@@ -1,6 +1,7 @@
-import pygame
-from pygame.locals import *
+from datetime import datetime
+import time
 
+import glfw
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
@@ -73,10 +74,6 @@ class CubeAsset:
 
     def __init__(self):
 
-        # Compile GLSL files
-        self._gProgram = engine.load_shaders('shaders/base.vert', 'shaders/base.frag')
-        self._gTexture = engine.load_texture('textures/wood.jpg')
-
         # Create and bind a VAO
         self._gVAO = glGenVertexArrays(1)
         glBindVertexArray(self._gVAO)
@@ -88,7 +85,11 @@ class CubeAsset:
         # Send the vertex coords to the VBO
         glBufferData(GL_ARRAY_BUFFER, self._data.nbytes, self._data, GL_STATIC_DRAW)
 
-        # Set up the VAO
+        # Compile GLSL files
+        self._gProgram = engine.load_shaders('shaders/base.vert', 'shaders/base.frag')
+        self._gTexture = engine.load_texture('textures/wood.jpg')
+
+        # Set up the VAO attributes
         glUseProgram(self._gProgram)
 
         # X, Y, Z coords
@@ -149,6 +150,7 @@ def render_instance(instance, camera):
     ass = instance.asset
 
     # Bind shaders and VAO
+    glBindVertexArray(ass.vao)
     glUseProgram(ass.shaders)
 
     # Pass uniform matrices for camera and object transform to the shader
@@ -162,8 +164,7 @@ def render_instance(instance, camera):
     glActiveTexture(GL_TEXTURE0)
     glBindTexture(GL_TEXTURE_2D, ass.texture)
 
-    # Bind VAO and draw
-    glBindVertexArray(ass.vao)
+    # Draw
     glDrawArrays(ass.draw_type, ass.draw_start, ass.draw_count)
 
     # Release VAO, shaders and texture
@@ -172,24 +173,67 @@ def render_instance(instance, camera):
     glBindTexture(GL_TEXTURE_2D, 0)
 
 
-def main(controls=True):
+def keyboard_input(window, key: int, scancode: int, action: int, mods: int):
+    if key == glfw.KEY_ESCAPE and action == 1:
+        print('Quitting')
+        glfw.terminate()
+        return
 
-    # Prepare PyGame context - this can be replaced by another context
-    pygame.init()
+    if key == glfw.KEY_W and action == 1:
+        print('Going forward')
+        # cam_displacement = cam.forward * distance_moved
+    if key == glfw.KEY_S and action == 1:
+        print('Going backward')
+        # cam_displacement = cam.backward * distance_moved
+    if key == glfw.KEY_A and action == 1:
+        print('Going left')
+        # cam_displacement = cam.left * distance_moved
+    if key == glfw.KEY_D and action == 1:
+        print('Going right')
+        # cam_displacement = cam.right * distance_moved
+    if key == glfw.KEY_Z and action == 1:
+        print('Going up')
+        # cam_displacement = engine.WORLD_UP * distance_moved
+    if key == glfw.KEY_X and action == 1:
+        print('Going down')
+        # cam_displacement = engine.WORLD_DOWN * distance_moved
+
+        # cam.fov = event.y * 0.5 + cam.fov
+
+def main(controls=True):
     display = (800, 600)
-    pygame.display.set_mode(display, DOUBLEBUF | OPENGL)
+
+    if not glfw.init():
+        return
+
+    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
+    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
+    glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
+    glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+
+    window = glfw.create_window(display[0], display[1], "Antworlds", None, None)
+
+    if not window:
+        glfw.terminate()
+        return
+
+    # Make the window's context current
+    glfw.make_context_current(window)
+
+    # Set the wait time for glfwSwapBuffers to 0 (this unlocks FPS)
+    glfw.swap_interval(0)
+    # The above may not work on all platforms. Another solution is to use single buffer instead of double
+    # (add the hint ```glfw.window_hint(glfw.DOUBLEBUFFER, glfw.FALSE)``` before creating the window)
+
+    if controls:
+        glfw.set_key_callback(window, keyboard_input)
 
     # Enable OpenGL depth testing
     glEnable(GL_DEPTH_TEST)
     glDepthFunc(GL_LESS)
 
-    # Set some PyGame-specific stuff
-    font = pygame.font.Font(pygame.font.get_default_font(), 20)
-
     if controls:
-        pygame.key.set_repeat(1, 10)
-        pygame.mouse.set_visible(False)
-        pygame.event.set_grab(True)
+        glfw.poll_events()
 
     # Set up starting camera position and aspect
     cam = Camera()
@@ -209,53 +253,27 @@ def main(controls=True):
     instances = [crate_0, crate_1, crate_2]
 
     # Initialise some variables
-    test_rot_speed = 45.0 * 0.001
+    test_rot_speed = 45.0
     test_rotation = 0
 
-    cam_move_speed = 0.01
+    cam_move_speed = 1
 
     fps_rolling = deque(maxlen=500)
 
-    clock = pygame.Clock()
-    while True:
+    tick = time.time_ns()
+    while not glfw.window_should_close(window):
 
         # Update variables according to passed time
-        t = clock.tick()
+        tock = time.time_ns()
+        t = (tock - tick) * 1e-9
+
         distance_moved = cam_move_speed * t
         test_rotated = test_rot_speed * t
 
         cam_displacement = 0
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                quit()
-            if event.type == KEYDOWN:
-                if event.key == K_ESCAPE:
-                    pygame.quit()
-                    quit()
-                if controls:
-                    if event.key == K_w:
-                        cam_displacement = cam.forward * distance_moved
-                    if event.key == K_s:
-                        cam_displacement = cam.backward * distance_moved
-                    if event.key == K_a:
-                        cam_displacement = cam.left * distance_moved
-                    if event.key == K_d:
-                        cam_displacement = cam.right * distance_moved
-                    if event.key == K_z:
-                        cam_displacement = engine.WORLD_UP * distance_moved
-                    if event.key == K_x:
-                        cam_displacement = engine.WORLD_DOWN * distance_moved
-            if controls and event.type == MOUSEWHEEL:
-                cam.fov = event.y * 0.5 + cam.fov
 
-        if controls:
-            mouse_x, mouse_y = pygame.mouse.get_rel()
-
-            # Update camera
-            cam.yaw -= mouse_x * 0.1
-            cam.pitch -= mouse_y * 0.1
-            cam.pos += cam_displacement
+        # Poll for and process events
+        glfw.poll_events()
 
         # Update transforms
         test_rotation += test_rotated
@@ -272,22 +290,16 @@ def main(controls=True):
         for instance in instances:
             render_instance(instance, cam)  # We render to the cam - TODO - render to texture instead?
 
-        # Compute and display FPS
-        fps_rolling.append(clock.get_fps())
-        text_surf = font.render(f'{np.mean(fps_rolling).astype(int)}', True, (255, 255, 255, 255), (0, 0, 0, 255))
-        text_surf_dat = pygame.image.tobytes(text_surf, "RGBA", True)
-        glWindowPos2d(10, 10)
-        glDrawPixels(text_surf.get_width(), text_surf.get_height(), GL_RGBA, GL_UNSIGNED_BYTE, text_surf_dat)
+        # Swap front and back buffers
+        glfw.swap_buffers(window)
 
-        # Swap buffers to display
-        pygame.display.flip()       # equivalent to glfwSwapBuffers() but for PyGame
+        tick = tock
 
-        if controls:
-            pygame.time.wait(1)
+    glfw.terminate()
 
 
 ##
 
 if __name__ == "__main__":
-    main(controls=False)
+    main(controls=True)
 
