@@ -146,3 +146,37 @@ def init_glfw(width=800, height=600, name='Antworlds'):
         sys.exit(1)
 
     return window
+
+
+class Input:
+    forward = False
+    backward = False
+    left = False
+    right = False
+    up = False
+    down = False
+
+    @staticmethod
+    def get_keys(window, key: int, scancode: int, action: int, mods: int):
+
+        if action in (glfw.PRESS, glfw.RELEASE):
+            if key == glfw.KEY_ESCAPE:
+                glfw.terminate()
+
+            if key == glfw.KEY_W:
+                Input.forward = not Input.forward
+
+            if key == glfw.KEY_S:
+                Input.backward = not Input.backward
+
+            if key == glfw.KEY_A:
+                Input.left = not Input.left
+
+            if key == glfw.KEY_D:
+                Input.right = not Input.right
+
+            if key == glfw.KEY_Z:
+                Input.up = not Input.up
+
+            if key == glfw.KEY_X:
+                Input.down = not Input.down

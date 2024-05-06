@@ -10,42 +10,13 @@ from collections import deque
 import numpy as np
 
 from camera import Camera
+from engine import Input
 from glm import Matrices
 import engine
 import things
 
 
-
 ##
-
-
-def keyboard_input(window, key: int, scancode: int, action: int, mods: int):
-    if key == glfw.KEY_ESCAPE and action == 1:
-        print('Quitting')
-        glfw.terminate()
-        return
-
-    if key == glfw.KEY_W and action == 1:
-        print('Going forward')
-        # cam_displacement = cam.forward * distance_moved
-    if key == glfw.KEY_S and action == 1:
-        print('Going backward')
-        # cam_displacement = cam.backward * distance_moved
-    if key == glfw.KEY_A and action == 1:
-        print('Going left')
-        # cam_displacement = cam.left * distance_moved
-    if key == glfw.KEY_D and action == 1:
-        print('Going right')
-        # cam_displacement = cam.right * distance_moved
-    if key == glfw.KEY_Z and action == 1:
-        print('Going up')
-        # cam_displacement = engine.WORLD_UP * distance_moved
-    if key == glfw.KEY_X and action == 1:
-        print('Going down')
-        # cam_displacement = engine.WORLD_DOWN * distance_moved
-
-        # cam.fov = event.y * 0.5 + cam.fov
-
 
 def main(controls=True, use_imgui=True):
 
@@ -66,7 +37,7 @@ def main(controls=True, use_imgui=True):
     glDepthFunc(GL_LESS)
 
     if controls:
-        glfw.set_key_callback(window, keyboard_input)
+        glfw.set_key_callback(window, Input.get_keys)
 
     # --
 
@@ -87,10 +58,15 @@ def main(controls=True, use_imgui=True):
 
     instances = [crate_0, crate_1, crate_2]
 
-    # Initialise some variables
-    test_rot_speed = 45.0
-    test_rotation = 0
-    cam_move_speed = 1
+    # Initialise some global variables to be used during runtime
+
+    # This is for an example object-space rotation
+    test_rotation_speed = 45.0      # in degrees per second
+    cam_move_speed = 1.0            # in metres per second (?)
+
+    cumulative_test_rotation = 0    # i.e. current angle of the rotating test object
+
+    t = 0
 
     len_fps_rolling = 100
     fps_rolling = deque(maxlen=len_fps_rolling)
@@ -107,31 +83,46 @@ def main(controls=True, use_imgui=True):
         # application and to prove to the window system that the application hasn't locked up
         glfw.poll_events()
 
-        # Update variables according to passed time
+        # Update passed time variables
         tock = time.time_ns()
         t = (tock - tick) * 1e-9
         running_t += t
-        fps_rolling.append(1.0/t)
-
+        fps_rolling.append(1.0 / t)
         fps = sum(fps_rolling) / len_fps_rolling  # This will be wrong for a few frames but it's faster than using len()
 
-        distance_moved = cam_move_speed * t
-        test_rotated = test_rot_speed * t
+        # Move camera
+        if controls:
+            to_move_this_frame = cam_move_speed * t
 
-        cam_displacement = 0
+            if Input.forward:
+                cam.position += cam.forward * to_move_this_frame
+            if Input.backward:
+                cam.position += cam.backward * to_move_this_frame
+            if Input.left:
+                cam.position += cam.left * to_move_this_frame
+            if Input.right:
+                cam.position += cam.right * to_move_this_frame
+            if Input.up:
+                cam.position += engine.WORLD_UP * to_move_this_frame
+            if Input.down:
+                cam.position += engine.WORLD_DOWN * to_move_this_frame
 
-        # Update transforms
-        test_rotation += test_rotated
-        while test_rotation > 360.0:
-            test_rotation -= 360.0
+            # cam.fov = event.y * 0.5 + cam.fov
 
-        crate_0.transform = Matrices.rotation(np.deg2rad(test_rotation), engine.WORLD_UP)
+        # Update object transforms
+        to_rotate_this_frame = test_rotation_speed * t
+
+        cumulative_test_rotation += to_rotate_this_frame
+        while cumulative_test_rotation > 360.0:
+            cumulative_test_rotation -= 360.0
+
+        crate_0.transform = Matrices.rotation(np.deg2rad(cumulative_test_rotation), engine.WORLD_UP)
 
         # Render all instances
         for instance in instances:
             things.render_instance(instance, cam)  # We render to the cam - TODO - render to texture instead?
 
-        # imgui main loop - needs to be done *after* rendering the scene
+        # imgui main loop - needs to be done *after* rendering the scene so it appears in front of things
         if use_imgui:
             # Process inputs from imgui
             impl.process_inputs()
