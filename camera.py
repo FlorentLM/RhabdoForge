@@ -1,6 +1,8 @@
 import numpy as np
-import glm
+
 from engine import WORLD_RIGHT, WORLD_UP
+from glm import Matrices, rotate, translate
+
 
 
 class Camera:
@@ -83,8 +85,8 @@ class Camera:
     @property
     def orientation(self):
         orientation = self.identity
-        orientation = glm.rotate(orientation, np.deg2rad(self.pitch), WORLD_RIGHT)
-        orientation = glm.rotate(orientation, np.deg2rad(self.yaw), WORLD_UP)
+        orientation = rotate(orientation, np.deg2rad(self.pitch), WORLD_RIGHT)
+        orientation = rotate(orientation, np.deg2rad(self.yaw), WORLD_UP)
         return orientation
 
     @property
@@ -113,11 +115,11 @@ class Camera:
 
     @property
     def projection(self):
-        return glm.perspective_mat(np.deg2rad(self.fov), self._aspect_ratio, self.near, self.far)
+        return Matrices.perspective(np.deg2rad(self.fov), self._aspect_ratio, self.near, self.far)
 
     @property
     def view(self):
-        return glm.translate(self.identity, -self.pos) @ self.orientation
+        return translate(self.identity, -self.pos) @ self.orientation
 
     @property
     def matrix(self):

@@ -8,11 +8,12 @@ from OpenGL.GL import *
 
 from collections import deque
 import numpy as np
-import glm
 
 from camera import Camera
+from glm import Matrices
 import engine
 import things
+
 
 
 ##
@@ -80,9 +81,9 @@ def main(controls=True, use_imgui=True):
     # Create instances
     crate_0 = things.Instance(c)
     crate_1 = things.Instance(c)
-    crate_1.transform = glm.translation_mat([-3, 0, 0])
+    crate_1.transform = Matrices.translation([-3, 0, 0])
     crate_2 = things.Instance(c)
-    crate_2.transform = glm.translation_mat([3, 0, 0])
+    crate_2.transform = Matrices.translation([3, 0, 0])
 
     instances = [crate_0, crate_1, crate_2]
 
@@ -124,7 +125,7 @@ def main(controls=True, use_imgui=True):
         while test_rotation > 360.0:
             test_rotation -= 360.0
 
-        crate_0.transform = glm.rotation_mat(np.deg2rad(test_rotation), engine.WORLD_UP)
+        crate_0.transform = Matrices.rotation(np.deg2rad(test_rotation), engine.WORLD_UP)
 
         # Render all instances
         for instance in instances:
