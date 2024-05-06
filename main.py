@@ -1,13 +1,12 @@
+import sys
 import time
-
-import imgui
-from imgui.integrations.glfw import GlfwRenderer
-
-import glfw
-from OpenGL.GL import *
-
 from collections import deque
 import numpy as np
+
+import glfw
+import imgui
+from imgui.integrations.glfw import GlfwRenderer
+from OpenGL.GL import *
 
 from camera import Camera
 from engine import Input
@@ -20,7 +19,7 @@ import things
 
 def main(controls=True, use_imgui=True):
 
-    display = 800, 600
+    display = 1280, 1024
 
     # -- Initialise window GLFW and optionally hook it to imgui
     if use_imgui:
@@ -38,6 +37,11 @@ def main(controls=True, use_imgui=True):
 
     if controls:
         glfw.set_key_callback(window, Input.get_keys)
+        glfw.set_cursor_pos_callback(window, Input.get_mouse)
+        glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+        glfw.set_cursor_pos(window, 0, 0)
+        glfw.set_mouse_button_callback(window, Input.get_mousebuttons)
+        glfw.set_scroll_callback(window, Input.get_scroll)
 
     # --
 
@@ -62,11 +66,11 @@ def main(controls=True, use_imgui=True):
 
     # This is for an example object-space rotation
     test_rotation_speed = 45.0      # in degrees per second
-    cam_move_speed = 1.0            # in metres per second (?)
+    cam_move_speed = 3.0            # in metres per second (?)
+    zoom_speed = 0.1                # idk :(
+    mouse_speed = 0.01              # idk :(
 
     cumulative_test_rotation = 0    # i.e. current angle of the rotating test object
-
-    t = 0
 
     len_fps_rolling = 100
     fps_rolling = deque(maxlen=len_fps_rolling)
@@ -94,6 +98,9 @@ def main(controls=True, use_imgui=True):
         if controls:
             to_move_this_frame = cam_move_speed * t
 
+            if Input.quit:
+                break
+
             if Input.forward:
                 cam.position += cam.forward * to_move_this_frame
             if Input.backward:
@@ -107,7 +114,9 @@ def main(controls=True, use_imgui=True):
             if Input.down:
                 cam.position += engine.WORLD_DOWN * to_move_this_frame
 
-            # cam.fov = event.y * 0.5 + cam.fov
+            cam.fov += Input.mouse_wh * zoom_speed
+            cam.yaw -= Input.mouse_x * mouse_speed
+            cam.pitch -= Input.mouse_y * mouse_speed
 
         # Update object transforms
         to_rotate_this_frame = test_rotation_speed * t

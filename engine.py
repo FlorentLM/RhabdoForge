@@ -149,19 +149,31 @@ def init_glfw(width=800, height=600, name='Antworlds'):
 
 
 class Input:
-    forward = False
-    backward = False
-    left = False
-    right = False
-    up = False
-    down = False
+    forward: bool = False
+    backward: bool = False
+    left: bool = False
+    right: bool = False
+    up: bool = False
+    down: bool = False
+
+    mouse_x: float = 0.0
+    mouse_y: float = 0.0
+    mouse_wh: float = 0.0
+
+    mouse_lb: bool = False
+    mouse_rb: bool = False
+
+    _last_mouse_x: float = 0.0
+    _last_mouse_y: float = 0.0
+
+    quit: bool = False
 
     @staticmethod
-    def get_keys(window, key: int, scancode: int, action: int, mods: int):
+    def get_keys(window: glfw._GLFWwindow, key: int, scancode: int, action: int, mods: int) -> None:
 
         if action in (glfw.PRESS, glfw.RELEASE):
             if key == glfw.KEY_ESCAPE:
-                glfw.terminate()
+                Input.quit = True
 
             if key == glfw.KEY_W:
                 Input.forward = not Input.forward
@@ -180,3 +192,38 @@ class Input:
 
             if key == glfw.KEY_X:
                 Input.down = not Input.down
+
+    @staticmethod
+    def get_mouse(window: glfw._GLFWwindow, xpos: float, ypos: float) -> None:
+
+        xoffset = xpos - Input._last_mouse_x
+        yoffset = ypos - Input._last_mouse_y
+
+        if abs(xoffset) > 1:
+            Input.mouse_x = xoffset
+        else:
+            Input.mouse_x = 0.0
+        if abs(yoffset) > 1:
+            Input.mouse_y = yoffset
+        else:
+            Input.mouse_y = 0.0
+
+        Input._last_mouse_x = xpos
+        Input._last_mouse_y = ypos
+
+    @staticmethod
+    def get_mousebuttons(window: glfw._GLFWwindow, button: int, action: int, mods: int) -> None:
+        if action in (glfw.PRESS, glfw.RELEASE):
+            if button == glfw.MOUSE_BUTTON_LEFT:
+                Input.mouse_lb = not Input.mouse_lb
+            if button == glfw.MOUSE_BUTTON_RIGHT:
+                Input.mouse_rb = not Input.mouse_rb
+
+    @staticmethod
+    def get_scroll(window: glfw._GLFWwindow, xoffset: float, yoffset: float) -> None:
+        if yoffset > 0.1:
+            Input.mouse_wh = 1
+        elif yoffset < -0.1:
+            Input.mouse_wh = -1
+        else:
+            Input.mouse_wh = 0
