@@ -1,4 +1,8 @@
 import time
+import sys
+
+import imgui
+from imgui.integrations.glfw import GlfwRenderer
 
 import glfw
 from OpenGL.GL import *
@@ -199,24 +203,23 @@ def keyboard_input(window, key: int, scancode: int, action: int, mods: int):
 
         # cam.fov = event.y * 0.5 + cam.fov
 
-def main(controls=True):
-    display = (800, 600)
+
+def init_glfw(width=800, height=600, name='Antworlds'):
 
     if not glfw.init():
-        return
+        print("Could not initialize OpenGL context.")
+        sys.exit(1)
 
+    # macOS supports only forward-compatible core profiles from 3.2+
     glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
     glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
     glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
     glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
 
-    window = glfw.create_window(display[0], display[1], "Antworlds", None, None)
+    glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, GL_TRUE)
 
-    if not window:
-        glfw.terminate()
-        return
-
-    # Make the window's context current
+    # Create a windowed mode window and its OpenGL context
+    window = glfw.create_window(int(width), int(height), name, None, None)
     glfw.make_context_current(window)
 
     # Set the wait time for glfwSwapBuffers to 0 (this unlocks FPS)
@@ -224,15 +227,36 @@ def main(controls=True):
     # The above may not work on all platforms. Another solution is to use single buffer instead of double
     # (add the hint ```glfw.window_hint(glfw.DOUBLEBUFFER, glfw.FALSE)``` before creating the window)
 
-    if controls:
-        glfw.set_key_callback(window, keyboard_input)
+    if not window:
+        glfw.terminate()
+        print("Could not initialize window...")
+        sys.exit(1)
+
+    return window
+
+
+def main(controls=True, use_imgui=True):
+
+    display = 800, 600
+
+    # -- Initialise window GLFW and optionally hook it to imgui
+    if use_imgui:
+        imgui.create_context()
+
+    window = init_glfw(width=display[0], height=display[1], name='Antworlds')
+
+    if use_imgui:
+        impl = GlfwRenderer(window)
+    # --
 
     # Enable OpenGL depth testing
     glEnable(GL_DEPTH_TEST)
     glDepthFunc(GL_LESS)
 
     if controls:
-        glfw.poll_events()
+        glfw.set_key_callback(window, keyboard_input)
+
+    # --
 
     # Set up starting camera position and aspect
     cam = Camera()
@@ -254,25 +278,35 @@ def main(controls=True):
     # Initialise some variables
     test_rot_speed = 45.0
     test_rotation = 0
-
     cam_move_speed = 1
 
-    fps_rolling = deque(maxlen=500)
+    len_fps_rolling = 100
+    fps_rolling = deque(maxlen=len_fps_rolling)
 
     tick = time.time_ns()
+    running_t = 0
     while not glfw.window_should_close(window):
+
+        # Clear the render with black
+        glClearColor(0, 0, 0, 1)
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+        # Per the documentation: GLFW needs to poll the window system for events both to provide input to the
+        # application and to prove to the window system that the application hasn't locked up
+        glfw.poll_events()
 
         # Update variables according to passed time
         tock = time.time_ns()
         t = (tock - tick) * 1e-9
+        running_t += t
+        fps_rolling.append(1.0/t)
+
+        fps = sum(fps_rolling) / len_fps_rolling  # This will be wrong for a few frames but it's faster than using len()
 
         distance_moved = cam_move_speed * t
         test_rotated = test_rot_speed * t
 
         cam_displacement = 0
-
-        # Poll for and process events
-        glfw.poll_events()
 
         # Update transforms
         test_rotation += test_rotated
@@ -281,24 +315,44 @@ def main(controls=True):
 
         crate_0.transform = glm.rotation_mat(np.deg2rad(test_rotation), engine.WORLD_UP)
 
-        # Clear the render with black
-        glClearColor(0, 0, 0, 1)
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
         # Render all instances
         for instance in instances:
             render_instance(instance, cam)  # We render to the cam - TODO - render to texture instead?
 
+        # imgui main loop - needs to be done *after* rendering the scene
+        if use_imgui:
+            # Process inputs from imgui
+            impl.process_inputs()
+
+            # Start new frame context
+            imgui.new_frame()
+
+            # Draw text label inside of current window
+            imgui.text(f'{fps:.2f} fps')
+
+            # Pass all drawing comands to the rendering pipeline and close frame context
+            imgui.render()
+            impl.render(imgui.get_draw_data())
+            imgui.end_frame()
+
+        else:
+            if running_t >= 1:
+                print(f'{fps:.2f} fps')
+                running_t = 0
+
         # Swap front and back buffers
         glfw.swap_buffers(window)
 
+        # And finally update the time for current frame
         tick = tock
 
+    if use_imgui:
+        impl.shutdown()
     glfw.terminate()
 
 
 ##
 
 if __name__ == "__main__":
-    main(controls=True)
+    main(use_imgui=True)
 
