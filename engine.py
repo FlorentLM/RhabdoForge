@@ -1,7 +1,10 @@
+import sys
 from pathlib import Path
+
 from PIL import Image
 import numpy as np
 
+import glfw
 from OpenGL.GL import *
 from OpenGL.GL.shaders import compileShader, compileProgram
 
@@ -112,3 +115,34 @@ def load_cubemap(folder_path):
     glBindTexture(GL_TEXTURE_2D, 0)
 
     return texture_id
+
+
+def init_glfw(width=800, height=600, name='Antworlds'):
+
+    if not glfw.init():
+        print("Could not initialize OpenGL context.")
+        sys.exit(1)
+
+    # macOS supports only forward-compatible core profiles from 3.2+
+    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
+    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
+    glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
+    glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+
+    glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, GL_TRUE)
+
+    # Create a windowed mode window and its OpenGL context
+    window = glfw.create_window(int(width), int(height), name, None, None)
+    glfw.make_context_current(window)
+
+    # Set the wait time for glfwSwapBuffers to 0 (this unlocks FPS)
+    glfw.swap_interval(0)
+    # The above may not work on all platforms. Another solution is to use single buffer instead of double
+    # (add the hint ```glfw.window_hint(glfw.DOUBLEBUFFER, glfw.FALSE)``` before creating the window)
+
+    if not window:
+        glfw.terminate()
+        print("Could not initialize window...")
+        sys.exit(1)
+
+    return window
