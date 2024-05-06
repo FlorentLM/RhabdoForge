@@ -1,4 +1,3 @@
-import sys
 import time
 from collections import deque
 import numpy as np
@@ -51,9 +50,13 @@ def main(controls=True, use_imgui=True):
     cam.ratio = display[0] / display[1]
 
     # Load Assets
-    c = things.CubeAsset()
+    c = things.CubeAsset(texture_name='rock')
+    # t = things.TerrainAsset(texture_name='grass')
 
     # Create instances
+    # terrain = things.Instance(t)
+    # terrain.transform = Matrices.translation([0, -1, 0]) @ Matrices.scaling([10, 1, 10])
+
     crate_0 = things.Instance(c)
     crate_1 = things.Instance(c)
     crate_1.transform = Matrices.translation([-3, 0, 0])

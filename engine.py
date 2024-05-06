@@ -38,27 +38,33 @@ def load_shaders(path_vert, path_frag, path_geom=None):
     return compileProgram(*comp)
 
 
-def load_texture(file_path):
+def load_texture(file_path, rgb=True):
     bitmap_path = Path(file_path)
     if not bitmap_path.exists():
         raise IOError(f"Failed to open texture file {bitmap_path}")
 
     with Image.open(bitmap_path) as im:
         w, h = im.width, im.height
-        im_data = im.transpose(Image.FLIP_TOP_BOTTOM).convert("RGBA").tobytes()
+        img = im.transpose(Image.FLIP_TOP_BOTTOM)
+
+    if rgb:
+        im_data = img.convert("RGBA").tobytes()
+    else:
+        im_data = img.convert("L").tobytes()
 
     texture_id = glGenTextures(1)
+    print(texture_id)
     glBindTexture(GL_TEXTURE_2D, texture_id)
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
 
     glTexImage2D(GL_TEXTURE_2D,
                  0,
-                 GL_RGBA,
+                 GL_RGBA if rgb else GL_RED,
                  w,
                  h,
                  0,
-                 GL_RGBA,
+                 GL_RGBA if rgb else GL_RED,
                  GL_UNSIGNED_BYTE,
                  im_data)
 
