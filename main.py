@@ -50,7 +50,7 @@ def main(controls=True, use_imgui=True):
     cam.ratio = display[0] / display[1]
 
     # Load Assets
-    c = things.CubeAsset(texture_name='rock')
+    c = things.CubeAsset()
     # t = things.TerrainAsset(texture_name='grass')
 
     # Create instances
