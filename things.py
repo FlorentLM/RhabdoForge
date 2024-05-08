@@ -29,12 +29,12 @@ class BaseAsset:
         r_tex = engine.Texture(f'textures/rock.jpg', mode='RGB')
         c_tex = engine.Texture(f'textures/cracks.jpg', mode='RGB')
 
-        # Assign the textures to the two sampler2d
+        # Assign the textures to the two sampler2d in the shader
         loc_tex1 = glGetUniformLocation(self._gProgram, "texture1")
-        glUniform1i(loc_tex1, r_tex._tex_unit)
+        glUniform1i(loc_tex1, r_tex.unit)
 
         loc_tex2 = glGetUniformLocation(self._gProgram, "texture2")
-        glUniform1i(loc_tex2, c_tex._tex_unit)
+        glUniform1i(loc_tex2, c_tex.unit)
 
         # And keep a ref to the texture objects
         self._gTextures = [r_tex, c_tex]
