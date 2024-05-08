@@ -26,13 +26,18 @@ class BaseAsset:
         glUseProgram(self._gProgram)
 
         # Load textures
-        self._gTextures = {}
-        self._gTextures['rock'] = engine.load_texture(f'textures/rock.jpg', rgb=True)
-        self._gTextures['cracks'] = engine.load_texture(f'textures/cracks.jpg', rgb=True)
+        r_tex = engine.Texture(f'textures/rock.jpg', mode='RGB')
+        c_tex = engine.Texture(f'textures/cracks.jpg', mode='RGB')
 
-        # Assign the textures to the sampler2d
-        glUniform1i(glGetUniformLocation(self._gProgram, "tex"), 0)
-        glUniform1i(glGetUniformLocation(self._gProgram, "tex2"), 1)
+        # Assign the textures to the two sampler2d
+        loc_tex1 = glGetUniformLocation(self._gProgram, "texture1")
+        glUniform1i(loc_tex1, r_tex._tex_unit)
+
+        loc_tex2 = glGetUniformLocation(self._gProgram, "texture2")
+        glUniform1i(loc_tex2, c_tex._tex_unit)
+
+        # And keep a ref to the texture objects
+        self._gTextures = [r_tex, c_tex]
 
         # TODO - make a global texture store instead (better if multiple assets share a same texture)
 
@@ -163,11 +168,9 @@ def render_instance(instance, camera):
     glUniformMatrix4fv(model_loc, 1, False, instance.transform)
 
     # Bind the instance's textures
-    i = 0
-    for name, slot in ass.textures.items():
-        glActiveTexture(GL_TEXTURE0 + i)
-        glBindTexture(GL_TEXTURE_2D, slot)
-        i += 1
+    for tex in ass.textures:
+        glActiveTexture(GL_TEXTURE0 + tex.unit)
+        glBindTexture(GL_TEXTURE_2D, tex.idx)
 
     # Draw
     glDrawArrays(ass.draw_type, ass.draw_start, ass.draw_count)
@@ -176,3 +179,6 @@ def render_instance(instance, camera):
     glBindVertexArray(0)
     glUseProgram(0)
     glBindTexture(GL_TEXTURE_2D, 0)
+
+    # TODO -  avoid unbinding everything every time if we're rendering several instaces of the same asset
+

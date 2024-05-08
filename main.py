@@ -15,7 +15,6 @@ import things
 
 
 ##
-
 def main(controls=True, use_imgui=True):
 
     display = 1280, 1024

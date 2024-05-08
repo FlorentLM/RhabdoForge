@@ -1,4 +1,5 @@
 import sys
+import hashlib
 from pathlib import Path
 
 from PIL import Image
@@ -38,89 +39,155 @@ def load_shaders(path_vert, path_frag, path_geom=None):
     return compileProgram(*comp)
 
 
-def load_texture(file_path, rgb=True):
-    bitmap_path = Path(file_path)
-    if not bitmap_path.exists():
-        raise IOError(f"Failed to open texture file {bitmap_path}")
+class Texture:
 
-    with Image.open(bitmap_path) as im:
-        w, h = im.width, im.height
-        img = im.transpose(Image.FLIP_TOP_BOTTOM)
+    __loaded_textures = {}
 
-    if rgb:
-        im_data = img.convert("RGBA").tobytes()
-    else:
-        im_data = img.convert("L").tobytes()
+    @staticmethod
+    def __make_hash(file, mode):
+        if mode.upper() not in ('RGB', 'RGBA', 'L'):
+            raise AttributeError('Unknown texture mode')
 
-    texture_id = glGenTextures(1)
-    print(texture_id)
-    glBindTexture(GL_TEXTURE_2D, texture_id)
+        file = Path(file)
+        assert file.is_file() and file.suffix in ('.bmp', '.png', '.jpg', '.jpeg', '.tiff', '.tif')
+        to_hash = (file.as_posix() + mode.upper()).encode("utf-8")
+        hash = int(hashlib.sha1(to_hash).hexdigest(), 16) % (10 ** 8), file, mode
 
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+        return hash
 
-    glTexImage2D(GL_TEXTURE_2D,
-                 0,
-                 GL_RGBA if rgb else GL_RED,
-                 w,
-                 h,
-                 0,
-                 GL_RGBA if rgb else GL_RED,
-                 GL_UNSIGNED_BYTE,
-                 im_data)
+    def __new__(cls, file, mode='RGBA'):
+        hash, file, mode = cls.__make_hash(file, mode)
+        if hash in Texture.__loaded_textures.keys():
+            return Texture.__loaded_textures[hash]
+        else:
+            instance = super().__new__(cls)
+            return instance
 
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0)
+    def __init__(self, file, mode='RGBA'):
 
-    # Unbind texture
-    glBindTexture(GL_TEXTURE_2D, 0)
+        hash, file, mode = self.__make_hash(file, mode)
+        if hash in Texture.__loaded_textures.keys():
+            self._hash = Texture.__loaded_textures[hash]._hash
+            self._file_path = Texture.__loaded_textures[hash]._file_path
+            self._mode = Texture.__loaded_textures[hash]._mode
+            self._tex_unit = Texture.__loaded_textures[hash]._tex_unit
+            self._GL_texID = Texture.__loaded_textures[hash]._GL_texID
 
-    return texture_id
+        else:
+            self._hash = hash
+            self._file_path = file
+            self._mode = mode
+            self._tex_unit = len(Texture.__loaded_textures.keys())
 
+            self._load_bitmap()
+            Texture.__loaded_textures[self._hash] = self
 
-def load_cubemap(folder_path):
+    def _load_bitmap(self):
 
-    faces = [GL_TEXTURE_CUBE_MAP_POSITIVE_X,
-             GL_TEXTURE_CUBE_MAP_NEGATIVE_X,
-             GL_TEXTURE_CUBE_MAP_POSITIVE_Y,
-             GL_TEXTURE_CUBE_MAP_NEGATIVE_Y,
-             GL_TEXTURE_CUBE_MAP_POSITIVE_Z,
-             GL_TEXTURE_CUBE_MAP_NEGATIVE_Z]
-
-    files = list(Path(folder_path).glob('*'))
-    assert len(files) == 6
-
-    texture_id = glGenTextures(1)
-    glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id)
-
-    for i in range(6):
-        with Image.open(files[i]) as im:
+        with Image.open(self._file_path) as im:
             w, h = im.width, im.height
-            im_data = im.transpose(Image.FLIP_TOP_BOTTOM).convert("RGBA").tobytes()
+            im_data = im.transpose(Image.FLIP_TOP_BOTTOM).convert(self._mode).tobytes()
 
-        glTexImage2D(faces[i],
+        texture_id = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, texture_id)
+
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+
+        if self._mode == 'RGBA':
+            gl_color_mode = GL_RGBA
+        elif self._mode == 'RGB':
+            gl_color_mode = GL_RGB
+        else:
+            gl_color_mode = GL_LUMINANCE       # TODO - why doesn't GL_LUMINANCE work??
+
+        glTexImage2D(GL_TEXTURE_2D,
                      0,
-                     GL_RGBA8,
+                     gl_color_mode,
                      w,
                      h,
                      0,
-                     GL_RGBA,
+                     gl_color_mode,
                      GL_UNSIGNED_BYTE,
                      im_data)
 
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE)
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0)
 
-    # Unbind texture
-    glBindTexture(GL_TEXTURE_2D, 0)
+        # Unbind texture
+        glBindTexture(GL_TEXTURE_2D, 0)
 
-    return texture_id
+        self._GL_texID = texture_id
+
+    @property
+    def file(self):
+        return self._file_path
+
+    @property
+    def mode(self):
+        return self._mode
+
+    @property
+    def hash(self):
+        return self._hash
+
+    @property
+    def unit(self):
+        return self._tex_unit
+
+    @property
+    def idx(self):
+        return self._GL_texID
+
+# class Cubemap(Texture):
+#
+#     def __init__(self, file, mode):
+#         super().__init__(file, mode)
+#
+#     def _load_bitmap(self):
+#
+#         faces = [GL_TEXTURE_CUBE_MAP_POSITIVE_X,
+#                  GL_TEXTURE_CUBE_MAP_NEGATIVE_X,
+#                  GL_TEXTURE_CUBE_MAP_POSITIVE_Y,
+#                  GL_TEXTURE_CUBE_MAP_NEGATIVE_Y,
+#                  GL_TEXTURE_CUBE_MAP_POSITIVE_Z,
+#                  GL_TEXTURE_CUBE_MAP_NEGATIVE_Z]
+#
+#         files = list(Path(folder_path).glob('*'))
+#         assert len(files) == 6
+#
+#         texture_id = glGenTextures(1)
+#         glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id)
+#
+#         for i in range(6):
+#             with Image.open(files[i]) as im:
+#                 w, h = im.width, im.height
+#                 im_data = im.transpose(Image.FLIP_TOP_BOTTOM).convert(self._mode).tobytes()
+#
+#             glTexImage2D(faces[i],
+#                          0,
+#                          GL_RGBA8,
+#                          w,
+#                          h,
+#                          0,
+#                          GL_RGBA,
+#                          GL_UNSIGNED_BYTE,
+#                          im_data)
+#
+#         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+#         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+#         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+#         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+#         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE)
+#
+#         # Unbind texture
+#         glBindTexture(GL_TEXTURE_2D, 0)
+#
+#         self._GL_texID = texture_id
+
 
 
 def init_glfw(width=800, height=600, name='Antworlds'):
