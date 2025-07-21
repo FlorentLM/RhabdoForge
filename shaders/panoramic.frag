@@ -17,15 +17,11 @@ void main()
     // Convert spherical coordinates back to a 3D direction vector
     // (note: this is the reverse of the math in William Martin's eul2geo)
     vec3 dir;
-    dir.y = sin(latitude);
+    dir.y = -sin(latitude);
     float cos_lat = cos(latitude);
-    dir.x = cos_lat * cos(longitude);
-    dir.z = cos_lat * sin(longitude);
+    dir.x = cos_lat * sin(longitude);
+    dir.z = -cos_lat * cos(longitude);
 
-    // Cubemaps use a left-handed coordinate system for lookups
-    // So the Z coordinate should be flipped for the texture lookup
-    vec3 lookup_dir = vec3(dir.x, dir.y, -dir.z);
-
-    // Sample the cubemap with the calculated direction
-    FragColor = texture(u_cubemap, lookup_dir);
+    // Sample the cubemap
+    FragColor = texture(u_cubemap, dir);
 }
