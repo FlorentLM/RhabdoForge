@@ -216,7 +216,7 @@ def main(controls=True):
 
     # Load assets
     crate_asset = CubeAsset()
-    insect_eye_asset = InsectEyeAsset(num_ommatidia=162, acceptance_angle_deg=10.0)
+    insect_eye_asset = InsectEyeAsset(num_ommatidia=4096, acceptance_angle_deg=15.0)
 
     # Create instances
     crate_0 = Instance(crate_asset)
@@ -291,12 +291,12 @@ def main(controls=True):
         glClearColor(0, 0, 0, 1)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-
+        #
         # # Render all instances
         # for instance in instances:
         #     render_instance(instance, cam)  # We render to the cam - TODO - render to texture instead?
-
-
+        #
+        #
         # # --- PASS 1: RENDER SCENE TO CUBEMAP ---
         # cubemap_fbo.bind()
         #
@@ -341,29 +341,29 @@ def main(controls=True):
         #
         # cubemap_fbo.unbind()
 
-
-        # --- PASS 2: OMMATIDIA DATA GATHERING ---
-        ommatidia_values = insect_eye_asset.get_ommatidia_data(cubemap_fbo.color_texture_id)
+        #
+        # # --- PASS 2: OMMATIDIA DATA GATHERING ---
+        # # ommatidia_values = insect_eye_asset.get_ommatidia_data(cubemap_fbo.color_texture_id)
         # ommatidia_values = insect_eye_asset.get_ommatidia_data(debug_cubemap_id)
-
-
-        # --- PASS 3 (OPTIONAL): VISUALISATION ---
-        if VISUALIZE_MODE:
-            glViewport(0, 0, display[0], display[1])
-            glClearColor(0.05, 0.05, 0.05, 1)
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-            # Feed the data just gathered back to the visualization renderer
-            insect_eye_asset.draw(ommatidia_values)
-
-        else:
-            # We already have the data, just clear the screen to show it's running
-            glViewport(0, 0, display[0], display[1])
-            glClear(GL_COLOR_BUFFER_BIT)
-
-            if pygame.time.get_ticks() % 60 == 0:
-                print(f"HEADLESS MODE - Ommatidium 0: {ommatidia_values[0]}")
-
+        #
+        #
+        # # --- PASS 3 (OPTIONAL): VISUALISATION ---
+        # if VISUALIZE_MODE:
+        #     glViewport(0, 0, display[0], display[1])
+        #     glClearColor(0.05, 0.05, 0.05, 1)
+        #     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        #
+        #     # Feed the data just gathered back to the visualization renderer
+        #     insect_eye_asset.draw(ommatidia_values)
+        #
+        # else:
+        #     # We already have the data, just clear the screen to show it's running
+        #     glViewport(0, 0, display[0], display[1])
+        #     glClear(GL_COLOR_BUFFER_BIT)
+        #
+        #     if pygame.time.get_ticks() % 60 == 0:
+        #         print(f"HEADLESS MODE - Ommatidium 0: {ommatidia_values[0]}")
+        #
 
 
 

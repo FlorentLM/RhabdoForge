@@ -8,13 +8,18 @@ from fbo import DataFBO
 class InsectEyeAsset:
     def __init__(self, num_ommatidia=500, acceptance_angle_deg=5.0):
 
-        om_dirs, om_lats, om_lons = ommatidia_builder(ommatidia=num_ommatidia)
+        om_dirs, om_lons, om_lats = ommatidia_builder(ommatidia=num_ommatidia)
 
         self.num_ommatidia = om_dirs.shape[0]
         self.acceptance_angle = np.deg2rad(acceptance_angle_deg)
 
         self.ommatidia_dirs = np.zeros((self.num_ommatidia, 4), dtype=np.float32)
         self.ommatidia_dirs[:, :3] = om_dirs
+
+        # VBO data for panoramic visualization
+        self.vis_vertex_data = np.zeros((self.num_ommatidia, 2), dtype=np.float32)
+        self.vis_vertex_data[:, 0] = om_lons  # Longitude
+        self.vis_vertex_data[:, 1] = om_lats  # Latitude
 
         # Visualisation resources (lazy-loaded)
         self._vis_program = None
@@ -36,12 +41,9 @@ class InsectEyeAsset:
         # SSBO for sending colors to the visualization shader
         self.colors_ssbo = glGenBuffers(1)
         # Bind to GL_UNIFORM_BUFFER here just to allocate the memory
-        # The target used during allocation doesn't matter as much as the one used for binding,
-        # but we still use the proper target from the start for consistency
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.colors_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, self.num_ommatidia * 16, None, GL_DYNAMIC_DRAW)
-
-        # Unbind
+        # and unbind
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     @property
@@ -64,23 +66,21 @@ class InsectEyeAsset:
 
     @property
     def vis_vao(self):
-
         if self._vis_vao is None:
             vao = glGenVertexArrays(1)
             glBindVertexArray(vao)
+
             vbo = glGenBuffers(1)
             glBindBuffer(GL_ARRAY_BUFFER, vbo)
-            glBufferData(GL_ARRAY_BUFFER, self.ommatidia_dirs.nbytes, self.ommatidia_dirs, GL_STATIC_DRAW)
+            glBufferData(GL_ARRAY_BUFFER, self.vis_vertex_data.nbytes, self.vis_vertex_data, GL_STATIC_DRAW)
 
-            # Using the property to ensure it's compiled
-            glUseProgram(self.vis_program)
-            pos_loc = glGetAttribLocation(self.vis_program, "a_ommatidium_dir")
-            glEnableVertexAttribArray(pos_loc)
-            glVertexAttribPointer(pos_loc, 3, GL_FLOAT, GL_FALSE, 4 * self.ommatidia_dirs.itemsize, ctypes.c_void_p(0))
+            pano_loc = glGetAttribLocation(self.vis_program, "a_ommatidia_coords")
+            glEnableVertexAttribArray(pano_loc)
+
+            glVertexAttribPointer(pano_loc, 2, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
 
             glBindVertexArray(0)
             self._vis_vao = vao
-
         return self._vis_vao
 
     def get_ommatidia_data(self, cubemap_texture_id):
@@ -130,20 +130,17 @@ class InsectEyeAsset:
         return self.vis_vao
 
     def draw(self, data):
-        """ Draws the visualization using pre-calculated ommatidia data """
+        """ Draws the visualization as a panoramic equirectangular projection """
 
         glUseProgram(self.vis_program)
 
-        # Set the visualization scale uniform required by the vertex shader
-        glUniform1f(glGetUniformLocation(self.vis_program, "u_vis_scale"), 0.9)
-
-        # Update the colors SSBO with the new data
+        # Update and bind the colors SSBO
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.colors_ssbo)
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, data.nbytes, data)
-
-        # Bind the colors SSBO to binding point 1
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.colors_ssbo)
 
+        # Bind the VAO and draw the points
+        # The vertex shader will handle the panoramic projection
         glBindVertexArray(self.vis_vao)
         glDrawArrays(GL_POINTS, 0, self.num_ommatidia)
 
