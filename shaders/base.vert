@@ -1,16 +1,17 @@
-#version 150
+#version 430 core
 
-uniform mat4 camera;
-uniform mat4 model;
-
-in vec3 pos;
-in vec2 vertTexCoord;
+layout (location = 0) in vec3 pos;
+layout (location = 1) in vec2 vertTexCoord;
 
 out vec2 fragTexCoord;
 
-void main() {
-    // Pass the tex coord straight through to the fragment shader
-    fragTexCoord = vertTexCoord;
+uniform mat4 camera; // This will be Projection * View
+uniform mat4 model;
 
-    gl_Position = camera * model * vec4(pos, 1);
+void main()
+{
+    fragTexCoord = vertTexCoord;
+    // This is column-major multiplication, which is what we want inside GLSL
+    // glUniformMatrix with GL_TRUE ensures the matrices arrive in the correct format
+    gl_Position = camera * model * vec4(pos, 1.0);
 }

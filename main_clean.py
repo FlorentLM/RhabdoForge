@@ -178,18 +178,21 @@ def render_instance(instance, camera):
     glBindTexture(GL_TEXTURE_2D, 0)
 
 
-def render_instance_to_fbo(instance, projection_matrix, view_matrix):
+def render_instance_to_fbo(instance, camera_matrix):
     ass = instance.asset
     glUseProgram(ass.shaders)
 
-    camera_matrix = projection_matrix @ view_matrix
-    glUniformMatrix4fv(glGetUniformLocation(ass.shaders, "camera"), 1, GL_FALSE, camera_matrix)
-    glUniformMatrix4fv(glGetUniformLocation(ass.shaders, "model"), 1, GL_FALSE, instance.transform)
+    # Tell OpenGL the matrices are row-major and need to be transposed
+    glUniformMatrix4fv(glGetUniformLocation(ass.shaders, "camera"), 1, GL_TRUE, camera_matrix)
+    glUniformMatrix4fv(glGetUniformLocation(ass.shaders, "model"), 1, GL_TRUE, instance.transform)
 
     glActiveTexture(GL_TEXTURE0)
     glBindTexture(GL_TEXTURE_2D, ass.texture)
+    glUniform1i(glGetUniformLocation(ass.shaders, "u_texture"), 0)
+
     glBindVertexArray(ass.vao)
-    glDrawArrays(ass.draw_type, ass.draw_start, ass.draw_count)
+    glDrawArrays(ass.draw_type, 0, ass.draw_count)
+
     glBindVertexArray(0)
     glUseProgram(0)
 
@@ -274,40 +277,36 @@ def main(controls=True):
 
         # --- PASS 1: RENDER SCENE TO CUBEMAP ---
         cubemap_fbo.bind()
-
-        agent_position = cam.pos
-        cam_orientation = cam.orientation
-
-        # Projection matrix for the cubemap camera (always 90 FOV)
         cubemap_projection = glm.perspective_mat(np.deg2rad(90.0), 1.0, 0.1, 100.0)
 
-        targets_world = [
-            [1, 0, 0], [-1, 0, 0],  # +X, -X
-            [0, 1, 0], [0, -1, 0],  # +Y, -Y
-            [0, 0, 1], [0, 0, -1]   # +Z, -Z
-        ]
-        ups_world = [
-            [0, -1, 0], [0, -1, 0],  # +X, -X
-            [0,  0, 1], [0, 0, -1],  # +Y, -Y (special up vectors to avoid gimbal lock)
-            [0, -1, 0], [0, -1, 0]   # +Z, -Z
-        ]
+        # Get the camera's orientation matrix (row-major)
+        # TODO: Everything probably needs to be column-major
+        cam_orientation = cam.orientation
+
+        targets_world = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
+                                 dtype=np.float32)
+        ups_world = np.array([[0, -1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0], [0, -1, 0]], dtype=np.float32)
 
         for i in range(6):
-            # Rotate the target and up vectors by the main camera's orientation
-            target_oriented = (np.array(targets_world[i] + [0.0]) @ cam_orientation)[:3]
-            up_oriented = (np.array(ups_world[i] + [0.0]) @ cam_orientation)[:3]
+            # Transform vectors using row-major math: vector @ matrix
+            target_vec4 = np.array(list(targets_world[i]) + [0.0])
+            up_vec4 = np.array(list(ups_world[i]) + [0.0])
 
-            view_matrix = glm.lookat_mat(agent_position, agent_position + target_oriented, up_oriented)
+            oriented_target = (target_vec4 @ cam_orientation)[:3]
+            oriented_up = (up_vec4 @ cam_orientation)[:3]
+
+            view_matrix = glm.lookat_mat(cam.pos, cam.pos + oriented_target, oriented_up)
 
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                    GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
                                    cubemap_fbo.color_texture_id, 0)
-
-            glClearColor(0.1, 0.2, 0.3, 1)
+            glClearColor(0.2, 0.3, 0.4, 1.0)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
+            camera_mat_for_shader = view_matrix @ cubemap_projection
+
             for instance in instances:
-                render_instance_to_fbo(instance, cubemap_projection, view_matrix)
+                render_instance_to_fbo(instance, camera_mat_for_shader)
 
         cubemap_fbo.unbind()
 
