@@ -1,4 +1,7 @@
+import os
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
+
 from pygame.locals import *
 
 from OpenGL.GL import *
@@ -289,16 +292,11 @@ def main(controls=True):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
 
-        #
-        #
-        #
         # # Render all instances
         # for instance in instances:
         #     render_instance(instance, cam)  # We render to the cam - TODO - render to texture instead?
-        #
 
 
-        #
         # # --- PASS 1: RENDER SCENE TO CUBEMAP ---
         # cubemap_fbo.bind()
         #
@@ -345,8 +343,8 @@ def main(controls=True):
 
 
         # --- PASS 2: OMMATIDIA DATA GATHERING ---
-        # ommatidia_values = insect_eye_asset.get_ommatidia_data(cubemap_fbo.color_texture_id)
-        ommatidia_values = insect_eye_asset.get_ommatidia_data(debug_cubemap_id)
+        ommatidia_values = insect_eye_asset.get_ommatidia_data(cubemap_fbo.color_texture_id)
+        # ommatidia_values = insect_eye_asset.get_ommatidia_data(debug_cubemap_id)
 
 
         # --- PASS 3 (OPTIONAL): VISUALISATION ---

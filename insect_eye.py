@@ -1,6 +1,6 @@
 import numpy as np
 from OpenGL.GL import *
-from engine import load_shaders
+from engine import load_shaders, load_compute_shader
 from ommatidia_funcs import ommatidia_builder
 from fbo import DataFBO
 
@@ -23,7 +23,6 @@ class InsectEyeAsset:
         # Data-gathering resources
         self._data_program = None   # also lazy-loaded
         self.data_fbo = DataFBO(self.num_ommatidia)
-        self.data_quad_vao = glGenVertexArrays(1)  # A simple VAO for drawing a quad
 
         # CPU buffer for holding the data
         self.cpu_data_buffer = np.zeros((self.num_ommatidia, 4), dtype=np.float32)
@@ -42,38 +41,25 @@ class InsectEyeAsset:
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.colors_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, self.num_ommatidia * 16, None, GL_DYNAMIC_DRAW)
 
-        # Unbind both
+        # Unbind
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-        glBindBuffer(GL_UNIFORM_BUFFER, 0)
 
     @property
     def vis_program(self):
         if self._vis_program is None:
             print("Compiling visualization shaders...")
-
             self._vis_program = load_shaders(
                 'shaders/insect_eye.vert',
                 'shaders/insect_eye.frag',
                 'shaders/insect_eye.geom'
             )
-
-            # # Explicitly link the uniform block in the shader to binding point 1
-            # block_index = glGetUniformBlockIndex(self._vis_program, "ColorDataBlock")
-            # glUniformBlockBinding(self._vis_program, block_index, 1)
-
         return self._vis_program
 
     @property
     def data_program(self):
         if self._data_program is None:
-            print("Compiling data shaders...")
-            self._data_program = load_shaders('shaders/data_pass.vert',
-                                              'shaders/data_pass.frag')
-
-            # # Explicitly link the uniform block in the shader to binding point 0
-            # block_index = glGetUniformBlockIndex(self._data_program, "OmmatidiaBlock")
-            # glUniformBlockBinding(self._data_program, block_index, 0)
-
+            print("Compiling data shader...")
+            self._data_program = load_compute_shader('shaders/data_pass.comp')
         return self._data_program
 
     @property
@@ -86,7 +72,7 @@ class InsectEyeAsset:
             glBindBuffer(GL_ARRAY_BUFFER, vbo)
             glBufferData(GL_ARRAY_BUFFER, self.ommatidia_dirs.nbytes, self.ommatidia_dirs, GL_STATIC_DRAW)
 
-            # Use the vis_program property to ensure it's compiled
+            # Using the property to ensure it's compiled
             glUseProgram(self.vis_program)
             pos_loc = glGetAttribLocation(self.vis_program, "a_ommatidium_dir")
             glEnableVertexAttribArray(pos_loc)
@@ -100,28 +86,38 @@ class InsectEyeAsset:
     def get_ommatidia_data(self, cubemap_texture_id):
         """ Computes ommatidia data and returns it as a numpy array """
 
-        self.data_fbo.bind()
         glUseProgram(self.data_program)
 
         # Set uniforms for the data pass
         glUniform1f(glGetUniformLocation(self.data_program, "u_acceptance_angle"), self.acceptance_angle)
         glUniform1i(glGetUniformLocation(self.data_program, "u_num_ommatidia"), self.num_ommatidia)
 
+        # Bind input cubemap (texture unit 0)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_texture_id)
         glUniform1i(glGetUniformLocation(self.data_program, "u_scene_cubemap"), 0)
 
-        # Bind directions UBO to binding point 0
+        # Bind input ommatidia directions (SSBO binding point 0)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.directions_ssbo)
 
-        glBindVertexArray(self.data_quad_vao)
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 3)
+        # Bind output image texture (image unit 0)
+        glBindImageTexture(0, self.data_fbo.data_texture_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
+
+        # Dispatch the compute shader
+        # Divide the total number of ommatidia by the workgroup size (64)
+        work_groups_x = (self.num_ommatidia + 63) // 64
+        glDispatchCompute(work_groups_x, 1, 1)
+
+        # Block until the compute shader has finished writing to the image
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
+
+        # Unbind resources
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
+        glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
+        glUseProgram(0)
 
         # Read the data back to the CPU
         self.data_fbo.read_data(self.cpu_data_buffer)
-
-        self.data_fbo.unbind()
-        glUseProgram(0)
 
         return self.cpu_data_buffer
 

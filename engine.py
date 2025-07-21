@@ -64,6 +64,37 @@ def load_shaders(path_vert, path_frag, path_geom=None):
     return program
 
 
+def load_compute_shader(path_comp):
+    """ Loads, compiles, and links a single compute shader into a program """
+
+    code = Path(path_comp).read_text()
+
+    shader = glCreateShader(GL_COMPUTE_SHADER)
+    glShaderSource(shader, code)
+    glCompileShader(shader)
+
+    if not glGetShaderiv(shader, GL_COMPILE_STATUS):
+        error = glGetShaderInfoLog(shader).decode()
+        glDeleteShader(shader)
+        raise RuntimeError(f"Compute shader compilation error in {path_comp}:\n{error}")
+
+    program = glCreateProgram()
+    glAttachShader(program, shader)
+    glLinkProgram(program)
+
+    if not glGetProgramiv(program, GL_LINK_STATUS):
+        error = glGetProgramInfoLog(program).decode()
+        glDetachShader(program, shader)
+        glDeleteShader(shader)
+        glDeleteProgram(program)
+        raise RuntimeError(f"Shader linking error for {path_comp}:\n{error}")
+
+    glDetachShader(program, shader)
+    glDeleteShader(shader)
+
+    return program
+
+
 def load_texture(file_path):
     bitmap_path = Path(file_path)
     if not bitmap_path.exists():
