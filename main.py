@@ -218,6 +218,13 @@ def main(controls=True):
     crate_asset = CubeAsset()
     insect_eye_asset = InsectEyeAsset(num_ommatidia=4096, acceptance_angle_deg=15.0)
 
+    try:
+        debug_pano_shader = engine.load_shaders('shaders/panoramic.vert', 'shaders/panoramic.frag')
+        debug_pano_vao = glGenVertexArrays(1)  # dummy VAO
+    except Exception as e:
+        print(f"Could not load debug shader: {e}")
+        debug_pano_shader = None
+
     # Create instances
     crate_0 = Instance(crate_asset)
     crate_1 = Instance(crate_asset)
@@ -238,6 +245,7 @@ def main(controls=True):
     clock = pygame.time.Clock()
 
     VISUALIZE_MODE = True
+    PANORAMIC_DEBUG_MODE = True
 
     while True:
 
@@ -291,7 +299,7 @@ def main(controls=True):
         glClearColor(0, 0, 0, 1)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        #
+
         # # Render all instances
         # for instance in instances:
         #     render_instance(instance, cam)  # We render to the cam - TODO - render to texture instead?
@@ -341,29 +349,50 @@ def main(controls=True):
         #
         # cubemap_fbo.unbind()
 
-        #
-        # # --- PASS 2: OMMATIDIA DATA GATHERING ---
-        # # ommatidia_values = insect_eye_asset.get_ommatidia_data(cubemap_fbo.color_texture_id)
-        # ommatidia_values = insect_eye_asset.get_ommatidia_data(debug_cubemap_id)
-        #
-        #
-        # # --- PASS 3 (OPTIONAL): VISUALISATION ---
-        # if VISUALIZE_MODE:
-        #     glViewport(0, 0, display[0], display[1])
-        #     glClearColor(0.05, 0.05, 0.05, 1)
-        #     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        #
-        #     # Feed the data just gathered back to the visualization renderer
-        #     insect_eye_asset.draw(ommatidia_values)
-        #
-        # else:
-        #     # We already have the data, just clear the screen to show it's running
-        #     glViewport(0, 0, display[0], display[1])
-        #     glClear(GL_COLOR_BUFFER_BIT)
-        #
-        #     if pygame.time.get_ticks() % 60 == 0:
-        #         print(f"HEADLESS MODE - Ommatidium 0: {ommatidia_values[0]}")
-        #
+
+        # CUBEMAP_ID = cubemap_fbo.color_texture_id
+        CUBEMAP_ID = debug_cubemap_id
+
+
+        # --- PASS 2: OMMATIDIA DATA GATHERING ---
+        if not PANORAMIC_DEBUG_MODE:
+            ommatidia_values = insect_eye_asset.get_ommatidia_data(CUBEMAP_ID)
+
+        # --- PASS 3 (OPTIONAL): VISUALISATION ---
+        if VISUALIZE_MODE:
+            glViewport(0, 0, display[0], display[1])
+            glClearColor(0.05, 0.05, 0.05, 1)
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+            if PANORAMIC_DEBUG_MODE and debug_pano_shader:
+                # Debug draw call
+                glUseProgram(debug_pano_shader)
+
+                # Bind the cubemap texture we want to inspect
+                glActiveTexture(GL_TEXTURE0)
+                glBindTexture(GL_TEXTURE_CUBE_MAP, CUBEMAP_ID)
+                glUniform1i(glGetUniformLocation(debug_pano_shader, "u_cubemap"), 0)
+
+                # Draw the full-screen triangle
+                glBindVertexArray(debug_pano_vao)
+                glDrawArrays(GL_TRIANGLES, 0, 3)
+
+                # Unbind
+                glBindVertexArray(0)
+                glUseProgram(0)
+
+        elif not PANORAMIC_DEBUG_MODE:
+            # Feed the data just gathered back to the visualization renderer
+            insect_eye_asset.draw(ommatidia_values)
+
+        else:
+            # We already have the data, just clear the screen to show it's running
+            glViewport(0, 0, display[0], display[1])
+            glClear(GL_COLOR_BUFFER_BIT)
+
+            if pygame.time.get_ticks() % 60 == 0:
+                print(f"HEADLESS MODE - Ommatidium 0: {ommatidia_values[0]}")
+
 
 
 

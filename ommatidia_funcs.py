@@ -180,7 +180,7 @@ def ommatidia_builder(ommatidia=None, lod=None, print_specs=False, cache=False):
 
     om_dirs, _, _ = subdivide_ico(lod)
 
-    longs, lats = utils.eul2geo(om_dirs[:, 0], om_dirs[:, 1], om_dirs[:, 2])
+    longs, lats = utils.eul2geo(om_dirs[:, 0], om_dirs[:, 2], om_dirs[:, 1])
 
     if cache:
         np.savez_compressed(OMMATIDIA_CACHE_PATH / f'om{ommatidia}.npz',

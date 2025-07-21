@@ -1,0 +1,31 @@
+#version 430 core
+
+in vec2 v_screen_pos;
+out vec4 FragColor;
+
+uniform samplerCube u_cubemap;
+
+const float PI = 3.14159265359;
+
+void main()
+{
+    // Convert the incoming screen position [-1, 1] into panoramic coordinates
+    // longitude [-PI, PI] and latitude [-PI/2, PI/2]
+    float longitude = v_screen_pos.x * PI;
+    float latitude = v_screen_pos.y * (PI / 2.0);
+
+    // Convert spherical coordinates back to a 3D direction vector
+    // (note: this is the reverse of the math in William Martin's eul2geo)
+    vec3 dir;
+    dir.y = sin(latitude);
+    float cos_lat = cos(latitude);
+    dir.x = cos_lat * cos(longitude);
+    dir.z = cos_lat * sin(longitude);
+
+    // Cubemaps use a left-handed coordinate system for lookups
+    // So the Z coordinate should be flipped for the texture lookup
+    vec3 lookup_dir = vec3(dir.x, dir.y, -dir.z);
+
+    // Sample the cubemap with the calculated direction
+    FragColor = texture(u_cubemap, lookup_dir);
+}
