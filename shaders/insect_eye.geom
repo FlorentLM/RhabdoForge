@@ -18,13 +18,16 @@ flat out int v_ommatidium_id;
 
 // Define the 6 vertices of a hexagon in screen space
 const float HEX_RADIUS = 0.02;
+
+// The vertices are ordered to form a hexagon using a TRIANGLE_STRIP
+// The order v0, v1, v5, v2, v4, v3 (from a standard counter-clockwise set) creates a strip of 4 triangles that tile the shape
 const vec2 hex_verts[6] = vec2[](
-    vec2(HEX_RADIUS, 0.0),
-    vec2(HEX_RADIUS * 0.5, HEX_RADIUS * 0.866),
-    vec2(HEX_RADIUS * -0.5, HEX_RADIUS * 0.866),
-    vec2(HEX_RADIUS * -1.0, 0.0),
-    vec2(HEX_RADIUS * -0.5, HEX_RADIUS * -0.866),
-    vec2(HEX_RADIUS * 0.5, HEX_RADIUS * -0.866)
+    vec2(HEX_RADIUS, 0.0), // v0
+    vec2(HEX_RADIUS * 0.5, HEX_RADIUS * 0.866), // v1
+    vec2(HEX_RADIUS * 0.5, HEX_RADIUS * -0.866), // v5
+    vec2(HEX_RADIUS * -0.5, HEX_RADIUS * 0.866), // v2
+    vec2(HEX_RADIUS * -0.5, HEX_RADIUS * -0.866), // v4
+    vec2(HEX_RADIUS * -1.0, 0.0) // v3
 );
 
 void main() {
