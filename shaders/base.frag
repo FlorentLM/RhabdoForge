@@ -1,11 +1,12 @@
 #version 150
 
-uniform sampler2D tex;
+uniform sampler2D texture1;
+uniform sampler2D texture2;
+
 in vec2 fragTexCoord;
 
 out vec4 finalColor;
 
 void main() {
-
-    finalColor = texture(tex, fragTexCoord);
+    finalColor = mix(texture(texture1, fragTexCoord), texture(texture2, fragTexCoord), 0.2);
 }
