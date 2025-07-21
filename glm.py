@@ -2,15 +2,16 @@ import numpy as np
 
 
 def perspective_mat(fov, aspect_ratio, near_plane, far_plane):
-
-    num = 1.0 / np.tan(fov / 2.0)
-    num9 = num / aspect_ratio
+    """
+    Creates a standard perspective projection matrix
+    """
+    f = 1.0 / np.tan(fov / 2.0)
 
     return np.array([
-        [num9, 0.0, 0.0, 0.0],
-        [0.0, num, 0.0, 0.0],
-        [0.0, 0.0, far_plane / (near_plane - far_plane), -1.0],
-        [0.0, 0.0, (near_plane * far_plane) / (near_plane - far_plane), 0.0]
+        [f / aspect_ratio, 0.0, 0.0, 0.0],
+        [0.0, f, 0.0, 0.0],
+        [0.0, 0.0, (far_plane + near_plane) / (near_plane - far_plane), -1.0],
+        [0.0, 0.0, (2.0 * far_plane * near_plane) / (near_plane - far_plane), 0.0]
     ], dtype=np.float32)
 
 
@@ -25,14 +26,14 @@ def lookat_mat(eye_pos, target_pos, up_vector):
     vect2 = np.cross(up_vector, vect)
     vect2 /= np.linalg.norm(vect2)
 
-    vect3 = np.cross(vect2, vect)
+    vect3 = np.cross(vect, vect2)  # Re-cross to ensure perfect orthogonality
 
     mat = np.array([
-        [vect2[0], vect3[0], vect[0], 0.0],
-        [vect2[1], vect3[1], vect[1], 0.0],
-        [vect2[2], vect3[2], vect[2], 0.0],
+        [vect2[0], vect3[0], -vect[0], 0.0],
+        [vect2[1], vect3[1], -vect[1], 0.0],
+        [vect2[2], vect3[2], -vect[2], 0.0],
         [-np.dot(vect2, eye_pos), -np.dot(vect3, eye_pos), np.dot(vect, eye_pos), 1.0]
-    ])
+    ], dtype=np.float32).T
     return mat
 
 

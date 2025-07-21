@@ -16,23 +16,87 @@ WORLD_LEFT = - WORLD_RIGHT
 WORLD_DOWN = - WORLD_UP
 WORLD_BACKWARD = - WORLD_FORWARD
 
+#
+# def load_shaders(path_vert, path_frag, path_geom=None):
+#
+#     def _compile_shader(path, shader_type):
+#         """ Wrapper to compile a shader with clearer errors """
+#         code = Path(path).read_text()
+#         shader = compileShader(code, shader_type)
+#
+#         if not glGetShaderiv(shader, GL_COMPILE_STATUS):
+#             error = glGetShaderInfoLog(shader).decode()
+#             raise RuntimeError(f"Shader compilation error in {path}:\n{error}")
+#         return shader
+#
+#     vertex_shader = _compile_shader(path_vert, GL_VERTEX_SHADER)
+#     fragment_shader = _compile_shader(path_frag, GL_FRAGMENT_SHADER)
+#
+#     shaders = [vertex_shader, fragment_shader]
+#     if path_geom:
+#         shaders.append(_compile_shader(path_geom, GL_GEOMETRY_SHADER))
+#
+#     # Link program
+#     program = compileProgram(*shaders)
+#     if not glGetProgramiv(program, GL_LINK_STATUS):
+#         error = glGetProgramInfoLog(program).decode()
+#         raise RuntimeError(f"Shader linking error:\n{error}")
+#
+#     # # Validate program
+#     # glValidateProgram(program)
+#     # if not glGetProgramiv(program, GL_VALIDATE_STATUS):
+#     #     error = glGetProgramInfoLog(program).decode()
+#     #     # This might still be empty on some drivers tho
+#     #     raise RuntimeError(f"Shader validation error:\n{error or 'No details provided by driver.'}")
+#
+#     return program
 
 def load_shaders(path_vert, path_frag, path_geom=None):
+    def _compile_single_shader(path, shader_type):
+        """Compiles a single shader from a file path."""
+        code = Path(path).read_text()
+        shader = glCreateShader(shader_type)
+        glShaderSource(shader, code)
+        glCompileShader(shader)
 
-    vertex_code = Path(path_vert).read_text()
-    fragment_code = Path(path_frag).read_text()
+        if not glGetShaderiv(shader, GL_COMPILE_STATUS):
+            error = glGetShaderInfoLog(shader).decode()
+            glDeleteShader(shader)  # Don't leak the shader.
+            raise RuntimeError(f"Shader compilation error in {path}:\n{error}")
+        return shader
 
-    vertex_compiled = compileShader(vertex_code, GL_VERTEX_SHADER)
-    frag_compiled = compileShader(fragment_code, GL_FRAGMENT_SHADER)
+    # Compile all shaders
+    vertex_shader = _compile_single_shader(path_vert, GL_VERTEX_SHADER)
+    fragment_shader = _compile_single_shader(path_frag, GL_FRAGMENT_SHADER)
 
-    comp = [vertex_compiled, frag_compiled]
+    shaders_to_link = [vertex_shader, fragment_shader]
+    if path_geom:
+        geometry_shader = _compile_single_shader(path_geom, GL_GEOMETRY_SHADER)
+        shaders_to_link.append(geometry_shader)
 
-    if path_geom is not None:
-        geometry_code = Path(path_geom).read_text()
-        geometry_compiled = compileShader(geometry_code, GL_GEOMETRY_SHADER)
-        comp.append(geometry_compiled)
+    # Create and link the program
+    program = glCreateProgram()
+    for shader in shaders_to_link:
+        glAttachShader(program, shader)
 
-    return compileProgram(*comp)
+    glLinkProgram(program)
+
+    # Check for linking errors (this is the crucial and correct check)
+    if not glGetProgramiv(program, GL_LINK_STATUS):
+        error = glGetProgramInfoLog(program).decode()
+        # Clean up shaders and program if linking fails
+        for shader in shaders_to_link:
+            glDetachShader(program, shader)
+            glDeleteShader(shader)
+        glDeleteProgram(program)
+        raise RuntimeError(f"Shader linking error:\n{error}")
+
+    # Detach and delete shaders after a successful link, they are no longer needed.
+    for shader in shaders_to_link:
+        glDetachShader(program, shader)
+        glDeleteShader(shader)
+
+    return program
 
 
 def load_texture(file_path):

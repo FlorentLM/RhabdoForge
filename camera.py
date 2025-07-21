@@ -82,34 +82,33 @@ class Camera:
 
     @property
     def orientation(self):
-        orientation = self.identity
-        orientation = glm.rotate(orientation, np.deg2rad(self.pitch), WORLD_RIGHT)
-        orientation = glm.rotate(orientation, np.deg2rad(self.yaw), WORLD_UP)
+        orientation = glm.rotation_mat(np.deg2rad(self.yaw), WORLD_UP)
+        orientation = glm.rotation_mat(np.deg2rad(self.pitch), WORLD_RIGHT) @ orientation
         return orientation
 
     @property
     def forward(self):
-        return (np.array([0.0, 0.0, -1.0, 1.0], dtype=np.float32) @ np.linalg.inv(self.orientation))[:3]
+        return (np.array([0.0, 0.0, -1.0, 1.0], dtype=np.float32) @ self.orientation.T)[:3]
 
     @property
     def backward(self):
-        return (np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float32) @ np.linalg.inv(self.orientation))[:3]
+        return (np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float32) @ self.orientation.T)[:3]
 
     @property
     def right(self):
-        return (np.array([1.0, 0.0, 0.0, 1.0], dtype=np.float32) @ np.linalg.inv(self.orientation))[:3]
+        return (np.array([1.0, 0.0, 0.0, 1.0], dtype=np.float32) @ self.orientation.T)[:3]
 
     @property
     def left(self):
-        return (np.array([-1.0, 0.0, 0.0, 1.0], dtype=np.float32) @ np.linalg.inv(self.orientation))[:3]
+        return (np.array([-1.0, 0.0, 0.0, 1.0], dtype=np.float32) @ self.orientation.T)[:3]
 
     @property
     def up(self):
-        return (np.array([0.0, 1.0, 0.0, 1.0], dtype=np.float32) @ np.linalg.inv(self.orientation))[:3]
+        return (np.array([0.0, 1.0, 0.0, 1.0], dtype=np.float32) @ self.orientation.T)[:3]
 
     @property
     def down(self):
-        return (np.array([0.0, -1.0, 0.0, 1.0], dtype=np.float32) @ np.linalg.inv(self.orientation))[:3]
+        return (np.array([0.0, -1.0, 0.0, 1.0], dtype=np.float32) @ self.orientation.T)[:3]
 
     @property
     def projection(self):
@@ -117,7 +116,7 @@ class Camera:
 
     @property
     def view(self):
-        return glm.translate(self.identity, -self.pos) @ self.orientation
+        return self.orientation.T @ glm.translation_mat(-self.pos)
 
     @property
     def matrix(self):

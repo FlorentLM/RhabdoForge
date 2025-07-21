@@ -11,6 +11,9 @@ from camera import Camera
 import engine
 import glm
 
+from fbo import CubemapFBO
+from insect_eye import InsectEyeAsset
+
 
 ##
 
@@ -183,6 +186,12 @@ def main(controls=True):
     glEnable(GL_DEPTH_TEST)
     glDepthFunc(GL_LESS)
 
+    # Enable seamless cubemap filtering
+    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS)
+
+    # This is needed to use gl_PointSize in vertex shaders
+    glEnable(GL_PROGRAM_POINT_SIZE)
+
     # Set some PyGame-specific stuff
     font = pygame.font.Font(pygame.font.get_default_font(), 20)
 
@@ -194,16 +203,23 @@ def main(controls=True):
     # Set up starting camera position and aspect
     cam = Camera()
     cam.pos = 0, 0, 4
-    cam.ratio = display[0] / display[1]
 
-    # Load Assets
-    c = CubeAsset()
+    cam.ratio = 1.0  # cubemaps are square
+    cam.fov = 90.0
+
+    # Set up FBO
+    debug_cubemap_id = engine.load_cubemap('textures/bright_day')
+    cubemap_fbo = CubemapFBO(resolution=512)
+
+    # Load assets
+    crate_asset = CubeAsset()
+    insect_eye_asset = InsectEyeAsset(num_ommatidia=162, acceptance_angle_deg=10.0)
 
     # Create instances
-    crate_0 = Instance(c)
-    crate_1 = Instance(c)
+    crate_0 = Instance(crate_asset)
+    crate_1 = Instance(crate_asset)
     crate_1.transform = glm.translation_mat([-3, 0, 0])
-    crate_2 = Instance(c)
+    crate_2 = Instance(crate_asset)
     crate_2.transform = glm.translation_mat([3, 0, 0])
 
     instances = [crate_0, crate_1, crate_2]
@@ -216,7 +232,10 @@ def main(controls=True):
 
     fps_rolling = deque(maxlen=500)
 
-    clock = pygame.Clock()
+    clock = pygame.time.Clock()
+
+    VISUALIZE_MODE = True
+
     while True:
 
         # Update variables according to passed time
@@ -246,6 +265,7 @@ def main(controls=True):
                         cam_displacement = engine.WORLD_UP * distance_moved
                     if event.key == K_x:
                         cam_displacement = engine.WORLD_DOWN * distance_moved
+
             if controls and event.type == MOUSEWHEEL:
                 cam.fov = event.y * 0.5 + cam.fov
 
@@ -268,9 +288,86 @@ def main(controls=True):
         glClearColor(0, 0, 0, 1)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        # Render all instances
-        for instance in instances:
-            render_instance(instance, cam)  # We render to the cam - TODO - render to texture instead?
+
+        #
+        #
+        #
+        # # Render all instances
+        # for instance in instances:
+        #     render_instance(instance, cam)  # We render to the cam - TODO - render to texture instead?
+        #
+
+
+        #
+        # # --- PASS 1: RENDER SCENE TO CUBEMAP ---
+        # cubemap_fbo.bind()
+        #
+        # # Define the 6 camera directions for the cubemap
+        # agent_position = [0, 0, 0]  # Where the viewer is
+        # targets = [
+        #     [ 1,  0,  0], [-1,  0,  0],   # +X, -X
+        #     [ 0,  1,  0], [ 0, -1,  0],   # +Y, -Y
+        #     [ 0,  0,  1], [ 0,  0, -1]    # +Z, -Z
+        # ]
+        # ups = [
+        #     [ 0, -1,  0], [ 0, -1,  0],   # +X, -X
+        #     [ 0,  0,  1], [ 0,  0, -1],   # +Y, -Y
+        #     [ 0, -1,  0], [ 0, -1,  0]    # +Z, -Z
+        # ]
+        #
+        # # Use a temporary camera for rendering to the cubemap
+        # cubemap_cam = Camera(position=agent_position, fov=90.0, ratio=1.0)
+        #
+        # for i in range(6):
+        #     # Point the camera in the correct direction
+        #     cubemap_cam.lookat(np.array(agent_position) + np.array(targets[i]))
+        #     # This lookat might not handle UP vector correctly, a more robust lookat matrix is better
+        #     view_matrix = glm.lookat_mat(agent_position, np.array(agent_position) + targets[i], ups[i])
+        #
+        #     # Attach the correct face of the cubemap texture to the FBO
+        #     glFramebufferTexture2D(GL_FRAMEBUFFER,
+        #                            GL_COLOR_ATTACHMENT0,
+        #                            GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
+        #                            cubemap_fbo.color_texture_id,
+        #                            0)
+        #
+        #     glClearColor(0.1, 0.2, 0.3, 1)
+        #     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        #
+        #     # Render all instances with this view
+        #     for instance in instances:
+        #         # We need to modify render_instance to accept a view_matrix
+        #         # Let's make a quick adjustment
+        #         # TODO: fix this properly
+        #         render_instance_to_fbo(instance, cubemap_cam.projection, view_matrix)
+        #
+        # cubemap_fbo.unbind()
+
+
+        # --- PASS 2: OMMATIDIA DATA GATHERING ---
+        # ommatidia_values = insect_eye_asset.get_ommatidia_data(cubemap_fbo.color_texture_id)
+        ommatidia_values = insect_eye_asset.get_ommatidia_data(debug_cubemap_id)
+
+
+        # --- PASS 3 (OPTIONAL): VISUALISATION ---
+        if VISUALIZE_MODE:
+            glViewport(0, 0, display[0], display[1])
+            glClearColor(0.05, 0.05, 0.05, 1)
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+            # Feed the data just gathered back to the visualization renderer
+            insect_eye_asset.draw(ommatidia_values)
+
+        else:
+            # We already have the data, just clear the screen to show it's running
+            glViewport(0, 0, display[0], display[1])
+            glClear(GL_COLOR_BUFFER_BIT)
+
+            if pygame.time.get_ticks() % 60 == 0:
+                print(f"HEADLESS MODE - Ommatidium 0: {ommatidia_values[0]}")
+
+
+
 
         # Compute and display FPS
         fps_rolling.append(clock.get_fps())
@@ -286,8 +383,24 @@ def main(controls=True):
             pygame.time.wait(1)
 
 
+def render_instance_to_fbo(instance, projection_matrix, view_matrix):
+    ass = instance.asset
+    glUseProgram(ass.shaders)
+
+    # We construct the camera matrix manually from parts
+    camera_matrix = view_matrix @ projection_matrix
+    glUniformMatrix4fv(glGetUniformLocation(ass.shaders, "camera"), 1, GL_FALSE, camera_matrix)
+    glUniformMatrix4fv(glGetUniformLocation(ass.shaders, "model"), 1, GL_FALSE, instance.transform)
+
+    glActiveTexture(GL_TEXTURE0)
+    glBindTexture(GL_TEXTURE_2D, ass.texture)
+    glBindVertexArray(ass.vao)
+    glDrawArrays(ass.draw_type, ass.draw_start, ass.draw_count)
+    glBindVertexArray(0)
+    glUseProgram(0)
+
 ##
 
 if __name__ == "__main__":
-    main(controls=False)
+    main(controls=True)
 
