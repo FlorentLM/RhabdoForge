@@ -17,7 +17,7 @@ void main()
     // Convert spherical coordinates back to a 3D direction vector
     // (note: this is the reverse of the math in William Martin's eul2geo)
     vec3 dir;
-    dir.y = -sin(latitude);
+    dir.y = sin(latitude);
     float cos_lat = cos(latitude);
     dir.x = cos_lat * sin(longitude);
     dir.z = -cos_lat * cos(longitude);

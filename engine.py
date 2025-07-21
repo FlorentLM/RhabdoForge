@@ -134,41 +134,38 @@ def load_texture(file_path):
 
 def load_cubemap(folder_path):
 
-    faces = [GL_TEXTURE_CUBE_MAP_POSITIVE_X,
-             GL_TEXTURE_CUBE_MAP_NEGATIVE_X,
-             GL_TEXTURE_CUBE_MAP_POSITIVE_Y,
-             GL_TEXTURE_CUBE_MAP_NEGATIVE_Y,
-             GL_TEXTURE_CUBE_MAP_POSITIVE_Z,
-             GL_TEXTURE_CUBE_MAP_NEGATIVE_Z]
+    # OpenGL cubemap face order
+    faces_gl = [GL_TEXTURE_CUBE_MAP_POSITIVE_X,
+                GL_TEXTURE_CUBE_MAP_NEGATIVE_X,
+                GL_TEXTURE_CUBE_MAP_POSITIVE_Y,
+                GL_TEXTURE_CUBE_MAP_NEGATIVE_Y,
+                GL_TEXTURE_CUBE_MAP_POSITIVE_Z,
+                GL_TEXTURE_CUBE_MAP_NEGATIVE_Z]
 
-    files = list(Path(folder_path).glob('*'))
-    assert len(files) == 6
+    face_files = ['right.jpg', 'left.jpg', 'top.jpg', 'bottom.jpg', 'front.jpg', 'back.jpg']
 
     texture_id = glGenTextures(1)
     glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id)
 
     for i in range(6):
-        with Image.open(files[i]) as im:
+        filepath = Path(folder_path) / face_files[i]
+        if not filepath.exists():
+            # Try png
+            filepath = filepath.with_suffix('.png')
+            if not filepath.exists():
+                raise FileNotFoundError(f"Could not find cubemap face: {filepath.with_suffix('.jpg')}")
+
+        with Image.open(filepath) as im:
             w, h = im.width, im.height
-            im_data = im.transpose(Image.FLIP_TOP_BOTTOM).convert("RGBA").tobytes()
+            im_data = im.convert("RGBA").tobytes()
 
-        glTexImage2D(faces[i],
-                     0,
-                     GL_RGBA8,
-                     w,
-                     h,
-                     0,
-                     GL_RGBA,
-                     GL_UNSIGNED_BYTE,
-                     im_data)
+        glTexImage2D(faces_gl[i], 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, im_data)
 
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE)
 
-    # Unbind texture
-    glBindTexture(GL_TEXTURE_2D, 0)
-
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
     return texture_id
