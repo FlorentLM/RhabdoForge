@@ -52,7 +52,7 @@ class Engine:
         self.fps_rolling = deque(maxlen=500)
         self.is_running_interactive = False
 
-        self.cam_move_speed = 5.0  # units per second
+        self.cam_move_step = 0.1  # units per frame
         self.mouse_sensitivity = 0.1
 
     def load_mesh(self, name, *args, **kwargs) -> Mesh:
@@ -163,7 +163,7 @@ class Engine:
             self._handle_interactive_events()
 
             # ___ Per-frame update stuff here ___
-            # (like updating object animations)
+            # (like updating object animations or whatever)
 
             self.render_frame()
             self._draw_fps()
@@ -181,6 +181,8 @@ class Engine:
         # Handle discrete events (quitting or mouse wheel)
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                # In run_interactive, this flag is used
+                # In an external loop, the loop's own flag would be set
                 self.is_running_interactive = False
                 return
             if event.type == MOUSEWHEEL:
@@ -200,7 +202,7 @@ class Engine:
         # Normalize (prevents faster diagonal movement) and apply speed
         norm = np.linalg.norm(cam_displacement)
         if norm > 0:
-            cam_displacement = (cam_displacement / norm) * self.cam_move_speed * delta_time
+            cam_displacement = (cam_displacement / norm) * self.cam_move_step
             self.camera.pos += cam_displacement
 
         # Handle mouse look
