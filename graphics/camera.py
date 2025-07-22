@@ -1,6 +1,6 @@
 import numpy as np
-import glm
-from engine import WORLD_RIGHT, WORLD_UP
+from graphics.glm import rotation_mat, perspective_mat, translation_mat
+from graphics.utils import WORLD_RIGHT, WORLD_UP
 
 
 class Camera:
@@ -49,7 +49,7 @@ class Camera:
 
     @near.setter
     def near(self, val):
-        val = 0.001 if val <= 0.0 else val
+        val = max(0.001, val)
         self._near = val
 
     @property
@@ -67,7 +67,7 @@ class Camera:
 
     @ratio.setter
     def ratio(self, val):
-        val = 0.001 if val <= 0.0 else val
+        val = max(0.001, val)
         self._aspect_ratio = val
 
     pos = position
@@ -82,8 +82,8 @@ class Camera:
 
     @property
     def orientation(self):
-        orientation = glm.rotation_mat(np.deg2rad(self.yaw), WORLD_UP)
-        orientation = glm.rotation_mat(np.deg2rad(self.pitch), WORLD_RIGHT) @ orientation
+        orientation = rotation_mat(np.deg2rad(self.yaw), WORLD_UP)
+        orientation = rotation_mat(np.deg2rad(self.pitch), WORLD_RIGHT) @ orientation
         return orientation
 
     @property
@@ -112,11 +112,11 @@ class Camera:
 
     @property
     def projection(self):
-        return glm.perspective_mat(np.deg2rad(self.fov), self._aspect_ratio, self.near, self.far)
+        return perspective_mat(np.deg2rad(self.fov), self._aspect_ratio, self.near, self.far)
 
     @property
     def view(self):
-        return self.orientation.T @ glm.translation_mat(-self.pos)
+        return self.orientation.T @ translation_mat(-self.pos)
 
     @property
     def matrix(self):

@@ -14,9 +14,33 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.tri import Triangulation
 from pathlib import Path
-import utils
+
 
 OMMATIDIA_CACHE_PATH = Path(__file__).absolute().parent / 'cache'
+
+
+def angle_between(v1, v2, round_decimals=5):
+    """
+    Returns the angle in radians between vectors 'v1' and 'v2'
+    """
+    v1 = np.asanyarray(v1)
+    v2 = np.asanyarray(v2)
+
+    if v1.ndim == v2.ndim == 2:
+        numerator = np.round(np.sum(v1 * v1, axis=1), decimals=round_decimals)
+        denominator = np.round(np.linalg.norm(v1, axis=1) * np.linalg.norm(v1, axis=1), decimals=round_decimals)
+
+        return np.arccos(numerator / denominator)
+
+    elif v1.ndim == v2.ndim == 1:
+        v1_u = np.divide(v1, np.linalg.norm(v1, axis=0))
+        v2_u = np.divide(v2, np.linalg.norm(v2, axis=0))
+
+        return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))    # TODO: remove the clipping here?
+
+    else:
+        raise AssertionError('The passed shapes mismatch!')
+
 
 def get_barymat(n):
     """
@@ -180,7 +204,8 @@ def ommatidia_builder(ommatidia=None, lod=None, print_specs=False, cache=False):
 
     om_dirs, _, _ = subdivide_ico(lod)
 
-    longs, lats = utils.eul2geo(om_dirs[:, 0], om_dirs[:, 2], om_dirs[:, 1])
+    longs = np.arctan2(om_dirs[:, 0], om_dirs[:, 2])
+    lats = np.arcsin(om_dirs[:, 1])
 
     if cache:
         np.savez_compressed(OMMATIDIA_CACHE_PATH / f'om{ommatidia}.npz',
@@ -192,7 +217,7 @@ def ommatidia_builder(ommatidia=None, lod=None, print_specs=False, cache=False):
         # Estimate interommatidial angle
         # NB. Analysis of the adopted method shows that there is some variance in the angle between neighbouring
         # points on the circle, hence the 'estimate' part in the name
-        phi_estimate = utils.angle_between(om_dirs[0, :], om_dirs[1, :])
+        phi_estimate = angle_between(om_dirs[0, :], om_dirs[1, :])
 
         print('Eye model specs (no pun intended...):')
         print(f'  Ommatidia: {ommatidia}')

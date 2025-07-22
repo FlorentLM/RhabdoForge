@@ -14,7 +14,6 @@ def perspective_mat(fov, aspect_ratio, near_plane, far_plane):
         [0.0, 0.0, (2.0 * far_plane * near_plane) / (near_plane - far_plane), 0.0]
     ], dtype=np.float32)
 
-
 def lookat_mat(eye_pos, target_pos, up_vector):
     eye_pos = np.asarray(eye_pos, dtype=np.float32)[:3]
     target_pos = np.asarray(target_pos, dtype=np.float32)[:3]
@@ -36,13 +35,11 @@ def lookat_mat(eye_pos, target_pos, up_vector):
     ], dtype=np.float32).T
     return mat
 
-
 def translation_mat(vector):
     vector = np.asarray(vector, dtype=np.float32)[:3]
     mat = np.eye(4, dtype=np.float32)
     mat[3, :3] = vector[:3]
     return mat
-
 
 def translate(matrix, vector):
     return translation_mat(vector) @ matrix
@@ -55,7 +52,6 @@ def scaling_mat(vector):
         [0, y, 0, 0],
         [0, 0, z, 0],
         [0, 0, 0, 1]], dtype=np.float32)
-
 
 def scale(matrix, vector):
     return scaling_mat(vector) @ matrix
@@ -74,7 +70,6 @@ def rotation_mat(angle, axis_vector):
         [y*x*nc + z*s, y*y*nc +   c, y*z*nc - x*s, 0],
         [x*z*nc - y*s, y*z*nc + x*s, z*z*nc +   c, 0],
         [           0,            0,            0, 1]], dtype=np.float32)
-
 
 def rotate(matrix, angle, axis_vector):
     return rotation_mat(angle, axis_vector) @ matrix

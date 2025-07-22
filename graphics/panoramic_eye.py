@@ -1,8 +1,8 @@
 from OpenGL.GL import *
-import engine
+from graphics.utils import load_shaders
 
 
-class HumanEyeAsset:
+class PanoramicEye:
     """ A simple asset to render a cubemap to the screen as a panoramic (equirectangular) view """
 
     def __init__(self):
@@ -13,8 +13,8 @@ class HumanEyeAsset:
     def program(self):
         if self._program is None:
             print("Compiling panoramic debug shaders...")
-            self._program = engine.load_shaders('shaders/panoramic.vert',
-                                                'shaders/panoramic.frag')
+            self._program = load_shaders('../shaders/panoramic.vert',
+                                         '../shaders/panoramic.frag')
         return self._program
 
     @property

@@ -10,12 +10,8 @@ from OpenGL.GLU import *
 from collections import deque
 import numpy as np
 
-from camera import Camera
-import engine
-import glm
-
-from fbo import CubemapFBO
-from insect_eye import InsectEyeAsset
+from graphics.camera import Camera
+from graphics import glm
 
 
 ##
@@ -207,23 +203,11 @@ def main(controls=True):
     cam = Camera()
     cam.pos = 0, 0, 4
 
-    cam.ratio = 1.0  # cubemaps are square
+    cam.ratio = 1.0
     cam.fov = 90.0
-
-    # Set up FBO
-    debug_cubemap_id = engine.load_cubemap('textures/bright_day')
-    cubemap_fbo = CubemapFBO(resolution=512)
 
     # Load assets
     crate_asset = CubeAsset()
-    insect_eye_asset = InsectEyeAsset(num_ommatidia=4096, acceptance_angle_deg=15.0)
-
-    try:
-        debug_pano_shader = engine.load_shaders('shaders/panoramic.vert', 'shaders/panoramic.frag')
-        debug_pano_vao = glGenVertexArrays(1)  # dummy VAO
-    except Exception as e:
-        print(f"Could not load debug shader: {e}")
-        debug_pano_shader = None
 
     # Create instances
     crate_0 = Instance(crate_asset)
@@ -243,10 +227,6 @@ def main(controls=True):
     fps_rolling = deque(maxlen=500)
 
     clock = pygame.time.Clock()
-
-    VISUALIZE_MODE = True
-    PANORAMIC_DEBUG_MODE = True
-
     while True:
 
         # Update variables according to passed time
@@ -299,94 +279,9 @@ def main(controls=True):
         glClearColor(0, 0, 0, 1)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-
-        # --- PASS 1: RENDER SCENE TO CUBEMAP ---
-        cubemap_fbo.bind()
-
-        # Define the 6 camera directions for the cubemap
-        agent_position = [0, 0, 0]  # Where the viewer is
-        targets = [
-            [ 1,  0,  0], [-1,  0,  0],   # +X, -X
-            [ 0,  1,  0], [ 0, -1,  0],   # +Y, -Y
-            [ 0,  0,  1], [ 0,  0, -1]    # +Z, -Z
-        ]
-        ups = [
-            [ 0, -1,  0], [ 0, -1,  0],   # +X, -X
-            [ 0,  0,  1], [ 0,  0, -1],   # +Y, -Y
-            [ 0, -1,  0], [ 0, -1,  0]    # +Z, -Z
-        ]
-
-        # Use a temporary camera for rendering to the cubemap
-        cubemap_cam = Camera(position=agent_position, fov=90.0, ratio=1.0)
-
-        for i in range(6):
-            # Point the camera in the correct direction
-            cubemap_cam.lookat(np.array(agent_position) + np.array(targets[i]))
-            # This lookat might not handle UP vector correctly, a more robust lookat matrix is better
-            view_matrix = glm.lookat_mat(agent_position, np.array(agent_position) + targets[i], ups[i])
-
-            # Attach the correct face of the cubemap texture to the FBO
-            glFramebufferTexture2D(GL_FRAMEBUFFER,
-                                   GL_COLOR_ATTACHMENT0,
-                                   GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
-                                   cubemap_fbo.color_texture_id,
-                                   0)
-
-            glClearColor(0.1, 0.2, 0.3, 1)
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-            # Render all instances with this view
-            for instance in instances:
-                # We need to modify render_instance to accept a view_matrix
-                # Let's make a quick adjustment
-                # TODO: fix this properly
-                render_instance_to_fbo(instance, cubemap_cam.projection, view_matrix)
-
-        cubemap_fbo.unbind()
-
-
-        # CUBEMAP_ID = cubemap_fbo.color_texture_id
-        CUBEMAP_ID = debug_cubemap_id
-
-
-        # --- PASS 2: OMMATIDIA DATA GATHERING ---
-        if not PANORAMIC_DEBUG_MODE:
-            ommatidia_values = insect_eye_asset.get_ommatidia_data(CUBEMAP_ID)
-
-        # --- PASS 3 (OPTIONAL): VISUALISATION ---
-        if VISUALIZE_MODE:
-            glViewport(0, 0, display[0], display[1])
-            glClearColor(0.05, 0.05, 0.05, 1)
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-            if PANORAMIC_DEBUG_MODE and debug_pano_shader:
-                # Debug draw call
-                glUseProgram(debug_pano_shader)
-
-                # Bind the cubemap texture we want to inspect
-                glActiveTexture(GL_TEXTURE0)
-                glBindTexture(GL_TEXTURE_CUBE_MAP, CUBEMAP_ID)
-                glUniform1i(glGetUniformLocation(debug_pano_shader, "u_cubemap"), 0)
-
-                # Draw the full-screen triangle
-                glBindVertexArray(debug_pano_vao)
-                glDrawArrays(GL_TRIANGLES, 0, 3)
-
-                # Unbind
-                glBindVertexArray(0)
-                glUseProgram(0)
-
-        elif not PANORAMIC_DEBUG_MODE:
-            # Feed the data just gathered back to the visualization renderer
-            insect_eye_asset.draw(ommatidia_values)
-
-        else:
-            # We already have the data, just clear the screen to show it's running
-            glViewport(0, 0, display[0], display[1])
-            glClear(GL_COLOR_BUFFER_BIT)
-
-            if pygame.time.get_ticks() % 60 == 0:
-                print(f"HEADLESS MODE - Ommatidium 0: {ommatidia_values[0]}")
+        # Render all instances
+        for instance in instances:
+            render_instance(instance, cam)
 
         # Compute and display FPS
         fps_rolling.append(clock.get_fps())
@@ -401,22 +296,6 @@ def main(controls=True):
         if controls:
             pygame.time.wait(1)
 
-
-def render_instance_to_fbo(instance, projection_matrix, view_matrix):
-    ass = instance.asset
-    glUseProgram(ass.shaders)
-
-    # We construct the camera matrix manually from parts
-    camera_matrix = view_matrix @ projection_matrix
-    glUniformMatrix4fv(glGetUniformLocation(ass.shaders, "camera"), 1, GL_FALSE, camera_matrix)
-    glUniformMatrix4fv(glGetUniformLocation(ass.shaders, "model"), 1, GL_FALSE, instance.transform)
-
-    glActiveTexture(GL_TEXTURE0)
-    glBindTexture(GL_TEXTURE_2D, ass.texture)
-    glBindVertexArray(ass.vao)
-    glDrawArrays(ass.draw_type, ass.draw_start, ass.draw_count)
-    glBindVertexArray(0)
-    glUseProgram(0)
 
 ##
 

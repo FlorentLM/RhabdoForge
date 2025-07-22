@@ -3,7 +3,7 @@ from PIL import Image
 import numpy as np
 from OpenGL.GL import *
 
-##
+# Constants
 
 # World unit vectors
 WORLD_RIGHT = WORLD_X = np.array([1.0, 0.0, 0.0], dtype=np.float32)
@@ -13,6 +13,9 @@ WORLD_FORWARD = WORLD_Z = np.array([0.0, 0.0, -1.0], dtype=np.float32)
 WORLD_LEFT = - WORLD_RIGHT
 WORLD_DOWN = - WORLD_UP
 WORLD_BACKWARD = - WORLD_FORWARD
+
+
+# Loader functions
 
 def load_shaders(path_vert, path_frag, path_geom=None):
 

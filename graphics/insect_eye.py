@@ -1,11 +1,12 @@
 import numpy as np
 from OpenGL.GL import *
-from engine import load_shaders, load_compute_shader
-from ommatidia_funcs import ommatidia_builder
-from fbo import DataFBO
+
+from graphics.utils import load_shaders, load_compute_shader
+from graphics.ommatidia_funcs import ommatidia_builder
+from graphics.fbo import DataFBO
 
 
-class InsectEyeAsset:
+class InsectEye:
     def __init__(self, num_ommatidia=500, acceptance_angle_deg=5.0):
 
         om_dirs, om_lons, om_lats = ommatidia_builder(ommatidia=num_ommatidia)
@@ -51,9 +52,9 @@ class InsectEyeAsset:
         if self._vis_program is None:
             print("Compiling visualization shaders...")
             self._vis_program = load_shaders(
-                'shaders/insect_eye.vert',
-                'shaders/insect_eye.frag',
-                'shaders/insect_eye.geom'
+                '../shaders/insect_eye.vert',
+                '../shaders/insect_eye.frag',
+                '../shaders/insect_eye.geom'
             )
         return self._vis_program
 
@@ -61,7 +62,7 @@ class InsectEyeAsset:
     def data_program(self):
         if self._data_program is None:
             print("Compiling data shader...")
-            self._data_program = load_compute_shader('shaders/data_pass.comp')
+            self._data_program = load_compute_shader('../shaders/data_pass.comp')
         return self._data_program
 
     @property
