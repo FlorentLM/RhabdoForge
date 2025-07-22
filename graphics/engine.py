@@ -11,6 +11,7 @@ from graphics.scene import Scene, Instance, Mesh
 from graphics.camera import Camera
 from graphics.utils import WORLD_UP, WORLD_DOWN
 from graphics.fbo import CubemapFBO
+from graphics.glm import lookat_mat
 
 
 class Engine:
@@ -64,16 +65,29 @@ class Engine:
     def add_instance(self, instance: Instance):
         self.scene.add_instance(instance)
 
-    def _render_instance(self, instance, camera):
-        """ Renders a single instance """
+    def _render_instance(self, instance, camera, view_matrix=None, projection_matrix=None):
+        """ Renders a single instance (with a camera's matrices or explicitly provided ones) """
 
         mesh = instance.asset
         glUseProgram(mesh.shaders)
 
+        if view_matrix is not None and projection_matrix is not None:
+            # Use explicitly provided matrices (for FBO rendering)
+            proj = projection_matrix
+            view = view_matrix
+        else:
+            # Use the camera's matrices (for standard rendering)
+            proj = camera.projection
+            view = camera.view
+
+        # Construct the final matrix for the shader
+        camera_matrix = proj.T @ view
+        # camera_matrix = view.T @ proj
+
         glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "camera"),
                            1,
                            False,
-                           camera.matrix)
+                           camera_matrix)
         glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "model"),
                            1,
                            False,
@@ -107,6 +121,9 @@ class Engine:
         targets = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
         ups = [[0, -1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0], [0, -1, 0]]
 
+        # Get the projection matrix once from the cubemap camera
+        projection = self.cubemap_render_cam.projection
+
         for i in range(6):
             # Attach the correct face of the cubemap texture for rendering
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -115,19 +132,16 @@ class Engine:
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-            # Set the camera view for this face
-            # Using a direct lookat matrix is more robust for cubemaps
-            view_matrix = glm.lookat_mat(
+            # Generate the specific view matrix for this face
+            view = lookat_mat(
                 agent_position,
                 np.array(agent_position) + targets[i],
                 ups[i]
             )
-            # Combine with the camera's projection matrix
-            self.cubemap_render_cam.matrix = self.cubemap_render_cam.projection.T @ view_matrix
 
             # Render all instances in the scene with this view
             for instance in scene.instances:
-                self._render_instance(instance, self.cubemap_render_cam)
+                self._render_instance(instance, None, view_matrix=view, projection_matrix=projection)
 
         self.cubemap_fbo.unbind()
         return self.cubemap_fbo.color_texture_id
