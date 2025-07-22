@@ -11,7 +11,8 @@ uniform mat4 model;
 void main()
 {
     fragTexCoord = vertTexCoord;
-    // This is column-major multiplication, which is what we want inside GLSL
-    // glUniformMatrix with GL_TRUE ensures the matrices arrive in the correct format
+    // The C-side code provides row-major matrices, but glUniformMatrix4fv with
+    // transpose=GL_FALSE causes OpenGL to read them as column-major, which transposes them
+    // The C-side multiplication order is thus camera = view * proj, which becomes proj * view here
     gl_Position = camera * model * vec4(pos, 1.0);
 }
