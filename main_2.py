@@ -75,8 +75,7 @@ def main():
         # ======================== INSECT EYE RENDER PASSES ===================
 
         # PASS 1: Render the 3D scene into the cubemap FBO
-        agent_pos = eng.camera.position
-        scene_cubemap_id = eng.render_to_cubemap(eng.scene, agent_position=agent_pos)
+        scene_cubemap_id = eng.render_to_cubemap(eng.scene, eng.camera)
 
         # PASS 2: Use the generated cubemap to get ommatidia sensory data
         ommatidia_values = insect_eye.get_ommatidia_data(scene_cubemap_id)

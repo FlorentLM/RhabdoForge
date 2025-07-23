@@ -46,19 +46,6 @@ class Engine:
         # A camera for the 6-sided cubemap render
         self.cubemap_render_cam = Camera(fov=90.0, ratio=1.0)
 
-        # Camera orientations for the 6 faces of the cubemap
-        self._cubemap_targets = [
-            WORLD_RIGHT, -WORLD_RIGHT,      # +X, -X
-            WORLD_UP, -WORLD_UP,            # +Y, -Y
-            -WORLD_FORWARD, WORLD_FORWARD   # +Z, -Z
-        ]
-
-        self._cubemap_ups = [
-            -WORLD_UP, -WORLD_UP,           # Up for [+X, -X] is -Y
-            -WORLD_FORWARD, WORLD_FORWARD,  # Up for +Y is +Z, Up for -Y is -Z
-            -WORLD_UP, -WORLD_UP            # Up for +Z, -Z is -Y
-        ]
-
         # Skybox cubemap references
         self.skybox = None
         self.skybox_texture_id = None
@@ -143,15 +130,27 @@ class Engine:
         for instance in self.scene.instances:
             self._render_instance(instance, camera)
 
-    def render_to_cubemap(self, scene, agent_position=(0, 0, 0)):
-        """
-        Renders the given scene into the cubemap FBO from the perspective of the agent position
-        """
-        self.cubemap_fbo.bind()
-        self.cubemap_render_cam.pos = agent_position
+    def render_to_cubemap(self, scene, camera):
+        """ Renders the given scene into the cubemap FBO from the perspective of the agent position """
 
-        # Get the projection matrix once from the cubemap camera
+        self.cubemap_fbo.bind()
+
+        # Using the cubemap-specific camera (for its 90-degree FOV projection)
+        self.cubemap_render_cam.pos = camera.position
         projection = self.cubemap_render_cam.projection
+
+        targets = [
+            camera.left, camera.right,
+            camera.up, camera.down,
+            camera.forward, camera.backward
+        ]
+
+        # The 'up' vectors for each lookat direction, relative to the camera's orientation
+        ups = [
+            camera.down, camera.down,
+            camera.forward, camera.backward,
+            camera.down, camera.down
+        ]
 
         for i in range(6):
             # Attach the correct face of the cubemap texture for rendering
@@ -163,9 +162,9 @@ class Engine:
 
             # Generate the specific view matrix for this face
             view = lookat_mat(
-                agent_position,
-                np.asarray(agent_position, dtype=DTYPE) + self._cubemap_targets[i],
-                self._cubemap_ups[i]
+                camera.position,
+                camera.position + targets[i],  # target point is eye + direction
+                ups[i]
             )
 
             # Draw skybox first into the cubemap face
