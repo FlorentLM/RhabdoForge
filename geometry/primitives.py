@@ -1,4 +1,5 @@
 import numpy as np
+from graphics.utils import DTYPE
 
 
 CUBE_VERTICES = np.array((
@@ -46,4 +47,4 @@ CUBE_VERTICES = np.array((
      1.0, -1.0,  1.0,    1.0, 1.0,
      1.0,  1.0, -1.0,    0.0, 0.0,
      1.0,  1.0,  1.0,    0.0, 1.0
-), dtype=np.float32)
+), dtype=DTYPE)

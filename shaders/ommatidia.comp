@@ -3,16 +3,18 @@
 // number of threads per work group
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-// Input: ommatidia directions
+// Input: SSBO for ommatidia directions (from binding point 0)
 layout(std430, binding = 0) readonly buffer OmmatidiaBlock {
    vec4 u_ommatidia_directions[];
 };
 
+// Output: SSBO to write the results to (at binding point 1)
+layout(std430, binding = 1) buffer OmmatidiaColorOutput {
+   vec4 u_ommatidia_colors[];
+};
+
 // Input: scene rendered to a cubemap
 uniform samplerCube u_scene_cubemap;
-
-// Output: texture to write the results to
-layout(binding = 0, rgba32f) uniform writeonly image2D u_output_image;
 
 // Uniforms
 uniform float u_acceptance_angle; // radius in radians
@@ -21,21 +23,22 @@ uniform int u_num_ommatidia;
 const int SAMPLES_PER_OMMATIDIUM = 64;
 const float PI = 3.14159265359;
 
+// A simple random number generator
 float rand(vec2 co){
     return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
 }
 
+// Gaussian acceptance function
 float gaussian(float angle_zeta, float acceptance_angle_rho) {
     return exp(-4.0 * log(2.0) * pow(angle_zeta / acceptance_angle_rho, 2.0));
 }
-
 
 void main()
 {
     // Get the unique ID for this specific shader invocation
     uint ommatidium_idx = gl_GlobalInvocationID.x;
 
-    // Stop if out of bounds (the dispatch size might not be a perfect multiple)
+    // Stop if out of bounds
     if (ommatidium_idx >= u_num_ommatidia) {
         return;
     }
@@ -44,25 +47,29 @@ void main()
     vec3 total_color = vec3(0.0);
     float total_weight = 0.0;
 
-    // Create a local coordinate system (TBN matrix) for the ommatidium
+    // Create a local coordinate system for the ommatidium
     vec3 up = abs(om_dir.y) > 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
     vec3 tangent = normalize(cross(up, om_dir));
     vec3 bitangent = cross(om_dir, tangent);
-    mat3 tbn = mat3(tangent, bitangent, om_dir);
 
-    // Monte Carlo sampling within the cone
+    // Monte Carlo sampling within a cone
     float cos_acceptance_angle = cos(u_acceptance_angle);
 
     for (int i = 0; i < SAMPLES_PER_OMMATIDIUM; i++) {
+        // Generate two random numbers
         float r1 = rand(vec2(ommatidium_idx, i));
         float r2 = rand(vec2(ommatidium_idx, i) + 0.5);
 
+        // Use random numbers for spherical coordinates (uniform sampling on a spherical cap)
         float cos_theta = mix(cos_acceptance_angle, 1.0, r1);
         float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
         float phi = 2.0 * PI * r2;
 
+        // Convert sample from local coordinates to world coordinates
         vec3 sample_local = vec3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
-        vec3 sample_dir = normalize(tbn * sample_local);
+        vec3 sample_dir = normalize(mat3(tangent, bitangent, om_dir) * sample_local);
+
+        // Calculate weight and sample color
         float angle_zeta = acos(cos_theta);
         float weight = gaussian(angle_zeta, u_acceptance_angle);
         vec3 sampled_color = texture(u_scene_cubemap, sample_dir).rgb;
@@ -75,6 +82,6 @@ void main()
         total_color /= total_weight;
     }
 
-    // Write the final color to the output image texture
-    imageStore(u_output_image, ivec2(ommatidium_idx, 0), vec4(total_color, 1.0));
+    // Write the final color to the output SSBO at the correct index
+    u_ommatidia_colors[ommatidium_idx] = vec4(total_color, 1.0);
 }

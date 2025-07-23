@@ -1,6 +1,6 @@
 import numpy as np
 from OpenGL.GL import *
-from graphics.utils import load_shaders, load_texture
+from graphics.utils import load_shaders, load_texture, DTYPE
 
 
 class Mesh:
@@ -68,7 +68,7 @@ class Instance:
     def __init__(self, asset: Mesh, transform=None):
         self.asset = asset
         if transform is None:
-            self.transform = np.eye(4, dtype=np.float32)
+            self.transform = np.eye(4, dtype=DTYPE)
         else:
             self.transform = transform
 

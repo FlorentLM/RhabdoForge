@@ -10,10 +10,10 @@ from graphics.engine import Engine
 from graphics.scene import Instance
 from graphics.insect_eye import InsectEye
 from graphics.panoramic_eye import PanoramicEye
-from graphics import glm, utils
+from graphics.glm import translation_mat, rotation_mat
 from geometry.primitives import CUBE_VERTICES
-# from graphics.skybox import Skybox
-# from graphics.utils import load_cubemap
+from graphics.skybox import Skybox
+from graphics.utils import WORLD_UP, load_cubemap
 
 
 def main():
@@ -32,12 +32,12 @@ def main():
         texture_path='textures/wood.jpg'
     )
 
-    # eng.skybox = Skybox()
-    # eng.skybox_texture_id = load_cubemap('textures/bright_day')
+    eng.skybox = Skybox()
+    eng.skybox_texture_id = load_cubemap('textures/bright_day')
 
-    eng.add_instance(Instance(asset=crate_mesh))  # rotating crate at the center
-    eng.add_instance(Instance(asset=crate_mesh, transform=glm.translation_mat([-3, 0, 0])))
-    eng.add_instance(Instance(asset=crate_mesh, transform=glm.translation_mat([3, 0, 0])))
+    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([ 0.0, 0.0, 0.0])))
+    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([-3.0, 0.0, 0.0])))
+    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([ 3.0, 0.0, 0.0])))
 
     print("Initializing insect eye model...")
     insect_eye = InsectEye(num_ommatidia=1962, acceptance_angle_deg=15.0)
@@ -63,13 +63,13 @@ def main():
                     PANORAMIC_DEBUG_MODE = not PANORAMIC_DEBUG_MODE
                     print(f"Toggled panoramic debug mode: {'ON' if PANORAMIC_DEBUG_MODE else 'OFF'}")
 
-            # # Update camera from continuous input (W, A, S, D, mouse)
-            # eng.update_movement()
+            # Update camera from continuous input (W, A, S, D, mouse)
+            eng.update_movement()
 
         # Update scene state
         current_rotation_deg = (current_rotation_deg + rotation_per_step_deg) % 360.0
-        eng.scene.instances[0].transform = glm.rotation_mat(
-            np.deg2rad(current_rotation_deg), utils.WORLD_UP
+        eng.scene.instances[0].transform = rotation_mat(
+            np.deg2rad(current_rotation_deg), WORLD_UP
         )
 
         # ======================== INSECT EYE RENDER PASSES ===================

@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 from matplotlib.tri import Triangulation
 from pathlib import Path
 
+from graphics.utils import DTYPE
 
 OMMATIDIA_CACHE_PATH = Path(__file__).absolute().parent / 'cache'
 
@@ -164,7 +165,7 @@ def subdivide_ico(n):
     cleanscaled_mids = np.matmul(mid // 1e-8, 100 * np.arange(1, 4))
     _, iu = np.unique(cleanscaled_mids, return_index=True)
 
-    return univerts.astype(np.float32), unitri.astype(np.float32), unibar[iu].astype(np.float32)
+    return univerts.astype(DTYPE), unitri.astype(DTYPE), unibar[iu].astype(DTYPE)
 
 
 def subdiv_to_ommatidia(x):
@@ -204,7 +205,7 @@ def ommatidia_builder(ommatidia=None, lod=None, print_specs=False, cache=False):
 
     om_dirs, _, _ = subdivide_ico(lod)
 
-    longs = np.arctan2(om_dirs[:, 0], om_dirs[:, 2])
+    longs = np.arctan2(om_dirs[:, 0], -om_dirs[:, 2])
     lats = np.arcsin(om_dirs[:, 1])
 
     if cache:
@@ -223,7 +224,7 @@ def ommatidia_builder(ommatidia=None, lod=None, print_specs=False, cache=False):
         print(f'  Ommatidia: {ommatidia}')
         print(f'  Ideal acceptance angle: {np.rad2deg(phi_estimate):.3f} degs')
 
-    return om_dirs.astype(np.float32), longs.astype(np.float32), lats.astype(np.float32)
+    return om_dirs.astype(DTYPE), longs.astype(DTYPE), lats.astype(DTYPE)
 
 
 def calculate_ommatidia_vs_acuity(start=3, end=71):
@@ -231,7 +232,7 @@ def calculate_ommatidia_vs_acuity(start=3, end=71):
     lods = np.array(range(start, end))
     om_nbs = subdiv_to_ommatidia(lods)
 
-    inter_om_angles = np.zeros_like(lods, dtype=np.float64)
+    inter_om_angles = np.zeros_like(lods, dtype=DTYPE)
 
     for i, val in enumerate(lods):
         inter_om_angles[i], _, _ = ommatidia_builder(lod=val, cache=False)

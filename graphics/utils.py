@@ -16,12 +16,6 @@ WORLD_LEFT = - WORLD_RIGHT
 WORLD_DOWN = - WORLD_UP
 WORLD_BACKWARD = - WORLD_FORWARD
 
-# Camera
-WORLD_RIGHT = WORLD_X = np.array([1.0, 0.0, 0.0], dtype=DTYPE)
-WORLD_UP = WORLD_Y = np.array([0.0, 1.0, 0.0], dtype=DTYPE)
-WORLD_FORWARD = WORLD_Z = np.array([0.0, 0.0, -1.0], dtype=DTYPE)
-
-
 # Loader functions
 
 def load_shaders(path_vert, path_frag, path_geom=None):

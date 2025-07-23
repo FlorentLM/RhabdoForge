@@ -9,7 +9,7 @@ from OpenGL.GL import *
 
 from graphics.scene import Scene, Instance, Mesh
 from graphics.camera import Camera
-from graphics.utils import WORLD_UP, WORLD_DOWN
+from graphics.utils import DTYPE, WORLD_UP, WORLD_DOWN, WORLD_RIGHT, WORLD_FORWARD
 from graphics.fbo import CubemapFBO
 from graphics.glm import lookat_mat
 
@@ -46,13 +46,28 @@ class Engine:
         # A camera for the 6-sided cubemap render
         self.cubemap_render_cam = Camera(fov=90.0, ratio=1.0)
 
+        # Camera orientations for the 6 faces of the cubemap
+        self._cubemap_targets = [
+            WORLD_RIGHT, -WORLD_RIGHT,      # +X, -X
+            WORLD_UP, -WORLD_UP,            # +Y, -Y
+            -WORLD_FORWARD, WORLD_FORWARD   # +Z, -Z
+        ]
+
+        self._cubemap_ups = [
+            -WORLD_UP, -WORLD_UP,           # Up for [+X, -X] is -Y
+            -WORLD_FORWARD, WORLD_FORWARD,  # Up for +Y is +Z, Up for -Y is -Z
+            -WORLD_UP, -WORLD_UP            # Up for +Z, -Z is -Y
+        ]
+
+        # Skybox cubemap references
+        self.skybox = None
+        self.skybox_texture_id = None
+
         # For interactive mode
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(pygame.font.get_default_font(), 20)
         self.fps_rolling = deque(maxlen=500)
         self.is_running_interactive = False
-
-        self.text_overlay_surface = pygame.Surface((150, 40))
 
         self.cam_move_step = 0.01  # units per frame
         self.mouse_sensitivity = 0.1
@@ -108,6 +123,11 @@ class Engine:
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glViewport(0, 0, self.width, self.height)
 
+        # Draw skybox first
+        if self.skybox and self.skybox_texture_id is not None:
+            self.skybox.draw(camera.projection, camera.view, self.skybox_texture_id)
+
+        # Then the rest of the scene
         for instance in self.scene.instances:
             self._render_instance(instance, camera)
 
@@ -117,18 +137,6 @@ class Engine:
         """
         self.cubemap_fbo.bind()
         self.cubemap_render_cam.pos = agent_position
-
-        # Camera orientations for the 6 faces of the cubemap
-        targets = [
-            [1, 0, 0], [-1, 0, 0],  # +X, -X
-            [0, 1, 0], [0, -1, 0],  # +Y, -Y
-            [0, 0, 1], [0, 0, -1]   # +Z, -Z
-        ]
-        ups = [
-            [0, -1, 0], [0, -1, 0],  # Up for +X, -X is -Y
-            [0, 0, 1], [0, 0, -1],   # Up for +Y is +Z, Up for -Y is -Z
-            [0, -1, 0], [0, -1, 0]   # Up for +Z, -Z is -Y
-        ]
 
         # Get the projection matrix once from the cubemap camera
         projection = self.cubemap_render_cam.projection
@@ -144,9 +152,13 @@ class Engine:
             # Generate the specific view matrix for this face
             view = lookat_mat(
                 agent_position,
-                np.array(agent_position) + targets[i],
-                ups[i]
+                np.asarray(agent_position, dtype=DTYPE) + self._cubemap_targets[i],
+                self._cubemap_ups[i]
             )
+
+            # Draw skybox first into the cubemap face
+            if self.skybox and self.skybox_texture_id is not None:
+                self.skybox.draw(projection, view, self.skybox_texture_id)
 
             # Render all instances in the scene with this view
             for instance in scene.instances:
@@ -166,10 +178,11 @@ class Engine:
         pygame.mouse.set_visible(False)
         pygame.event.set_grab(True)
 
-        self.is_running_interactive = True
-        while self.is_running_interactive:
+        is_running = True
+        while is_running:
             self.clock.tick()
-            self._handle_interactive_events()
+            if not self.handle_interactive_events():
+                is_running = False
 
             # ___ Per-frame update stuff here ___
             # (like updating object animations or whatever)
@@ -180,21 +193,27 @@ class Engine:
 
         self.close()
 
-    def _handle_interactive_events(self):
+    def handle_interactive_events(self):
 
-        # Handle discrete events (quitting or mouse wheel)
+        # Handle discrete events
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
-                # In run_interactive, this flag is used
-                # In an external loop, the loop's own flag would be set
-                self.is_running_interactive = False
-                return
+                return False  # Signal to quit
+
             if event.type == MOUSEWHEEL:
                 self.camera.fov -= event.y * 1.5
 
+        # Handle continuous input for camera movement
+        self.update_movement()
+
+        return True  # Signal to continue running
+
+    def update_movement(self):
+        """ Processes continuous input (keyboard/mouse) to move the camera """
+
         # Handle continuous key presses
         keys = pygame.key.get_pressed()
-        cam_displacement = np.zeros(3, dtype=np.float32)
+        cam_displacement = np.zeros(3, dtype=DTYPE)
 
         if keys[K_w]: cam_displacement += self.camera.forward
         if keys[K_s]: cam_displacement += self.camera.backward
@@ -213,7 +232,7 @@ class Engine:
         mouse_x, mouse_y = pygame.mouse.get_rel()
         if mouse_x != 0 or mouse_y != 0:
             self.camera.yaw += mouse_x * self.mouse_sensitivity
-            self.camera.pitch = np.clip(self.camera.pitch + mouse_y * self.mouse_sensitivity, -89.0, 89.0)
+            self.camera.pitch = np.clip(self.camera.pitch + mouse_y * self.mouse_sensitivity, -89.0, 89.0, dtype=DTYPE)
 
     def _draw_fps(self):
         self.fps_rolling.append(self.clock.get_fps())

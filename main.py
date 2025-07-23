@@ -2,6 +2,8 @@ from graphics.glm import translation_mat
 from graphics.engine import Engine
 from graphics.scene import Instance
 from geometry.primitives import CUBE_VERTICES
+from graphics.skybox import Skybox
+from graphics.utils import load_cubemap
 
 
 def main():
@@ -19,10 +21,13 @@ def main():
         texture_path='textures/wood.jpg'
     )
 
+    eng.skybox = Skybox()
+    eng.skybox_texture_id = load_cubemap('textures/bright_day')
+
     # Create instances of the loaded mesh
-    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([0, 0, 0])))
-    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([-3, 0, 0])))
-    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([3, 0, 0])))
+    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([ 0.0, 0.0, 0.0])))
+    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([-3.0, 0.0, 0.0])))
+    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([ 3.0, 0.0, 0.0])))
 
     # --- Run the Simulation/Visualization ---
 
