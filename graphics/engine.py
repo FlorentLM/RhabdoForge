@@ -139,17 +139,25 @@ class Engine:
         self.cubemap_render_cam.pos = camera.position
         projection = self.cubemap_render_cam.projection
 
-        targets = [
-            camera.left, camera.right,
-            camera.up, camera.down,
-            camera.forward, camera.backward
+        # Mapping to align the camera's view directions with the cubemap faces as they are interpreted
+        # by the panoramic fragment shader
+        lookat_directions = [
+            camera.right,       # For +X face (index 0), we look to the camera's right
+            camera.left,        # For -X face (index 1), we look to the camera's left
+            camera.up,          # For +Y face (index 2), we look up
+            camera.down,        # For -Y face (index 3), we look down
+            camera.backward,    # For +Z face (index 4), we look backward
+            camera.forward,     # For -Z face (index 5), we look forward
         ]
 
-        # The 'up' vectors for each lookat direction, relative to the camera's orientation
+        # The 'up' vectors for each look-at direction
         ups = [
-            camera.down, camera.down,
-            camera.forward, camera.backward,
-            camera.down, camera.down
+            camera.down,        # Up for looking right/left is camera's down
+            camera.down,
+            camera.backward,    # Up for looking up is camera's backward
+            camera.forward,     # Up for looking down is camera's forward
+            camera.down,        # Up for looking backward/forward is camera's down
+            camera.down,
         ]
 
         for i in range(6):
@@ -163,7 +171,7 @@ class Engine:
             # Generate the specific view matrix for this face
             view = lookat_mat(
                 camera.position,
-                camera.position + targets[i],  # target point is eye + direction
+                camera.position + lookat_directions[i],  # target point is eye + direction
                 ups[i]
             )
 
