@@ -62,7 +62,7 @@ class InsectEye:
     def data_program(self):
         if self._data_program is None:
             print("Compiling data shader...")
-            self._data_program = load_compute_shader('../shaders/data_pass.comp')
+            self._data_program = load_compute_shader('shaders/data_pass.comp')
         return self._data_program
 
     @property

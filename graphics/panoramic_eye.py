@@ -13,8 +13,8 @@ class PanoramicEye:
     def program(self):
         if self._program is None:
             print("Compiling panoramic debug shaders...")
-            self._program = load_shaders('../shaders/panoramic.vert',
-                                         '../shaders/panoramic.frag')
+            self._program = load_shaders('shaders/panoramic.vert',
+                                         'shaders/panoramic.frag')
         return self._program
 
     @property

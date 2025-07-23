@@ -52,7 +52,9 @@ class Engine:
         self.fps_rolling = deque(maxlen=500)
         self.is_running_interactive = False
 
-        self.cam_move_step = 0.1  # units per frame
+        self.text_overlay_surface = pygame.Surface((150, 40))
+
+        self.cam_move_step = 0.01  # units per frame
         self.mouse_sensitivity = 0.1
 
     def load_mesh(self, name, *args, **kwargs) -> Mesh:
@@ -80,17 +82,16 @@ class Engine:
             proj = camera.projection
             view = camera.view
 
-        # Construct the final matrix for the shader
-        camera_matrix = proj.T @ view
-        # camera_matrix = view.T @ proj
+        # Column-major, so post-multiply, so final matrix is P * V * M
+        camera_matrix = proj @ view
 
         glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "camera"),
                            1,
-                           False,
+                           True,  # OpenGL expects column-major arrays in COLUMN-MAJOR MEMORY (Fortran style)!!
                            camera_matrix)
         glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "model"),
                            1,
-                           False,
+                           True,  # OpenGL expects column-major arrays in COLUMN-MAJOR MEMORY (Fortran style)!!
                            instance.transform)
 
         glActiveTexture(GL_TEXTURE0)
@@ -118,8 +119,16 @@ class Engine:
         self.cubemap_render_cam.pos = agent_position
 
         # Camera orientations for the 6 faces of the cubemap
-        targets = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
-        ups = [[0, -1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1], [0, -1, 0], [0, -1, 0]]
+        targets = [
+            [1, 0, 0], [-1, 0, 0],  # +X, -X
+            [0, 1, 0], [0, -1, 0],  # +Y, -Y
+            [0, 0, 1], [0, 0, -1]   # +Z, -Z
+        ]
+        ups = [
+            [0, -1, 0], [0, -1, 0],  # Up for +X, -X is -Y
+            [0, 0, 1], [0, 0, -1],   # Up for +Y is +Z, Up for -Y is -Z
+            [0, -1, 0], [0, -1, 0]   # Up for +Z, -Z is -Y
+        ]
 
         # Get the projection matrix once from the cubemap camera
         projection = self.cubemap_render_cam.projection
@@ -173,11 +182,6 @@ class Engine:
 
     def _handle_interactive_events(self):
 
-        for event in pygame.event.get():
-            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
-                self.is_running_interactive = False
-                return
-
         # Handle discrete events (quitting or mouse wheel)
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
@@ -208,12 +212,13 @@ class Engine:
         # Handle mouse look
         mouse_x, mouse_y = pygame.mouse.get_rel()
         if mouse_x != 0 or mouse_y != 0:
-            self.camera.yaw -= mouse_x * self.mouse_sensitivity
-            self.camera.pitch = np.clip(self.camera.pitch - mouse_y * self.mouse_sensitivity, -89.0, 89.0)
+            self.camera.yaw += mouse_x * self.mouse_sensitivity
+            self.camera.pitch = np.clip(self.camera.pitch + mouse_y * self.mouse_sensitivity, -89.0, 89.0)
 
     def _draw_fps(self):
         self.fps_rolling.append(self.clock.get_fps())
         avg_fps = np.mean(self.fps_rolling) if self.fps_rolling else 0
+        print(avg_fps)
         text_surf = self.font.render(f'{int(avg_fps)} FPS',
                                      True,
                                      (255, 255, 255, 255),

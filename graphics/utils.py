@@ -3,16 +3,23 @@ from PIL import Image
 import numpy as np
 from OpenGL.GL import *
 
-# Constants
+
+# Precision
+DTYPE = np.float32
 
 # World unit vectors
-WORLD_RIGHT = WORLD_X = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-WORLD_UP = WORLD_Y = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-WORLD_FORWARD = WORLD_Z = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+WORLD_RIGHT = WORLD_X = np.array([1.0, 0.0, 0.0], dtype=DTYPE)
+WORLD_UP = WORLD_Y = np.array([0.0, 1.0, 0.0], dtype=DTYPE)
+WORLD_FORWARD = WORLD_Z = np.array([0.0, 0.0, -1.0], dtype=DTYPE)
 
 WORLD_LEFT = - WORLD_RIGHT
 WORLD_DOWN = - WORLD_UP
 WORLD_BACKWARD = - WORLD_FORWARD
+
+# Camera
+WORLD_RIGHT = WORLD_X = np.array([1.0, 0.0, 0.0], dtype=DTYPE)
+WORLD_UP = WORLD_Y = np.array([0.0, 1.0, 0.0], dtype=DTYPE)
+WORLD_FORWARD = WORLD_Z = np.array([0.0, 0.0, -1.0], dtype=DTYPE)
 
 
 # Loader functions

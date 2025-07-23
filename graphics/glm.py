@@ -1,75 +1,114 @@
 import numpy as np
+import numba
+from graphics.utils import DTYPE, WORLD_RIGHT, WORLD_UP
 
 
-def perspective_mat(fov, aspect_ratio, near_plane, far_plane):
-    """
-    Creates a standard perspective projection matrix
-    """
-    f = 1.0 / np.tan(fov / 2.0)
+@numba.jit(nopython=True, cache=True)
+def perspective_mat(fov_rad, aspect_ratio, near_plane, far_plane):
+
+    f = 1.0 / np.tan(fov_rad / 2.0)
 
     return np.array([
         [f / aspect_ratio, 0.0, 0.0, 0.0],
         [0.0, f, 0.0, 0.0],
-        [0.0, 0.0, (far_plane + near_plane) / (near_plane - far_plane), -1.0],
-        [0.0, 0.0, (2.0 * far_plane * near_plane) / (near_plane - far_plane), 0.0]
-    ], dtype=np.float32)
+        [0.0, 0.0, (far_plane + near_plane) / (near_plane - far_plane),
+         (2.0 * far_plane * near_plane) / (near_plane - far_plane)],
+        [0.0, 0.0, -1.0, 0.0]
+    ], dtype=DTYPE)
 
+
+@numba.jit(nopython=True, cache=True)
 def lookat_mat(eye_pos, target_pos, up_vector):
-    eye_pos = np.asarray(eye_pos, dtype=np.float32)[:3]
-    target_pos = np.asarray(target_pos, dtype=np.float32)[:3]
-    up_vector = np.asarray(up_vector, dtype=np.float32)[:3]
+    eye = np.asarray(eye_pos, dtype=DTYPE)
+    target = np.asarray(target_pos, dtype=DTYPE)
+    up = np.asarray(up_vector, dtype=DTYPE)
 
-    vect = target_pos - eye_pos
-    vect /= np.linalg.norm(vect)
+    # Camera's basis vectors (its local coordinate system)
+    forward = target - eye
+    forward_norm = np.linalg.norm(forward)
+    if forward_norm < 1e-6:
+        return np.eye(4, dtype=DTYPE)   # eye and target are in the same position
+    forward /= forward_norm
 
-    vect2 = np.cross(up_vector, vect)
-    vect2 /= np.linalg.norm(vect2)
+    right = np.cross(forward, up)
+    right_norm = np.linalg.norm(right)
 
-    vect3 = np.cross(vect, vect2)  # Re-cross to ensure perfect orthogonality
+    # case where forward and up are collinear (looking straight up or down)
+    if right_norm < 1e-6:
+        if np.allclose(np.abs(forward), WORLD_UP):
+            right = np.cross(forward, WORLD_RIGHT)
+        else:
+            right = np.cross(forward, WORLD_UP)
+        right /= np.linalg.norm(right)
+    else:
+        right /= right_norm
 
-    mat = np.array([
-        [vect2[0], vect3[0], -vect[0], 0.0],
-        [vect2[1], vect3[1], -vect[1], 0.0],
-        [vect2[2], vect3[2], -vect[2], 0.0],
-        [-np.dot(vect2, eye_pos), -np.dot(vect3, eye_pos), np.dot(vect, eye_pos), 1.0]
-    ], dtype=np.float32).T
-    return mat
+    # Re cross to ensure perfect orthogonality
+    up = np.cross(right, forward)
 
+    rot_part = np.array([
+        [right[0],  up[0],  -forward[0],  0.0],
+        [right[1],  up[1],  -forward[1],  0.0],
+        [right[2],  up[2],  -forward[2],  0.0],
+        [     0.0,    0.0,          0.0,  1.0]
+    ], dtype=DTYPE)
+
+    trans_part = translation_mat(-eye)
+
+    # view matrix is R_inv * T_inv
+    # Note: We premultiply because the rotation should be applied first
+    return rot_part @ trans_part
+
+
+@numba.jit(nopython=True, cache=True)
 def translation_mat(vector):
-    vector = np.asarray(vector, dtype=np.float32)[:3]
-    mat = np.eye(4, dtype=np.float32)
-    mat[3, :3] = vector[:3]
+    mat = np.eye(4, dtype=DTYPE)
+    # Translation is in the last column's first 3 rows
+    mat[:3, 3] = vector[:3]
     return mat
 
-def translate(matrix, vector):
-    return translation_mat(vector) @ matrix
 
+@numba.jit(nopython=True, cache=True)
 def scaling_mat(vector):
-    vector = np.asarray(vector, dtype=np.float32)[:3]
-    x, y, z = vector
     return np.array([
-        [x, 0, 0, 0],
-        [0, y, 0, 0],
-        [0, 0, z, 0],
-        [0, 0, 0, 1]], dtype=np.float32)
+        [ vector[0],       0.0,       0.0,      0.0],
+        [       0.0, vector[1],       0.0,      0.0],
+        [       0.0,       0.0, vector[2],      0.0],
+        [       0.0,       0.0,       0.0,      1.0]
+    ], dtype=DTYPE)
 
-def scale(matrix, vector):
-    return scaling_mat(vector) @ matrix
 
-def rotation_mat(angle, axis_vector):
-    axis_vector = np.asarray(axis_vector, dtype=np.float32)
-    axis_vector /= np.linalg.norm(axis_vector)
+@numba.jit(nopython=True, cache=True)
+def rotation_mat(angle_rad, axis_vector):
+    axis_norm = np.linalg.norm(axis_vector)
 
-    x, y, z = axis_vector
-    s = np.sin(angle)
-    c = np.cos(angle)
+    if axis_norm < 1e-6:
+        return np.eye(4, dtype=DTYPE)
+    axis = axis_vector / axis_norm
 
+    x, y, z = axis
+    s = np.sin(angle_rad)
+    c = np.cos(angle_rad)
     nc = 1 - c
-    return np.array([
-        [x*x*nc +   c, x*y*nc - z*s, x*z*nc + y*s, 0],
-        [y*x*nc + z*s, y*y*nc +   c, y*z*nc - x*s, 0],
-        [x*z*nc - y*s, y*z*nc + x*s, z*z*nc +   c, 0],
-        [           0,            0,            0, 1]], dtype=np.float32)
 
-def rotate(matrix, angle, axis_vector):
-    return rotation_mat(angle, axis_vector) @ matrix
+    return np.array([
+        [x * x * nc + c,     y * x * nc + z * s, z * x * nc - y * s, 0.0],
+        [x * y * nc - z * s, y * y * nc + c,     z * y * nc + x * s, 0.0],
+        [x * z * nc + y * s, y * z * nc - x * s, z * z * nc + c,     0.0],
+        [0.0,                  0.0,                  0.0,            1.0]
+    ], dtype=DTYPE)
+
+
+@numba.jit(nopython=True, cache=True)
+def translate(matrix, vector):
+    return matrix @ translation_mat(vector)
+
+
+@numba.jit(nopython=True, cache=True)
+def scale(matrix, vector):
+    return matrix @ scaling_mat(vector)
+
+
+@numba.jit(nopython=True, cache=True)
+def rotate(matrix, angle_rad, axis_vector):
+    return matrix @ rotation_mat(angle_rad, axis_vector)

@@ -5,14 +5,13 @@ layout (location = 1) in vec2 vertTexCoord;
 
 out vec2 fragTexCoord;
 
-uniform mat4 camera; // This will be Projection * View
-uniform mat4 model;
+uniform mat4 camera;    // pre-combined P * V matrix
+uniform mat4 model;     // model-to-world transform matrix
 
 void main()
 {
     fragTexCoord = vertTexCoord;
-    // The C-side code provides row-major matrices, but glUniformMatrix4fv with
-    // transpose=GL_FALSE causes OpenGL to read them as column-major, which transposes them
-    // The C-side multiplication order is thus camera = view * proj, which becomes proj * view here
+
+    // Transform for column-major vertex is: P * V * M * v
     gl_Position = camera * model * vec4(pos, 1.0);
 }
