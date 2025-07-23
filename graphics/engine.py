@@ -86,34 +86,46 @@ class Engine:
         """ Renders a single instance (with a camera's matrices or explicitly provided ones) """
 
         mesh = instance.asset
-        glUseProgram(mesh.shaders)
 
-        if view_matrix is not None and projection_matrix is not None:
-            # Use explicitly provided matrices (for FBO rendering)
-            proj = projection_matrix
-            view = view_matrix
-        else:
-            # Use the camera's matrices (for standard rendering)
-            proj = camera.projection
-            view = camera.view
+        try:
+            # Bind everything
+            glUseProgram(mesh.shaders)
+            glBindVertexArray(mesh.vao)
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, mesh.texture)
 
-        # Column-major, so post-multiply, so final matrix is P * V * M
-        camera_matrix = proj @ view
+            if view_matrix is not None and projection_matrix is not None:
+                # Use explicitly provided matrices (for FBO rendering)
+                proj = projection_matrix
+                view = view_matrix
+            else:
+                # Use the camera's matrices (for standard rendering)
+                proj = camera.projection
+                view = camera.view
 
-        glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "camera"),
-                           1,
-                           True,  # OpenGL expects column-major arrays in COLUMN-MAJOR MEMORY (Fortran style)!!
-                           camera_matrix)
-        glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "model"),
-                           1,
-                           True,  # OpenGL expects column-major arrays in COLUMN-MAJOR MEMORY (Fortran style)!!
-                           instance.transform)
+            # Column-major, so post-multiply, so final matrix is P * V * M
+            camera_matrix = proj @ view
 
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, mesh.texture)
+            glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "camera"),
+                               1,
+                               True,  # OpenGL expects column-major arrays in COLUMN-MAJOR MEMORY (Fortran style)!!
+                               camera_matrix)
+            glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "model"),
+                               1,
+                               True,  # OpenGL expects column-major arrays in COLUMN-MAJOR MEMORY (Fortran style)!!
+                               instance.transform)
 
-        glBindVertexArray(mesh.vao)
-        glDrawArrays(mesh.draw_type, mesh.draw_start, mesh.draw_count)
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, mesh.texture)
+
+            glBindVertexArray(mesh.vao)
+            glDrawArrays(mesh.draw_type, mesh.draw_start, mesh.draw_count)
+
+        finally:
+            # Unbind everyone
+            glBindTexture(GL_TEXTURE_2D, 0)
+            glBindVertexArray(0)
+            glUseProgram(0)
 
     def render_frame(self, camera=None):
         """ Renders a single frame to the currently bound framebuffer (e.g., the screen) """
@@ -235,14 +247,20 @@ class Engine:
             self.camera.pitch = np.clip(self.camera.pitch + mouse_y * self.mouse_sensitivity, -89.0, 89.0, dtype=DTYPE)
 
     def _draw_fps(self):
+
+        # Unbind texture to prevent state leakage (text background is otherwise the colour as the last used texture)
+        glBindTexture(GL_TEXTURE_2D, 0)
+        # And explicitely unbind any program still active (also to avoid state leakage)
+        glUseProgram(0)
+
         self.fps_rolling.append(self.clock.get_fps())
         avg_fps = np.mean(self.fps_rolling) if self.fps_rolling else 0
-        print(avg_fps)
+
         text_surf = self.font.render(f'{int(avg_fps)} FPS',
                                      True,
                                      (255, 255, 255, 255),
                                      (0, 0, 0, 255))
-        text_data = pygame.image.tobytes(text_surf, "RGBA", True)
+        text_data = pygame.image.tobytes(text_surf, 'RGBA', True)
 
         # Temporarily disable depth testing to ensure text is drawn on top
         glDisable(GL_DEPTH_TEST)
