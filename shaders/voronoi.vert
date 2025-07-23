@@ -24,7 +24,7 @@ uniform bool u_tiled_mode;
 out vec3 v_color;
 
 const float PI = 3.14159265359;
-const float VISUAL_SCALE_MULTIPLIER = 0.2;
+const float VISUAL_SCALE_MULTIPLIER = 0.167;
 
 void main() {
     // Get the data for the specific instance (ommatidium) we are drawing

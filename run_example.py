@@ -1,7 +1,5 @@
 import os
 
-from graphics.voronoi_visualiser import VoronoiVisualiser
-
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
 from pygame.locals import *
@@ -23,8 +21,7 @@ def main():
 
     IS_HEADLESS = False
     PANORAMIC_DEBUG_MODE = True
-    VORONOI_MODE = True
-    TILED_VORONOI_MODE = False
+    TILED_MODE = True
     SIMULATION_STEPS = 1000
 
     eng = Engine(width=1280, height=720, headless=IS_HEADLESS)
@@ -45,9 +42,8 @@ def main():
     eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([ 3.0, 0.0, 0.0])))
 
     print("Initializing insect eye model...")
-    insect_eye = InsectEye(num_ommatidia=162, acceptance_angle_deg=30.0)
+    insect_eye = InsectEye(num_ommatidia=162)
     pano_debug_view = PanoramicEye()
-    voronoi_view = VoronoiVisualiser(insect_eye.num_ommatidia)
 
     # Simulation variables are defined here for non-interactive mode
 
@@ -82,8 +78,8 @@ def main():
                     print(f"Samples per ommatidium: {insect_eye.samples_per_ommatidium}")
 
                 if event.type == KEYDOWN and event.key == K_t:
-                    TILED_VORONOI_MODE = not TILED_VORONOI_MODE
-                    print(f"Toggled tiled Voronoid debug mode: {'ON' if TILED_VORONOI_MODE else 'OFF'}")
+                    TILED_MODE = not TILED_MODE
+                    print(f"Toggled tiled mode: {'ON' if TILED_MODE else 'OFF'}")
 
             # Update camera from continuous input (W, A, S, D, mouse)
             eng.update_movement()
@@ -116,10 +112,8 @@ def main():
             # Draw either the panoramic debug view or the insect eye visualization
             if PANORAMIC_DEBUG_MODE:
                 pano_debug_view.draw(scene_cubemap_id)
-            elif VORONOI_MODE:
-                voronoi_view.draw(insect_eye, tiled_mode=TILED_VORONOI_MODE)
             else:
-                insect_eye.draw()
+                insect_eye.draw(tiled_mode=TILED_MODE)
 
             # Draw FPS overlay and update the display
             eng.clock.tick()

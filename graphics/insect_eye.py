@@ -3,12 +3,13 @@ from pathlib import Path
 import numpy as np
 from OpenGL.GL import *
 
+from geometry.primitives import CONE_VERTICES
 from graphics.utils import load_shaders, load_compute_shader, DTYPE
 from graphics.ommatidia_funcs import ommatidia_builder
 
 
 class InsectEye:
-    def __init__(self, file_path=None, num_ommatidia=500, acceptance_angle_deg=5.0):
+    def __init__(self, file_path=None, num_ommatidia=1962, acceptance_angle_deg=None):
 
         if file_path is not None:
 
@@ -37,8 +38,24 @@ class InsectEye:
             om_dirs, om_lons, om_lats = ommatidia_builder(ommatidia=num_ommatidia)
             self.num_ommatidia = om_dirs.shape[0]
 
+            if acceptance_angle_deg is None:
+                # TODO: ommatidia builder should be able to do this by itself
+
+                print("Acceptance angle not provided. Calculating a default based on interommatidial angle.")
+                # Estimate interommatidial angle from the first two ommatidia (for a uniform eye)
+                v1 = om_dirs[0]
+                v2 = om_dirs[1]
+                interommatidial_angle_rad = np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0))
+
+                # Set the acceptance angle to this calculated value
+                acceptance_angle_rad = interommatidial_angle_rad
+                print(f"  -> Default acceptance angle set to: {np.rad2deg(acceptance_angle_rad):.2f} degrees")
+            else:
+                # If provided, use the specified value
+                acceptance_angle_rad = np.deg2rad(acceptance_angle_deg)
+
             # Create a uniform array of acceptance angles
-            acceptance_angles_rad = np.full(self.num_ommatidia, np.deg2rad(acceptance_angle_deg), dtype=DTYPE)
+            acceptance_angles_rad = np.full(self.num_ommatidia, acceptance_angle_rad, dtype=DTYPE)
 
         # Pack all the ommatidia data into a big array
         # Shape is (num_ommatidia, 5) -> [dir_x, dir_y, dir_z, acceptance_angle, padding]
@@ -50,10 +67,10 @@ class InsectEye:
         # Number of rays to sample per ommatidium
         self._samples_per_ommatidium = 64
 
-        # VBO data for panoramic visualization
-        self.vis_vertex_data = np.zeros((self.num_ommatidia, 2), dtype=DTYPE)
-        self.vis_vertex_data[:, 0] = om_lons  # Longitude
-        self.vis_vertex_data[:, 1] = om_lats  # Latitude
+        # Program and VAO for visualisation
+        self._voronoi_program = None
+        self._voronoi_vao = None
+        self._cone_vertex_count = 0
 
         # Visualisation resources (lazy-loaded)
         self._vis_program = None
@@ -87,33 +104,31 @@ class InsectEye:
         self._samples_per_ommatidium = int(min(4096, max(1, value)))
 
     @property
-    def vis_program(self):
-        if self._vis_program is None:
-            print("Compiling visualization shaders...")
-            self._vis_program = load_shaders(
-                'shaders/insect_eye.vert',
-                'shaders/insect_eye.frag',
-                'shaders/insect_eye.geom'
-            )
-        return self._vis_program
+    def voronoi_program(self):
+        if self._voronoi_program is None:
+            print("Compiling Voronoi visualization shaders...")
+            self._voronoi_program = load_shaders('shaders/voronoi.vert',
+                                                 'shaders/voronoi.frag')
+        return self._voronoi_program
 
     @property
-    def vis_vao(self):
-        if self._vis_vao is None:
+    def voronoi_vao(self):
+        if self._voronoi_vao is None:
+            self._cone_vertex_count = len(CONE_VERTICES) // 3
             vao = glGenVertexArrays(1)
             glBindVertexArray(vao)
 
             vbo = glGenBuffers(1)
             glBindBuffer(GL_ARRAY_BUFFER, vbo)
-            glBufferData(GL_ARRAY_BUFFER, self.vis_vertex_data.nbytes, self.vis_vertex_data, GL_STATIC_DRAW)
+            glBufferData(GL_ARRAY_BUFFER, CONE_VERTICES.nbytes, CONE_VERTICES, GL_STATIC_DRAW)
 
-            pano_loc = glGetAttribLocation(self.vis_program, 'a_ommatidia_coords')
-            glEnableVertexAttribArray(pano_loc)
-            glVertexAttribPointer(pano_loc, 2, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
+            pos_loc = glGetAttribLocation(self.voronoi_program, "a_cone_vertex_pos")
+            glEnableVertexAttribArray(pos_loc)
+            glVertexAttribPointer(pos_loc, 3, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
 
             glBindVertexArray(0)
-            self._vis_vao = vao
-        return self._vis_vao
+            self._voronoi_vao = vao
+        return self._voronoi_vao
 
     def get_ommatidia_data(self, cubemap_texture_id):
         """ Computes ommatidia data and returns it as a numpy array """
@@ -168,26 +183,32 @@ class InsectEye:
 
     @property
     def shaders(self):
-        return self.vis_program
+        return self.voronoi_program
 
     @property
     def vao(self):
-        return self.vis_vao
+        return self.voronoi_vao
 
-    def draw(self):
-        """ Draws the visualization as a panoramic equirectangular projection """
+    def draw(self, tiled_mode=False):
 
-        glUseProgram(self.vis_program)
+        glUseProgram(self.voronoi_program)
+        glEnable(GL_DEPTH_TEST)
 
-        # Data is already on the GPU, just need to bind the SSBO
+        glUniform1i(glGetUniformLocation(self.voronoi_program, "u_tiled_mode"), tiled_mode)
+
+        # Bind the SSBOs containing per-ommatidium data
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.colors_ssbo)
 
-        # Bind the VAO and draw the points
-        # The vertex shader will handle the panoramic projection
-        glBindVertexArray(self.vis_vao)
-        glDrawArrays(GL_POINTS, 0, self.num_ommatidia)
+        # Bind the cone's VAO
+        glBindVertexArray(self.voronoi_vao)
 
-        # Unbind everything
+        # Make the instanced draw call
+        glDrawArraysInstanced(GL_TRIANGLES, 0, self._cone_vertex_count, self.num_ommatidia)
+
+        # Unbind everyone
         glBindVertexArray(0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
+        glDisable(GL_DEPTH_TEST)
         glUseProgram(0)
