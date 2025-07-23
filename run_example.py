@@ -23,6 +23,7 @@ def main():
     PANORAMIC_DEBUG_MODE = True
     TILED_MODE = True
     SIMULATION_STEPS = 1000
+    TIME_DITHERING = False
 
     eng = Engine(width=1280, height=720, headless=IS_HEADLESS)
 
@@ -42,7 +43,7 @@ def main():
     eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([ 3.0, 0.0, 0.0])))
 
     print("Initializing insect eye model...")
-    insect_eye = InsectEye(num_ommatidia=162)
+    insect_eye = InsectEye(num_ommatidia=162, time_dithering=TIME_DITHERING)
     pano_debug_view = PanoramicEye()
 
     # Simulation variables are defined here for non-interactive mode

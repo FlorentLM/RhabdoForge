@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +10,7 @@ from graphics.ommatidia_funcs import ommatidia_builder
 
 
 class InsectEye:
-    def __init__(self, file_path=None, num_ommatidia=1962, acceptance_angle_deg=None):
+    def __init__(self, file_path=None, num_ommatidia=1962, acceptance_angle_deg=None, time_dithering=True):
 
         if file_path is not None:
 
@@ -65,7 +66,11 @@ class InsectEye:
         self.ommatidia_input_data[:, 3] = acceptance_angles_rad
 
         # Number of rays to sample per ommatidium
-        self._samples_per_ommatidium = 64
+        self._samples_per_ommatidium = 1024
+
+        # A counter for time dithering during sampling
+        self._time_dithering = time_dithering
+        self._time_counter = 0
 
         # Program and VAO for visualisation
         self._voronoi_program = None
@@ -101,7 +106,7 @@ class InsectEye:
 
     @samples_per_ommatidium.setter
     def samples_per_ommatidium(self, value):
-        self._samples_per_ommatidium = int(min(4096, max(1, value)))
+        self._samples_per_ommatidium = int(min(32768, max(1, value)))
 
     @property
     def voronoi_program(self):
@@ -138,6 +143,7 @@ class InsectEye:
         # Set uniforms for the data pass
         glUniform1i(glGetUniformLocation(self.ommatidia_program, 'u_num_ommatidia'), self.num_ommatidia)
         glUniform1i(glGetUniformLocation(self.ommatidia_program, 'u_samples_per_ommatidium'), self.samples_per_ommatidium)
+        glUniform1f(glGetUniformLocation(self.ommatidia_program, 'u_time'), self._time_counter * 0.01)
 
         # Bind input cubemap (texture unit 0)
         glActiveTexture(GL_TEXTURE0)
@@ -178,6 +184,10 @@ class InsectEye:
 
         # Unbind the buffer
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
+        # And update the counter for time dithering
+        if self._time_dithering:
+            self._time_counter += 1
 
         return self.cpu_ommatidia_buf
 

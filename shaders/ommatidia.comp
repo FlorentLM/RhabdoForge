@@ -25,13 +25,16 @@ uniform samplerCube u_scene_cubemap;
 // Uniforms
 uniform int u_num_ommatidia;
 uniform int u_samples_per_ommatidium;
-
+uniform float u_time; // For temporal dithering
 
 const float PI = 3.14159265359;
 
-// A simple random number generator
+// Constant to control the tightness of the sampling
+const float SAMPLING_BIAS = 0.5; // smaller = samples more concentrated at the center
+
+// Simple RNG with temporal dithering
 float rand(vec2 co){
-    return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    return fract(sin(dot(co.xy, vec2(12.9898, 78.233)) + u_time) * 43758.5453);
 }
 
 // Gaussian acceptance function
@@ -69,8 +72,11 @@ void main()
         float r1 = rand(vec2(ommatidium_idx, i));
         float r2 = rand(vec2(ommatidium_idx, i) + 0.5);
 
-        // Use random numbers for spherical coordinates (uniform sampling on a spherical cap)
-        float cos_theta = mix(cos_acceptance_angle, 1.0, r1);
+        // Importance Sampling
+        // Warp the random number to bias samples towards the center of the cone
+        float r1_warped = pow(r1, SAMPLING_BIAS);
+        float cos_theta = mix(cos_acceptance_angle, 1.0, r1_warped);
+
         float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
         float phi = 2.0 * PI * r2;
 
@@ -78,17 +84,15 @@ void main()
         vec3 sample_local = vec3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
         vec3 sample_dir = normalize(mat3(tangent, bitangent, om_dir) * sample_local);
 
-        // Calculate weight and sample color
-        float angle_zeta = acos(cos_theta);
-        float weight = gaussian(angle_zeta, acceptance_angle);
+        // Each sample has equal weight (distribution is already biased)
         vec3 sampled_color = texture(u_scene_cubemap, sample_dir).rgb;
-
-        total_color += sampled_color * weight;
-        total_weight += weight;
+        total_color += sampled_color;
     }
 
-    if (total_weight > 0.0) {
-        total_color /= total_weight;
+    // Simple Averaging
+    // Normalize by the total number of samples taken
+    if (u_samples_per_ommatidium > 0) {
+        total_color /= float(u_samples_per_ommatidium);
     }
 
     // Write the final color to the output SSBO at the correct index
