@@ -49,6 +49,10 @@ def main():
     rotation_per_step_deg = 0.5
     current_rotation_deg = 0.0
 
+    if not IS_HEADLESS:
+        pygame.mouse.set_visible(False)
+        pygame.event.set_grab(True)
+
     is_running = True
     frame_count = 0
     while is_running:
