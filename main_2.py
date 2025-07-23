@@ -75,8 +75,7 @@ def main():
         # ======================== INSECT EYE RENDER PASSES ===================
 
         # PASS 1: Render the 3D scene into the cubemap FBO
-        # The agent's position is fixed at the origin for this simulation
-        agent_pos = (0, 0, 0)
+        agent_pos = eng.camera.position
         scene_cubemap_id = eng.render_to_cubemap(eng.scene, agent_position=agent_pos)
 
         # PASS 2: Use the generated cubemap to get ommatidia sensory data
