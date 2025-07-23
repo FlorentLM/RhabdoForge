@@ -1,0 +1,17 @@
+[project]
+name = "antworlds2"
+version = "0.2.0"
+description = "A fast ommatidia-based renderer"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "glfw>=2.9.0",
+    "matplotlib>=3.10.3",
+    "moderngl>=5.12.0",
+    "numpy",
+    "pillow>=11.3.0",
+    "pygame>=2.6.1",
+    "pyopengl>=3.1.9",
+    "numba>=0.61.2",
+    "scipy"
+]
