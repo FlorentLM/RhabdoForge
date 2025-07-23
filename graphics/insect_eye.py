@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 from OpenGL.GL import *
 
@@ -6,16 +8,46 @@ from graphics.ommatidia_funcs import ommatidia_builder
 
 
 class InsectEye:
-    def __init__(self, num_ommatidia=500, acceptance_angle_deg=5.0):
+    def __init__(self, file_path=None, num_ommatidia=500, acceptance_angle_deg=5.0):
 
-        om_dirs, om_lons, om_lats = ommatidia_builder(ommatidia=num_ommatidia)
+        if file_path is not None:
 
-        self.num_ommatidia = om_dirs.shape[0]
-        self.acceptance_angle = np.deg2rad(acceptance_angle_deg)
+            loaded_data = np.load(Path(file_path))
 
-        self.ommatidia_dirs = np.zeros((self.num_ommatidia, 4), dtype=DTYPE)
-        self.ommatidia_dirs[:, :3] = om_dirs
+            # TODO: Write proper parsers for the different formats available out there...
 
+            # Data matrix should have shape (N, 3+) with columns:
+            # [azimuth_rad, elevation_rad, acceptance_angle_rad, ...]
+
+            self.num_ommatidia = loaded_data.shape[0]
+
+            # Convert spherical coordinates (azimuth/longitude, elevation/latitude) to 3D direction vectors
+            om_lons = loaded_data[:, 0]
+            om_lats = loaded_data[:, 1]
+            om_dirs = np.zeros((self.num_ommatidia, 3), dtype=DTYPE)
+            om_dirs[:, 0] = np.cos(om_lats) * np.sin(om_lons)  # x
+            om_dirs[:, 1] = np.sin(om_lats)                    # y
+            om_dirs[:, 2] = -np.cos(om_lats) * np.cos(om_lons) # z (assuming standard panoramic math)
+
+            # Extract acceptance angles
+            acceptance_angles_rad = loaded_data[:, 2]
+
+        else:
+            # Use your existing ommatidia_builder for uniform eyes
+            om_dirs, om_lons, om_lats = ommatidia_builder(ommatidia=num_ommatidia)
+            self.num_ommatidia = om_dirs.shape[0]
+
+            # Create a uniform array of acceptance angles
+            acceptance_angles_rad = np.full(self.num_ommatidia, np.deg2rad(acceptance_angle_deg), dtype=DTYPE)
+
+        # Pack all the ommatidia data into a big array
+        # Shape is (num_ommatidia, 5) -> [dir_x, dir_y, dir_z, acceptance_angle, padding]
+        # Note: vec3 is 12 bytes. float is 4 bytes. Total 16 bytes, which conveniently aligns to vec4 :)
+        self.ommatidia_input_data = np.zeros((self.num_ommatidia, 4), dtype=DTYPE)
+        self.ommatidia_input_data[:, :3] = om_dirs
+        self.ommatidia_input_data[:, 3] = acceptance_angles_rad
+
+        # Number of rays to sample per ommatidium
         self._samples_per_ommatidium = 64
 
         # VBO data for panoramic visualization
@@ -33,12 +65,11 @@ class InsectEye:
         # Buffer for reading the ommatidia data back to CPU
         self.cpu_ommatidia_buf = np.zeros((self.num_ommatidia, 4), dtype=DTYPE)
 
-        # Input SSBO for sending ommatidia directions to the compute shader
-        self.directions_ssbo = glGenBuffers(1)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.directions_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, self.ommatidia_dirs.nbytes, self.ommatidia_dirs, GL_STATIC_DRAW)
-
-        # TODO: Acceptance angle should be per-ommatidia too
+        # Input SSBO for sending ommatidia data to the compute shader
+        self.input_ssbo = glGenBuffers(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.input_ssbo)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, self.ommatidia_input_data.nbytes, self.ommatidia_input_data, GL_STATIC_DRAW)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)  # unbind
 
         # Output/Input SSBO: Compute shader writes to it, visualization shader reads from it
         self.colors_ssbo = glGenBuffers(1)
@@ -90,7 +121,6 @@ class InsectEye:
         glUseProgram(self.ommatidia_program)
 
         # Set uniforms for the data pass
-        glUniform1f(glGetUniformLocation(self.ommatidia_program, 'u_acceptance_angle'), self.acceptance_angle)
         glUniform1i(glGetUniformLocation(self.ommatidia_program, 'u_num_ommatidia'), self.num_ommatidia)
         glUniform1i(glGetUniformLocation(self.ommatidia_program, 'u_samples_per_ommatidium'), self.samples_per_ommatidium)
 
@@ -100,7 +130,7 @@ class InsectEye:
         glUniform1i(glGetUniformLocation(self.ommatidia_program, 'u_scene_cubemap'), 0)
 
         # Bind directions SSBO to binding point 0 (for reading)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.directions_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_ssbo)
         # Bind colors SSBO to binding point 1 (for writing)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.colors_ssbo)
 

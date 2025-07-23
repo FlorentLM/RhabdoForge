@@ -3,9 +3,15 @@
 // number of threads per work group
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-// Input: SSBO for ommatidia directions (from binding point 0)
-layout(std430, binding = 0) readonly buffer OmmatidiaBlock {
-   vec4 u_ommatidia_directions[];
+// Ommatidium struct for clarity
+struct Ommatidium {
+    vec3 direction;
+    float acceptance_angle;
+};
+
+// Input: SSBO from binding point 0 contains an array of these structs
+layout(std430, binding = 0) readonly buffer OmmatidiaInputBlock {
+   Ommatidium u_ommatidia_data[];
 };
 
 // Output: SSBO to write the results to (at binding point 1)
@@ -17,7 +23,6 @@ layout(std430, binding = 1) buffer OmmatidiaColorOutput {
 uniform samplerCube u_scene_cubemap;
 
 // Uniforms
-uniform float u_acceptance_angle; // radius in radians
 uniform int u_num_ommatidia;
 uniform int u_samples_per_ommatidium;
 
@@ -44,7 +49,10 @@ void main()
         return;
     }
 
-    vec3 om_dir = normalize(u_ommatidia_directions[ommatidium_idx].xyz);
+    // Unpack data for this specific ommatidium
+    vec3 om_dir = normalize(u_ommatidia_data[ommatidium_idx].direction);
+    float acceptance_angle = u_ommatidia_data[ommatidium_idx].acceptance_angle;
+
     vec3 total_color = vec3(0.0);
     float total_weight = 0.0;
 
@@ -54,7 +62,7 @@ void main()
     vec3 bitangent = cross(om_dir, tangent);
 
     // Monte Carlo sampling within a cone
-    float cos_acceptance_angle = cos(u_acceptance_angle);
+    float cos_acceptance_angle = cos(acceptance_angle);
 
     for (int i = 0; i < u_samples_per_ommatidium; i++) {
         // Generate two random numbers
@@ -72,7 +80,7 @@ void main()
 
         // Calculate weight and sample color
         float angle_zeta = acos(cos_theta);
-        float weight = gaussian(angle_zeta, u_acceptance_angle);
+        float weight = gaussian(angle_zeta, acceptance_angle);
         vec3 sampled_color = texture(u_scene_cubemap, sample_dir).rgb;
 
         total_color += sampled_color * weight;
