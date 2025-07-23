@@ -28,7 +28,10 @@ class CubemapFBO:
 
         # Attach textures/buffers to the FBO
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo_id)
-        glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, self.color_texture_id, 0)
+
+        # Attach just one face initially to make the FBO 'complete'
+        # The render loop will correctly attach the other faces as needed
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X, self.color_texture_id, 0)
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self.depth_buffer_id)
 
         # Check if the FBO is complete
