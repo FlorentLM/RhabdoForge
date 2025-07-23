@@ -40,7 +40,7 @@ def main():
     eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([ 3.0, 0.0, 0.0])))
 
     print("Initializing insect eye model...")
-    insect_eye = InsectEye(num_ommatidia=1962, acceptance_angle_deg=15.0)
+    insect_eye = InsectEye(num_ommatidia=162, acceptance_angle_deg=30.0)
     pano_debug_view = PanoramicEye()
 
     # Simulation variables are defined here for non-interactive mode
@@ -66,6 +66,14 @@ def main():
                 if event.type == KEYDOWN and event.key == K_p:
                     PANORAMIC_DEBUG_MODE = not PANORAMIC_DEBUG_MODE
                     print(f"Toggled panoramic debug mode: {'ON' if PANORAMIC_DEBUG_MODE else 'OFF'}")
+
+                if event.type == KEYDOWN and event.key == K_h:
+                    insect_eye.samples_per_ommatidium = insect_eye.samples_per_ommatidium * 2
+                    print(f"Samples per ommatidium: {insect_eye.samples_per_ommatidium}")
+
+                if event.type == KEYDOWN and event.key == K_g:
+                    insect_eye.samples_per_ommatidium = insect_eye.samples_per_ommatidium / 2
+                    print(f"Samples per ommatidium: {insect_eye.samples_per_ommatidium}")
 
             # Update camera from continuous input (W, A, S, D, mouse)
             eng.update_movement()

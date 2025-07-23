@@ -135,17 +135,23 @@ class Camera:
         return self.view @ self.projection
 
     def lookat(self, *target_pos):
-        # TODO - move this in a static function in glm?
-        target_pos = np.asarray(target_pos, dtype=DTYPE)
 
+        if len(target_pos) == 1:
+            target_pos = np.asarray(target_pos[0], dtype=DTYPE)
+        else:
+            target_pos = np.asarray(target_pos, dtype=DTYPE)
+
+        # Avoid division by zero if the target is at the camera's position
         if np.allclose(target_pos, self.position):
             return
 
+        # direction from the camera to the target
         direction = target_pos - self.position
         direction /= np.linalg.norm(direction)
 
         # Calculate pitch (up/down look) from the Y component
-        self.pitch = np.rad2deg(np.arcsin(-direction[1]), dtype=DTYPE)
+        self.pitch = np.rad2deg(np.arcsin(direction[1]), dtype=DTYPE)
+
         # Calculate yaw (left/right look) from the X and Z components
         self.yaw = np.rad2deg(np.arctan2(direction[0], -direction[2]), dtype=DTYPE)
 

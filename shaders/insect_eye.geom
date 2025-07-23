@@ -17,7 +17,7 @@ flat in int v_primitive_id[];
 flat out int v_ommatidium_id;
 
 // Define the 6 vertices of a hexagon in screen space
-const float HEX_RADIUS = 0.02;
+const float HEX_RADIUS = 0.2;
 
 // The vertices are ordered to form a hexagon using a TRIANGLE_STRIP
 // The order v0, v1, v5, v2, v4, v3 (from a standard counter-clockwise set) creates a strip of 4 triangles that tile the shape

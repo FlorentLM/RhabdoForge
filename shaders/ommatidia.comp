@@ -19,8 +19,9 @@ uniform samplerCube u_scene_cubemap;
 // Uniforms
 uniform float u_acceptance_angle; // radius in radians
 uniform int u_num_ommatidia;
+uniform int u_samples_per_ommatidium;
 
-const int SAMPLES_PER_OMMATIDIUM = 64;
+
 const float PI = 3.14159265359;
 
 // A simple random number generator
@@ -55,7 +56,7 @@ void main()
     // Monte Carlo sampling within a cone
     float cos_acceptance_angle = cos(u_acceptance_angle);
 
-    for (int i = 0; i < SAMPLES_PER_OMMATIDIUM; i++) {
+    for (int i = 0; i < u_samples_per_ommatidium; i++) {
         // Generate two random numbers
         float r1 = rand(vec2(ommatidium_idx, i));
         float r2 = rand(vec2(ommatidium_idx, i) + 0.5);

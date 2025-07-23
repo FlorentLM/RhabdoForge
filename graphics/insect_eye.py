@@ -16,6 +16,8 @@ class InsectEye:
         self.ommatidia_dirs = np.zeros((self.num_ommatidia, 4), dtype=DTYPE)
         self.ommatidia_dirs[:, :3] = om_dirs
 
+        self._samples_per_ommatidium = 64
+
         # VBO data for panoramic visualization
         self.vis_vertex_data = np.zeros((self.num_ommatidia, 2), dtype=DTYPE)
         self.vis_vertex_data[:, 0] = om_lons  # Longitude
@@ -46,6 +48,14 @@ class InsectEye:
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)  # unbind
 
     @property
+    def samples_per_ommatidium(self):
+        return self._samples_per_ommatidium
+
+    @samples_per_ommatidium.setter
+    def samples_per_ommatidium(self, value):
+        self._samples_per_ommatidium = int(min(4096, max(1, value)))
+
+    @property
     def vis_program(self):
         if self._vis_program is None:
             print("Compiling visualization shaders...")
@@ -66,7 +76,7 @@ class InsectEye:
             glBindBuffer(GL_ARRAY_BUFFER, vbo)
             glBufferData(GL_ARRAY_BUFFER, self.vis_vertex_data.nbytes, self.vis_vertex_data, GL_STATIC_DRAW)
 
-            pano_loc = glGetAttribLocation(self.vis_program, "a_ommatidia_coords")
+            pano_loc = glGetAttribLocation(self.vis_program, 'a_ommatidia_coords')
             glEnableVertexAttribArray(pano_loc)
             glVertexAttribPointer(pano_loc, 2, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
 
@@ -80,13 +90,14 @@ class InsectEye:
         glUseProgram(self.ommatidia_program)
 
         # Set uniforms for the data pass
-        glUniform1f(glGetUniformLocation(self.ommatidia_program, "u_acceptance_angle"), self.acceptance_angle)
-        glUniform1i(glGetUniformLocation(self.ommatidia_program, "u_num_ommatidia"), self.num_ommatidia)
+        glUniform1f(glGetUniformLocation(self.ommatidia_program, 'u_acceptance_angle'), self.acceptance_angle)
+        glUniform1i(glGetUniformLocation(self.ommatidia_program, 'u_num_ommatidia'), self.num_ommatidia)
+        glUniform1i(glGetUniformLocation(self.ommatidia_program, 'u_samples_per_ommatidium'), self.samples_per_ommatidium)
 
         # Bind input cubemap (texture unit 0)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_texture_id)
-        glUniform1i(glGetUniformLocation(self.ommatidia_program, "u_scene_cubemap"), 0)
+        glUniform1i(glGetUniformLocation(self.ommatidia_program, 'u_scene_cubemap'), 0)
 
         # Bind directions SSBO to binding point 0 (for reading)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.directions_ssbo)
