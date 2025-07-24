@@ -1,71 +1,21 @@
-import time
 from pathlib import Path
 
 import numpy as np
 from OpenGL.GL import *
 
 from geometry.primitives import CONE_VERTICES
+from graphics.eye_model import EyeModel
 from graphics.utils import load_shaders, load_compute_shader, DTYPE
-from graphics.ommatidia_funcs import ommatidia_builder
 
 
 class InsectEye:
-    def __init__(self, file_path=None, num_ommatidia=1962, acceptance_angle_deg=None, time_dithering=True):
+    def __init__(self, eye_model: EyeModel, time_dithering=True):
 
-        if file_path is not None:
+        self.model = eye_model
+        self.num_ommatidia = self.model.num_ommatidia
+        self.ommatidia_input_data = self.model.pack()
 
-            loaded_data = np.load(Path(file_path))
-
-            # TODO: Write proper parsers for the different formats available out there...
-
-            # Data matrix should have shape (N, 3+) with columns:
-            # [azimuth_rad, elevation_rad, acceptance_angle_rad, ...]
-
-            self.num_ommatidia = loaded_data.shape[0]
-
-            # Convert spherical coordinates (azimuth/longitude, elevation/latitude) to 3D direction vectors
-            om_lons = loaded_data[:, 0]
-            om_lats = loaded_data[:, 1]
-            om_dirs = np.zeros((self.num_ommatidia, 3), dtype=DTYPE)
-            om_dirs[:, 0] = np.cos(om_lats) * np.sin(om_lons)  # x
-            om_dirs[:, 1] = np.sin(om_lats)                    # y
-            om_dirs[:, 2] = -np.cos(om_lats) * np.cos(om_lons) # z (assuming standard panoramic math)
-
-            # Extract acceptance angles
-            acceptance_angles_rad = loaded_data[:, 2]
-
-        else:
-            # Use your existing ommatidia_builder for uniform eyes
-            om_dirs, om_lons, om_lats = ommatidia_builder(ommatidia=num_ommatidia)
-            self.num_ommatidia = om_dirs.shape[0]
-
-            if acceptance_angle_deg is None:
-                # TODO: ommatidia builder should be able to do this by itself
-
-                print("Acceptance angle not provided. Calculating a default based on interommatidial angle.")
-                # Estimate interommatidial angle from the first two ommatidia (for a uniform eye)
-                v1 = om_dirs[0]
-                v2 = om_dirs[1]
-                interommatidial_angle_rad = np.arccos(np.clip(np.dot(v1, v2), -1.0, 1.0))
-
-                # Set the acceptance angle to this calculated value
-                acceptance_angle_rad = interommatidial_angle_rad
-                print(f"  -> Default acceptance angle set to: {np.rad2deg(acceptance_angle_rad):.2f} degrees")
-            else:
-                # If provided, use the specified value
-                acceptance_angle_rad = np.deg2rad(acceptance_angle_deg)
-
-            # Create a uniform array of acceptance angles
-            acceptance_angles_rad = np.full(self.num_ommatidia, acceptance_angle_rad, dtype=DTYPE)
-
-        # Pack all the ommatidia data into a big array
-        # Shape is (num_ommatidia, 5) -> [dir_x, dir_y, dir_z, acceptance_angle, padding]
-        # Note: vec3 is 12 bytes. float is 4 bytes. Total 16 bytes, which conveniently aligns to vec4 :)
-        self.ommatidia_input_data = np.zeros((self.num_ommatidia, 4), dtype=DTYPE)
-        self.ommatidia_input_data[:, :3] = om_dirs
-        self.ommatidia_input_data[:, 3] = acceptance_angles_rad
-
-        # Number of rays to sample per ommatidium
+        # Default umber of rays to sample per ommatidium
         self._samples_per_ommatidium = 1024
 
         # A counter for time dithering during sampling
