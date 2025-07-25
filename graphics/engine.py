@@ -122,8 +122,16 @@ class Engine:
         self.cubemap_render_cam.pos = camera.position
         projection = self.cubemap_render_cam.projection
 
-        # Mapping to align the camera's view directions with the cubemap faces as they are interpreted
-        # by the panoramic fragment shader
+        # look-at directions and 'up' vectors for each face must correspond to the OpenGL cubemap coordinate system:
+        #  - GL_TEXTURE_CUBE_MAP_POSITIVE_X  ->  Right
+        #  - GL_TEXTURE_CUBE_MAP_NEGATIVE_X  ->  Left
+        #  - GL_TEXTURE_CUBE_MAP_POSITIVE_Y  ->  Up
+        #  - GL_TEXTURE_CUBE_MAP_NEGATIVE_Y  ->  Down
+        #  - GL_TEXTURE_CUBE_MAP_POSITIVE_Z  ->  Back
+        #  - GL_TEXTURE_CUBE_MAP_NEGATIVE_Z  ->  Front
+        #
+        # Note: the camera's local vectors are used to maintain its orientation (roll)
+
         lookat_directions = [
             camera.right,       # For +X face (index 0), we look to the camera's right
             camera.left,        # For -X face (index 1), we look to the camera's left

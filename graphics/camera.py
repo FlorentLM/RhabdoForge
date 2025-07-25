@@ -134,12 +134,12 @@ class Camera:
     def matrix(self):
         return self.view @ self.projection
 
-    def lookat(self, *target_pos):
+    def lookat(self, target_pos):
+        """
+        Orients the camera to look at a specific target position
+        """
 
-        if len(target_pos) == 1:
-            target_pos = np.asarray(target_pos[0], dtype=VEC_DTYPE)
-        else:
-            target_pos = np.asarray(target_pos, dtype=VEC_DTYPE)
+        target_pos = np.asarray(target_pos, dtype=VEC_DTYPE)
 
         # Avoid division by zero if the target is at the camera's position
         if np.allclose(target_pos, self.position):
@@ -147,10 +147,14 @@ class Camera:
 
         # direction from the camera to the target
         direction = target_pos - self.position
-        direction /= np.linalg.norm(direction)
+        direction_norm = np.linalg.norm(direction)
+        if direction_norm < 1e-6:
+            return
+        direction /= direction_norm
 
         # Calculate pitch (up/down look) from the Y component
-        self.pitch = np.rad2deg(np.arcsin(direction[1]), dtype=VEC_DTYPE)
+        # Clamp the argument to asin (avoids domain errors from floating point inaccuracies)
+        self.pitch = np.rad2deg(np.arcsin(np.clip(direction[1], -1.0, 1.0)), dtype=VEC_DTYPE)
 
         # Calculate yaw (left/right look) from the X and Z components
         self.yaw = np.rad2deg(np.arctan2(direction[0], -direction[2]), dtype=VEC_DTYPE)
