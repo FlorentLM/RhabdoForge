@@ -1,7 +1,4 @@
 import os
-
-from graphics.eye_model import EyeModel
-
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
 from pygame.locals import *
@@ -10,50 +7,54 @@ import numpy as np
 from OpenGL.GL import *
 
 from graphics.engine import Engine
-from graphics.scene import Instance
-from graphics.insect_eye import InsectEye
-from graphics.panoramic_eye import PanoramicEye
+from graphics.scene import Instance, Scene, RaytracingScene
+from graphics.eye_model import EyeModel
 from graphics.glm import translation_mat, rotation_mat
 from geometry.primitives import CUBE_VERTICES
 from graphics.skybox import Skybox
-from graphics.utils import WORLD_UP, load_cubemap
+from graphics.utils import load_cubemap, WORLD_UP
+from graphics.insect_eye import InsectEyeRaster, InsectEyeRay
+from graphics.panoramic_eye import PanoramicEye
 
 
 def main():
 
+    USE_RAYTRACER = True
     IS_HEADLESS = False
-    PANORAMIC_DEBUG_MODE = True
-    TILED_MODE = True
     SIMULATION_STEPS = 1000
     TIME_DITHERING = False
+    EYE_RADIUS = 0.5  # eye physical size, only used for RT version
 
+    # Setup
     eng = Engine(width=1280, height=720, headless=IS_HEADLESS)
 
-    crate_mesh = eng.load_mesh(
-        name="crate",
-        vertex_data=CUBE_VERTICES,
-        vert_shader_path='shaders/base.vert',
-        frag_shader_path='shaders/base.frag',
-        texture_path='textures/wood.jpg'
-    )
+    crate_mesh = eng.load_mesh("crate", CUBE_VERTICES, 'shaders/base.vert', 'shaders/base.frag', 'textures/wood.jpg')
 
     eng.skybox = Skybox()
     eng.skybox_texture_id = load_cubemap('textures/bright_day')
 
-    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([ 0.0, 0.0, 0.0])))
+    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([0.0, 0.0, 0.0])))
     eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([-3.0, 0.0, 0.0])))
-    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([ 3.0, 0.0, 0.0])))
+    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([3.0, 0.0, 0.0])))
 
+    # Create the eye model
     print("Initializing insect eye model...")
+    eye_geom = EyeModel.generate_uniform_eye(num_ommatidia=1962, eye_radius=EYE_RADIUS)
 
-    eye_geom = EyeModel.generate_uniform_eye(num_ommatidia=162)
+    if USE_RAYTRACER:
+        print("Mode: Ray-Tracer")
+        rt_scene = RaytracingScene(eng.scene)
+        insect_eye = InsectEyeRay(eye_model=eye_geom, rt_scene=rt_scene, time_dithering=TIME_DITHERING)
+    else:
+        print("Mode: Rasterizer")
+        insect_eye = InsectEyeRaster(eye_model=eye_geom, time_dithering=TIME_DITHERING)
+        pano_debug_view = PanoramicEye()  # only needed for raster mode
 
-    insect_eye = InsectEye(eye_model=eye_geom, time_dithering=TIME_DITHERING)
-    pano_debug_view = PanoramicEye()
+    # Simulation loop
+    SHOW_INSECT_EYE_VIEW = False
+    TILED_MODE = True
 
-    # Simulation variables are defined here for non-interactive mode
-
-    # Define rotation as a fixed amount per frame
+    # Simulation variables
     rotation_per_step_deg = 0.5
     current_rotation_deg = 0.0
 
@@ -64,74 +65,60 @@ def main():
     is_running = True
     frame_count = 0
     while is_running:
+        # Event handling
+        for event in pygame.event.get():
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE): is_running = False
+            if event.type == MOUSEWHEEL: eng.camera.fov -= event.y * 1.5
+            if event.type == KEYDOWN and event.key == K_p: SHOW_INSECT_EYE_VIEW = not SHOW_INSECT_EYE_VIEW
+            if event.type == KEYDOWN and event.key == K_t: TILED_MODE = not TILED_MODE
+            if event.type == KEYDOWN and event.key == K_h: insect_eye.samples_per_ommatidium *= 2
+            if event.type == KEYDOWN and event.key == K_g: insect_eye.samples_per_ommatidium //= 2
+        eng.update_movement()
 
-        if not IS_HEADLESS:
-            for event in pygame.event.get():
-                if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
-                    is_running = False
-                if event.type == MOUSEWHEEL:  # Let engine handle this
-                    eng.camera.fov -= event.y * 1.5
-                if event.type == KEYDOWN and event.key == K_p:
-                    PANORAMIC_DEBUG_MODE = not PANORAMIC_DEBUG_MODE
-                    print(f"Toggled panoramic debug mode: {'ON' if PANORAMIC_DEBUG_MODE else 'OFF'}")
-
-                if event.type == KEYDOWN and event.key == K_h:
-                    insect_eye.samples_per_ommatidium = insect_eye.samples_per_ommatidium * 2
-                    print(f"Samples per ommatidium: {insect_eye.samples_per_ommatidium}")
-
-                if event.type == KEYDOWN and event.key == K_g:
-                    insect_eye.samples_per_ommatidium = insect_eye.samples_per_ommatidium / 2
-                    print(f"Samples per ommatidium: {insect_eye.samples_per_ommatidium}")
-
-                if event.type == KEYDOWN and event.key == K_t:
-                    TILED_MODE = not TILED_MODE
-                    print(f"Toggled tiled mode: {'ON' if TILED_MODE else 'OFF'}")
-
-            # Update camera from continuous input (W, A, S, D, mouse)
-            eng.update_movement()
-
-        # Update scene state
+        # Update scene and re-packing for dynamic elements (optional)
         current_rotation_deg = (current_rotation_deg + rotation_per_step_deg) % 360.0
         eng.scene.instances[0].transform = rotation_mat(
             np.deg2rad(current_rotation_deg), WORLD_UP
         )
 
-        # ======================== INSECT EYE RENDER PASSES ===================
+        if USE_RAYTRACER:
+            rt_scene.update(eng.scene.instances)
+            insect_eye.update_scene(rt_scene)     # fast update method
+            # insect_eye.replace_scene(rt_scene)  # Slower update, to use when elements are added / removed from scene
 
-        # PASS 1: Render the 3D scene into the cubemap FBO
-        scene_cubemap_id = eng.render_to_cubemap(eng.scene, eng.camera)
+        # Data Acquisition
+        if USE_RAYTRACER:
+            ommatidia_values = insect_eye.get_ommatidia_data(eng.camera, eng.skybox_texture_id)
+        else:
+            scene_cubemap_id = eng.render_to_cubemap(eng.scene, eng.camera)
+            ommatidia_values = insect_eye.get_ommatidia_data(scene_cubemap_id)
 
-        # PASS 2: Use the generated cubemap to get ommatidia sensory data
-        ommatidia_values = insect_eye.get_ommatidia_data(scene_cubemap_id)
-
+        # Example of CPU-side use of ommatidia data
         if frame_count % 100 == 0:  # Print a sample every 100 frames
             print(f"Step {frame_count}: Ommatidium 0 value: {ommatidia_values[0]}")
-        # Example: np.save(f'data/frame_{frame_count}.npy', ommatidia_values)
+        # np.save(f'data/frame_{frame_count}.npy', ommatidia_values)
 
-        # =====================================================================
-
+        # Drawing
         if not IS_HEADLESS:
             glViewport(0, 0, eng.width, eng.height)
-            glClearColor(0.05, 0.05, 0.05, 1)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-            # Draw either the panoramic debug view or the insect eye visualization
-            if PANORAMIC_DEBUG_MODE:
+            if SHOW_INSECT_EYE_VIEW:
+                insect_eye.draw(tiled_mode=TILED_MODE)
+            elif not USE_RAYTRACER:
                 pano_debug_view.draw(scene_cubemap_id)
             else:
-                insect_eye.draw(tiled_mode=TILED_MODE)
+                eng.render_frame()  # default to normal 3D view
 
-            # Draw FPS overlay and update the display
             eng.clock.tick()
             eng._draw_fps()
             pygame.display.flip()
 
         frame_count += 1
-        if IS_HEADLESS and frame_count >= SIMULATION_STEPS:
-            is_running = False
+        if IS_HEADLESS and frame_count >= SIMULATION_STEPS: is_running = False
 
-    # Need to cleanup when running non-interactive
     print(f"Simulation finished after {frame_count} steps.")
+    insect_eye.free()
     eng.close()
 
 

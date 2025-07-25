@@ -1,0 +1,145 @@
+#version 450 core
+
+#include "commons.glsl"
+
+// one thread per ray
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+struct Triangle {
+    vec3 v0, v1, v2;
+    vec2 uv0, uv1, uv2;
+    uint material_idx;
+    uint pad0, pad1, pad2; // align to vec4
+};
+
+// Input buffers
+layout(std430, binding = 0) readonly buffer OmmatidiaInputBuffer { Ommatidium u_ommatidia_data[]; };
+layout(std430, binding = 1) readonly buffer TriangleBuffer { Triangle u_triangles[]; };
+layout(std430, binding = 2) readonly buffer MaterialBuffer { Material u_materials[]; };
+
+// Output buffer
+layout(std430, binding = 3) writeonly buffer RayResultBuffer { vec4 u_ray_results[]; };
+
+// Uniforms
+uniform int u_num_triangles;
+uniform int u_num_materials;
+uniform int u_samples_per_ommatidium;
+uniform float u_time;
+uniform mat4 u_camera_orientation; // to transform ommatidia directions to world space
+uniform vec3 u_camera_position;    // for ray origin
+
+// skybox and texture array for scene materials
+uniform samplerCube u_skybox;
+uniform sampler2DArray u_scene_textures;
+
+const float PI = 3.14159265359;
+const float SAMPLING_BIAS = 0.5;
+
+// Functions
+
+float rand(vec2 co){
+    return fract(sin(dot(co.xy, vec2(12.9898, 78.233)) + u_time) * 43758.5453);
+}
+
+// Möller–Trumbore ray-triangle intersection algorithm
+HitInfo intersect_triangle(Ray r, Triangle tri) {
+    HitInfo hit;
+    hit.found = false;
+    vec3 edge1 = tri.v1 - tri.v0;
+    vec3 edge2 = tri.v2 - tri.v0;
+    vec3 h = cross(r.direction, edge2);
+    float a = dot(edge1, h);
+
+    if (a > -1e-6 && a < 1e-6) return hit; // ray is parallel to the triangle
+
+    float f = 1.0 / a;
+    vec3 s = r.origin - tri.v0;
+    float u = f * dot(s, h);
+
+    if (u < 0.0 || u > 1.0) return hit;
+
+    vec3 q = cross(s, edge1);
+    float v = f * dot(r.direction, q);
+
+    if (v < 0.0 || u + v > 1.0) return hit;
+
+    float t = f * dot(edge2, q);
+    if (t > 1e-6) { // ray intersection
+        hit.found = true;
+        hit.t = t;
+        hit.barycentric_coords = vec3(1.0 - u - v, u, v);
+    }
+    return hit;
+}
+
+void main() {
+    uint global_id = gl_GlobalInvocationID.x;
+
+    // Deconstruct the global ID to find which ommatidium and sample this thread is for
+    uint ommatidium_idx = global_id / u_samples_per_ommatidium;
+    uint sample_idx = global_id % u_samples_per_ommatidium;
+
+    // Generate the ray
+    Ommatidium om = u_ommatidia_data[ommatidium_idx];
+
+    // Transform ommatidium direction to world space
+    vec3 om_world_dir = (u_camera_orientation * vec4(om.direction, 0.0)).xyz;
+
+    // Transform the local origin offset by the camera's orientation and add to its position
+    vec3 om_world_origin = u_camera_position + (u_camera_orientation * vec4(om.origin, 0.0)).xyz;
+
+    // Create local coordinate system for sampling
+    vec3 up = abs(om_world_dir.y) > 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    vec3 tangent = normalize(cross(up, om_world_dir));
+    vec3 bitangent = cross(om_world_dir, tangent);
+
+    // Monte Carlo sampling within cone
+    float r1 = rand(vec2(global_id, u_time));
+    float r2 = rand(vec2(global_id, u_time + 0.5));
+    float r1_warped = pow(r1, SAMPLING_BIAS);
+    float cos_theta = mix(cos(om.acceptance_angle), 1.0, r1_warped);
+    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+    float phi = 2.0 * PI * r2;
+    vec3 sample_local = vec3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
+
+    Ray r;
+    r.origin = om_world_origin;
+    r.direction = normalize(mat3(tangent, bitangent, om_world_dir) * sample_local);
+
+    // Trace the ray
+    HitInfo closest_hit;
+    closest_hit.found = false;
+    closest_hit.t = 1.0/0.0; // inf
+
+    for (uint i = 0; i < u_num_triangles; ++i) {
+        HitInfo current_hit = intersect_triangle(r, u_triangles[i]);
+        if (current_hit.found && current_hit.t < closest_hit.t) {
+            closest_hit = current_hit;
+            closest_hit.triangle_idx = i;
+        }
+    }
+
+    // Shade the result
+    vec3 final_color;
+    if (closest_hit.found) {
+        // hit something, shade it
+        Triangle hit_tri = u_triangles[closest_hit.triangle_idx];
+        Material hit_mat = u_materials[hit_tri.material_idx];
+
+        // interpolate UV coordinates
+        vec2 hit_uv = hit_tri.uv0 * closest_hit.barycentric_coords.x +
+                      hit_tri.uv1 * closest_hit.barycentric_coords.y +
+                      hit_tri.uv2 * closest_hit.barycentric_coords.z;
+
+        // Get colour from the material struct
+        uint texture_layer = hit_mat.texture_idx;
+        final_color = texture(u_scene_textures, vec3(hit_uv, texture_layer)).rgb;
+
+    } else {
+        // hit nothing, sample the skybox
+        final_color = texture(u_skybox, r.direction).rgb;
+    }
+
+    // write result for current ray
+    u_ray_results[global_id] = vec4(final_color, 1.0);
+}

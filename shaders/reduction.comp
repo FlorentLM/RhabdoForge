@@ -1,0 +1,33 @@
+#version 450 core
+
+// one thread per ommatidium
+layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// Input buffer
+layout(std430, binding = 3) readonly buffer RayResultBuffer { vec4 u_ray_results[]; };
+
+// Output buffer
+layout(std430, binding = 4) writeonly buffer FinalColorBuffer { vec4 u_final_colors[]; };
+
+uniform int u_samples_per_ommatidium;
+uniform int u_num_ommatidia;
+
+void main() {
+    uint ommatidium_idx = gl_GlobalInvocationID.x;
+    if (ommatidium_idx >= u_num_ommatidia) {
+        return;
+    }
+
+    vec3 total_color = vec3(0.0);
+    uint start_idx = ommatidium_idx * u_samples_per_ommatidium;
+
+    for (int i = 0; i < u_samples_per_ommatidium; ++i) {
+        total_color += u_ray_results[start_idx + i].rgb;
+    }
+
+    if (u_samples_per_ommatidium > 0) {
+        total_color /= float(u_samples_per_ommatidium);
+    }
+
+    u_final_colors[ommatidium_idx] = vec4(total_color, 1.0);
+}
