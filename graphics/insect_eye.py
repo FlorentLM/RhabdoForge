@@ -31,6 +31,7 @@ class InsectEyeBase(ABC):
         self._voronoi_program = None
         self._voronoi_vao = None
         self._cone_vertex_count = 0
+        self.visualization_scale = 1.0 / (2.0 * np.pi)
 
         # Visualization SSBOs
         # Input ommatidia geometry (directions, angles, etc)
@@ -123,6 +124,7 @@ class InsectEyeBase(ABC):
         glEnable(GL_DEPTH_TEST)
 
         glUniform1i(glGetUniformLocation(self.voronoi_program, "u_tiled_mode"), tiled_mode)
+        glUniform1f(glGetUniformLocation(self.voronoi_program, "u_visual_scale"), self.visualization_scale)
 
         # Binding 0: Ommatidia geometry (directions, origins, etc)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)

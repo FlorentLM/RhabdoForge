@@ -16,11 +16,13 @@ layout(std430, binding = 1) readonly buffer ColorDataBlock {
 // Whether to fill the screen or represent the actual acceptance angles
 uniform bool u_tiled_mode;
 
+// Visualisation scale of the ommatidia
+uniform float u_visual_scale;
+
 // To fragment shader
 out vec3 v_color;
 
 const float PI = 3.14159265359;
-const float VISUAL_SCALE_MULTIPLIER = 0.167;
 
 void main() {
     // Get the data for the specific instance (ommatidium) we are drawing
@@ -47,7 +49,7 @@ void main() {
         scaled_cone_pos.xy *= 5.0;
     } else {
         // For visualizing receptive fields, scale by acceptance angle
-        scaled_cone_pos.xy *= acceptance_angle * VISUAL_SCALE_MULTIPLIER;
+        scaled_cone_pos.xy *= acceptance_angle * u_visual_scale;
     }
 
     // Final position is the scaled cone's vertex position, translated to the ommatidium's unique screen position
