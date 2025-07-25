@@ -10,7 +10,7 @@ from OpenGL.GL import *
 from graphics.scene import Scene, Instance, Mesh
 from graphics.camera import Camera
 from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_DOWN, WORLD_RIGHT, WORLD_FORWARD
-from graphics.fbo import CubemapFBO
+from graphics.raster_mode import CubemapFBO
 from graphics.glm import lookat_mat
 
 

@@ -14,7 +14,7 @@ from geometry.primitives import CUBE_VERTICES
 from graphics.skybox import Skybox
 from graphics.utils import load_cubemap, WORLD_UP
 from graphics.insect_eye import InsectEyeRaster, InsectEyeRay
-from graphics.panoramic_eye import PanoramicEye
+from graphics.raster_mode import PanoramicEye
 
 
 def main():
