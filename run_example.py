@@ -39,7 +39,7 @@ def main():
 
     # Create the eye model
     print("Initializing insect eye model...")
-    eye_geom = EyeModel.generate_uniform_eye(num_ommatidia=4062, eye_radius=EYE_RADIUS)
+    eye_geom = EyeModel.generate_uniform_eye(num_ommatidia=1962, eye_radius=EYE_RADIUS)
 
     if USE_RAYTRACER:
         print("Mode: Ray-Tracer")

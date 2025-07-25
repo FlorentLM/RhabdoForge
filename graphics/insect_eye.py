@@ -33,19 +33,31 @@ class InsectEyeBase(ABC):
         self._cone_vertex_count = 0
         self.visualization_scale = 1.0 / (2.0 * np.pi)
 
-        # Visualization SSBOs
-        # Input ommatidia geometry (directions, angles, etc)
+        # SSBO for input ommatidia geometry (directions, angles, etc)
         self.input_om_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.input_om_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, self.ommatidia_input_data.nbytes, self.ommatidia_input_data, GL_STATIC_DRAW)
 
+        # Size of the output buffers in bytes (num_ommatidia * 4 floats * 4 bytes/float)
+        buffer_size = self.num_ommatidia * 16
+
         # Final computed colors (written by subclass, read by draw())
         self.final_colors_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.final_colors_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, self.num_ommatidia * 16, None, GL_DYNAMIC_DRAW)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, buffer_size, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
-        # Buffer for reading data back to CPU
+        # Two PBOs for ping-ponging and doing async reading from the CPU-side
+        self.pbo_ids = glGenBuffers(2)
+        self.pbo_index = 0
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, self.pbo_ids[0])
+        glBufferData(GL_PIXEL_PACK_BUFFER, buffer_size, None, GL_STREAM_READ)
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, self.pbo_ids[1])
+        glBufferData(GL_PIXEL_PACK_BUFFER, buffer_size, None, GL_STREAM_READ)
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+
+        # CPU-side buffer to return the final data
         self.cpu_read_buffer = np.zeros((self.num_ommatidia, 4), dtype=np.float32)
 
     @property
@@ -68,22 +80,38 @@ class InsectEyeBase(ABC):
         # Subclass runs its specific compute pass
         self._compute_colors(*args, **kwargs)
 
-        # Read the data from the GPU SSBO to the CPU buffer
+        # Determine which PBO to read from (current) and which to write to (next)
+        current_pbo_idx = self.pbo_index
+        next_pbo_idx = (self.pbo_index + 1) % 2
 
-        # Bind the buffer we want to read from
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.final_colors_ssbo)
+        # This is a GPU-to-GPU copy, so it is asynchronous (the command returns immediately).
+        # it initiates the copy from the SSBO to the *next* PBO
+        glBindBuffer(GL_COPY_READ_BUFFER, self.final_colors_ssbo)
+        glBindBuffer(GL_COPY_WRITE_BUFFER, self.pbo_ids[next_pbo_idx])
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, self.cpu_read_buffer.nbytes)
 
-        # Map the GPU memory into a CPU-accessible pointer
-        ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, self.cpu_read_buffer.nbytes, GL_MAP_READ_BIT)
+        # Process data from the *current* PBO (it was filled in the previous frame)
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, self.pbo_ids[current_pbo_idx])
 
-        # Copy the data from the mapped memory location to the numpy array's memory location
-        ctypes.memmove(self.cpu_read_buffer.ctypes.data, ptr, self.cpu_read_buffer.nbytes)
+        # Map the buffer ('GL_MAP_READ_BIT' is very important!)
+        ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, self.cpu_read_buffer.nbytes, GL_MAP_READ_BIT)
 
-        # Unmap the buffer which invalidates the pointer and returns memory control to the GPU
-        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER)
+        if ptr:
+            # Copy the data from the mapped GPU memory to our CPU-side numpy array.
+            ctypes.memmove(self.cpu_read_buffer.ctypes.data, ptr, self.cpu_read_buffer.nbytes)
+            # IMPORTANT: Unmap the buffer to return control to the GPU
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
+        else:
+            # Handle error if mapping fails
+            print("Warning: Failed to map PBO for reading.")
 
-        # Unbind the buffer
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        # Unbind all buffers used in the copy and map operations
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+        glBindBuffer(GL_COPY_READ_BUFFER, 0)
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
+
+        # Swap PBO index for the next frame
+        self.pbo_index = next_pbo_idx
 
         # And update the counter for time dithering
         if self._time_dithering:
@@ -143,7 +171,7 @@ class InsectEyeBase(ABC):
 
     def free(self):
         """ Free GPU resources """
-        glDeleteBuffers(2, [self.input_om_ssbo, self.final_colors_ssbo])
+        glDeleteBuffers(4, [self.input_om_ssbo, self.final_colors_ssbo, self.pbo_ids[0], self.pbo_ids[1]])
         if self._voronoi_program:
             glDeleteProgram(self._voronoi_program)
         if self._voronoi_vao:
