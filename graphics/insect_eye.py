@@ -6,7 +6,7 @@ from OpenGL.GL import *
 
 from geometry.primitives import CONE_VERTICES
 from graphics.eye_model import EyeModel
-from graphics.scene import RaytracingScene
+from graphics.scene import RaytracingScene, Scene
 from graphics.utils import load_shaders, load_compute_shader, VEC_DTYPE
 
 
@@ -203,9 +203,11 @@ class InsectEyeRaster(InsectEyeBase):
 
 
 class InsectEyeRay(InsectEyeBase):
-    def __init__(self, eye_model, rt_scene: RaytracingScene, time_dithering=True):
+    def __init__(self, eye_model, scene: Scene, time_dithering=True):
         super().__init__(eye_model, time_dithering)
-        self.rt_scene = rt_scene
+
+        # Pack the scene for ray-tracing
+        self.rt_scene = RaytracingScene(scene)
 
         print("Compiling ray-tracing and reduction shaders...")
         self.raytrace_program = load_compute_shader('shaders/ommatidia_raytracing.comp')
@@ -270,25 +272,28 @@ class InsectEyeRay(InsectEyeBase):
         print(f"Created texture array with {layer_count} layers ({tex_w}x{tex_h}).")
         return tex_array_id
 
-    def update_scene(self, rt_scene: RaytracingScene):
+    def update_geometry(self, instances: list):
         """
-        Updates the triangle buffer for dynamic scenes: called every frame objects are moving
+        Updates the ray-tracing scene by re-transforming vertex positions and uploading the new data to the GPU
+        (This is the fast path for dynamic objects)
         """
 
-        self.rt_scene = rt_scene
+        # Update the CPU-side buffer in the RaytracingScene object
+        self.rt_scene.update(instances)
 
+        # Upload the updated buffer to the GPU
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.triangles_ssbo)
-        # Does not reallocate the existing buffer, unly update its content
+        # glBufferSubData does not reallocate, only updates the content
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.rt_scene.triangles.nbytes, self.rt_scene.triangles)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
-    def replace_scene(self, rt_scene: RaytracingScene):
+    def replace_scene(self, scene: Scene):
         """
         Rebuilds the entire scene representation on the GPU (deletes old buffers and allocates new ones).
         Called when objects are added/removed from the scene
         """
 
-        self.rt_scene = rt_scene
+        self.rt_scene = RaytracingScene(scene)
 
         # Re-allocate triangle buffer
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.triangles_ssbo)

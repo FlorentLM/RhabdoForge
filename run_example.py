@@ -7,7 +7,7 @@ import numpy as np
 from OpenGL.GL import *
 
 from graphics.engine import Engine
-from graphics.scene import Instance, RaytracingScene
+from graphics.scene import Instance
 from graphics.eye_model import EyeModel
 from graphics.glm import translation_mat, rotation_mat
 from geometry.primitives import CUBE_VERTICES
@@ -43,8 +43,7 @@ def main():
 
     if USE_RAYTRACER:
         print("Mode: Ray-Tracer")
-        rt_scene = RaytracingScene(eng.scene)
-        insect_eye = InsectEyeRay(eye_model=eye_geom, rt_scene=rt_scene, time_dithering=TIME_DITHERING)
+        insect_eye = InsectEyeRay(eye_model=eye_geom, scene=eng.scene, time_dithering=TIME_DITHERING)
     else:
         print("Mode: Rasterizer")
         insect_eye = InsectEyeRaster(eye_model=eye_geom, time_dithering=TIME_DITHERING)
@@ -82,9 +81,8 @@ def main():
         )
 
         if USE_RAYTRACER:
-            rt_scene.update(eng.scene.instances)
-            insect_eye.update_scene(rt_scene)     # fast update method
-            # insect_eye.replace_scene(rt_scene)  # Slower update, to use when elements are added / removed from scene
+            insect_eye.update_geometry(eng.scene.instances)     # fast update method
+            # insect_eye.replace_scene(eng.scene)  # Slower update, to use when elements are added / removed from scene
 
         # Data Acquisition
         if USE_RAYTRACER:
