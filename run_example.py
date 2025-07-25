@@ -7,7 +7,7 @@ import numpy as np
 from OpenGL.GL import *
 
 from graphics.engine import Engine
-from graphics.scene import Instance, Scene, RaytracingScene
+from graphics.scene import Instance, RaytracingScene
 from graphics.eye_model import EyeModel
 from graphics.glm import translation_mat, rotation_mat
 from geometry.primitives import CUBE_VERTICES
