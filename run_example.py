@@ -19,7 +19,7 @@ from graphics.raster_mode import PanoramicEye
 
 def main():
 
-    USE_RAYTRACER = False
+    USE_RAYTRACER = True
     IS_HEADLESS = False
     SIMULATION_STEPS = 1000
     TIME_DITHERING = False
@@ -39,7 +39,7 @@ def main():
 
     # Create the eye model
     print("Initializing insect eye model...")
-    eye_geom = EyeModel.generate_uniform_eye(num_ommatidia=1962, eye_radius=EYE_RADIUS)
+    eye_geom = EyeModel.generate_uniform_eye(num_ommatidia=4062, eye_radius=EYE_RADIUS)
 
     if USE_RAYTRACER:
         print("Mode: Ray-Tracer")
@@ -75,10 +75,10 @@ def main():
         eng.update_movement()
 
         # Update scene and re-packing for dynamic elements (optional)
-        current_rotation_deg = (current_rotation_deg + rotation_per_step_deg) % 360.0
-        eng.scene.instances[0].transform = rotation_mat(
-            np.deg2rad(current_rotation_deg), WORLD_UP
-        )
+        # current_rotation_deg = (current_rotation_deg + rotation_per_step_deg) % 360.0
+        # eng.scene.instances[0].transform = rotation_mat(
+        #     np.deg2rad(current_rotation_deg), WORLD_UP
+        # )
 
         if USE_RAYTRACER:
             insect_eye.update_geometry(eng.scene.instances)     # fast update method

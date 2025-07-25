@@ -57,7 +57,7 @@ class Engine:
         self.is_running_interactive = False
 
         self.cam_move_step = 0.01  # units per frame
-        self.mouse_sensitivity = 0.1
+        self.mouse_sensitivity = 0.25
 
     def load_mesh(self, name, *args, **kwargs) -> Mesh:
         """ Loads a mesh and caches it to avoid redundant loads """
