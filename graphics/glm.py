@@ -3,7 +3,7 @@ import numba
 from graphics.utils import VEC_DTYPE, WORLD_RIGHT, WORLD_UP
 
 
-# @numba.jit(nopython=True, cache=True)
+@numba.jit(nopython=True, cache=True)
 def perspective_mat(fov_rad, aspect_ratio, near_plane, far_plane):
 
     f = 1.0 / np.tan(fov_rad / 2.0)
@@ -17,7 +17,7 @@ def perspective_mat(fov_rad, aspect_ratio, near_plane, far_plane):
     ], dtype=VEC_DTYPE)
 
 
-# @numba.jit(nopython=True, cache=True)
+@numba.jit(nopython=True, cache=True)
 def lookat_mat(eye_pos, target_pos, up_vector):
     eye = np.asarray(eye_pos, dtype=VEC_DTYPE)
     target = np.asarray(target_pos, dtype=VEC_DTYPE)
@@ -56,7 +56,7 @@ def lookat_mat(eye_pos, target_pos, up_vector):
     return rotation_inverse @ translation_inverse
 
 
-# @numba.jit(nopython=True, cache=True)
+@numba.jit(nopython=True, cache=True)
 def translation_mat(vector):
     mat = np.eye(4, dtype=VEC_DTYPE)
     # Translation is in the last column's first 3 rows
@@ -64,7 +64,7 @@ def translation_mat(vector):
     return mat
 
 
-# @numba.jit(nopython=True, cache=True)
+@numba.jit(nopython=True, cache=True)
 def scaling_mat(vector):
     return np.array([
         [ vector[0],       0.0,       0.0,      0.0],
@@ -74,7 +74,7 @@ def scaling_mat(vector):
     ], dtype=VEC_DTYPE)
 
 
-# @numba.jit(nopython=True, cache=True)
+@numba.jit(nopython=True, cache=True)
 def rotation_mat(angle_rad, axis_vector):
     axis_norm = np.linalg.norm(axis_vector)
 
@@ -95,16 +95,16 @@ def rotation_mat(angle_rad, axis_vector):
     ], dtype=VEC_DTYPE)
 
 
-# @numba.jit(nopython=True, cache=True)
+@numba.jit(nopython=True, cache=True)
 def translate(matrix, vector):
     return matrix @ translation_mat(vector)
 
 
-# @numba.jit(nopython=True, cache=True)
+@numba.jit(nopython=True, cache=True)
 def scale(matrix, vector):
     return matrix @ scaling_mat(vector)
 
 
-# @numba.jit(nopython=True, cache=True)
+@numba.jit(nopython=True, cache=True)
 def rotate(matrix, angle_rad, axis_vector):
     return matrix @ rotation_mat(angle_rad, axis_vector)
