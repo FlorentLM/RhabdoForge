@@ -3,7 +3,7 @@ from typing import Optional, List
 import numpy as np
 from dataclasses import dataclass, field
 from scipy.spatial import KDTree
-from graphics.utils import DTYPE
+from graphics.utils import VEC_DTYPE
 
 
 @dataclass
@@ -16,7 +16,7 @@ class Ommatidium:
     elevation_rad: float    # Vertical angle (latitude)
 
     direction: np.ndarray = field(repr=False)  # 3D pointing vector
-    origin: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=DTYPE), repr=False)  # 3D origin point
+    origin: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=VEC_DTYPE), repr=False)  # 3D origin point
 
     acceptance_angle_rad: float = 0.0
 
@@ -37,8 +37,8 @@ class Ommatidium:
     def __post_init__(self):
 
         # Ensure origin and direction is are np arrays
-        self.direction = np.asarray(self.direction, dtype=DTYPE)
-        self.origin = np.asarray(self.origin, dtype=DTYPE)
+        self.direction = np.asarray(self.direction, dtype=VEC_DTYPE)
+        self.origin = np.asarray(self.origin, dtype=VEC_DTYPE)
 
         # normalise direction
         norm = np.linalg.norm(self.direction)
@@ -55,7 +55,7 @@ class EyeModel:
         self.num_ommatidia: int = len(self.ommatidia)
 
         # Build the KD-Tree for fast spatial queries
-        self.directions = np.array([om.direction for om in self.ommatidia], dtype=DTYPE)
+        self.directions = np.array([om.direction for om in self.ommatidia], dtype=VEC_DTYPE)
         self.kdtree = KDTree(self.directions)
 
     @classmethod
@@ -75,7 +75,7 @@ class EyeModel:
         om_lats = np.arcsin(om_dirs[:, 1])
         om_origins = om_dirs * eye_radius
 
-        acceptance_angle_rad = np.deg2rad(acceptance_angle_deg or 0.0, dtype=DTYPE)
+        acceptance_angle_rad = np.deg2rad(acceptance_angle_deg or 0.0, dtype=VEC_DTYPE)
         # TODO: this will break if acceptance_angle_deg is a numpy array
 
         ommatidia_list = [
@@ -108,7 +108,7 @@ class EyeModel:
             raise FileNotFoundError(f"Cannot find eye data file: {file_path}")
 
         if file_path.suffix == '.npy':
-            data = np.load(file_path).astype(DTYPE)
+            data = np.load(file_path).astype(VEC_DTYPE)
             num_ommatidia = data.shape[0]
             num_cols = data.shape[1]
 
@@ -199,7 +199,7 @@ class EyeModel:
         num_om = self.num_ommatidia
 
         # empty array with 8 columns (3 origin + 1 pad + 3 dir + 1 angle)
-        packed_data = np.zeros((num_om, 8), dtype=DTYPE)
+        packed_data = np.zeros((num_om, 8), dtype=VEC_DTYPE)
 
         # Fill with data
         packed_data[:, 0:3] = np.array([om.origin for om in self.ommatidia])
@@ -308,4 +308,4 @@ def subdivide_icosahedron(n: int) -> np.ndarray:
     all_new_verts /= np.linalg.norm(all_new_verts, axis=1)[:, np.newaxis]
     _, iunique = np.unique(np.round(all_new_verts, 6), axis=0, return_index=True)
 
-    return all_new_verts[iunique].astype(DTYPE)
+    return all_new_verts[iunique].astype(VEC_DTYPE)

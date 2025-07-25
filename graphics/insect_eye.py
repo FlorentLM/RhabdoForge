@@ -5,7 +5,7 @@ from OpenGL.GL import *
 
 from geometry.primitives import CONE_VERTICES
 from graphics.eye_model import EyeModel
-from graphics.utils import load_shaders, load_compute_shader, DTYPE
+from graphics.utils import load_shaders, load_compute_shader, VEC_DTYPE
 
 
 class InsectEye:
@@ -35,7 +35,7 @@ class InsectEye:
         self.ommatidia_program = load_compute_shader('shaders/ommatidia.comp')
 
         # Buffer for reading the ommatidia data back to CPU
-        self.cpu_ommatidia_buf = np.zeros((self.num_ommatidia, 4), dtype=DTYPE)
+        self.cpu_ommatidia_buf = np.zeros((self.num_ommatidia, 4), dtype=VEC_DTYPE)
 
         # Input SSBO for sending ommatidia data to the compute shader
         self.input_ssbo = glGenBuffers(1)

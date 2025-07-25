@@ -9,7 +9,7 @@ from OpenGL.GL import *
 
 from graphics.scene import Scene, Instance, Mesh
 from graphics.camera import Camera
-from graphics.utils import DTYPE, WORLD_UP, WORLD_DOWN, WORLD_RIGHT, WORLD_FORWARD
+from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_DOWN, WORLD_RIGHT, WORLD_FORWARD
 from graphics.fbo import CubemapFBO
 from graphics.glm import lookat_mat
 
@@ -232,7 +232,7 @@ class Engine:
 
         # Handle continuous key presses
         keys = pygame.key.get_pressed()
-        cam_displacement = np.zeros(3, dtype=DTYPE)
+        cam_displacement = np.zeros(3, dtype=VEC_DTYPE)
 
         if keys[K_w]: cam_displacement += self.camera.forward
         if keys[K_s]: cam_displacement += self.camera.backward
@@ -251,7 +251,7 @@ class Engine:
         mouse_x, mouse_y = pygame.mouse.get_rel()
         if mouse_x != 0 or mouse_y != 0:
             self.camera.yaw += mouse_x * self.mouse_sensitivity
-            self.camera.pitch = np.clip(self.camera.pitch + mouse_y * self.mouse_sensitivity, -89.0, 89.0, dtype=DTYPE)
+            self.camera.pitch = np.clip(self.camera.pitch + mouse_y * self.mouse_sensitivity, -89.0, 89.0, dtype=VEC_DTYPE)
 
     def _draw_fps(self):
 

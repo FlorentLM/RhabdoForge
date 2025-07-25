@@ -2,45 +2,68 @@ from pathlib import Path
 from PIL import Image
 import numpy as np
 from OpenGL.GL import *
+import re
 
 
 # Precision
-DTYPE = np.float32
+VEC_DTYPE = np.float32
 
 # World unit vectors
-WORLD_RIGHT = WORLD_X = np.array([1.0, 0.0, 0.0], dtype=DTYPE)
-WORLD_UP = WORLD_Y = np.array([0.0, 1.0, 0.0], dtype=DTYPE)
-WORLD_FORWARD = WORLD_Z = np.array([0.0, 0.0, -1.0], dtype=DTYPE)
+WORLD_RIGHT = WORLD_X = np.array([1.0, 0.0, 0.0], dtype=VEC_DTYPE)
+WORLD_UP = WORLD_Y = np.array([0.0, 1.0, 0.0], dtype=VEC_DTYPE)
+WORLD_FORWARD = WORLD_Z = np.array([0.0, 0.0, -1.0], dtype=VEC_DTYPE)
 
 WORLD_LEFT = - WORLD_RIGHT
 WORLD_DOWN = - WORLD_UP
 WORLD_BACKWARD = - WORLD_FORWARD
 
+
 # Loader functions
+
+def compile_single_shader(path, shader_type):
+    """ Compiles a single shader from a file path """
+
+    path = Path(path)
+
+    # Regex to find #include "some/path.glsl"
+    include_pattern = re.compile(r'#include\s+"(.*?)"')
+
+    # Start with the code from the main shader file
+    code = path.read_text()
+
+    # Find all '#include' directives
+    for match in include_pattern.finditer(code):
+        include_path_str = match.group(1)
+        # The path in the '#include' is relative to the current shader file
+        include_path = path.parent / include_path_str
+
+        if include_path.exists():
+            include_content = include_path.read_text()
+            # replace the '#include' directive with the content of the included file
+            code = code.replace(match.group(0), include_content)
+        else:
+            raise FileNotFoundError(f"Cannot find include file: {include_path}")
+
+    shader = glCreateShader(shader_type)
+    glShaderSource(shader, code)
+    glCompileShader(shader)
+
+    if not glGetShaderiv(shader, GL_COMPILE_STATUS):
+        error = glGetShaderInfoLog(shader).decode()
+        glDeleteShader(shader)  # Don't leak the shader
+        raise RuntimeError(f"Shader compilation error in {path}:\n{error}")
+    return shader
+
 
 def load_shaders(path_vert, path_frag, path_geom=None):
 
-    def _compile_single_shader(path, shader_type):
-        """ Compiles a single shader from a file path """
-
-        code = Path(path).read_text()
-        shader = glCreateShader(shader_type)
-        glShaderSource(shader, code)
-        glCompileShader(shader)
-
-        if not glGetShaderiv(shader, GL_COMPILE_STATUS):
-            error = glGetShaderInfoLog(shader).decode()
-            glDeleteShader(shader)  # Don't leak the shader
-            raise RuntimeError(f"Shader compilation error in {path}:\n{error}")
-        return shader
-
     # Compile all shaders
-    vertex_shader = _compile_single_shader(path_vert, GL_VERTEX_SHADER)
-    fragment_shader = _compile_single_shader(path_frag, GL_FRAGMENT_SHADER)
+    vertex_shader = compile_single_shader(path_vert, GL_VERTEX_SHADER)
+    fragment_shader = compile_single_shader(path_frag, GL_FRAGMENT_SHADER)
 
     shaders_to_link = [vertex_shader, fragment_shader]
     if path_geom:
-        geometry_shader = _compile_single_shader(path_geom, GL_GEOMETRY_SHADER)
+        geometry_shader = compile_single_shader(path_geom, GL_GEOMETRY_SHADER)
         shaders_to_link.append(geometry_shader)
 
     # Create and link the program
@@ -71,16 +94,7 @@ def load_shaders(path_vert, path_frag, path_geom=None):
 def load_compute_shader(path_comp):
     """ Loads, compiles, and links a single compute shader into a program """
 
-    code = Path(path_comp).read_text()
-
-    shader = glCreateShader(GL_COMPUTE_SHADER)
-    glShaderSource(shader, code)
-    glCompileShader(shader)
-
-    if not glGetShaderiv(shader, GL_COMPILE_STATUS):
-        error = glGetShaderInfoLog(shader).decode()
-        glDeleteShader(shader)
-        raise RuntimeError(f"Compute shader compilation error in {path_comp}:\n{error}")
+    shader = compile_single_shader(path_comp, GL_COMPUTE_SHADER)
 
     program = glCreateProgram()
     glAttachShader(program, shader)

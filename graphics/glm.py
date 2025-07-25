@@ -1,6 +1,6 @@
 import numpy as np
 import numba
-from graphics.utils import DTYPE, WORLD_RIGHT, WORLD_UP
+from graphics.utils import VEC_DTYPE, WORLD_RIGHT, WORLD_UP
 
 
 # @numba.jit(nopython=True, cache=True)
@@ -14,20 +14,20 @@ def perspective_mat(fov_rad, aspect_ratio, near_plane, far_plane):
         [0.0, 0.0, (far_plane + near_plane) / (near_plane - far_plane),
          (2.0 * far_plane * near_plane) / (near_plane - far_plane)],
         [0.0, 0.0, -1.0, 0.0]
-    ], dtype=DTYPE)
+    ], dtype=VEC_DTYPE)
 
 
 # @numba.jit(nopython=True, cache=True)
 def lookat_mat(eye_pos, target_pos, up_vector):
-    eye = np.asarray(eye_pos, dtype=DTYPE)
-    target = np.asarray(target_pos, dtype=DTYPE)
-    up = np.asarray(up_vector, dtype=DTYPE)
+    eye = np.asarray(eye_pos, dtype=VEC_DTYPE)
+    target = np.asarray(target_pos, dtype=VEC_DTYPE)
+    up = np.asarray(up_vector, dtype=VEC_DTYPE)
 
     # Calculate camera's local coordinate system basis vectors
     forward = target - eye
     forward_norm = np.linalg.norm(forward)
     if forward_norm < 1e-6:
-        return np.eye(4, dtype=DTYPE)
+        return np.eye(4, dtype=VEC_DTYPE)
     forward /= forward_norm
 
     right = np.cross(forward, up)
@@ -48,7 +48,7 @@ def lookat_mat(eye_pos, target_pos, up_vector):
         [up[0],       up[1],       up[2],      0.0],
         [-forward[0], -forward[1], -forward[2], 0.0],
         [0.0,         0.0,         0.0,        1.0]
-    ], dtype=DTYPE)
+    ], dtype=VEC_DTYPE)
 
     translation_inverse = translation_mat(-eye)
 
@@ -58,7 +58,7 @@ def lookat_mat(eye_pos, target_pos, up_vector):
 
 # @numba.jit(nopython=True, cache=True)
 def translation_mat(vector):
-    mat = np.eye(4, dtype=DTYPE)
+    mat = np.eye(4, dtype=VEC_DTYPE)
     # Translation is in the last column's first 3 rows
     mat[:3, 3] = vector[:3]
     return mat
@@ -71,7 +71,7 @@ def scaling_mat(vector):
         [       0.0, vector[1],       0.0,      0.0],
         [       0.0,       0.0, vector[2],      0.0],
         [       0.0,       0.0,       0.0,      1.0]
-    ], dtype=DTYPE)
+    ], dtype=VEC_DTYPE)
 
 
 # @numba.jit(nopython=True, cache=True)
@@ -79,7 +79,7 @@ def rotation_mat(angle_rad, axis_vector):
     axis_norm = np.linalg.norm(axis_vector)
 
     if axis_norm < 1e-6:
-        return np.eye(4, dtype=DTYPE)
+        return np.eye(4, dtype=VEC_DTYPE)
     axis = axis_vector / axis_norm
 
     x, y, z = axis
@@ -92,7 +92,7 @@ def rotation_mat(angle_rad, axis_vector):
         [x * y * nc - z * s, y * y * nc + c,     z * y * nc + x * s, 0.0],
         [x * z * nc + y * s, y * z * nc - x * s, z * z * nc + c,     0.0],
         [0.0,                  0.0,                  0.0,            1.0]
-    ], dtype=DTYPE)
+    ], dtype=VEC_DTYPE)
 
 
 # @numba.jit(nopython=True, cache=True)

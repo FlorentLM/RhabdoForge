@@ -1,5 +1,5 @@
 import numpy as np
-from graphics.utils import DTYPE
+from graphics.utils import VEC_DTYPE
 
 
 CUBE_VERTICES = np.array((
@@ -47,7 +47,7 @@ CUBE_VERTICES = np.array((
      1.0, -1.0,  1.0,    1.0, 1.0,
      1.0,  1.0, -1.0,    0.0, 0.0,
      1.0,  1.0,  1.0,    0.0, 1.0
-), dtype=DTYPE)
+), dtype=VEC_DTYPE)
 
 
 def create_cone_data(radius=1.0, height=1.0, segments=16):
@@ -58,7 +58,7 @@ def create_cone_data(radius=1.0, height=1.0, segments=16):
     """
 
     # Smaller Z value for apex = 'closer'
-    apex = np.array([0.0, 0.0, -height], dtype=DTYPE)
+    apex = np.array([0.0, 0.0, -height], dtype=VEC_DTYPE)
 
     # Base vertices should have a LARGER Z value
     base_verts = []
@@ -67,7 +67,7 @@ def create_cone_data(radius=1.0, height=1.0, segments=16):
         angle = (i / segments) * 2.0 * np.pi
         x = np.cos(angle) * radius
         y = np.sin(angle) * radius
-        base_verts.append(np.array([x, y, base_z], dtype=DTYPE))
+        base_verts.append(np.array([x, y, base_z], dtype=VEC_DTYPE))
 
     # Assemble triangles for drawing with glDrawArrays
     # Each triangle is (apex, base_vertex_i, base_vertex_i+1)
@@ -77,7 +77,7 @@ def create_cone_data(radius=1.0, height=1.0, segments=16):
         triangle_strip.append(base_verts[i])
         triangle_strip.append(base_verts[(i + 1) % segments])  # modulo to close the loop
 
-    return np.array(triangle_strip, dtype=DTYPE).flatten()
+    return np.array(triangle_strip, dtype=VEC_DTYPE).flatten()
 
 
 CONE_VERTICES = create_cone_data(radius=1.0, height=1.0, segments=32)

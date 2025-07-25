@@ -1,10 +1,10 @@
 import numpy as np
 from graphics.glm import rotation_mat, perspective_mat, translation_mat
-from graphics.utils import DTYPE, WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
+from graphics.utils import VEC_DTYPE, WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
 
-RIGHT_HOMOGENEOUS = np.array([*WORLD_RIGHT, 0.0], dtype=DTYPE)
-UP_HOMOGENEOUS = np.array([*WORLD_UP, 0.0], dtype=DTYPE)
-FORWARD_HOMOGENEOUS = np.array([*WORLD_FORWARD, 0.0], dtype=DTYPE)
+RIGHT_HOMOGENEOUS = np.array([*WORLD_RIGHT, 0.0], dtype=VEC_DTYPE)
+UP_HOMOGENEOUS = np.array([*WORLD_UP, 0.0], dtype=VEC_DTYPE)
+FORWARD_HOMOGENEOUS = np.array([*WORLD_FORWARD, 0.0], dtype=VEC_DTYPE)
 
 
 class Camera:
@@ -19,7 +19,7 @@ class Camera:
                  far=100.0,
                  ratio=4.0/3.0):
 
-        self._position = np.asarray(position, dtype=DTYPE)
+        self._position = np.asarray(position, dtype=VEC_DTYPE)
         self.tilt = self.pitch = self.vertical_angle = pitch
         self.pan = self.yaw = self.horizontal_angle = yaw
         self.roll = self.forward_angle = forward_roll
@@ -29,7 +29,7 @@ class Camera:
         self._near = near
         self._far = far
 
-        self._ident = np.eye(4, dtype=DTYPE)
+        self._ident = np.eye(4, dtype=VEC_DTYPE)
 
     @property
     def position(self):
@@ -37,7 +37,7 @@ class Camera:
 
     @position.setter
     def position(self, value):
-        self._position = np.asarray(value, dtype=DTYPE)[:3]
+        self._position = np.asarray(value, dtype=VEC_DTYPE)[:3]
 
     @property
     def fov(self):
@@ -45,7 +45,7 @@ class Camera:
 
     @fov.setter
     def fov(self, val):
-        self._fov = np.clip(val, 0.001, 180.0, dtype=DTYPE)
+        self._fov = np.clip(val, 0.001, 180.0, dtype=VEC_DTYPE)
 
     @property
     def near(self):
@@ -53,7 +53,7 @@ class Camera:
 
     @near.setter
     def near(self, val):
-        val = np.maximum(0.001, val, dtype=DTYPE)
+        val = np.maximum(0.001, val, dtype=VEC_DTYPE)
         self._near = val
 
     @property
@@ -62,7 +62,7 @@ class Camera:
 
     @far.setter
     def far(self, val):
-        val = np.maximum(self._near, val, dtype=DTYPE)
+        val = np.maximum(self._near, val, dtype=VEC_DTYPE)
         self._far = val
 
     @property
@@ -71,7 +71,7 @@ class Camera:
 
     @ratio.setter
     def ratio(self, val):
-        val = np.maximum(0.001, val, dtype=DTYPE)
+        val = np.maximum(0.001, val, dtype=VEC_DTYPE)
         self._aspect_ratio = val
 
     pos = position
@@ -89,8 +89,8 @@ class Camera:
         """ The camera's orientation matrix (rotates from local to world space) """
         # column-major, so post-multiply: Parent_Transform * Local_Transform
         # Yaw (around world up) is the parent, pitch is the local rotation
-        yaw_mat = rotation_mat(np.deg2rad(self.yaw, dtype=DTYPE), WORLD_UP)
-        pitch_mat = rotation_mat(np.deg2rad(self.pitch, dtype=DTYPE), WORLD_RIGHT)
+        yaw_mat = rotation_mat(np.deg2rad(self.yaw, dtype=VEC_DTYPE), WORLD_UP)
+        pitch_mat = rotation_mat(np.deg2rad(self.pitch, dtype=VEC_DTYPE), WORLD_RIGHT)
         return yaw_mat @ pitch_mat
 
     @property
@@ -122,7 +122,7 @@ class Camera:
 
     @property
     def projection(self):
-        return perspective_mat(np.deg2rad(self.fov, dtype=DTYPE), self._aspect_ratio, self.near, self.far)
+        return perspective_mat(np.deg2rad(self.fov, dtype=VEC_DTYPE), self._aspect_ratio, self.near, self.far)
 
     @property
     def view(self):
@@ -137,9 +137,9 @@ class Camera:
     def lookat(self, *target_pos):
 
         if len(target_pos) == 1:
-            target_pos = np.asarray(target_pos[0], dtype=DTYPE)
+            target_pos = np.asarray(target_pos[0], dtype=VEC_DTYPE)
         else:
-            target_pos = np.asarray(target_pos, dtype=DTYPE)
+            target_pos = np.asarray(target_pos, dtype=VEC_DTYPE)
 
         # Avoid division by zero if the target is at the camera's position
         if np.allclose(target_pos, self.position):
@@ -150,8 +150,8 @@ class Camera:
         direction /= np.linalg.norm(direction)
 
         # Calculate pitch (up/down look) from the Y component
-        self.pitch = np.rad2deg(np.arcsin(direction[1]), dtype=DTYPE)
+        self.pitch = np.rad2deg(np.arcsin(direction[1]), dtype=VEC_DTYPE)
 
         # Calculate yaw (left/right look) from the X and Z components
-        self.yaw = np.rad2deg(np.arctan2(direction[0], -direction[2]), dtype=DTYPE)
+        self.yaw = np.rad2deg(np.arctan2(direction[0], -direction[2]), dtype=VEC_DTYPE)
 
