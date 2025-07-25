@@ -209,7 +209,7 @@ class InsectEyeRay(InsectEyeBase):
 
         print("Compiling ray-tracing and reduction shaders...")
         self.raytrace_program = load_compute_shader('shaders/ommatidia_raytracing.comp')
-        self.reduction_program = load_compute_shader('shaders/reduction.comp')
+        self.reduction_program = load_compute_shader('shaders/rays_reduction.comp')
 
         # SSBO to store the scene triangles
         self.triangles_ssbo = glGenBuffers(1)
