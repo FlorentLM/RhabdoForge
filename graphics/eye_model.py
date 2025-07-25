@@ -11,9 +11,13 @@ class Ommatidium:
     """ A single ommatidium and its properties """
 
     id: int
-    direction: np.ndarray = field(repr=False)  # 3D pointing vector
+
     azimuth_rad: float      # Horizontal angle (longitude)
     elevation_rad: float    # Vertical angle (latitude)
+
+    direction: np.ndarray = field(repr=False)  # 3D pointing vector
+    origin: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=DTYPE), repr=False)  # 3D origin point
+
     acceptance_angle_rad: float = 0.0
 
     @property
@@ -32,9 +36,11 @@ class Ommatidium:
 
     def __post_init__(self):
 
-        # Ensure direction is a normalized np array
+        # Ensure origin and direction is are np arrays
         self.direction = np.asarray(self.direction, dtype=DTYPE)
+        self.origin = np.asarray(self.origin, dtype=DTYPE)
 
+        # normalise direction
         norm = np.linalg.norm(self.direction)
         if not np.isclose(norm, 1.0):
             self.direction /= norm
@@ -53,7 +59,7 @@ class EyeModel:
         self.kdtree = KDTree(self.directions)
 
     @classmethod
-    def generate_uniform_eye(cls, num_ommatidia: int, acceptance_angle_deg: Optional[float] = None):
+    def generate_uniform_eye(cls, num_ommatidia: int, acceptance_angle_deg: Optional[float] = None, eye_radius: float = 0.0):
         """ Factory to create an EyeModel with a uniform spherical distribution based on a subdivided icosahedron """
 
         lod = estimate_lod(num_ommatidia)
@@ -67,13 +73,19 @@ class EyeModel:
         om_dirs = subdivide_icosahedron(lod)
         om_lons = np.arctan2(om_dirs[:, 0], -om_dirs[:, 2])
         om_lats = np.arcsin(om_dirs[:, 1])
+        om_origins = om_dirs * eye_radius
 
         acceptance_angle_rad = np.deg2rad(acceptance_angle_deg or 0.0, dtype=DTYPE)
         # TODO: this will break if acceptance_angle_deg is a numpy array
 
         ommatidia_list = [
-            Ommatidium(id=i, direction=dir, azimuth_rad=lon, elevation_rad=lat, acceptance_angle_rad=acceptance_angle_rad)
-            for i, (dir, lon, lat) in enumerate(zip(om_dirs, om_lons, om_lats))
+            Ommatidium(id=i,
+                       direction=dir,
+                       origin=origin,
+                       azimuth_rad=lon,
+                       elevation_rad=lat,
+                       acceptance_angle_rad=acceptance_angle_rad)
+            for i, (dir, origin, lon, lat) in enumerate(zip(om_dirs, om_origins, om_lons, om_lats))
         ]
         model = cls(ommatidia_list)
 
@@ -174,10 +186,28 @@ class EyeModel:
     def pack(self) -> np.ndarray:
         # TODO: Maybe the packed version could be stored and accessed with cool accessor properties?
 
-        directions = np.array([om.direction for om in self.ommatidia], dtype=DTYPE)
-        acceptance_angles = np.array([om.acceptance_angle_rad for om in self.ommatidia], dtype=DTYPE).reshape(-1, 1)
+        # Packs ommatidia data into a numpy array with a layout that is compatible with std430 rules for the SSBO
+        #
+        # GLSL struct layout (std430):
+        # struct Ommatidium {
+        #     vec3 origin;           // offset 0, size 12
+        #     // 4 bytes padding
+        #     vec3 direction;        // offset 16, size 12
+        #     float acceptance_angle; // offset 28, size 4
+        # };                         // total size = 32 bytes
 
-        return np.hstack([directions, acceptance_angles])
+        num_om = self.num_ommatidia
+
+        # empty array with 8 columns (3 origin + 1 pad + 3 dir + 1 angle)
+        packed_data = np.zeros((num_om, 8), dtype=DTYPE)
+
+        # Fill with data
+        packed_data[:, 0:3] = np.array([om.origin for om in self.ommatidia])
+        # column 3 is left as 0.0 for padding
+        packed_data[:, 4:7] = self.directions
+        packed_data[:, 7] = np.array([om.acceptance_angle_rad for om in self.ommatidia])
+
+        return packed_data
 
 
 def estimate_lod(num_ommatidia: int) -> int:

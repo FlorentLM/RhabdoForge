@@ -4,13 +4,15 @@
 layout (location = 0) in vec3 a_cone_vertex_pos;
 
 // Data from SSBOs indexed by gl_InstanceID
-struct OmmatidiumInput {
-    vec3 direction;
-    float acceptance_angle;
-};
+struct Ommatidium {
+    vec3 origin;            // 12 bytes, offset 0
+    // std430 alignment for vec3 is 16 bytes, so the compiler adds 4 bytes of padding here
+    vec3 direction;         // 12 bytes, offset 16
+    float acceptance_angle; // 4 bytes, offset 28
+}; // 32 bytes total per ommatidium
 
 layout(std430, binding = 0) readonly buffer OmmatidiaInputBlock {
-   OmmatidiumInput u_ommatidia_data[];
+   Ommatidium u_ommatidia_data[];
 };
 
 layout(std430, binding = 1) readonly buffer ColorDataBlock {

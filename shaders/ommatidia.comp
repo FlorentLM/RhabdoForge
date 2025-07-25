@@ -5,9 +5,11 @@ layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 // Ommatidium struct for clarity
 struct Ommatidium {
-    vec3 direction;
-    float acceptance_angle;
-};
+    vec3 origin;            // 12 bytes, offset 0
+    // std430 alignment for vec3 is 16 bytes, so the compiler adds 4 bytes of padding here
+    vec3 direction;         // 12 bytes, offset 16
+    float acceptance_angle; // 4 bytes, offset 28
+}; // 32 bytes total per ommatidium
 
 // Input: SSBO from binding point 0 contains an array of these structs
 layout(std430, binding = 0) readonly buffer OmmatidiaInputBlock {
