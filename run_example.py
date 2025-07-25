@@ -19,7 +19,7 @@ from graphics.raster_mode import PanoramicEye
 
 def main():
 
-    USE_RAYTRACER = True
+    USE_RAYTRACER = False
     IS_HEADLESS = False
     SIMULATION_STEPS = 1000
     TIME_DITHERING = False

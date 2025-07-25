@@ -69,47 +69,30 @@ class Engine:
     def add_instance(self, instance: Instance):
         self.scene.add_instance(instance)
 
-    def _render_instance(self, instance, camera, view_matrix=None, projection_matrix=None):
-        """ Renders a single instance (with a camera's matrices or explicitly provided ones) """
+    def _render_instance(self, instance, view_matrix, projection_matrix):
+        """ Renders a single instance using provided view and projection matrices """
 
         mesh = instance.asset
 
         try:
-            # Bind everything
             glUseProgram(mesh.shaders)
             glBindVertexArray(mesh.vao)
-            glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_2D, mesh.texture)
 
-            if view_matrix is not None and projection_matrix is not None:
-                # Use explicitly provided matrices (for FBO rendering)
-                proj = projection_matrix
-                view = view_matrix
-            else:
-                # Use the camera's matrices (for standard rendering)
-                proj = camera.projection
-                view = camera.view
-
-            # Column-major, so post-multiply, so final matrix is P * V * M
-            camera_matrix = proj @ view
+            # Column-major so final matrix is P * V * M
+            camera_matrix = projection_matrix @ view_matrix
 
             glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "camera"),
-                               1,
-                               True,  # OpenGL expects column-major arrays in COLUMN-MAJOR MEMORY (Fortran style)!!
-                               camera_matrix)
+                               1, True, camera_matrix)
             glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "model"),
-                               1,
-                               True,  # OpenGL expects column-major arrays in COLUMN-MAJOR MEMORY (Fortran style)!!
-                               instance.transform)
+                               1, True, instance.transform)
 
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, mesh.texture)
 
-            glBindVertexArray(mesh.vao)
             glDrawArrays(mesh.draw_type, mesh.draw_start, mesh.draw_count)
 
         finally:
-            # Unbind everyone
+            # Unbind everything
             glBindTexture(GL_TEXTURE_2D, 0)
             glBindVertexArray(0)
             glUseProgram(0)
@@ -128,7 +111,7 @@ class Engine:
 
         # Then the rest of the scene
         for instance in self.scene.instances:
-            self._render_instance(instance, camera)
+            self._render_instance(instance, camera.view, camera.projection)
 
     def render_to_cubemap(self, scene, camera):
         """ Renders the given scene into the cubemap FBO from the perspective of the agent position """
@@ -181,7 +164,7 @@ class Engine:
 
             # Render all instances in the scene with this view
             for instance in scene.instances:
-                self._render_instance(instance, None, view_matrix=view, projection_matrix=projection)
+                self._render_instance(instance, view, projection)
 
         self.cubemap_fbo.unbind()
         return self.cubemap_fbo.color_texture_id
