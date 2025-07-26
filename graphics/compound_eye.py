@@ -269,7 +269,7 @@ class CompoundEyeRay(CompoundEyeBase):
 
         # Set the default number of samples with the setter to allocate the SSBO
         self._samples_per_ommatidium = 0    # just to bypass the check for first call
-        self.samples_per_ommatidium = 256
+        self.samples_per_ommatidium = nb_samples
 
         self.scene_texture_array = self._create_texture_array(self.rt_scene.texture_ids)
 
@@ -388,6 +388,8 @@ class CompoundEyeRay(CompoundEyeBase):
 
         # Set uniforms
         num_triangles = len(self.rt_scene.triangles) // 20   # stride 20 (80 bytes total, 4 bytes per float)
+        num_materials = len(self.rt_scene.materials) // 4  # stride 4 (16 bytes total, 4 bytes per float)
+
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_skybox'), 0)
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_scene_textures'), 1)
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_triangles'), num_triangles)
@@ -396,7 +398,7 @@ class CompoundEyeRay(CompoundEyeBase):
         glUniform1f(glGetUniformLocation(self.raytrace_program, 'u_time'), float(self._time_counter))
         glUniform3fv(glGetUniformLocation(self.raytrace_program, 'u_camera_position'), 1, camera.position)
         glUniformMatrix4fv(glGetUniformLocation(self.raytrace_program, 'u_camera_orientation'), 1, True, camera.orientation)
-        glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_materials'), len(self.rt_scene.materials))
+        glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_materials'), num_materials)
 
         # Dispatch
         work_groups = (self.total_samples + 255) // 256
