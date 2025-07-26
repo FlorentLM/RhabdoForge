@@ -200,7 +200,7 @@ class InsectEyeRaster(InsectEyeBase):
         # Set uniforms for the data pass
         glUniform1i(glGetUniformLocation(self.ommatidia_program, 'u_num_ommatidia'), self.num_ommatidia)
         glUniform1i(glGetUniformLocation(self.ommatidia_program, 'u_samples_per_ommatidium'), self.samples_per_ommatidium)
-        glUniform1f(glGetUniformLocation(self.ommatidia_program, 'u_time'), self._time_counter * 0.01)
+        glUniform1f(glGetUniformLocation(self.ommatidia_program, 'u_time'), float(self._time_counter))
 
         # Bind input cubemap (texture unit 0)
         glActiveTexture(GL_TEXTURE0)
@@ -384,7 +384,7 @@ class InsectEyeRay(InsectEyeBase):
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_scene_textures'), 1)
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_triangles'), len(self.rt_scene.triangles))
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_samples_per_ommatidium'), self.samples_per_ommatidium)
-        glUniform1f(glGetUniformLocation(self.raytrace_program, 'u_time'), self._time_counter * 0.01)
+        glUniform1f(glGetUniformLocation(self.raytrace_program, 'u_time'), float(self._time_counter))
         glUniform3fv(glGetUniformLocation(self.raytrace_program, 'u_camera_position'), 1, camera.position)
         glUniformMatrix4fv(glGetUniformLocation(self.raytrace_program, 'u_camera_orientation'), 1, True, camera.orientation)
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_materials'), len(self.rt_scene.materials))
