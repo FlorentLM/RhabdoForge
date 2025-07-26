@@ -125,6 +125,7 @@ class Engine:
 
         # Using the cubemap-specific camera (for its 90-degree FOV projection)
         self._cubemap_render_cam.pos = camera.position
+
         projection = self._cubemap_render_cam.projection
 
         # look-at directions and 'up' vectors for each face must correspond to the OpenGL cubemap coordinate system:
@@ -180,6 +181,10 @@ class Engine:
                 self._render_instance(instance, view, projection)
 
         self._cubemap_fbo.unbind()
+
+        # Restore the viewport to the main window's dimensions
+        glViewport(0, 0, self.width, self.height)
+
         return self._cubemap_fbo.color_texture_id
 
     def update_movement(self):
@@ -210,7 +215,7 @@ class Engine:
 
     def _draw_fps(self):
 
-        # Unbind texture to prevent state leakage (text background is otherwise the colour as the last used texture)
+        # Unbind texture to prevent state leakage (text background is otherwise the colour of the last used texture)
         glBindTexture(GL_TEXTURE_2D, 0)
         # And explicitely unbind any program still active (also to avoid state leakage)
         glUseProgram(0)

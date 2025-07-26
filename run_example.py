@@ -13,13 +13,13 @@ from graphics.glm import translation_mat, rotation_mat
 from geometry.primitives import CUBE_VERTICES
 from graphics.skybox import Skybox
 from graphics.utils import load_cubemap, WORLD_UP
-from graphics.insect_eye import InsectEyeRaster, InsectEyeRay
+from graphics.compound_eye import CompoundEyeRaster, CompoundEyeRay
 from graphics.raster_mode import PanoramicEye
 
 
 def main():
 
-    USE_RAYTRACER = True
+    USE_RAYTRACER = False
     IS_HEADLESS = False
     SHOW_PANO_VIEW = True
     SIMULATION_STEPS = 1000
@@ -44,10 +44,10 @@ def main():
 
     if USE_RAYTRACER:
         print("Mode: Ray-Tracer")
-        insect_eye = InsectEyeRay(eye_model=eye_geom, scene=eng.scene, time_dithering=TIME_DITHERING)
+        insect_eye = CompoundEyeRay(eye_model=eye_geom, scene=eng.scene, time_dithering=TIME_DITHERING)
     else:
         print("Mode: Rasterizer")
-        insect_eye = InsectEyeRaster(eye_model=eye_geom, time_dithering=TIME_DITHERING)
+        insect_eye = CompoundEyeRaster(eye_model=eye_geom, time_dithering=TIME_DITHERING)
 
     pano_debug_view = PanoramicEye()
 

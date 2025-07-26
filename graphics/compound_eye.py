@@ -10,7 +10,7 @@ from graphics.scene import RaytracingScene, Scene
 from graphics.utils import load_shaders, load_compute_shader, VEC_DTYPE
 
 
-class InsectEyeBase(ABC):
+class CompoundEyeBase(ABC):
     """
     Abstract base class for an insect eye model, handling visualization and common properties
     """
@@ -178,7 +178,7 @@ class InsectEyeBase(ABC):
             glDeleteVertexArrays(1, [self._voronoi_vao])
 
 
-class InsectEyeRaster(InsectEyeBase):
+class CompoundEyeRaster(CompoundEyeBase):
     def __init__(self, eye_model: EyeModel, time_dithering=True):
         super().__init__(eye_model, time_dithering)
         self.ommatidia_program = load_compute_shader('shaders/ommatidia_raster.comp')
@@ -232,7 +232,7 @@ class InsectEyeRaster(InsectEyeBase):
         super().free()
 
 
-class InsectEyeRay(InsectEyeBase):
+class CompoundEyeRay(CompoundEyeBase):
     def __init__(self, eye_model, scene: Scene, time_dithering=True):
         super().__init__(eye_model, time_dithering)
 
