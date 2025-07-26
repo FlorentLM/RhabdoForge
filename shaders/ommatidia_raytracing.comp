@@ -93,8 +93,8 @@ void main() {
     vec3 bitangent = cross(om_world_dir, tangent);
 
     // Monte Carlo sampling within cone
-    float r1 = rand(vec2(global_id, u_time));
-    float r2 = rand(vec2(global_id, u_time + 0.5));
+    float r1 = rand(vec2(ommatidium_idx, sample_idx));
+    float r2 = rand(vec2(ommatidium_idx, sample_idx) + 0.5);
     float r1_warped = pow(r1, SAMPLING_BIAS);
     float cos_theta = mix(cos(om.acceptance_angle), 1.0, r1_warped);
     float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
