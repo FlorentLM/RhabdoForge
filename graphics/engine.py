@@ -40,11 +40,11 @@ class Engine:
         self.scene = Scene()
         self.camera = Camera(position=(0, 0, 4), ratio=width / height)
 
-        # Cubemap FBO for the insect eye pass
-        self.cubemap_fbo = CubemapFBO(resolution=cubemap_resolution)
-
+        # Cubemap FBO to render the whole scene on (used by InsectEyeRaster in its first pass, and by the PanoramicEye)
+        self._cubemap_fbo = None     # lazy initialised if needed
+        self._cubemap_resolution = cubemap_resolution
         # A camera for the 6-sided cubemap render
-        self.cubemap_render_cam = Camera(fov=90.0, ratio=1.0)
+        self._cubemap_render_cam = None     # also lazy initialised
 
         # Skybox cubemap references
         self.skybox = None
@@ -116,11 +116,16 @@ class Engine:
     def render_to_cubemap(self, scene, camera):
         """ Renders the given scene into the cubemap FBO from the perspective of the agent position """
 
-        self.cubemap_fbo.bind()
+        # Lazy initialise the FBO and Cubemp camera
+        if self._cubemap_fbo is None or self._cubemap_render_cam is None:
+            self._cubemap_fbo = CubemapFBO(resolution=self._cubemap_resolution)
+            self._cubemap_render_cam = Camera(fov=90.0, ratio=1.0)
+
+        self._cubemap_fbo.bind()
 
         # Using the cubemap-specific camera (for its 90-degree FOV projection)
-        self.cubemap_render_cam.pos = camera.position
-        projection = self.cubemap_render_cam.projection
+        self._cubemap_render_cam.pos = camera.position
+        projection = self._cubemap_render_cam.projection
 
         # look-at directions and 'up' vectors for each face must correspond to the OpenGL cubemap coordinate system:
         #  - GL_TEXTURE_CUBE_MAP_POSITIVE_X  ->  Right
@@ -155,7 +160,7 @@ class Engine:
             # Attach the correct face of the cubemap texture for rendering
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                    GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
-                                   self.cubemap_fbo.color_texture_id, 0)
+                                   self._cubemap_fbo.color_texture_id, 0)
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
@@ -174,49 +179,8 @@ class Engine:
             for instance in scene.instances:
                 self._render_instance(instance, view, projection)
 
-        self.cubemap_fbo.unbind()
-        return self.cubemap_fbo.color_texture_id
-
-    def run_interactive(self):
-        """ Starts an interactive visualization loop with camera controls """
-
-        if self.headless:
-            print("Cannot run interactive mode when initialized as headless.")
-            return
-
-        pygame.key.set_repeat(1, 10)
-        pygame.mouse.set_visible(False)
-        pygame.event.set_grab(True)
-
-        is_running = True
-        while is_running:
-            self.clock.tick()
-            if not self.handle_interactive_events():
-                is_running = False
-
-            # ___ Per-frame update stuff here ___
-            # (like updating object animations or whatever)
-
-            self.render_frame()
-            self._draw_fps()
-            pygame.display.flip()
-
-        self.close()
-
-    def handle_interactive_events(self):
-
-        # Handle discrete events
-        for event in pygame.event.get():
-            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
-                return False  # Signal to quit
-
-            if event.type == MOUSEWHEEL:
-                self.camera.fov -= event.y * 1.5
-
-        # Handle continuous input for camera movement
-        self.update_movement()
-
-        return True  # Signal to continue running
+        self._cubemap_fbo.unbind()
+        return self._cubemap_fbo.color_texture_id
 
     def update_movement(self):
         """ Processes continuous input (keyboard/mouse) to move the camera """

@@ -21,6 +21,7 @@ def main():
 
     USE_RAYTRACER = True
     IS_HEADLESS = False
+    SHOW_PANO_VIEW = True
     SIMULATION_STEPS = 1000
     TIME_DITHERING = False
     EYE_RADIUS = 0.5  # eye physical size, only used for RT version
@@ -47,7 +48,8 @@ def main():
     else:
         print("Mode: Rasterizer")
         insect_eye = InsectEyeRaster(eye_model=eye_geom, time_dithering=TIME_DITHERING)
-        pano_debug_view = PanoramicEye()  # only needed for raster mode
+
+    pano_debug_view = PanoramicEye()
 
     # Simulation loop
     SHOW_INSECT_EYE_VIEW = False
@@ -72,6 +74,7 @@ def main():
             if event.type == KEYDOWN and event.key == K_t: TILED_MODE = not TILED_MODE
             if event.type == KEYDOWN and event.key == K_h: insect_eye.samples_per_ommatidium *= 2
             if event.type == KEYDOWN and event.key == K_g: insect_eye.samples_per_ommatidium //= 2
+            if event.type == KEYDOWN and event.key == K_v: SHOW_PANO_VIEW = not SHOW_PANO_VIEW
         eng.update_movement()
 
         # Update scene and re-packing for dynamic elements (optional)
@@ -103,8 +106,11 @@ def main():
 
             if SHOW_INSECT_EYE_VIEW:
                 insect_eye.draw(tiled_mode=TILED_MODE)
-            elif not USE_RAYTRACER:
+
+            elif SHOW_PANO_VIEW:
+                scene_cubemap_id = eng.render_to_cubemap(eng.scene, eng.camera)
                 pano_debug_view.draw(scene_cubemap_id)
+
             else:
                 eng.render_frame()  # default to normal 3D view
 
