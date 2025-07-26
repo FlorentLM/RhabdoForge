@@ -272,15 +272,15 @@ def barycentric_coords(n: int) -> np.ndarray:
         for all the points in the subdivided triangle
     """
 
-    vals = np.linspace(0, 1, n)
+    vals = np.linspace(0, 1, n + 1)
 
     # Total number of points in a triangle subdivided n times
-    num_points = int(n * (n + 1) / 2)
+    num_points = int((n + 1) * (n + 2) / 2)
     bcmat = np.zeros((num_points, 3))
 
     # Builds the points 'row by row' inside the ref triangle
-    shifts = np.arange(n, 0, -1)
-    starts = np.zeros(n, dtype=int)
+    shifts = np.arange(n + 1, 0, -1)
+    starts = np.zeros(n + 1, dtype=int)
     starts[1:] = np.cumsum(shifts[:-1])
     stops = starts + shifts
 
