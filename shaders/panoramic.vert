@@ -7,9 +7,8 @@ const vec2 positions[3] = vec2[](
     vec2(-1,  3)
 );
 
-// Screen position needs to be passed to the fragment shader
-// so it can calculate the 3D direction vector
-out vec2 v_screen_pos;
+// Output: Varying to fragment shader
+layout (location = 0) out vec2 v_screen_pos;
 
 void main()
 {

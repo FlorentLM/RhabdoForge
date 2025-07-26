@@ -1,9 +1,14 @@
 #version 430 core
 
-in vec3 texCoords;
-out vec4 FragColor;
+// Input: Varying from vertex shader
+layout (location = 0) in vec3 texCoords;
 
-uniform samplerCube skybox;
+// Output: Final color to framebuffer
+layout (location = 0) out vec4 FragColor;
+
+// Uniforms
+layout (binding = 0) uniform samplerCube skybox;
+
 
 void main()
 {

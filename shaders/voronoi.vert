@@ -2,9 +2,10 @@
 
 #include "commons.glsl"
 
-// Per-vertex attribute for the base cone mesh
+// Input: Per-vertex attribute for the base cone mesh
 layout (location = 0) in vec3 a_cone_vertex_pos;
 
+// Bindings
 layout(std430, binding = 0) readonly buffer OmmatidiaInputBlock {
    Ommatidium u_ommatidia_data[];
 };
@@ -13,14 +14,12 @@ layout(std430, binding = 1) readonly buffer ColorDataBlock {
    vec4 u_ommatidia_colors[];
 };
 
-// Whether to fill the screen or represent the actual acceptance angles
+// Uniforms queried by name
 uniform bool u_tiled_mode;
-
-// Visualisation scale of the ommatidia
 uniform float u_visual_scale;
 
-// To fragment shader
-out vec3 v_color;
+// Output: Varying to fragment shader
+layout (location = 0) out vec3 v_color;
 
 const float PI = 3.14159265359;
 

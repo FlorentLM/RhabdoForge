@@ -1,9 +1,13 @@
 #version 430 core
 
-in vec2 v_screen_pos;
-out vec4 FragColor;
+// Input: Varying from vertex shader
+layout (location = 0) in vec2 v_screen_pos;
 
-uniform samplerCube u_cubemap;
+// Output: Final color to framebuffer
+layout (location = 0) out vec4 FragColor;
+
+// Uniforms
+layout (binding = 0) uniform samplerCube u_cubemap;
 
 const float PI = 3.14159265359;
 

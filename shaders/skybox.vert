@@ -1,10 +1,12 @@
 #version 430 core
 
+// Input: Vertex attributes from VBO
 layout (location = 0) in vec3 pos;
 
-out vec3 texCoords;
+// Output: Varying to fragment shader
+layout (location = 0) out vec3 texCoords;
 
-// Only the projection and the rotational part of the view matrix are needed
+// Uniforms
 uniform mat4 projection;
 uniform mat4 view; // This will be the view matrix without translation
 
