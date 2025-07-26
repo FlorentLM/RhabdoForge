@@ -174,12 +174,17 @@ class RaytracingScene:
 
         if not all_verts_pos:
             print("Packed scene for ray tracing: 0 triangles.")
+            self.num_vertices = 0
+            self.num_triangles = 0
             return
 
         # Concat into large untransformed scene data array
         self.base_positions = np.concatenate(all_verts_pos, axis=0)
         self.base_uvs = np.concatenate(all_verts_uv, axis=0)
         self.material_indices = np.concatenate(all_material_indices)
+
+        self.num_vertices = len(self.base_positions)
+        self.num_triangles = self.num_vertices // 3
 
     def update(self, instances):
         """

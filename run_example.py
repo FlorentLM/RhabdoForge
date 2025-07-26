@@ -58,6 +58,9 @@ def main():
 
     pano_debug_view = PanoramicEye()
 
+    # Assign the eye to the engine
+    eng.compound_eye = compoundeye
+
     # Simulation loop
     COMPOUND_EYE_VIEW = False
     VORONOI_VIEW = True
@@ -90,10 +93,10 @@ def main():
         eng.update_movement()
 
         # Update scene and re-packing for dynamic elements (optional)
-        # current_rotation_deg = (current_rotation_deg + rotation_per_step_deg) % 360.0
-        # eng.scene.instances[0].transform = rotation_mat(
-        #     np.deg2rad(current_rotation_deg), WORLD_UP
-        # )
+        current_rotation_deg = (current_rotation_deg + rotation_per_step_deg) % 360.0
+        eng.scene.instances[0].transform = rotation_mat(
+            np.deg2rad(current_rotation_deg), WORLD_UP
+        )
 
         if USE_RAYTRACER:
             compoundeye.update_geometry(eng.scene.instances)     # fast update method
@@ -127,7 +130,7 @@ def main():
                 eng.render_frame()  # default to normal 3D view
 
             eng.clock.tick()
-            eng.draw_hud(compoundeye)
+            eng.draw_hud()
 
             pygame.display.flip()
 

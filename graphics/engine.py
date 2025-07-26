@@ -1,5 +1,7 @@
 import os
 
+from graphics.compound_eye import CompoundEyeRay
+
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 from collections import deque
 import numpy as np
@@ -19,6 +21,12 @@ class Engine:
         self.width = width
         self.height = height
         self.headless = headless
+
+        self.compound_eye = None
+
+        # Properties for geometry counts
+        self._total_scene_vertices = 0
+        self._total_scene_triangles = 0
 
         # -- Pygame OpenGL context --
         # TODO: maybe something lighter than pygame? glfw?
@@ -73,10 +81,14 @@ class Engine:
     def _cache_controls_text(self):
         """ Renders the controls text once and caches it """
 
+        sample_label = "Samples"
+        if self.compound_eye and isinstance(self.compound_eye, CompoundEyeRay):
+            sample_label = "Rays"
+
         controls = [
             'ESC: Quit',
             'H: Show/hide HUD',
-            '+/-: Samples per ommatidium',
+            f'+/-: {sample_label}',
             'T: Time dithering',
             'V: Voronoi view',
             'P: Panoramic view',
@@ -87,6 +99,7 @@ class Engine:
             '',
             'Controls:'
         ]
+
         self._cached_controls_surfaces.clear()
         for text in controls:
             white_surf = self.font.render(text, True, (255, 255, 255, 255))
@@ -96,7 +109,7 @@ class Engine:
     def _render_text_surface(self, white_surf: pygame.Surface, gray_surf: pygame.Surface, x: int, y: int):
         """ Renders pre-made Pygame surface with a simple outline """
 
-        # This is kinda slow but it's only called with pre-rendered surfaces
+        # This is kinda slow
 
         w, h = white_surf.get_width(), white_surf.get_height()
 
@@ -112,7 +125,7 @@ class Engine:
         glWindowPos2d(x, y)
         glDrawPixels(w, h, GL_RGBA, GL_UNSIGNED_BYTE, white_data)
 
-    def draw_hud(self, insect_eye):
+    def draw_hud(self):
         """ Renders the HUD text with simulation info in the top-left corner """
 
         current_time = pygame.time.get_ticks()
@@ -126,24 +139,47 @@ class Engine:
             if self.show_hud:
 
                 # Gather info
+                # TODO: this will not change at runtime, there should be a setter to regiser an eye and set this once
+                is_raytracer = isinstance(self.compound_eye, CompoundEyeRay)
+                mode_name = "Ray-tracer" if is_raytracer else "Rasterizer"
+                sample_label = "Rays" if is_raytracer else "Samples"
+
+                # Gather info
                 pos = self.camera.position
-                num_om = getattr(insect_eye, 'num_ommatidia', 'N/A')
-                num_samples = getattr(insect_eye, 'samples_per_ommatidium', 'N/A')
-                dithering_on = getattr(insect_eye, '_time_dithering', False)
+                num_om = getattr(self.compound_eye, 'num_ommatidia', 0)
+                num_samples = getattr(self.compound_eye, 'samples_per_ommatidium', 1)
+                dithering_on = getattr(self.compound_eye, '_time_dithering', False)
+                # total_samples = num_om * num_samples
 
                 # Format info text
                 info_text = (
-                    f'FPS: {avg_fps:>5.2f} | '
-                    f'Ommatidia: {num_om} | '
-                    f'Samples: {num_samples:>5} | '
-                    f'Time dithering: {'On ' if dithering_on else 'Off'} | '
+                    f'FPS: {avg_fps:>4.2f} | Mode: {mode_name} | Ommatidia: {num_om} | '
+                    f'{sample_label}: {num_samples} | Dithering: {"On " if dithering_on else "Off"} | '
                     f'XYZ: [ {pos[0]:>5.3f}, {pos[1]:>5.3f}, {pos[2]:>5.3f} ]'
                 )
 
-                # Re-render and cache the HUD surface
+                # Gather scene geometry info
+                # Use the Engine's own pre-calculated counts
+                # scene_info_lines = [
+                #     f'Scene Vertices: {self._total_scene_vertices:,}',
+                #     f'Scene Triangles: {self._total_scene_triangles:,}',
+                #     f'Total {sample_label}: {total_samples:,}',
+                # ]
+
+                # Re-render and cache the HUD surfaces
+                surfaces = []
+                # Top info bar
                 white_surf = self.font.render(info_text, True, (255, 255, 255, 255))
                 gray_surf = self.font.render(info_text, True, (0, 0, 0, 180))
-                self._cached_hud_surface = (white_surf, gray_surf)
+                surfaces.append(((white_surf, gray_surf), 'top_left'))
+
+                # Bottom right info
+                # for i, text in enumerate(reversed(scene_info_lines)):
+                #     white_surf = self.font.render(text, True, (255, 255, 255, 255))
+                #     gray_surf = self.font.render(text, True, (0, 0, 0, 180))
+                #     surfaces.append(((white_surf, gray_surf), 'bottom_right', i))
+
+                self._cached_hud_surface = surfaces
 
             else:
                 # if not visible just print the FPS to the console
@@ -163,21 +199,31 @@ class Engine:
             glUseProgram(0)
             glBindTexture(GL_TEXTURE_2D, 0)
 
-            # Draw the cached surface
-            if self._cached_hud_surface:
+            # Draw info text
+            margin = 10
+            line_height = self.font.get_height() + 2
 
-                # Draw info text
-                margin = 10
-                white_surf, gray_surf = self._cached_hud_surface
-                self._render_text_surface(white_surf, gray_surf, margin, self.height - self.font.get_height() - margin)
+            # Draw the cached controls on the left
+            for i, (white_surf, gray_surf) in enumerate(self._cached_controls_surfaces):
+                x_pos = margin
+                y_pos = margin + (i * line_height)
+                self._render_text_surface(white_surf, gray_surf, x_pos, y_pos)
 
-                # Draw controls
-                line_height = self.font.get_height() + 2
-                margin = 10
-                for i, (white_surf, black_surf) in enumerate(self._cached_controls_surfaces):
-                    x_pos = margin
-                    y_pos = margin + (i * line_height)
-                    self._render_text_surface(white_surf, black_surf, x_pos, y_pos)
+                # Draw the cached info surfaces
+                if self._cached_hud_surface:
+                    for surface_info in self._cached_hud_surface:
+                        (white_surf, gray_surf), position, *rest = surface_info
+
+                        if position == 'top_left':
+                            x_pos = margin
+                            y_pos = self.height - line_height
+                            self._render_text_surface(white_surf, gray_surf, x_pos, y_pos)
+
+                        # elif position == 'bottom_right':
+                        #     line_index = rest[0]
+                        #     x_pos = self.width - white_surf.get_width() - margin
+                        #     y_pos = margin + (line_index * line_height)
+                        #     self._render_text_surface(white_surf, gray_surf, x_pos, y_pos)
 
             # Restore GL state
             glEnable(GL_DEPTH_TEST)
@@ -192,6 +238,15 @@ class Engine:
 
     def add_instance(self, instance: Instance):
         self.scene.add_instance(instance)
+        self._update_geometry_counts()
+
+    def _update_geometry_counts(self):
+        """ Recalculates total vertices and triangles from all instances in the scene """
+        vert_count = 0
+        for instance in self.scene.instances:
+            vert_count += instance.asset.draw_count
+        self._total_scene_vertices = vert_count
+        self._total_scene_triangles = vert_count // 3
 
     def _render_instance(self, instance, view_matrix, projection_matrix):
         """ Renders a single instance using provided view and projection matrices """
