@@ -21,7 +21,7 @@ def main():
 
     USE_RAYTRACER = False
     IS_HEADLESS = False
-    SHOW_PANO_VIEW = True
+    PANORAMIC_VIEW = True
     SIMULATION_STEPS = 1000
     TIME_DITHERING = False
     EYE_RADIUS = 0.5  # eye physical size, only used for RT version
@@ -52,8 +52,8 @@ def main():
     pano_debug_view = PanoramicEye()
 
     # Simulation loop
-    SHOW_INSECT_EYE_VIEW = False
-    TILED_MODE = True
+    COMPOUND_EYE_VIEW = False
+    VORONOI_VIEW = True
 
     # Simulation variables
     rotation_per_step_deg = 0.5
@@ -69,12 +69,13 @@ def main():
         # Event handling
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE): is_running = False
-            if event.type == MOUSEWHEEL: eng.camera.fov -= event.y * 1.5
-            if event.type == KEYDOWN and event.key == K_p: SHOW_INSECT_EYE_VIEW = not SHOW_INSECT_EYE_VIEW
-            if event.type == KEYDOWN and event.key == K_t: TILED_MODE = not TILED_MODE
-            if event.type == KEYDOWN and event.key == K_h: insect_eye.samples_per_ommatidium *= 2
-            if event.type == KEYDOWN and event.key == K_g: insect_eye.samples_per_ommatidium //= 2
-            if event.type == KEYDOWN and event.key == K_v: SHOW_PANO_VIEW = not SHOW_PANO_VIEW
+            if event.type == KEYDOWN and event.key == K_c: COMPOUND_EYE_VIEW = not COMPOUND_EYE_VIEW
+            if event.type == KEYDOWN and event.key == K_v: VORONOI_VIEW = not VORONOI_VIEW
+            if event.type == KEYDOWN and event.key == K_p: PANORAMIC_VIEW = not PANORAMIC_VIEW
+            if event.type == KEYDOWN and event.key == K_t: insect_eye.time_dithering = not insect_eye.time_dithering
+            if event.type == KEYDOWN and event.key == K_h: eng.show_hud = not eng.show_hud
+            if event.type == KEYDOWN and event.key in (K_KP_PLUS, K_EQUALS): insect_eye.samples_per_ommatidium *= 2
+            if event.type == KEYDOWN and event.key in (K_KP_MINUS, K_MINUS): insect_eye.samples_per_ommatidium //= 2
         eng.update_movement()
 
         # Update scene and re-packing for dynamic elements (optional)
@@ -94,20 +95,20 @@ def main():
             scene_cubemap_id = eng.render_to_cubemap(eng.scene, eng.camera)
             ommatidia_values = insect_eye.get_ommatidia_data(scene_cubemap_id)
 
-        # Example of CPU-side use of ommatidia data
-        if frame_count % 100 == 0:  # Print a sample every 100 frames
-            print(f"Step {frame_count}: Ommatidium 0 value: {ommatidia_values[0]}")
-        # np.save(f'data/frame_{frame_count}.npy', ommatidia_values)
+        # # Example of CPU-side use of ommatidia data
+        # if frame_count % 100 == 0:  # Print a sample every 100 frames
+        #     print(f"Step {frame_count}: Ommatidium 0 value: {ommatidia_values[0]}")
+        # # np.save(f'data/frame_{frame_count}.npy', ommatidia_values)
 
         # Drawing
         if not IS_HEADLESS:
             glViewport(0, 0, eng.width, eng.height)
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-            if SHOW_INSECT_EYE_VIEW:
-                insect_eye.draw(tiled_mode=TILED_MODE)
+            if COMPOUND_EYE_VIEW:
+                insect_eye.draw(tiled_mode=VORONOI_VIEW)
 
-            elif SHOW_PANO_VIEW:
+            elif PANORAMIC_VIEW:
                 scene_cubemap_id = eng.render_to_cubemap(eng.scene, eng.camera)
                 pano_debug_view.draw(scene_cubemap_id)
 
@@ -115,7 +116,8 @@ def main():
                 eng.render_frame()  # default to normal 3D view
 
             eng.clock.tick()
-            eng._draw_fps()
+            eng.draw_hud(insect_eye)
+
             pygame.display.flip()
 
         frame_count += 1

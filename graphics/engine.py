@@ -20,7 +20,7 @@ class Engine:
         self.height = height
         self.headless = headless
 
-        # Create an OpenGL context
+        # -- Pygame OpenGL context --
         # TODO: maybe something lighter than pygame? glfw?
         pygame.init()
         flags = DOUBLEBUF | OPENGL
@@ -28,7 +28,7 @@ class Engine:
             flags |= pygame.HIDDEN
         pygame.display.set_mode((self.width, self.height), flags)
 
-        # initial OpenGL state
+        # -- OpenGL state --
         glEnable(GL_DEPTH_TEST)
         glDepthFunc(GL_LESS)
         glEnable(GL_CULL_FACE)
@@ -36,12 +36,12 @@ class Engine:
         glEnable(GL_PROGRAM_POINT_SIZE)
         glClearColor(0.1, 0.1, 0.1, 1.0)
 
-        # Core components
+        # -- Core stuff --
         self.scene = Scene()
         self.camera = Camera(position=(0, 0, 4), ratio=width / height)
 
         # Cubemap FBO to render the whole scene on (used by InsectEyeRaster in its first pass, and by the PanoramicEye)
-        self._cubemap_fbo = None     # lazy initialised if needed
+        self._cubemap_fbo = None     # lazy initialised, only if needed
         self._cubemap_resolution = cubemap_resolution
         # A camera for the 6-sided cubemap render
         self._cubemap_render_cam = None     # also lazy initialised
@@ -50,14 +50,138 @@ class Engine:
         self.skybox = None
         self.skybox_texture_id = None
 
-        # For interactive mode
-        self.clock = pygame.time.Clock()
-        self.font = pygame.font.Font(pygame.font.get_default_font(), 20)
-        self.fps_rolling = deque(maxlen=500)
-        self.is_running_interactive = False
+        # -- Stuff for interactive mode --
 
-        self.cam_move_step = 0.01  # units per frame
+        # HUD & text rendering
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.SysFont(pygame.font.get_default_font(), 22)
+        self.fps_rolling = deque(maxlen=60)
+        self.show_hud = True
+
+        # Text caching and throttling
+        self.hud_update_interval_ms = 500  # update HUD text every 500 ms
+        self._last_hud_update_time = 0
+        self._cached_hud_surface = None
+
+        self._cached_controls_surfaces = []  # cache for controls text
+        self._cache_controls_text()  # render controls text once
+
+        self.move_sensitivity = 0.01  # units per frame
         self.mouse_sensitivity = 0.25
+        self.zoom_sensitivity = 0.25
+
+    def _cache_controls_text(self):
+        """ Renders the controls text once and caches it """
+
+        controls = [
+            'ESC: Quit',
+            'H: Show/hide HUD',
+            '+/-: Samples per ommatidium',
+            'T: Time dithering',
+            'V: Voronoi view',
+            'P: Panoramic view',
+            'C: Compound eye view',
+            'Mouse: Look',
+            'LShift/Space: Down/Up',
+            'WASD: Move',
+            '',
+            'Controls:'
+        ]
+        self._cached_controls_surfaces.clear()
+        for text in controls:
+            white_surf = self.font.render(text, True, (255, 255, 255, 255))
+            gray_surf = self.font.render(text, True, (0, 0, 0, 180))
+            self._cached_controls_surfaces.append((white_surf, gray_surf))
+
+    def _render_text_surface(self, white_surf: pygame.Surface, gray_surf: pygame.Surface, x: int, y: int):
+        """ Renders pre-made Pygame surface with a simple outline """
+
+        # This is kinda slow but it's only called with pre-rendered surfaces
+
+        w, h = white_surf.get_width(), white_surf.get_height()
+
+        gray_data = pygame.image.tobytes(gray_surf, 'RGBA', True)
+        white_data = pygame.image.tobytes(white_surf, 'RGBA', True)
+
+        # Draw the outline in 4 directions
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            glWindowPos2d(x + dx, y + dy)
+            glDrawPixels(w, h, GL_RGBA, GL_UNSIGNED_BYTE, gray_data)
+
+        # Draw foreground
+        glWindowPos2d(x, y)
+        glDrawPixels(w, h, GL_RGBA, GL_UNSIGNED_BYTE, white_data)
+
+    def draw_hud(self, insect_eye):
+        """ Renders the HUD text with simulation info in the top-left corner """
+
+        current_time = pygame.time.get_ticks()
+        self.fps_rolling.append(self.clock.get_fps())
+
+        # Throttled caching
+        if current_time - self._last_hud_update_time > self.hud_update_interval_ms:
+            self._last_hud_update_time = current_time
+            avg_fps = np.mean(self.fps_rolling) if self.fps_rolling else 0
+
+            if self.show_hud:
+
+                # Gather info
+                pos = self.camera.position
+                num_om = getattr(insect_eye, 'num_ommatidia', 'N/A')
+                num_samples = getattr(insect_eye, 'samples_per_ommatidium', 'N/A')
+                dithering_on = getattr(insect_eye, '_time_dithering', False)
+
+                # Format info text
+                info_text = (
+                    f'FPS: {avg_fps:>5.2f} | '
+                    f'Ommatidia: {num_om} | '
+                    f'Samples: {num_samples:>5} | '
+                    f'Time dithering: {'On ' if dithering_on else 'Off'} | '
+                    f'XYZ: [ {pos[0]:>5.3f}, {pos[1]:>5.3f}, {pos[2]:>5.3f} ]'
+                )
+
+                # Re-render and cache the HUD surface
+                white_surf = self.font.render(info_text, True, (255, 255, 255, 255))
+                gray_surf = self.font.render(info_text, True, (0, 0, 0, 180))
+                self._cached_hud_surface = (white_surf, gray_surf)
+
+            else:
+                # if not visible just print the FPS to the console
+                print(f'FPS: {avg_fps:.2f}')
+
+        # This block is the expensive OpenGL drawing calls
+        # TODO: move to a fully GPU-side render with a font atlas texture... but that's for later
+
+        if self.show_hud:
+
+            # Disable depth test and enable blending for transparent text background
+            glDisable(GL_DEPTH_TEST)
+            glEnable(GL_BLEND)
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+            # Unbind any shaders/textures to prevent state leakage
+            glUseProgram(0)
+            glBindTexture(GL_TEXTURE_2D, 0)
+
+            # Draw the cached surface
+            if self._cached_hud_surface:
+
+                # Draw info text
+                margin = 10
+                white_surf, gray_surf = self._cached_hud_surface
+                self._render_text_surface(white_surf, gray_surf, margin, self.height - self.font.get_height() - margin)
+
+                # Draw controls
+                line_height = self.font.get_height() + 2
+                margin = 10
+                for i, (white_surf, black_surf) in enumerate(self._cached_controls_surfaces):
+                    x_pos = margin
+                    y_pos = margin + (i * line_height)
+                    self._render_text_surface(white_surf, black_surf, x_pos, y_pos)
+
+            # Restore GL state
+            glEnable(GL_DEPTH_TEST)
+            glDisable(GL_BLEND)
 
     def load_mesh(self, name, *args, **kwargs) -> Mesh:
         """ Loads a mesh and caches it to avoid redundant loads """
@@ -204,7 +328,7 @@ class Engine:
         # Normalize (prevents faster diagonal movement) and apply speed
         norm = np.linalg.norm(cam_displacement)
         if norm > 0:
-            cam_displacement = (cam_displacement / norm) * self.cam_move_step
+            cam_displacement = (cam_displacement / norm) * self.move_sensitivity
             self.camera.pos += cam_displacement
 
         # Handle mouse look
@@ -213,30 +337,10 @@ class Engine:
             self.camera.yaw += mouse_x * self.mouse_sensitivity
             self.camera.pitch = np.clip(self.camera.pitch + mouse_y * self.mouse_sensitivity, -89.0, 89.0, dtype=VEC_DTYPE)
 
-    def _draw_fps(self):
-
-        # Unbind texture to prevent state leakage (text background is otherwise the colour of the last used texture)
-        glBindTexture(GL_TEXTURE_2D, 0)
-        # And explicitely unbind any program still active (also to avoid state leakage)
-        glUseProgram(0)
-
-        self.fps_rolling.append(self.clock.get_fps())
-        avg_fps = np.mean(self.fps_rolling) if self.fps_rolling else 0
-
-        text_surf = self.font.render(f'{int(avg_fps)} FPS',
-                                     True,
-                                     (255, 255, 255, 255),
-                                     (0, 0, 0, 255))
-        text_data = pygame.image.tobytes(text_surf, 'RGBA', True)
-
-        # Temporarily disable depth testing to ensure text is drawn on top
-        glDisable(GL_DEPTH_TEST)
-        glWindowPos2d(10, self.height - 30)
-        glDrawPixels(text_surf.get_width(), text_surf.get_height(), GL_RGBA, GL_UNSIGNED_BYTE, text_data)
-        glEnable(GL_DEPTH_TEST)  # Reenable depth testing
-
     def close(self):
         """ Frees all allocated resources """
         self.scene.free()
+        if self._cubemap_fbo:
+            self._cubemap_fbo.free()
         pygame.quit()
 

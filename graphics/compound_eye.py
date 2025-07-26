@@ -70,6 +70,15 @@ class CompoundEyeBase(ABC):
         # Subclasses may need to re-allocate buffers when this changes
         raise NotImplementedError
 
+    @property
+    def time_dithering(self):
+        return self._time_dithering
+
+    @time_dithering.setter
+    def time_dithering(self, value: bool):
+        self._time_dithering = bool(value)
+        print(f"Time dithering has been {'ENABLED' if self._time_dithering else 'DISABLED'}.")
+
     @abstractmethod
     def _compute_colors(self, *args, **kwargs):
         # Each subclass implements its own core rendering logic
