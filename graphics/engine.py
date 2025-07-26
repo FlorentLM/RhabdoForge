@@ -361,6 +361,11 @@ class Engine:
 
         self._cubemap_fbo.unbind()
 
+        # Regenerate mipmaps after rendering to the cubemap
+        glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.color_texture_id)
+        glGenerateMipmap(GL_TEXTURE_CUBE_MAP)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
+
         # Restore the viewport to the main window's dimensions
         glViewport(0, 0, self.width, self.height)
 

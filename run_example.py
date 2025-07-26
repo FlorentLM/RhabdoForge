@@ -27,6 +27,8 @@ def main():
     PANORAMIC_VIEW = True
     RUN_HEADLESS = False
     TIME_DITHERING = False
+    COMPOUND_EYE_VIEW = False
+    VORONOI_VIEW = True
 
     EYE_RADIUS = 0.01  # only used for RT version
     NB_OMMATIDIA = 1962
@@ -60,10 +62,6 @@ def main():
 
     # Assign the eye to the engine
     eng.compound_eye = compoundeye
-
-    # Simulation loop
-    COMPOUND_EYE_VIEW = False
-    VORONOI_VIEW = True
 
     # Simulation variables
     rotation_per_step_deg = 0.5

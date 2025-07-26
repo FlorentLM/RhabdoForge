@@ -23,6 +23,9 @@ class CubemapFBO:
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE)
 
+        # Generate mipmap storage
+        glGenerateMipmap(GL_TEXTURE_CUBE_MAP)
+
         # Create the Depth Renderbuffer
         self.depth_buffer_id = glGenRenderbuffers(1)
         glBindRenderbuffer(GL_RENDERBUFFER, self.depth_buffer_id)
