@@ -16,7 +16,7 @@ layout(std430, binding = 1) readonly buffer ColorDataBlock {
 
 // Uniforms queried by name
 uniform bool u_tiled_mode;
-uniform float u_visual_scale;
+uniform float u_cone_scale;
 
 // Output: Varying to fragment shader
 layout (location = 0) out vec3 v_color;
@@ -45,10 +45,10 @@ void main() {
     if (u_tiled_mode) {
         // To generate a classic Voronoi diagram, all cones must be huge
         // A radius of 5.0 in clip space is more than enough to cover the screen
-        scaled_cone_pos.xy *= 5.0;
+        scaled_cone_pos.xy *= u_cone_scale;
     } else {
         // For visualizing receptive fields, scale by acceptance angle
-        scaled_cone_pos.xy *= acceptance_angle * u_visual_scale;
+        scaled_cone_pos.xy *= acceptance_angle * u_cone_scale;
     }
 
     // Final position is the scaled cone's vertex position, translated to the ommatidium's unique screen position

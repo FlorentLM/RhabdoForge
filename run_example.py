@@ -29,7 +29,7 @@ def main():
     TIME_DITHERING = False
 
     EYE_RADIUS = 0.01  # only used for RT version
-    NB_OMMATIDIA = 1962
+    NB_OMMATIDIA = 20002
     NB_SAMPLES = 256
 
     HEADLESS_MAX_STEPS = 1000

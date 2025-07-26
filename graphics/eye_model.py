@@ -183,6 +183,28 @@ class EyeModel:
         for om, angle in zip(self.ommatidia, avg_angular_dist_rad):
             om.acceptance_angle_rad = angle
 
+    def max_gap(self):
+        """
+        Finds the maximum angular distance between any ommatidium and its
+        single nearest neighbor, which represents the largest "gap" in the eye
+        """
+
+        if self.num_ommatidia == 1:
+            return 0.0
+
+        # Find the single nearest neighbor for each ommatidium
+        distances, _ = self.kdtree.query(self.directions, k=2)
+        nearest_neighbor_dists = distances[:, 1]
+        max_euclidean_dist = np.max(nearest_neighbor_dists)
+
+        # Convert the maximum Euclidean distance to an angular distance in radians
+        # This is the largest inter-ommatidial angle in the entire eye
+        # angle = arccos(1 - dist^2 / 2)
+        term = 1.0 - (max_euclidean_dist ** 2) / 2.0
+        max_angular_dist = np.arccos(np.clip(term, -1.0, 1.0))
+
+        return max_angular_dist
+
     def pack(self) -> np.ndarray:
         # TODO: Maybe the packed version could be stored and accessed with cool accessor properties?
 

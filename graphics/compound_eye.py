@@ -31,7 +31,11 @@ class CompoundEyeBase(ABC):
         self._voronoi_program = None
         self._voronoi_vao = None
         self._cone_vertex_count = 0
-        self.visualization_scale = 1.0 / (2.0 * np.pi)
+
+        # A small fixed scale for the receptive field view
+        self.receptive_field_scale = 1.0 / (2.0 * np.pi)
+        # Dynamic scale for the Voronoi view (needs to fill the quad)
+        self.voronoi_scale = self.model.max_gap() * 2.5
 
         # Query maximum possible size for an SSBO on current GPU
         self._max_ssbo_size_bytes = glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)
@@ -164,8 +168,10 @@ class CompoundEyeBase(ABC):
         glUseProgram(self.voronoi_program)
         glEnable(GL_DEPTH_TEST)
 
-        glUniform1i(glGetUniformLocation(self.voronoi_program, "u_tiled_mode"), tiled_mode)
-        glUniform1f(glGetUniformLocation(self.voronoi_program, "u_visual_scale"), self.visualization_scale)
+        cone_scale = self.voronoi_scale if tiled_mode else self.receptive_field_scale
+
+        glUniform1i(glGetUniformLocation(self.voronoi_program, 'u_tiled_mode'), tiled_mode)
+        glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_cone_scale'), cone_scale)
 
         # Binding 0: Ommatidia geometry (directions, origins, etc)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
