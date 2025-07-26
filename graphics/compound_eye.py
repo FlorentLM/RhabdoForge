@@ -33,6 +33,10 @@ class CompoundEyeBase(ABC):
         self._cone_vertex_count = 0
         self.visualization_scale = 1.0 / (2.0 * np.pi)
 
+        # Query maximum possible size for an SSBO on current GPU
+        self._max_ssbo_size_bytes = glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)
+        print(f"Max SSBO size: {self._max_ssbo_size_bytes / (1024 * 1024):.2f} MB")
+
         # SSBO for input ommatidia geometry (directions, angles, etc)
         self.input_om_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.input_om_ssbo)
@@ -356,7 +360,17 @@ class CompoundEyeRay(CompoundEyeBase):
 
     @samples_per_ommatidium.setter
     def samples_per_ommatidium(self, value):
-        new_value = int(min(32768, max(1, value)))
+
+        # Theoretical max number of samples affordable based on hardware's SSBO size limit
+        max_total_samples = self._max_ssbo_size_bytes // 16     # each sample result is a vec4 (16 bytes)
+        max_samples_per_om = max(1, max_total_samples // self.num_ommatidia)
+
+        # Clamp the requested value to safe range
+        new_value = int(np.clip(value, 1, max_samples_per_om))
+
+        if new_value != value:
+            print(f"Warning: Clamped samples per ommatidium to {new_value} (HW limit is {max_samples_per_om}).")
+
         if new_value == self._samples_per_ommatidium:
             return
 
