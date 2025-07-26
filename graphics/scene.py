@@ -113,7 +113,7 @@ class RaytracingScene:
         # Buffer allocation
         num_triangles = len(self.base_positions) // 3 if self.base_positions is not None else 0
 
-        # GLSL struct Triangle is 80 bytes (5 * vec4) = 20 floats
+        # GLSL Triangle struct is 80 bytes (so 20 floats) with final std430 padding
         self.triangles = np.zeros(num_triangles * 20, dtype=VEC_DTYPE)
 
         # Populate the .triangles buffer with the initial state of the scene
@@ -140,8 +140,7 @@ class RaytracingScene:
                 self.material_map[asset] = material_idx
                 material_list.append(texture_idx)
 
-        # GLSL struct Material { uint texture_idx; uint pad0, pad1, pad2; };
-        # 4 floats, so 16 bytes
+        # GLSL Material struct is 16 bytes (so 4 floats)
         num_materials = len(material_list)
         self.materials = np.zeros(num_materials * 4, dtype=VEC_DTYPE)
 
@@ -208,7 +207,7 @@ class RaytracingScene:
         uv = self.base_uvs.reshape(num_triangles, 3, 2)             # (N, 3 verts, 2 coords)
 
         # view of flat buffer reshaped for easy triangle-wise assignment
-        flat_view = self.triangles.reshape(num_triangles, 20)
+        flat_view = self.triangles.reshape(num_triangles, 20)   # stride 20 (80 bytes total, 4 bytes per float)
 
         # Assign the data in chunks
         flat_view[:, 0:3] = v[:, 0, :]      # v0 positions

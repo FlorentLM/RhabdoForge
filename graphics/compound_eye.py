@@ -14,14 +14,14 @@ class CompoundEyeBase(ABC):
     """
     Abstract base class for an insect eye model, handling visualization and common properties
     """
-    def __init__(self, eye_model: EyeModel, time_dithering=True):
+    def __init__(self, eye_model: EyeModel, time_dithering=True, nb_samples=256):
         self.model = eye_model
         self.num_ommatidia = self.model.num_ommatidia
 
         self.ommatidia_input_data = self.model.pack()
 
         # Default umber of rays to sample per ommatidium
-        self._samples_per_ommatidium = 256
+        self._samples_per_ommatidium = nb_samples
 
         # A counter for time dithering during sampling
         self._time_dithering = time_dithering
@@ -77,7 +77,7 @@ class CompoundEyeBase(ABC):
     @time_dithering.setter
     def time_dithering(self, value: bool):
         self._time_dithering = bool(value)
-        print(f"Time dithering has been {'ENABLED' if self._time_dithering else 'DISABLED'}.")
+        print(f"Time dithering {'ENABLED' if self._time_dithering else 'DISABLED'}.")
 
     @abstractmethod
     def _compute_colors(self, *args, **kwargs):
@@ -131,7 +131,7 @@ class CompoundEyeBase(ABC):
     @property
     def voronoi_program(self):
         if self._voronoi_program is None:
-            print("Compiling Voronoi visualization shaders...")
+            # print("Compiling Voronoi visualization shaders...")
             self._voronoi_program = load_shaders('shaders/voronoi.vert', 'shaders/voronoi.frag')
         return self._voronoi_program
 
@@ -188,8 +188,8 @@ class CompoundEyeBase(ABC):
 
 
 class CompoundEyeRaster(CompoundEyeBase):
-    def __init__(self, eye_model: EyeModel, time_dithering=True):
-        super().__init__(eye_model, time_dithering)
+    def __init__(self, eye_model: EyeModel, time_dithering=True, nb_samples=256):
+        super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
         self.ommatidia_program = load_compute_shader('shaders/ommatidia_raster.comp')
 
     @property
@@ -242,20 +242,20 @@ class CompoundEyeRaster(CompoundEyeBase):
 
 
 class CompoundEyeRay(CompoundEyeBase):
-    def __init__(self, eye_model, scene: Scene, time_dithering=True):
-        super().__init__(eye_model, time_dithering)
+    def __init__(self, eye_model, scene: Scene, time_dithering=True, nb_samples=256):
+        super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
 
         # Pack the scene for ray-tracing
         self.rt_scene = RaytracingScene(scene)
 
-        print("Compiling ray-tracing and reduction shaders...")
+        # print("Compiling ray-tracing and reduction shaders...")
         self.raytrace_program = load_compute_shader('shaders/ommatidia_raytracing.comp')
         self.reduction_program = load_compute_shader('shaders/rays_reduction.comp')
 
         # SSBO to store the scene triangles
         self.triangles_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.triangles_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, self.rt_scene.triangles.nbytes, self.rt_scene.triangles, GL_STATIC_DRAW)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, self.rt_scene.triangles.nbytes, self.rt_scene.triangles, GL_DYNAMIC_DRAW)
 
         # SSBO for the ommatidia sampling - it is bound and allocated by the samples_per_ommatidium setter
         self.ray_results_ssbo = glGenBuffers(1)
@@ -263,7 +263,7 @@ class CompoundEyeRay(CompoundEyeBase):
         # And a SSBO to store scene materials
         self.materials_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.materials_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, self.rt_scene.materials.nbytes, self.rt_scene.materials, GL_STATIC_DRAW)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, self.rt_scene.materials.nbytes, self.rt_scene.materials, GL_DYNAMIC_DRAW)
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)  # unbind after last glBufferData
 
@@ -308,7 +308,7 @@ class CompoundEyeRay(CompoundEyeBase):
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
-        print(f"Created texture array with {layer_count} layers ({tex_w}x{tex_h}).")
+
         return tex_array_id
 
     def update_geometry(self, instances: list):
@@ -362,12 +362,10 @@ class CompoundEyeRay(CompoundEyeBase):
 
         self._samples_per_ommatidium = new_value
 
-        # Need to reallocate the intermediate buffer
+        # (Re)allocate the intermediate buffer
         self.total_samples = self.num_ommatidia * self._samples_per_ommatidium
 
-        print(f"Re-allocating ray results buffer for {self.total_samples} total samples.")
-
-        # the SSBO for the ommatidia sampling
+        # SSBO for ommatidia sampling
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ray_results_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, self.total_samples * 16, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
@@ -389,9 +387,11 @@ class CompoundEyeRay(CompoundEyeBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self.ray_results_ssbo)
 
         # Set uniforms
+        num_triangles = len(self.rt_scene.triangles) // 20   # stride 20 (80 bytes total, 4 bytes per float)
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_skybox'), 0)
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_scene_textures'), 1)
-        glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_triangles'), len(self.rt_scene.triangles))
+        glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_triangles'), num_triangles)
+        glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_ommatidia'), self.num_ommatidia)
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_samples_per_ommatidium'), self.samples_per_ommatidium)
         glUniform1f(glGetUniformLocation(self.raytrace_program, 'u_time'), float(self._time_counter))
         glUniform3fv(glGetUniformLocation(self.raytrace_program, 'u_camera_position'), 1, camera.position)
