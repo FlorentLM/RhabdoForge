@@ -13,7 +13,7 @@ layout(std430, binding = 2) readonly buffer MaterialBuffer { Material u_material
 // Outputs
 layout(std430, binding = 3) writeonly buffer RayResultBuffer { vec4 u_ray_results[]; };
 
-// Uniforms
+// Uniforms: skybox and texture array for scene materials
 layout(binding = 0) uniform samplerCube u_skybox;
 layout(binding = 1) uniform sampler2DArray u_scene_textures;
 
@@ -24,10 +24,6 @@ uniform int u_samples_per_ommatidium;
 uniform float u_time;
 uniform mat4 u_camera_orientation; // to transform ommatidia directions to world space
 uniform vec3 u_camera_position;    // for ray origin
-
-// skybox and texture array for scene materials
-uniform samplerCube u_skybox;
-uniform sampler2DArray u_scene_textures;
 
 const float PI = 3.14159265359;
 const float SAMPLING_BIAS = 0.5;
