@@ -187,3 +187,20 @@ def load_cubemap(folder_path):
 
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
     return texture_id
+
+
+def check_MetalGL_context():
+    import ctypes
+
+    # Useful to test if MGL is loaded on macOS
+
+    # Load PyGame's SDL2 library
+    sdl_path = Path().cwd() / ".venv/lib/python3.13/site-packages/pygame/.dylibs/libSDL2-2.0.0.dylib"
+    sdl = ctypes.CDLL(sdl_path.as_posix())
+    sdl.SDL_GL_GetCurrentContext.restype = ctypes.c_void_p
+
+    gl_ctx_ptr = sdl.SDL_GL_GetCurrentContext()
+    print("SDL_GL_GetCurrentContext returned:", gl_ctx_ptr)
+    print("GL version:", glGetString(GL_VERSION).decode())
+    print("Renderer:", glGetString(GL_RENDERER).decode())
+    print("---------------------------------")
