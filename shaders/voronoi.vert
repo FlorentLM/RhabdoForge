@@ -21,14 +21,15 @@ uniform float u_cone_scale;
 // Output: Varying to fragment shader
 layout (location = 0) out vec3 v_color;
 
-const float PI = 3.14159265359;
 
 void main() {
     // Get the data for the specific instance (ommatidium) we are drawing
     int instance_id = gl_InstanceID;
 
+    Ommatidium om = u_ommatidia_data[instance_id];
+
     // need to re-calculate screen position from direction vector
-    vec3 dir = u_ommatidia_data[instance_id].direction;
+    vec4 dir = om.direction;
     float longitude = atan(dir.x, -dir.z); // atan2(x, z)
     float latitude = asin(dir.y);
 
@@ -37,7 +38,7 @@ void main() {
     float screen_y = latitude / (PI / 2.0);
     vec2 instance_screen_pos = vec2(screen_x, screen_y);
 
-    float acceptance_angle = u_ommatidia_data[instance_id].acceptance_angle;
+    vec2 acceptance_angles = om.acceptance_angles;
     vec3 instance_color = u_ommatidia_colors[instance_id].rgb;
 
     vec3 scaled_cone_pos = a_cone_vertex_pos;
@@ -48,7 +49,7 @@ void main() {
         scaled_cone_pos.xy *= u_cone_scale;
     } else {
         // For visualizing receptive fields, scale by acceptance angle
-        scaled_cone_pos.xy *= acceptance_angle * u_cone_scale;
+        scaled_cone_pos.xy *= acceptance_angles * u_cone_scale;
     }
 
     // Final position is the scaled cone's vertex position, translated to the ommatidium's unique screen position

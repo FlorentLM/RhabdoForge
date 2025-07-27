@@ -21,13 +21,13 @@ from graphics.raster_mode import PanoramicEye
 
 def main():
 
-    USE_RAYTRACER = True
+    USE_RAYTRACER = False
 
     # TODO: move these flags to the engine
-    PANORAMIC_VIEW = True
+    PANORAMIC_VIEW = False
     RUN_HEADLESS = False
     TIME_DITHERING = False
-    COMPOUND_EYE_VIEW = False
+    COMPOUND_EYE_VIEW = True
     VORONOI_VIEW = True
 
     EYE_RADIUS = 0.01  # only used for RT version

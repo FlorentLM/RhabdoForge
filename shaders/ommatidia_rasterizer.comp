@@ -55,9 +55,6 @@ void main()
 
         vec3 sample_dir = sampledir(om, tangent, bitangent, om_dir, r1, r2);
 
-        vec3 sampled_color = texture(u_scene_cubemap, sample_dir).rgb;
-        total_color += sampled_color;
-
         // Each sample has equal weight (distribution is already biased)
         vec3 sampled_color = texture(u_scene_cubemap, sample_dir).rgb;
         total_color += sampled_color;

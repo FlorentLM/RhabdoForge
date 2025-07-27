@@ -113,7 +113,7 @@ class EyeModel:
         if need_estimation:
             # for a uniform eye estimate one angle and apply it to both H and V
             print("Estimating acceptance angles for uniform eye...")
-            model.estimate_acceptance_angles(assume_circul=True)
+            model.estimate_acceptance_angles(assume_circular=True)
 
         return model
 

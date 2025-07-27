@@ -395,7 +395,7 @@ class Engine:
         mouse_x, mouse_y = pygame.mouse.get_rel()
         if mouse_x != 0 or mouse_y != 0:
             self.camera.yaw += mouse_x * self.mouse_sensitivity
-            # self.camera.pitch = np.clip(self.camera.pitch + mouse_y * self.mouse_sensitivity, -89.0, 89.0, dtype=VEC_DTYPE)
+            self.camera.pitch = np.clip(self.camera.pitch + mouse_y * self.mouse_sensitivity, -89.0, 89.0, dtype=VEC_DTYPE)
 
     def close(self):
         """ Frees all allocated resources """
