@@ -26,28 +26,22 @@ uniform float u_time;
 uniform mat4 u_camera_orientation; // to transform ommatidia directions to world space
 uniform vec3 u_camera_position;    // for ray origin
 
-const float PI = 3.14159265359;
-const float SAMPLING_BIAS = 0.5;
 
 // Functions
-
-float rand(vec2 co){
-    return fract(sin(dot(co.xy, vec2(12.9898, 78.233)) + u_time) * 43758.5453);
-}
 
 // Möller–Trumbore ray-triangle intersection algorithm
 HitInfo intersect_triangle(Ray r, Triangle tri) {
     HitInfo hit;
     hit.found = false;
-    vec3 edge1 = tri.v1 - tri.v0;
-    vec3 edge2 = tri.v2 - tri.v0;
+    vec3 edge1 = tri.v1.xyz - tri.v0.xyz;
+    vec3 edge2 = tri.v2.xyz - tri.v0.xyz;
     vec3 h = cross(r.direction, edge2);
     float a = dot(edge1, h);
 
     if (a > -1e-6 && a < 1e-6) return hit; // ray is parallel to the triangle
 
     float f = 1.0 / a;
-    vec3 s = r.origin - tri.v0;
+    vec3 s = r.origin - tri.v0.xyz;
     float u = f * dot(s, h);
 
     if (u < 0.0 || u > 1.0) return hit;
@@ -82,10 +76,10 @@ void main() {
     Ommatidium om = u_ommatidia_data[ommatidium_idx];
 
     // Transform ommatidium direction to world space
-    vec3 om_world_dir = (u_camera_orientation * vec4(om.direction, 0.0)).xyz;
+    vec3 om_world_dir = (u_camera_orientation * om.direction).xyz;
 
     // Transform the local origin offset by the camera's orientation and add to its position
-    vec3 om_world_origin = u_camera_position + (u_camera_orientation * vec4(om.origin, 0.0)).xyz;
+    vec3 om_world_origin = u_camera_position + (u_camera_orientation * om.origin).xyz;
 
     // Create local coordinate system for sampling
     vec3 up = abs(om_world_dir.y) > 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
@@ -93,17 +87,11 @@ void main() {
     vec3 bitangent = cross(om_world_dir, tangent);
 
     // Monte Carlo sampling within cone
-    float r1 = rand(vec2(ommatidium_idx, sample_idx));
-    float r2 = rand(vec2(ommatidium_idx, sample_idx) + 0.5);
-    float r1_warped = pow(r1, SAMPLING_BIAS);
-    float cos_theta = mix(cos(om.acceptance_angle), 1.0, r1_warped);
-    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
-    float phi = 2.0 * PI * r2;
-    vec3 sample_local = vec3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
+    float r1 = rand(vec2(ommatidium_idx, sample_idx), u_time);
+    float r2 = rand(vec2(ommatidium_idx, sample_idx) + 0.5, u_time);
 
-    Ray r;
     r.origin = om_world_origin;
-    r.direction = normalize(mat3(tangent, bitangent, om_world_dir) * sample_local);
+    r.direction = sampledir(om, tangent, bitangent, om_dir, r1, r2);
 
     // Trace the ray
     HitInfo closest_hit;

@@ -22,18 +22,6 @@ uniform int u_num_ommatidia;
 uniform int u_samples_per_ommatidium;
 uniform float u_time; // For temporal dithering
 
-const float PI = 3.14159265359;
-const float SAMPLING_BIAS = 0.5; // smaller = samples more concentrated at the center
-
-// Simple RNG with temporal dithering
-float rand(vec2 co){
-    return fract(sin(dot(co.xy, vec2(12.9898, 78.233)) + u_time) * 43758.5453);
-}
-
-// Gaussian acceptance function
-float gaussian(float angle_zeta, float acceptance_angle_rho) {
-    return exp(-4.0 * log(2.0) * pow(angle_zeta / acceptance_angle_rho, 2.0));
-}
 
 void main()
 {
@@ -46,8 +34,9 @@ void main()
     }
 
     // Unpack data for this specific ommatidium
-    vec3 om_dir = normalize(u_ommatidia_data[ommatidium_idx].direction);
-    float acceptance_angle = u_ommatidia_data[ommatidium_idx].acceptance_angle;
+    Ommatidium om = u_ommatidia_data[ommatidium_idx];
+
+    vec3 om_dir = normalize(om.direction.xyz);
 
     vec3 total_color = vec3(0.0);
     float total_weight = 0.0;
@@ -58,24 +47,16 @@ void main()
     vec3 bitangent = cross(om_dir, tangent);
 
     // Monte Carlo sampling within a cone
-    float cos_acceptance_angle = cos(acceptance_angle);
-
     for (int i = 0; i < u_samples_per_ommatidium; i++) {
+
         // Generate two random numbers
-        float r1 = rand(vec2(ommatidium_idx, i));
-        float r2 = rand(vec2(ommatidium_idx, i) + 0.5);
+        float r1 = rand(vec2(ommatidium_idx, i), u_time);
+        float r2 = rand(vec2(ommatidium_idx, i) + 0.5, u_time);
 
-        // Importance Sampling
-        // Warp the random number to bias samples towards the center of the cone
-        float r1_warped = pow(r1, SAMPLING_BIAS);
-        float cos_theta = mix(cos_acceptance_angle, 1.0, r1_warped);
+        vec3 sample_dir = sampledir(om, tangent, bitangent, om_dir, r1, r2);
 
-        float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
-        float phi = 2.0 * PI * r2;
-
-        // Convert sample from local coordinates to world coordinates
-        vec3 sample_local = vec3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
-        vec3 sample_dir = normalize(mat3(tangent, bitangent, om_dir) * sample_local);
+        vec3 sampled_color = texture(u_scene_cubemap, sample_dir).rgb;
+        total_color += sampled_color;
 
         // Each sample has equal weight (distribution is already biased)
         vec3 sampled_color = texture(u_scene_cubemap, sample_dir).rgb;

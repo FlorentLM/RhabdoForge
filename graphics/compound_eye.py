@@ -200,7 +200,7 @@ class CompoundEyeBase(ABC):
 class CompoundEyeRaster(CompoundEyeBase):
     def __init__(self, eye_model: EyeModel, time_dithering=True, nb_samples=256):
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
-        self.ommatidia_program = load_compute_shader('shaders/ommatidia_raster.comp')
+        self.ommatidia_program = load_compute_shader('shaders/ommatidia_rasterizer.comp')
 
     @property
     def samples_per_ommatidium(self):

@@ -1,9 +1,9 @@
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import numpy as np
 from dataclasses import dataclass, field
 from scipy.spatial import KDTree
-from graphics.utils import VEC_DTYPE
+from graphics.utils import VEC_DTYPE, WORLD_UP
 
 
 @dataclass
@@ -18,7 +18,9 @@ class Ommatidium:
     direction: np.ndarray = field(repr=False)  # 3D pointing vector
     origin: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=VEC_DTYPE), repr=False)  # 3D origin point
 
-    acceptance_angle_rad: float = 0.0
+    # Acceptance angle(s)
+    acceptance_angle_h_rad: float = 0.0
+    acceptance_angle_v_rad: float = 0.0
 
     @property
     def azimuth(self):
@@ -27,6 +29,16 @@ class Ommatidium:
     @property
     def elevation(self):
         return self.elevation_rad
+
+    @property
+    def acceptance_angles_rad(self) -> Tuple[float, float]:
+        """ Returns (horizontal, vertical) acceptance angles in radians """
+        return self.acceptance_angle_h_rad, self.acceptance_angle_v_rad
+
+    @property
+    def acceptance_angles_deg(self) -> Tuple[float, float]:
+        """ Returns (horizontal, vertical) acceptance angles in degrees """
+        return np.rad2deg(self.acceptance_angle_h_rad), np.rad2deg(self.acceptance_angle_v_rad)
 
     # And some more aliases
     longitude = azimuth
@@ -75,8 +87,16 @@ class EyeModel:
         om_lats = np.arcsin(om_dirs[:, 1])
         om_origins = om_dirs * eye_radius
 
-        acceptance_angle_rad = np.deg2rad(acceptance_angle_deg or 0.0, dtype=VEC_DTYPE)
-        # TODO: this will break if acceptance_angle_deg is a numpy array
+        # Handle acceptance angle input
+        angle_h_rad, angle_v_rad = 0.0, 0.0
+        need_estimation = True
+        if acceptance_angle_deg is not None:
+            need_estimation = False
+            if isinstance(acceptance_angle_deg, (list, tuple)):
+                angle_h_rad = np.deg2rad(acceptance_angle_deg[0], dtype=VEC_DTYPE)
+                angle_v_rad = np.deg2rad(acceptance_angle_deg[1], dtype=VEC_DTYPE)
+            else:  # single float
+                angle_h_rad = angle_v_rad = np.deg2rad(acceptance_angle_deg, dtype=VEC_DTYPE)
 
         ommatidia_list = [
             Ommatidium(id=i,
@@ -84,14 +104,16 @@ class EyeModel:
                        origin=origin,
                        azimuth_rad=lon,
                        elevation_rad=lat,
-                       acceptance_angle_rad=acceptance_angle_rad)
+                       acceptance_angle_h_rad=angle_h_rad,
+                       acceptance_angle_v_rad=angle_v_rad)
             for i, (dir, origin, lon, lat) in enumerate(zip(om_dirs, om_origins, om_lons, om_lats))
         ]
         model = cls(ommatidia_list)
 
-        # If no acceptance angle was passed, it needs to be computed
-        if not acceptance_angle_deg:
-            model.estimate_acceptance_angles()
+        if need_estimation:
+            # for a uniform eye estimate one angle and apply it to both H and V
+            print("Estimating acceptance angles for uniform eye...")
+            model.estimate_acceptance_angles(assume_circul=True)
 
         return model
 
@@ -109,35 +131,38 @@ class EyeModel:
 
         if file_path.suffix == '.npy':
             data = np.load(file_path).astype(VEC_DTYPE)
-            num_ommatidia = data.shape[0]
-            num_cols = data.shape[1]
+            num_ommatidia, num_cols = data.shape
+
+            om_dirs = data[:, :3]
+            om_lons = np.arctan2(om_dirs[:, 0], -om_dirs[:, 2])
+            om_lats = np.arcsin(om_dirs[:, 1])
 
             if num_cols == 3:  # Directions only
-                om_dirs = data
-                om_lons = np.arctan2(om_dirs[:, 0], -om_dirs[:, 2])
-                om_lats = np.arcsin(om_dirs[:, 1])
-                ommatidia_list = [Ommatidium(id=i, direction=d, azimuth_rad=lon, elevation_rad=lat) for i, (d, lon, lat)
-                                  in enumerate(zip(om_dirs, om_lons, om_lats))]
-
-                # Create the model and then calculate the missing acceptance angles
+                ommatidia_list = [Ommatidium(id=i, direction=d, azimuth_rad=lon, elevation_rad=lat)
+                                  for i, (d, lon, lat) in enumerate(zip(om_dirs, om_lons, om_lats))]
                 model = cls(ommatidia_list)
-
-                print("Loaded 3-column data. Estimating acceptance angles from local density.")
-                model.estimate_acceptance_angles()
+                print("Loaded 3-column data. Estimating non-uniform acceptance angles.")
+                model.estimate_acceptance_angles(assume_circular=False)
                 return model
 
-            elif num_cols == 4:  # Directions + acceptance angles
-                om_dirs = data[:, :3]
-                acceptance_angles = data[:, 3]
-                om_lons = np.arctan2(om_dirs[:, 0], -om_dirs[:, 2])
-                om_lats = np.arcsin(om_dirs[:, 1])
-                ommatidia_list = [
-                    Ommatidium(id=i, direction=d, azimuth_rad=lon, elevation_rad=lat, acceptance_angle_rad=angle) for
-                    i, (d, lon, lat, angle) in enumerate(zip(om_dirs, om_lons, om_lats, acceptance_angles))]
+            elif num_cols == 4:  # Directions + 1 acceptance angle (circular)
+                angles = data[:, 3]
+                ommatidia_list = [Ommatidium(id=i, direction=d, azimuth_rad=lon, elevation_rad=lat,
+                                             acceptance_angle_h_rad=a, acceptance_angle_v_rad=a)
+                                  for i, (d, lon, lat, a) in enumerate(zip(om_dirs, om_lons, om_lats, angles))]
+                return cls(ommatidia_list)
+
+            elif num_cols == 5:  # Directions + 2 acceptance angles (elliptical)
+                angle_h = data[:, 3]
+                angle_v = data[:, 4]
+                ommatidia_list = [Ommatidium(id=i, direction=d, azimuth_rad=lon, elevation_rad=lat,
+                                             acceptance_angle_h_rad=ah, acceptance_angle_v_rad=av)
+                                  for i, (d, lon, lat, ah, av) in
+                                  enumerate(zip(om_dirs, om_lons, om_lats, angle_h, angle_v))]
                 return cls(ommatidia_list)
 
             else:
-                raise ValueError(f"Expected 3 or 4 columns, but got {num_cols}")
+                raise ValueError(f"Expected 3, 4, or 5 columns, but got {num_cols}")
         else:
             raise NotImplementedError(f"File format '{file_path.suffix}' not supported yet.")
 
@@ -158,30 +183,63 @@ class EyeModel:
 
         return neighbors
 
-    def estimate_acceptance_angles(self, k: int = 6):
+    def estimate_acceptance_angles(self, k: int = 8, assume_circular: bool = False):
         """
-        Calculates acceptance angles for each ommatidium based on the average angular
-        distance to its k-nearest neighbours
+        Calculates acceptance angles based on nearest neighbours
         """
-
         if self.num_ommatidia <= k:
             raise ValueError("Cannot estimate angles when k is >= number of ommatidia.")
 
-        distances, _ = self.kdtree.query(self.directions, k=k + 1)
+        distances, indices = self.kdtree.query(self.directions, k=k + 1)
+        neighbour_dirs = self.directions[indices[:, 1:]]
 
-        # first column is distance to self
-        neighbor_distances = distances[:, 1:]
+        # For each ommatidium the local 'up' is derived from the global 'up'
+        local_y_axes = WORLD_UP - self.directions * np.sum(self.directions * WORLD_UP, axis=1, keepdims=True)
+        local_y_axes /= np.linalg.norm(local_y_axes, axis=1, keepdims=True)
+        local_x_axes = np.cross(local_y_axes, self.directions)
 
-        avg_euclidean_dist = np.mean(neighbor_distances, axis=1)
+        neighbour_vectors = neighbour_dirs - self.directions[:, np.newaxis, :] # shape (num_om, k, 3)
 
-        # Convert to angular distance (radians)
-        # d^2 = 2 - 2*cos(phi), which gives phi = arccos(1 - d^2/2)
-        term = 1 - (avg_euclidean_dist ** 2) / 2.0
-        avg_angular_dist_rad = np.arccos(np.clip(term, -1.0, 1.0))
+        # Project neighbour vectors onto the local x and y axes to get h and v components of the separation
+        sep_h = np.sum(neighbour_vectors * local_x_axes[:, np.newaxis, :], axis=2)
+        sep_v = np.sum(neighbour_vectors * local_y_axes[:, np.newaxis, :], axis=2)
 
-        # Assign the calculated angle to each ommatidium
-        for om, angle in zip(self.ommatidia, avg_angular_dist_rad):
-            om.acceptance_angle_rad = angle
+        # angular distance is ~ Euclidean distance in the tangent plane
+        angular_dist_h = np.abs(sep_h)
+        angular_dist_v = np.abs(sep_v)
+
+        # For each ommatidium find the 2 "most horizontal" and 2 "most vertical" neighbours
+        # (heuristic: horizontal neighbours have high 'angular_dist_h' and low 'angular_dist_v')
+        # TODO: not sure this is the most robust way to do it
+        h_likeness = angular_dist_h / (angular_dist_v + 1e-9)
+        v_likeness = angular_dist_v / (angular_dist_h + 1e-9)
+        h_neighbor_indices = np.argsort(h_likeness, axis=1)[:, -2:]
+        v_neighbor_indices = np.argsort(v_likeness, axis=1)[:, -2:]
+
+        # Get actual angular distances for these neighbours
+        h_distances = np.take_along_axis(distances[:, 1:], h_neighbor_indices, axis=1)
+        v_distances = np.take_along_axis(distances[:, 1:], v_neighbor_indices, axis=1)
+
+        # Average distances to get characteristic interommatidial distance
+        avg_h_dist = np.mean(h_distances, axis=1)
+        avg_v_dist = np.mean(v_distances, axis=1)
+
+        # Convert Euclidean distance on unit sphere to angular distance
+        term_h = 1 - (avg_h_dist ** 2) / 2.0
+        term_v = 1 - (avg_v_dist ** 2) / 2.0
+        final_angles_h = np.arccos(np.clip(term_h, -1.0, 1.0))
+        final_angles_v = np.arccos(np.clip(term_v, -1.0, 1.0))
+
+        # And assign to ommatidia
+        for i, om in enumerate(self.ommatidia):
+            if assume_circular:
+                # For uniform eyes just average the two
+                avg_angle = (final_angles_h[i] + final_angles_v[i]) / 2.0
+                om.acceptance_angle_h_rad = avg_angle
+                om.acceptance_angle_v_rad = avg_angle
+            else:
+                om.acceptance_angle_h_rad = final_angles_h[i]
+                om.acceptance_angle_v_rad = final_angles_v[i]
 
     def max_gap(self):
         """
@@ -206,28 +264,26 @@ class EyeModel:
         return max_angular_dist
 
     def pack(self) -> np.ndarray:
-        # TODO: Maybe the packed version could be stored and accessed with cool accessor properties?
-
-        # Packs ommatidia data into a numpy array with a layout that is compatible with std430 rules for the SSBO
+        # Packs ommatidia data into a numpy array compatible with the new GLSL struct.
         #
         # GLSL struct layout (std430):
         # struct Ommatidium {
-        #     vec3 origin;           // offset 0, size 12
-        #     // 4 bytes padding
-        #     vec3 direction;        // offset 16, size 12
-        #     float acceptance_angle; // offset 28, size 4
-        # };                         // total size = 32 bytes
+        #     vec4 origin;            // offset 0,  size 16
+        #     vec4 direction;         // offset 16, size 16
+        #     vec2 acceptance_angles; // offset 32, size 8
+        #     float pad0, pad1;       // offset 40, size 8
+        # };                          // total size = 48 bytes
 
         num_om = self.num_ommatidia
 
-        # empty array with 8 columns (3 origin + 1 pad + 3 dir + 1 angle)
-        packed_data = np.zeros((num_om, 8), dtype=VEC_DTYPE)
+        # empty array with 12 columns 4 (origin) + 4 (dir) + 2 (angles) + 2 (pad)
+        packed_data = np.zeros((num_om, 12), dtype=VEC_DTYPE)
 
         # Fill with data
         packed_data[:, 0:3] = np.array([om.origin for om in self.ommatidia])
-        # column 3 is left as 0.0 for padding
         packed_data[:, 4:7] = self.directions
-        packed_data[:, 7] = np.array([om.acceptance_angle_rad for om in self.ommatidia])
+        packed_data[:, 8] = np.array([om.acceptance_angle_h_rad for om in self.ommatidia])
+        packed_data[:, 9] = np.array([om.acceptance_angle_v_rad for om in self.ommatidia])
 
         return packed_data
 
