@@ -4,6 +4,7 @@ import numpy as np
 from dataclasses import dataclass, field
 from scipy.spatial import KDTree
 from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_RIGHT
+from functools import cached_property
 
 
 @dataclass
@@ -12,15 +13,23 @@ class Ommatidium:
 
     id: int
 
-    azimuth_rad: float      # Horizontal angle (longitude)
-    elevation_rad: float    # Vertical angle (latitude)
-
     direction: np.ndarray = field(repr=False)  # 3D pointing vector
     origin: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=VEC_DTYPE), repr=False)  # 3D origin point
 
     # Acceptance angle(s)
-    acceptance_angle_h_rad: float = 0.0
-    acceptance_angle_v_rad: float = 0.0
+    acceptance_h: float = 0.0
+    acceptance_v: float = 0.0
+
+    # These are now calculated properties, not stored state.
+    @cached_property
+    def azimuth_rad(self) -> float:
+        """ Horizontal angle (longitude) """
+        return np.arctan2(self.direction[0], -self.direction[2])
+
+    @cached_property
+    def elevation_rad(self) -> float:
+        """ Vertical angle (latitude) """
+        return np.arcsin(self.direction[1])
 
     @property
     def azimuth(self):
@@ -31,14 +40,14 @@ class Ommatidium:
         return self.elevation_rad
 
     @property
-    def acceptance_angles_rad(self) -> Tuple[float, float]:
+    def acceptance_rad(self) -> Tuple[float, float]:
         """ Returns (horizontal, vertical) acceptance angles in radians """
-        return self.acceptance_angle_h_rad, self.acceptance_angle_v_rad
+        return self.acceptance_h, self.acceptance_v
 
     @property
-    def acceptance_angles_deg(self) -> Tuple[float, float]:
+    def acceptance(self) -> Tuple[float, float]:
         """ Returns (horizontal, vertical) acceptance angles in degrees """
-        return np.rad2deg(self.acceptance_angle_h_rad), np.rad2deg(self.acceptance_angle_v_rad)
+        return np.rad2deg(self.acceptance_h), np.rad2deg(self.acceptance_v)
 
     # And some more aliases
     longitude = azimuth
@@ -110,14 +119,11 @@ class CompoundEye:
 
         # Create the base ommatidia with their geometric properties
         self.num_ommatidia = len(self.directions)
-
-        lons = np.arctan2(self.directions[:, 0], -self.directions[:, 2])
-        lats = np.arcsin(self.directions[:, 1])
         origs = self.directions * eye_radius if eye_radius > 0 else np.zeros_like(self.directions)
 
         self.ommatidia: List[Ommatidium] = [
-            Ommatidium(id=i, direction=d, origin=o, azimuth_rad=lon, elevation_rad=lat)
-            for i, (d, o, lon, lat) in enumerate(zip(self.directions, origs, lons, lats))
+            Ommatidium(id=i, direction=d, origin=o)
+            for i, (d, o) in enumerate(zip(self.directions, origs))
         ]
         self.kdtree = KDTree(self.directions)
 
@@ -205,8 +211,8 @@ class CompoundEye:
             self._set_acceptance_angles(estimated_angles)
 
         # Now that Δρ and Δφ are known, calculate and store the resulting eye parameter p
-        all_rho_h = np.array([om.acceptance_angle_h_rad for om in self.ommatidia])
-        all_rho_v = np.array([om.acceptance_angle_v_rad for om in self.ommatidia])
+        all_rho_h = np.array([om.acceptance_h for om in self.ommatidia])
+        all_rho_v = np.array([om.acceptance_v for om in self.ommatidia])
 
         with np.errstate(divide='ignore', invalid='ignore'):
             self.p_h = all_rho_h / self.interommatidial_angle_h_rad
@@ -253,14 +259,14 @@ class CompoundEye:
         if angles_arr.ndim == 2 and angles_arr.shape == (self.num_ommatidia, 2):
             # Per-ommatidium H/V angles (shape (N, 2))
             for i, om in enumerate(self.ommatidia):
-                om.acceptance_angle_h_rad = float(angles_arr[i, 0])
-                om.acceptance_angle_v_rad = float(angles_arr[i, 1])
+                om.acceptance_h = float(angles_arr[i, 0])
+                om.acceptance_v = float(angles_arr[i, 1])
 
         elif angles_arr.ndim == 1 and angles_arr.shape == (self.num_ommatidia,):
             # Per-ommatidium isotropic angles (shape (N,))
             for i, om in enumerate(self.ommatidia):
-                om.acceptance_angle_h_rad = float(angles_arr[i])
-                om.acceptance_angle_v_rad = float(angles_arr[i])
+                om.acceptance_h = float(angles_arr[i])
+                om.acceptance_v = float(angles_arr[i])
 
         elif angles_arr.ndim == 0 or angles_arr.ndim == 1:
             # single global value (either a float or a tuple/list)
@@ -270,8 +276,8 @@ class CompoundEye:
                 angle_h = angle_v = angles_arr.item()
 
             for om in self.ommatidia:
-                om.acceptance_angle_h_rad = angle_h
-                om.acceptance_angle_v_rad = angle_v
+                om.acceptance_h = angle_h
+                om.acceptance_v = angle_v
 
         else:
             raise ValueError(f"Invalid shape for acceptance_angles_rad: {angles_arr.shape}")
@@ -408,7 +414,7 @@ class CompoundEye:
         return max_angular_dist
 
     def pack(self) -> np.ndarray:
-        # Packs ommatidia data into a numpy array compatible with the new GLSL struct.
+        # Packs ommatidia data into a numpy array compatible with the GLSL struct
         #
         # GLSL struct layout (std430):
         # struct Ommatidium {
@@ -426,8 +432,8 @@ class CompoundEye:
         # Fill with data
         packed_data[:, 0:3] = np.array([om.origin for om in self.ommatidia])
         packed_data[:, 4:7] = self.directions
-        packed_data[:, 8] = np.array([om.acceptance_angle_h_rad for om in self.ommatidia])
-        packed_data[:, 9] = np.array([om.acceptance_angle_v_rad for om in self.ommatidia])
+        packed_data[:, 8] = np.array([om.acceptance_h for om in self.ommatidia])
+        packed_data[:, 9] = np.array([om.acceptance_v for om in self.ommatidia])
 
         return packed_data
 
@@ -447,8 +453,8 @@ class CompoundEye:
                 f"    Vertical:   {np.mean(d_phi_v_deg):.3f}° (mean), {np.min(d_phi_v_deg):.3f}° (min), {np.max(d_phi_v_deg):.3f}° (max)")
 
         # Acceptance Angles (Δρ)
-        all_rho_h = np.array([om.acceptance_angle_h_rad for om in self.ommatidia])
-        all_rho_v = np.array([om.acceptance_angle_v_rad for om in self.ommatidia])
+        all_rho_h = np.array([om.acceptance_h for om in self.ommatidia])
+        all_rho_v = np.array([om.acceptance_v for om in self.ommatidia])
         rho_h_deg = np.rad2deg(all_rho_h)
         rho_v_deg = np.rad2deg(all_rho_v)
         summary.append(f"  Acceptance Angles (Δρ):")
