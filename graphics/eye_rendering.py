@@ -4,16 +4,16 @@ import numpy as np
 from OpenGL.GL import *
 
 from geometry.primitives import CONE_VERTICES
-from graphics.eyemodels import EyeModel
+from geometry.compound_eyes import CompoundEye
 from graphics.scene import RaytracingScene, Scene
 from graphics.utils import load_shaders, load_compute_shader
 
 
-class CompoundEyeBase(ABC):
+class EyeRendererBase(ABC):
     """
     Abstract base class for an insect eye model, handling visualization and common properties
     """
-    def __init__(self, eye_model: EyeModel, time_dithering=True, nb_samples=256):
+    def __init__(self, eye_model: CompoundEye, time_dithering=True, nb_samples=256):
         self.model = eye_model
         self.num_ommatidia = self.model.num_ommatidia
 
@@ -174,8 +174,8 @@ class CompoundEyeBase(ABC):
         # avoid division by zero if window is not yet setup
         aspect_ratio = viewport[2] / viewport[3] if viewport[3] > 0 else 1.0
 
-        # glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_aspect_ratio'), aspect_ratio)   # TODO: a keyboard key to toggle this
-        glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_aspect_ratio'), 1.0)
+        glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_aspect_ratio'), aspect_ratio)   # TODO: a keyboard key to toggle this
+        # glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_aspect_ratio'), 1.0)
         glUniform1i(glGetUniformLocation(self.voronoi_program, 'u_tiled_mode'), tiled_mode)
         glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_cone_scale'), cone_scale)
 
@@ -203,8 +203,8 @@ class CompoundEyeBase(ABC):
             glDeleteVertexArrays(1, [self._voronoi_vao])
 
 
-class CompoundEyeRaster(CompoundEyeBase):
-    def __init__(self, eye_model: EyeModel, time_dithering=True, nb_samples=256):
+class EyeRendererRaster(EyeRendererBase):
+    def __init__(self, eye_model: CompoundEye, time_dithering=True, nb_samples=256):
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
         self.ommatidia_program = load_compute_shader('shaders/ommatidia_rasterizer.comp')
 
@@ -257,7 +257,7 @@ class CompoundEyeRaster(CompoundEyeBase):
         super().free()
 
 
-class CompoundEyeRay(CompoundEyeBase):
+class EyeRendererRay(EyeRendererBase):
     def __init__(self, eye_model, scene: Scene, time_dithering=True, nb_samples=256):
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
 

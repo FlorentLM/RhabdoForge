@@ -58,7 +58,7 @@ class Ommatidium:
             self.direction /= norm
 
 
-class EyeModel:
+class CompoundEye:
     """
     Container for a single eye's ommatidia with spatial query capabilities
     """
@@ -71,8 +71,9 @@ class EyeModel:
                  lens_diameter: Optional[Union[float, Tuple]] = None,
                  rhabdom_diameter: Optional[Union[float, Tuple]] = None,
                  focal_length: Optional[Union[float, Tuple]] = None,
-                 wavelength: float = 500e-9,    # TODO: this is a nice temporary value, but the shaders will compute the 3 channels independently
-                 eye_radius: float = 0.0
+                 wavelength: float = 500e-9,  # TODO: this is a nice temporary value, but the shaders will compute the 3 channels independently
+                 eye_radius: float = 0.0,
+                 force_isotropic: bool = False
                  ):
         """
         The primary constructor for creating an EyeModel
@@ -87,6 +88,8 @@ class EyeModel:
             eye_parameter: (Optional) The eye parameter 'p' value (Δρ / Δφ). Used to estimate acceptance
                 angles if they are not provided directly (defaults to 1.0)
             eye_radius: (Optional) Physical radius of the eye for setting ommatidial origins
+            force_isotropic: (Optional) If True, ensures that the final acceptance angles
+                are circular (Δρ_h = Δρ_v) by averaging any estimated anisotropic values
         """
 
         # Directions
@@ -122,14 +125,16 @@ class EyeModel:
         self.interommatidial_angle_h_rad, self.interommatidial_angle_v_rad = self.estimate_interommatidial_angles()
 
         # Determine and set acceptance angles
+        estimated_angles = None
+
         if acceptance_angles_rad is not None:
             # Priority 1: Direct acceptance angles are provided
-            print("Using directly provided acceptance angles (Δρ).")
-            self._set_acceptance_angles(acceptance_angles_rad)
+            # print("Using directly provided acceptance angles (Δρ).")
+            estimated_angles = acceptance_angles_rad
 
         elif lens_diameter is not None and rhabdom_diameter is not None and focal_length is not None:
             # Priority 2: Estimate acceptance angles from optical parameters
-            print("Calculating acceptance angles (Δρ) from physical optical parameters.")
+            # print("Calculating acceptance angles (Δρ) from physical optical parameters.")
 
             Dh, Dv = self._unpack(lens_diameter, "lens_diameter")
             dh, dv = self._unpack(rhabdom_diameter, "rhabdom_diameter")
@@ -147,12 +152,11 @@ class EyeModel:
             angles_v_rad = np.sqrt(delta_phi_optics_v ** 2 + delta_phi_receptor_v ** 2)
 
             estimated_angles = np.vstack([angles_h_rad, angles_v_rad]).T
-            self._set_acceptance_angles(estimated_angles)
 
         else:
             # Priority 3: Estimate acceptance angles from geometry using eye parameter 'p'
             p = eye_parameter if eye_parameter is not None else 1.0
-            print(f"Estimating acceptance angles (Δρ) from interommatidial angles (Δφ) with eye parameter p={p}.")
+            # print(f"Estimating acceptance angles (Δρ) from interommatidial angles (Δφ) with eye parameter p={p}.")
 
             if isinstance(p, (list, tuple)):
                 p_h, p_v = p
@@ -164,7 +168,12 @@ class EyeModel:
             delta_rho_v = p_v * self.interommatidial_angle_v_rad
 
             estimated_angles = np.vstack([delta_rho_h, delta_rho_v]).T
-            self._set_acceptance_angles(estimated_angles)
+
+        if force_isotropic and isinstance(estimated_angles, np.ndarray) and estimated_angles.ndim == 2:
+            mean_angles = np.mean(estimated_angles, axis=1)
+            estimated_angles = np.vstack([mean_angles, mean_angles]).T
+
+        self._set_acceptance_angles(estimated_angles)
 
         # Now that Δρ and Δφ are known, calculate and store the resulting eye parameter p
         all_rho_h = np.array([om.acceptance_angle_h_rad for om in self.ommatidia])

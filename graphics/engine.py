@@ -1,6 +1,6 @@
 import os
 
-from graphics.compound_eye import CompoundEyeRay
+from graphics.eye_rendering import EyeRendererRay
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 from collections import deque
@@ -82,7 +82,7 @@ class Engine:
         """ Renders the controls text once and caches it """
 
         sample_label = "Samples"
-        if self.compound_eye and isinstance(self.compound_eye, CompoundEyeRay):
+        if self.compound_eye and isinstance(self.compound_eye, EyeRendererRay):
             sample_label = "Rays"
 
         controls = [
@@ -140,7 +140,7 @@ class Engine:
 
                 # Gather info
                 # TODO: this will not change at runtime, there should be a setter to regiser an eye and set this once
-                is_raytracer = isinstance(self.compound_eye, CompoundEyeRay)
+                is_raytracer = isinstance(self.compound_eye, EyeRendererRay)
                 mode_name = "Ray-tracer" if is_raytracer else "Rasterizer"
                 sample_label = "Rays" if is_raytracer else "Samples"
 
