@@ -33,11 +33,14 @@ def lookat_mat(eye_pos, target_pos, up_vector):
     right = np.cross(forward, up)
     right_norm = np.linalg.norm(right)
 
-    if right_norm < 1e-6: # Handle looking straight up or down
-        right = np.cross(WORLD_UP, -forward) if np.allclose(forward, WORLD_UP) else np.cross(forward, WORLD_UP)
+    if right_norm < 1e-6:
+        # 'up' was no good so use different axis to calculate the 'right' vector
+        right = np.cross(WORLD_RIGHT, forward)
+        # This can still fail if forward is also aligned with WORLD_RIGHT but that's extremely unlikely
+        # ultimate fallback is to use WORLD_UP
+        if np.linalg.norm(right) < 1e-6:
+            right = np.cross(WORLD_UP, forward)
         right /= np.linalg.norm(right)
-    else:
-        right /= right_norm
 
     # Recalculate the true 'up' vector to ensure orthogonality
     up = np.cross(right, forward)
