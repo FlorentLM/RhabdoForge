@@ -174,8 +174,8 @@ class EyeRendererBase(ABC):
         # avoid division by zero if window is not yet setup
         aspect_ratio = viewport[2] / viewport[3] if viewport[3] > 0 else 1.0
 
-        glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_aspect_ratio'), aspect_ratio)   # TODO: a keyboard key to toggle this
-        # glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_aspect_ratio'), 1.0)
+        # glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_aspect_ratio'), aspect_ratio)   # TODO: a keyboard key to toggle this
+        glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_aspect_ratio'), 1.0)
         glUniform1i(glGetUniformLocation(self.voronoi_program, 'u_tiled_mode'), tiled_mode)
         glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_cone_scale'), cone_scale)
 

@@ -121,59 +121,88 @@ class CompoundEye:
         ]
         self.kdtree = KDTree(self.directions)
 
-        # Interommatidial angles
-        self.interommatidial_angle_h_rad, self.interommatidial_angle_v_rad = self.estimate_interommatidial_angles()
+        if force_isotropic:
 
-        # Determine and set acceptance angles
-        estimated_angles = None
+            # We want a single circular value based on average local density
+            # (i.e. this path ignores any H/V distinctions)
 
-        if acceptance_angles_rad is not None:
-            # Priority 1: Direct acceptance angles are provided
-            # print("Using directly provided acceptance angles (Δρ).")
-            estimated_angles = acceptance_angles_rad
+            # Estimate a single simplified interommatidial angle (Δφ)
+            # (averages geometry of all neighbors first)
+            delta_phi, _ = self.estimate_interommatidial_angles(isotropic=True)
+            self.interommatidial_angle_h_rad = delta_phi
+            self.interommatidial_angle_v_rad = delta_phi
 
-        elif lens_diameter is not None and rhabdom_diameter is not None and focal_length is not None:
-            # Priority 2: Estimate acceptance angles from optical parameters
-            # print("Calculating acceptance angles (Δρ) from physical optical parameters.")
+            # Determine the acceptance angle (Δρ)
+            if acceptance_angles_rad is not None:
 
-            Dh, Dv = self._unpack(lens_diameter, "lens_diameter")
-            dh, dv = self._unpack(rhabdom_diameter, "rhabdom_diameter")
-            fh, fv = self._unpack(focal_length, "focal_length")
+                angles_2d = np.atleast_2d(acceptance_angles_rad)
 
-            # Calculate acceptance angles
-            # Horizontal
-            delta_phi_optics_h = wavelength / Dh
-            delta_phi_receptor_h = dh / fh
-            angles_h_rad = np.sqrt(delta_phi_optics_h ** 2 + delta_phi_receptor_h ** 2)
+                # Average across horizontal/vertical axis to get a single value per ommatidium
+                delta_rho = np.mean(angles_2d, axis=1)
+                if delta_rho.shape[0] == 1:
+                    delta_rho = delta_rho[0]
+            else:
+                # Fallback: Use p=1 to calculate Δρ from our simplified Δφ
+                print("Estimating isotropic Δρ from simplified Δφ with p=1.0.")
+                delta_rho = delta_phi  # since p=1
 
-            # Vertical
-            delta_phi_optics_v = wavelength / Dv
-            delta_phi_receptor_v = dv / fv
-            angles_v_rad = np.sqrt(delta_phi_optics_v ** 2 + delta_phi_receptor_v ** 2)
-
-            estimated_angles = np.vstack([angles_h_rad, angles_v_rad]).T
+            self._set_acceptance_angles(delta_rho)
 
         else:
-            # Priority 3: Estimate acceptance angles from geometry using eye parameter 'p'
-            p = eye_parameter if eye_parameter is not None else 1.0
-            # print(f"Estimating acceptance angles (Δρ) from interommatidial angles (Δφ) with eye parameter p={p}.")
 
-            if isinstance(p, (list, tuple)):
-                p_h, p_v = p
+            self.interommatidial_angle_h_rad, self.interommatidial_angle_v_rad = self.estimate_interommatidial_angles(
+                isotropic=False
+            )
+
+            # Determine and set acceptance angles
+            estimated_angles = None
+            if acceptance_angles_rad is not None:
+                # Priority 1: Direct acceptance angles are provided
+                # print("Using directly provided acceptance angles (Δρ).")
+                estimated_angles = acceptance_angles_rad
+
+            elif lens_diameter is not None and rhabdom_diameter is not None and focal_length is not None:
+                # Priority 2: Estimate acceptance angles from optical parameters
+                # print("Calculating acceptance angles (Δρ) from physical optical parameters.")
+
+                Dh, Dv = self._unpack(lens_diameter, "lens_diameter")
+                dh, dv = self._unpack(rhabdom_diameter, "rhabdom_diameter")
+                fh, fv = self._unpack(focal_length, "focal_length")
+
+                # Calculate acceptance angles
+                # Horizontal
+                delta_phi_optics_h = wavelength / Dh
+                delta_phi_receptor_h = dh / fh
+                angles_h_rad = np.sqrt(delta_phi_optics_h ** 2 + delta_phi_receptor_h ** 2)
+
+                # Vertical
+                delta_phi_optics_v = wavelength / Dv
+                delta_phi_receptor_v = dv / fv
+                angles_v_rad = np.sqrt(delta_phi_optics_v ** 2 + delta_phi_receptor_v ** 2)
+
+                estimated_angles = np.vstack([angles_h_rad, angles_v_rad]).T
+
             else:
-                p_h = p_v = p
+                # Priority 3: Estimate acceptance angles from geometry using eye parameter 'p'
+                p = eye_parameter if eye_parameter is not None else 1.0
+                # print(f"Estimating acceptance angles (Δρ) from interommatidial angles (Δφ) with eye parameter p={p}.")
 
-            # acceptance angles: Δρ = p * Δφ
-            delta_rho_h = p_h * self.interommatidial_angle_h_rad
-            delta_rho_v = p_v * self.interommatidial_angle_v_rad
+                if isinstance(p, (list, tuple)):
+                    p_h, p_v = p
+                else:
+                    p_h = p_v = p
 
-            estimated_angles = np.vstack([delta_rho_h, delta_rho_v]).T
+                # acceptance angles: Δρ = p * Δφ
+                delta_rho_h = p_h * self.interommatidial_angle_h_rad
+                delta_rho_v = p_v * self.interommatidial_angle_v_rad
 
-        if force_isotropic and isinstance(estimated_angles, np.ndarray) and estimated_angles.ndim == 2:
-            mean_angles = np.mean(estimated_angles, axis=1)
-            estimated_angles = np.vstack([mean_angles, mean_angles]).T
+                estimated_angles = np.vstack([delta_rho_h, delta_rho_v]).T
 
-        self._set_acceptance_angles(estimated_angles)
+            if force_isotropic and isinstance(estimated_angles, np.ndarray) and estimated_angles.ndim == 2:
+                mean_angles = np.mean(estimated_angles, axis=1)
+                estimated_angles = np.vstack([mean_angles, mean_angles]).T
+
+            self._set_acceptance_angles(estimated_angles)
 
         # Now that Δρ and Δφ are known, calculate and store the resulting eye parameter p
         all_rho_h = np.array([om.acceptance_angle_h_rad for om in self.ommatidia])
@@ -212,28 +241,40 @@ class CompoundEye:
             p_scalar = self._prepare_param(param, name)
             return p_scalar, p_scalar
 
-    def _set_acceptance_angles(self, angles_rad: Union[np.ndarray, Tuple[float, float], float]):
+    def _set_acceptance_angles(self, angles_rad: Union[np.ndarray, Tuple[float, float], float, None]):
         """ Helper to assign acceptance angles to all ommatidia """
 
         if angles_rad is None:
-            # This case shouldn't be reached, but as a safeguard:
             print("Warning: No acceptance angles were provided or could be estimated.")
             return
 
-        if isinstance(angles_rad, np.ndarray) and angles_rad.ndim == 2:
-            # Per-ommatidium H/V angles
+        angles_arr = np.asarray(angles_rad, dtype=VEC_DTYPE)
+
+        if angles_arr.ndim == 2 and angles_arr.shape == (self.num_ommatidia, 2):
+            # Per-ommatidium H/V angles (shape (N, 2))
             for i, om in enumerate(self.ommatidia):
-                om.acceptance_angle_h_rad = float(angles_rad[i, 0])
-                om.acceptance_angle_v_rad = float(angles_rad[i, 1])
-        else:
-            # single global angle (or tuple of angles) for all ommatidia
-            if isinstance(angles_rad, (list, tuple)):
-                angle_h, angle_v = angles_rad
-            else:  # is a float
-                angle_h = angle_v = angles_rad
+                om.acceptance_angle_h_rad = float(angles_arr[i, 0])
+                om.acceptance_angle_v_rad = float(angles_arr[i, 1])
+
+        elif angles_arr.ndim == 1 and angles_arr.shape == (self.num_ommatidia,):
+            # Per-ommatidium isotropic angles (shape (N,))
+            for i, om in enumerate(self.ommatidia):
+                om.acceptance_angle_h_rad = float(angles_arr[i])
+                om.acceptance_angle_v_rad = float(angles_arr[i])
+
+        elif angles_arr.ndim == 0 or angles_arr.ndim == 1:
+            # single global value (either a float or a tuple/list)
+            if angles_arr.size == 2:  # a tuple (h, v) was passed
+                angle_h, angle_v = angles_arr
+            else:  # a single float was passed
+                angle_h = angle_v = angles_arr.item()
+
             for om in self.ommatidia:
                 om.acceptance_angle_h_rad = angle_h
                 om.acceptance_angle_v_rad = angle_v
+
+        else:
+            raise ValueError(f"Invalid shape for acceptance_angles_rad: {angles_arr.shape}")
 
     @property
     def interommatidial_angles_rad(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
@@ -268,59 +309,81 @@ class CompoundEye:
 
         return cls(directions=directions, acceptance_angles_rad=acceptance_angles_rad, **kwargs)
 
-    def estimate_interommatidial_angles(self, k: int = 8) -> Tuple[np.ndarray, np.ndarray]:
+    def estimate_interommatidial_angles(self, k: int = 8, isotropic: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
         Estimates the horizontal and vertical interommatidial angles (Δφ) for each ommatidium
         from the local geometry of its neighbours
 
+        Args:
+            k: The number of nearest neighbors to consider
+            isotropic: If True, calculates a single representative angle by averaging the
+                       raw geometry of all k neighbors, ignoring H/V distinctions
+                       If False (default), estimates horizontal and vertical angles independently
+
         Returns:
             A tuple of two numpy arrays: (delta_phi_h, delta_phi_v) in radians
         """
+
         if self.num_ommatidia <= k:
-            raise ValueError("Cannot estimate angles when k is >= number of ommatidia.")
-
-        # Check for ommatidia at the poles
-        dot_products = np.abs(np.sum(self.directions * WORLD_UP, axis=1))
-        is_polar = dot_products > 0.9999
-
-        # Choose a reference 'up' vector (WORLD_RIGHT for polar ommatidia, WORLD_UP for others)
-        ref_up_vectors = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
-
-        # Now the Gram-Schmidt process is safe for all ommatidia
-        local_y_axes = ref_up_vectors - self.directions * np.sum(self.directions * ref_up_vectors, axis=1,
-                                                                 keepdims=True)
-        local_y_axes /= np.linalg.norm(local_y_axes, axis=1, keepdims=True)
-        local_x_axes = np.cross(local_y_axes, self.directions)
+            zeros = np.zeros(self.num_ommatidia)
+            return zeros, zeros
 
         distances, indices = self.kdtree.query(self.directions, k=k + 1)
-        # Check if any ommatidium has fewer than k+1 neighbors (can happen in weird geometries)
+
         if isinstance(indices, int) or indices.shape[1] < 2:
-            return np.zeros(self.num_ommatidia), np.zeros(self.num_ommatidia)
+            zeros = np.zeros(self.num_ommatidia)
+            return zeros, zeros
 
-        neighbour_dirs = self.directions[indices[:, 1:]]
-        neighbour_vectors = neighbour_dirs - self.directions[:, np.newaxis, :]
+        if isotropic:
+            neighbor_distances = distances[:, 1:]
+            avg_euclidean_dist = np.mean(neighbor_distances, axis=1)
+            term = 1.0 - (avg_euclidean_dist ** 2) / 2.0
+            delta_phi = np.arccos(np.clip(term, -1.0, 1.0))
+            return delta_phi, delta_phi
 
-        # Project neighbour vectors onto the local x and y axes to get h and v components of the separation
-        # small-angle approximation: angular distance is ~ Euclidean distance in the tangent plane
-        sep_h = np.sum(neighbour_vectors * local_x_axes[:, np.newaxis, :], axis=2)
-        sep_v = np.sum(neighbour_vectors * local_y_axes[:, np.newaxis, :], axis=2)
-        abs_sep_h, abs_sep_v = np.abs(sep_h), np.abs(sep_v)
+        else:
+            # Check for ommatidia at the poles
+            dot_products = np.abs(np.sum(self.directions * WORLD_UP, axis=1))
+            is_polar = dot_products > 0.9999
 
-        # Horizontal neighbours = the 2 neighbours with smallest vertical separation
-        h_neighbour_indices = np.argsort(abs_sep_v, axis=1)[:, :2]
+            # Choose a reference 'up' vector (WORLD_RIGHT for polar ommatidia, WORLD_UP for others)
+            ref_up_vectors = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
 
-        # Vertical neighbours = the 2 neighbours with smallest horizontal separation
-        v_neighbour_indices = np.argsort(abs_sep_h, axis=1)[:, :2]
+            # Now the Gram-Schmidt process is safe for all ommatidia
+            local_y_axes = ref_up_vectors - self.directions * np.sum(self.directions * ref_up_vectors, axis=1,
+                                                                     keepdims=True)
+            local_y_axes /= np.linalg.norm(local_y_axes, axis=1, keepdims=True)
+            local_x_axes = np.cross(local_y_axes, self.directions)
 
-        # Get actual angular distances for these neighbours
-        horizontal_angles = np.take_along_axis(abs_sep_h, h_neighbour_indices, axis=1)
-        vertical_angles = np.take_along_axis(abs_sep_v, v_neighbour_indices, axis=1)
+            distances, indices = self.kdtree.query(self.directions, k=k + 1)
+            # Check if any ommatidium has fewer than k+1 neighbors (can happen in weird geometries)
+            if isinstance(indices, int) or indices.shape[1] < 2:
+                return np.zeros(self.num_ommatidia), np.zeros(self.num_ommatidia)
 
-        # The characteristic interommatidial angle is the mean of these two neighbours
-        delta_phi_h = np.mean(horizontal_angles, axis=1)
-        delta_phi_v = np.mean(vertical_angles, axis=1)
+            neighbour_dirs = self.directions[indices[:, 1:]]
+            neighbour_vectors = neighbour_dirs - self.directions[:, np.newaxis, :]
 
-        return delta_phi_h, delta_phi_v
+            # Project neighbour vectors onto the local x and y axes to get h and v components of the separation
+            # small-angle approximation: angular distance is ~ Euclidean distance in the tangent plane
+            sep_h = np.sum(neighbour_vectors * local_x_axes[:, np.newaxis, :], axis=2)
+            sep_v = np.sum(neighbour_vectors * local_y_axes[:, np.newaxis, :], axis=2)
+            abs_sep_h, abs_sep_v = np.abs(sep_h), np.abs(sep_v)
+
+            # Horizontal neighbours = the 2 neighbours with smallest vertical separation
+            h_neighbour_indices = np.argsort(abs_sep_v, axis=1)[:, :2]
+
+            # Vertical neighbours = the 2 neighbours with smallest horizontal separation
+            v_neighbour_indices = np.argsort(abs_sep_h, axis=1)[:, :2]
+
+            # Get actual angular distances for these neighbours
+            horizontal_angles = np.take_along_axis(abs_sep_h, h_neighbour_indices, axis=1)
+            vertical_angles = np.take_along_axis(abs_sep_v, v_neighbour_indices, axis=1)
+
+            # The characteristic interommatidial angle is the mean of these two neighbours
+            delta_phi_h = np.mean(horizontal_angles, axis=1)
+            delta_phi_v = np.mean(vertical_angles, axis=1)
+
+            return delta_phi_h, delta_phi_v
 
     def max_gap(self):
         """
