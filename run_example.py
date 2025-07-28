@@ -10,7 +10,7 @@ from OpenGL.GL import *
 
 from graphics.engine import Engine
 from graphics.scene import Instance
-from graphics.eye_model import EyeModel
+from graphics.eyemodels import EyeModel
 from graphics.glm import translation_mat, rotation_mat
 from geometry.primitives import CUBE_VERTICES
 from graphics.skybox import Skybox
@@ -21,7 +21,7 @@ from graphics.raster_mode import PanoramicEye
 
 def main():
 
-    USE_RAYTRACER = False
+    USE_RAYTRACER = True
 
     # TODO: move these flags to the engine
     PANORAMIC_VIEW = False
@@ -49,14 +49,14 @@ def main():
     eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([3.0, 0.0, 0.0])))
 
     # Create the eye model
-    eye_geom = EyeModel.generate_uniform_eye(num_ommatidia=NB_OMMATIDIA, eye_radius=EYE_RADIUS)
+    eye = EyeModel(num_ommatidia=NB_OMMATIDIA, acceptance_angles_rad=np.deg2rad(4.5))
 
     if USE_RAYTRACER:
         print("Mode: Ray-Tracer")
-        compoundeye = CompoundEyeRay(eye_model=eye_geom, scene=eng.scene, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES)
+        compoundeye = CompoundEyeRay(eye_model=eye, scene=eng.scene, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES)
     else:
         print("Mode: Rasterizer")
-        compoundeye = CompoundEyeRaster(eye_model=eye_geom, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES)
+        compoundeye = CompoundEyeRaster(eye_model=eye, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES)
 
     pano_debug_view = PanoramicEye()
 

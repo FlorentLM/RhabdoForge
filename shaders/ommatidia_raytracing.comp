@@ -90,8 +90,9 @@ void main() {
     float r1 = rand(vec2(ommatidium_idx, sample_idx), u_time);
     float r2 = rand(vec2(ommatidium_idx, sample_idx) + 0.5, u_time);
 
+    Ray r;
     r.origin = om_world_origin;
-    r.direction = sampledir(om, tangent, bitangent, om_dir, r1, r2);
+    r.direction = sampledir(om, tangent, bitangent, om_world_dir, r1, r2);
 
     // Trace the ray
     HitInfo closest_hit;

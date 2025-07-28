@@ -1,13 +1,12 @@
 from abc import ABC, abstractmethod
-from pathlib import Path
 
 import numpy as np
 from OpenGL.GL import *
 
 from geometry.primitives import CONE_VERTICES
-from graphics.eye_model import EyeModel
+from graphics.eyemodels import EyeModel
 from graphics.scene import RaytracingScene, Scene
-from graphics.utils import load_shaders, load_compute_shader, VEC_DTYPE
+from graphics.utils import load_shaders, load_compute_shader
 
 
 class CompoundEyeBase(ABC):
@@ -170,6 +169,13 @@ class CompoundEyeBase(ABC):
 
         cone_scale = self.voronoi_scale if tiled_mode else self.receptive_field_scale
 
+        # Get current viewport dimensions to calculate aspect ratio
+        viewport = glGetIntegerv(GL_VIEWPORT)
+        # avoid division by zero if window is not yet setup
+        aspect_ratio = viewport[2] / viewport[3] if viewport[3] > 0 else 1.0
+
+        # glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_aspect_ratio'), aspect_ratio)   # TODO: a keyboard key to toggle this
+        glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_aspect_ratio'), 1.0)
         glUniform1i(glGetUniformLocation(self.voronoi_program, 'u_tiled_mode'), tiled_mode)
         glUniform1f(glGetUniformLocation(self.voronoi_program, 'u_cone_scale'), cone_scale)
 

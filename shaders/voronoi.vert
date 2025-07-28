@@ -17,6 +17,7 @@ layout(std430, binding = 1) readonly buffer ColorDataBlock {
 // Uniforms queried by name
 uniform bool u_tiled_mode;
 uniform float u_cone_scale;
+uniform float u_aspect_ratio;
 
 // Output: Varying to fragment shader
 layout (location = 0) out vec3 v_color;
@@ -55,6 +56,9 @@ void main() {
     // Final position is the scaled cone's vertex position, translated to the ommatidium's unique screen position
     // We are drawing in 2D clip space, so Z is for depth
     vec3 final_pos = scaled_cone_pos + vec3(instance_screen_pos, 0.0);
+
+    // Squash the X coordinate by the aspect ratio so they have the correct proportions when displayed
+    final_pos.x /= u_aspect_ratio;
 
     gl_Position = vec4(final_pos, 1.0);
 
