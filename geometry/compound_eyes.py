@@ -215,6 +215,11 @@ class CompoundEye:
     def _set_acceptance_angles(self, angles_rad: Union[np.ndarray, Tuple[float, float], float]):
         """ Helper to assign acceptance angles to all ommatidia """
 
+        if angles_rad is None:
+            # This case shouldn't be reached, but as a safeguard:
+            print("Warning: No acceptance angles were provided or could be estimated.")
+            return
+
         if isinstance(angles_rad, np.ndarray) and angles_rad.ndim == 2:
             # Per-ommatidium H/V angles
             for i, om in enumerate(self.ommatidia):
