@@ -60,6 +60,17 @@ void main() {
     // Squash the X coordinate by the aspect ratio so they have the correct proportions when displayed
     final_pos.x /= u_aspect_ratio;
 
+    // Check the ommatidium's origin to decide which side of the screen to draw on
+    // This creates the binocular view
+    if (om.origin.x < -0.001) { // Left eye
+        // Map the [-1, 1] x-range to the left half [-1, 0]
+        final_pos.x = final_pos.x * 0.5 - 0.5;
+    } else if (om.origin.x > 0.001) { // Right eye
+        // Map the [-1, 1] x-range to the right half [0, 1]
+        final_pos.x = final_pos.x * 0.5 + 0.5;
+    }
+    // if origin.x is near zero, it remains centered (covers the whole screen)
+
     gl_Position = vec4(final_pos, 1.0);
 
     // Pass the unique color for this instance to the fragment shader

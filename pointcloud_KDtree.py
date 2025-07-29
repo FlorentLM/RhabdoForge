@@ -2,7 +2,7 @@ import numpy as np
 import open3d as o3d
 from pathlib import Path
 
-POINT_CLOUD_FILE = 'C:/Users/flolm/Downloads/Seville_high_resolution/vegetation_inner_alternative.ply'
+POINT_CLOUD_FILE = 'C:/Users/flolm/Downloads/Seville_high_resolution/ground_inner_high_res.ply'
 OUTPUT_PREFIX = 'assets/scene_pointcloud'
 DOWNSAMPLE_SIZE = 0.1
 # Maximum number of points in a leaf node of the KD tree

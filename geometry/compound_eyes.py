@@ -2,6 +2,8 @@ from pathlib import Path
 from typing import Optional, List, Tuple, Union
 import numpy as np
 from dataclasses import dataclass, field
+
+from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_RIGHT
 from functools import cached_property
@@ -74,6 +76,7 @@ class CompoundEye:
 
     def __init__(self,
                  directions: Optional[np.ndarray] = None,
+                 origins: Optional[ArrayLike] = None,
                  num_ommatidia: Optional[int] = None,
                  acceptance_angles_rad: Optional[Union[np.ndarray, Tuple, float]] = None,
                  eye_parameter: Optional[Union[float, Tuple]] = None,
@@ -106,12 +109,14 @@ class CompoundEye:
             # Priority 1: Direct directions are provided
             print("Using provided direction vectors.")
             self.directions = directions
+
         elif num_ommatidia is not None:
             # Priority 2: Generate directions from num_ommatidia
             print(f"Generating uniform direction vectors for approx. {num_ommatidia} ommatidia.")
             lod = estimate_lod(num_ommatidia)
             self.directions = subdivide_icosahedron(lod)
             true_num_ommatidia = len(self.directions)
+
             if abs(num_ommatidia - true_num_ommatidia) > 1:
                 print(f"Note: Using {true_num_ommatidia} ommatidia to match subdivision level {lod}.")
         else:
@@ -119,7 +124,30 @@ class CompoundEye:
 
         # Create the base ommatidia with their geometric properties
         self.num_ommatidia = len(self.directions)
-        origs = self.directions * eye_radius if eye_radius > 0 else np.zeros_like(self.directions)
+
+        # Create origins for the ommatidia
+        if origins is not None:
+            origins_arr = np.asarray(origins, dtype=VEC_DTYPE)
+
+            if origins_arr.shape == (self.num_ommatidia, 3):
+                # Priority 1: Per-ommatidium origins provided, use directly
+                origs = origins_arr
+
+            elif origins_arr.shape == (3,):
+                # Priority 2: single origin provided, broadcast to all ommatidia
+                print(f"Broadcasting single origin {origins_arr} to all {self.num_ommatidia} ommatidia.")
+                origs = np.tile(origins_arr, (self.num_ommatidia, 1))
+            else:
+                raise ValueError(
+                    f"Invalid shape for 'origins': {origins_arr.shape}. "
+                    f"Expected ({self.num_ommatidia}, 3) for per-ommatidium origins, or (3,) for a single origin."
+                )
+        elif eye_radius > 0:
+            # Priority 3: Create origins on a sphere of a given radius
+            origs = self.directions * eye_radius
+        else:
+            # Default: All origins at (0, 0, 0)
+            origs = np.zeros_like(self.directions)
 
         self.ommatidia: List[Ommatidium] = [
             Ommatidium(id=i, direction=d, origin=o)
