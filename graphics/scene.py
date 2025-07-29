@@ -87,7 +87,7 @@ class PointCloud:
         if not kdtree_path.exists() or not points_path.exists():
             raise FileNotFoundError(
                 f"Could not find pre-processed point cloud data. "
-                f"Please run preprocess_pointcloud.py to generate '{kdtree_path.name}' and '{points_path.name}'."
+                f"Please run pointcloud_KDtree.py to generate '{kdtree_path.name}' and '{points_path.name}'."
             )
 
         print(f"Loading point cloud k-d tree from {kdtree_path}")
