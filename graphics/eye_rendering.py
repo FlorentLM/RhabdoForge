@@ -258,15 +258,23 @@ class EyeRendererRaster(EyeRendererBase):
 
 
 class EyeRendererRay(EyeRendererBase):
-    def __init__(self, eye_model, scene: Scene, time_dithering=True, nb_samples=256):
+    def __init__(self, eye_model, scene: Scene, time_dithering=True, nb_samples=256, point_radius=0.1):
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
 
-        # Pack the scene for ray-tracing
+        # Pack the scene for ray-tracing (triangles part)
         self.rt_scene = RaytracingScene(scene)
+
+        # Get the pointcloud part
+        self.point_cloud = scene.point_cloud
+
+        # Radius of points for ray-sphere intersection check
+        self.point_radius = point_radius
 
         # print("Compiling ray-tracing and reduction shaders...")
         self.raytrace_program = load_compute_shader('shaders/ommatidia_raytracing.comp')
         self.reduction_program = load_compute_shader('shaders/rays_reduction.comp')
+
+        # Triangle buffers
 
         # SSBO to store the scene triangles
         self.triangles_ssbo = glGenBuffers(1)
@@ -281,13 +289,30 @@ class EyeRendererRay(EyeRendererBase):
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.materials_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, self.rt_scene.materials.nbytes, self.rt_scene.materials, GL_DYNAMIC_DRAW)
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)  # unbind after last glBufferData
+        self.scene_texture_array = self._create_texture_array(self.rt_scene.texture_ids)
+
+        # Point cloud buffers
+
+        self.kdtree_ssbo = glGenBuffers(1)
+        self.points_ssbo = glGenBuffers(1)
+        if self.point_cloud:
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.kdtree_ssbo)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, self.point_cloud.kdtree_nodes.nbytes, self.point_cloud.kdtree_nodes,
+                         GL_STATIC_DRAW)
+
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.points_ssbo)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, self.point_cloud.point_attributes.nbytes,
+                         self.point_cloud.point_attributes, GL_STATIC_DRAW)
+
+        # Intermediate Ray result buffer
+        self.ray_results_ssbo = glGenBuffers(1)
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)  # unbind
 
         # Set the default number of samples with the setter to allocate the SSBO
         self._samples_per_ommatidium = 0    # just to bypass the check for first call
         self.samples_per_ommatidium = nb_samples
 
-        self.scene_texture_array = self._create_texture_array(self.rt_scene.texture_ids)
 
     def _create_texture_array(self, texture_ids):
 
@@ -348,6 +373,10 @@ class EyeRendererRay(EyeRendererBase):
         Called when objects are added/removed from the scene
         """
 
+        # TODO: Should replace only what's needed instead of replacing everything
+
+        # Replace triangles
+
         self.rt_scene = RaytracingScene(scene)
 
         # Re-allocate triangle buffer
@@ -363,6 +392,16 @@ class EyeRendererRay(EyeRendererBase):
         # delete the old texture array to prevent memory leak
         glDeleteTextures(1, [self.scene_texture_array])
         self.scene_texture_array = self._create_texture_array(self.rt_scene.texture_ids)
+
+        # Point Cloud
+        self.point_cloud = scene.point_cloud
+        if self.point_cloud:
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.kdtree_ssbo)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, self.point_cloud.kdtree_nodes.nbytes, self.point_cloud.kdtree_nodes,
+                         GL_STATIC_DRAW)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.points_ssbo)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, self.point_cloud.point_attributes.nbytes,
+                         self.point_cloud.point_attributes, GL_STATIC_DRAW)
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
@@ -412,19 +451,39 @@ class EyeRendererRay(EyeRendererBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self.materials_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self.ray_results_ssbo)
 
+        # Point-cloud-related bindings
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, self.kdtree_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, self.points_ssbo)
+
         # Set uniforms
         num_triangles = len(self.rt_scene.triangles) // 20   # stride 20 (80 bytes total, 4 bytes per float)
         num_materials = len(self.rt_scene.materials) // 4  # stride 4 (16 bytes total, 4 bytes per float)
 
+        num_points = self.point_cloud.num_points if self.point_cloud else 0
+        num_kdtree_nodes = self.point_cloud.num_nodes if self.point_cloud else 0
+
+        # Signed ints for textures
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_skybox'), 0)
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_scene_textures'), 1)
-        glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_triangles'), num_triangles)
+
+        # Unsigned ints
+        glUniform1ui(glGetUniformLocation(self.raytrace_program, 'u_num_triangles'), num_triangles)
+        glUniform1ui(glGetUniformLocation(self.raytrace_program, 'u_num_points'), num_points)
+        glUniform1ui(glGetUniformLocation(self.raytrace_program, 'u_num_kdtree_nodes'), num_kdtree_nodes)
+
+        # Other signed ints
+        glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_materials'), num_materials)
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_ommatidia'), self.num_ommatidia)
         glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_samples_per_ommatidium'), self.samples_per_ommatidium)
+
+        # Floats uniforms
+        glUniform1f(glGetUniformLocation(self.raytrace_program, 'u_point_radius'), self.point_radius)
         glUniform1f(glGetUniformLocation(self.raytrace_program, 'u_time'), float(self._time_counter))
+
+        # Vector/Matrix uniforms
         glUniform3fv(glGetUniformLocation(self.raytrace_program, 'u_camera_position'), 1, camera.position)
-        glUniformMatrix4fv(glGetUniformLocation(self.raytrace_program, 'u_camera_orientation'), 1, True, camera.orientation)
-        glUniform1i(glGetUniformLocation(self.raytrace_program, 'u_num_materials'), num_materials)
+        glUniformMatrix4fv(glGetUniformLocation(self.raytrace_program, 'u_camera_orientation'), 1, True,
+                           camera.orientation)
 
         # Dispatch
         work_groups = (self.total_samples + 255) // 256
@@ -450,18 +509,15 @@ class EyeRendererRay(EyeRendererBase):
 
         # Unbind resources
         glUseProgram(0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, 0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, 0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, 0)
+        for i in range(7): glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
     def free(self):
-        glDeleteBuffers(3, [self.triangles_ssbo, self.ray_results_ssbo, self.materials_ssbo])
+        glDeleteBuffers(5, [self.triangles_ssbo, self.ray_results_ssbo, self.materials_ssbo, self.kdtree_ssbo,
+                            self.points_ssbo])
         glDeleteTextures(1, [self.scene_texture_array])
         glDeleteProgram(self.raytrace_program)
         glDeleteProgram(self.reduction_program)

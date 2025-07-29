@@ -1,3 +1,6 @@
+from pathlib import Path
+from typing import Optional
+
 import numpy as np
 from OpenGL.GL import *
 from graphics.utils import load_shaders, load_texture, VEC_DTYPE
@@ -73,15 +76,47 @@ class Instance:
             self.transform = transform
 
 
+class PointCloud:
+    """
+    Container for point cloud data, including geometry acceleration structrure (KD tree)
+    """
+    def __init__(self, file_prefix: str):
+        kdtree_path = Path(f"{file_prefix}.kdtree.npy")
+        points_path = Path(f"{file_prefix}.points.npy")
+
+        if not kdtree_path.exists() or not points_path.exists():
+            raise FileNotFoundError(
+                f"Could not find pre-processed point cloud data. "
+                f"Please run preprocess_pointcloud.py to generate '{kdtree_path.name}' and '{points_path.name}'."
+            )
+
+        print(f"Loading point cloud k-d tree from {kdtree_path}")
+        self.kdtree_nodes = np.load(kdtree_path)
+        print(f"Loading point cloud attributes from {points_path}")
+        self.point_attributes = np.load(points_path)
+
+        self.num_nodes = len(self.kdtree_nodes)
+        self.num_points = len(self.point_attributes)
+        print(f"Loaded point cloud with {self.num_points} points and k-d tree with {self.num_nodes} nodes.")
+
+    def free(self):
+        # Data is just in numpy arrays, nothing to free
+        pass
+
+
 class Scene:
     """ Container for all objects in the world """
 
     def __init__(self):
         self.instances = []
         self.assets = {}
+        self.point_cloud: Optional[PointCloud] = None
 
     def add_instance(self, instance: Instance):
         self.instances.append(instance)
+
+    def add_point_cloud(self, point_cloud: PointCloud):
+        self.point_cloud = point_cloud
 
     def free(self):
         for asset in self.assets.values():

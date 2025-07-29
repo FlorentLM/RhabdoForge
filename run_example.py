@@ -9,7 +9,7 @@ import numpy as np
 from OpenGL.GL import *
 
 from graphics.engine import Engine
-from graphics.scene import Instance
+from graphics.scene import Instance, PointCloud
 from geometry.compound_eyes import CompoundEye
 from graphics.glm import translation_mat, rotation_mat
 from geometry.primitives import CUBE_VERTICES
@@ -21,6 +21,8 @@ from graphics.raster_mode import PanoramicEye
 
 def main():
 
+    USE_POINT_CLOUD = True
+
     USE_RAYTRACER = True
 
     # TODO: move these flags to the engine
@@ -28,24 +30,32 @@ def main():
     RUN_HEADLESS = False
     TIME_DITHERING = False
     COMPOUND_EYE_VIEW = True
-    VORONOI_VIEW = True
+    VORONOI_VIEW = False
 
     NB_OMMATIDIA = 1962
-    NB_SAMPLES = 256
+    NB_SAMPLES = 64
 
     HEADLESS_MAX_STEPS = 1000
 
     # Setup
     eng = Engine(width=1280, height=720, headless=RUN_HEADLESS)
 
-    crate_mesh = eng.load_mesh("crate", CUBE_VERTICES, 'shaders/base.vert', 'shaders/base.frag', 'textures/wood.jpg')
+    if USE_POINT_CLOUD:
+        # Load the pre-processed point cloud
+        point_cloud = PointCloud('assets/scene_pointcloud')
+        eng.scene.add_point_cloud(point_cloud)
+        print("Point cloud scene loaded.")
+    else:
+        # Load the debug crates
+        crate_mesh = eng.load_mesh("crate", CUBE_VERTICES, 'shaders/base.vert', 'shaders/base.frag',
+                                   'textures/wood.jpg')
+        eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([0.0, 0.0, 0.0])))
+        eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([-3.0, 0.0, 0.0])))
+        eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([3.0, 0.0, 0.0])))
+        print("Default crate scene loaded.")
 
     eng.skybox = Skybox()
     eng.skybox_texture_id = load_cubemap('textures/bright_day')
-
-    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([0.0, 0.0, 0.0])))
-    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([-3.0, 0.0, 0.0])))
-    eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([3.0, 0.0, 0.0])))
 
     # Create the eye model
     eye = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
@@ -90,14 +100,14 @@ def main():
         eng.update_movement()
 
         # Update scene and re-packing for dynamic elements (optional)
-        current_rotation_deg = (current_rotation_deg + rotation_per_step_deg) % 360.0
-        eng.scene.instances[0].transform = rotation_mat(
-            np.deg2rad(current_rotation_deg), WORLD_UP
-        )
-
-        if USE_RAYTRACER:
-            eye_renderer.update_geometry(eng.scene.instances)     # fast update method
-            # compoundeye.replace_scene(eng.scene)  # Slower update, to use when elements are added / removed from scene
+        if not USE_POINT_CLOUD:
+            current_rotation_deg = (current_rotation_deg + rotation_per_step_deg) % 360.0
+            eng.scene.instances[0].transform = rotation_mat(
+                np.deg2rad(current_rotation_deg), WORLD_UP
+            )
+            if USE_RAYTRACER:
+                eye_renderer.update_geometry(eng.scene.instances)     # fast update method
+                # compoundeye.replace_scene(eng.scene)  # Slower update, to use when elements are added / removed from scene
 
         # Data Acquisition
         if USE_RAYTRACER:
@@ -124,7 +134,14 @@ def main():
                 pano_debug_view.draw(scene_cubemap_id)
 
             else:
-                eng.render_frame()  # default to normal 3D view
+                if USE_POINT_CLOUD:
+                    # The default renderer only draws triangles for now
+                    # TODO: raster-based point cloud renderer
+                    # For now just draw the skybox
+                    if eng.skybox and eng.skybox_texture_id is not None:
+                        eng.skybox.draw(eng.camera.projection, eng.camera.view, eng.skybox_texture_id)
+                else:
+                    eng.render_frame()  # default to normal 3D view for debug crates
 
             eng.clock.tick()
             eng.draw_hud()
@@ -136,7 +153,7 @@ def main():
 
     total_time = (time.time_ns() - start) * 1e-9
     print(f"Simulation finished.")
-    print(f"Total: {frame_count} frames in {total_time:.3f} seconds ({int(frame_count / total_time)} avg fps, {(total_time / frame_count) * 1e4:.3f} ms per frame).")
+    print(f"Total: {frame_count} frames in {total_time:.3f} seconds ({int(frame_count / total_time)} fps (avg.), {(total_time / frame_count) * 1e4:.3f} ms per frame).")
     eye_renderer.free()
     eng.close()
 

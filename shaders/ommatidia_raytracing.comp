@@ -6,9 +6,14 @@
 layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 // Inputs
+// Triangles
 layout(std430, binding = 0) readonly buffer OmmatidiaInputBuffer { Ommatidium u_ommatidia_data[]; };
 layout(std430, binding = 1) readonly buffer TriangleBuffer { Triangle u_triangles[]; };
 layout(std430, binding = 2) readonly buffer MaterialBuffer { Material u_materials[]; };
+
+// Point clouds
+layout(std430, binding = 5) readonly buffer KdTreeBuffer { KdNode u_kdtree_nodes[]; };
+layout(std430, binding = 6) readonly buffer PointBuffer { Point u_points[]; };
 
 // Outputs
 layout(std430, binding = 3) writeonly buffer RayResultBuffer { vec4 u_ray_results[]; };
@@ -19,12 +24,15 @@ layout(binding = 1) uniform sampler2DArray u_scene_textures;
 
 // Uniforms queried by name
 uniform int u_num_ommatidia;
-uniform int u_num_triangles;
+uniform uint u_num_triangles;
 uniform int u_num_materials;
+uniform uint u_num_points;
+uniform uint u_num_kdtree_nodes;
+uniform float u_point_radius;
 uniform int u_samples_per_ommatidium;
 uniform float u_time;
 uniform mat4 u_camera_orientation; // to transform ommatidia directions to world space
-uniform vec3 u_camera_position;    // for ray origin
+uniform vec3 u_camera_position; // for ray origin
 
 
 // Functions
@@ -33,6 +41,7 @@ uniform vec3 u_camera_position;    // for ray origin
 HitInfo intersect_triangle(Ray r, Triangle tri) {
     HitInfo hit;
     hit.found = false;
+    hit.is_point_hit = false; // Mark as triangle hit
     vec3 edge1 = tri.v1.xyz - tri.v0.xyz;
     vec3 edge2 = tri.v2.xyz - tri.v0.xyz;
     vec3 h = cross(r.direction, edge2);
@@ -56,6 +65,35 @@ HitInfo intersect_triangle(Ray r, Triangle tri) {
         hit.found = true;
         hit.t = t;
         hit.barycentric_coords = vec3(1.0 - u - v, u, v);
+    }
+    return hit;
+}
+
+// Ray-sphere intersection
+HitInfo intersect_sphere(Ray r, vec3 center, float radius) {
+    HitInfo hit;
+    hit.found = false;
+    hit.is_point_hit = true; // Mark as point hit
+    vec3 oc = r.origin - center;
+    float a = dot(r.direction, r.direction);
+    float b = 2.0 * dot(oc, r.direction);
+    float c = dot(oc, oc) - radius * radius;
+    float discriminant = b * b - 4 * a * c;
+    if (discriminant >= 0) {
+        // We want the closest intersection in front of the ray
+        float t = (-b - sqrt(discriminant)) / (2.0 * a);
+        if (t > 1e-6) {
+            hit.found = true;
+            hit.t = t;
+        }
+        // Optional: If the first hit was behind, check the second one
+        // else {
+        //    t = (-b + sqrt(discriminant)) / (2.0 * a);
+        //    if (t > 1e-6) {
+        //        hit.found = true;
+        //        hit.t = t;
+        //    }
+        // }
     }
     return hit;
 }
@@ -99,29 +137,109 @@ void main() {
     closest_hit.found = false;
     closest_hit.t = 1.0/0.0; // inf
 
-    for (uint i = 0; i < u_num_triangles; ++i) {
-        HitInfo current_hit = intersect_triangle(r, u_triangles[i]);
-        if (current_hit.found && current_hit.t < closest_hit.t) {
-            closest_hit = current_hit;
-            closest_hit.triangle_idx = i;
+    // Trace against Meshes (if any)
+    // TODO: Also needs a geometry acceleration structure
+    if (u_num_triangles > 0) {
+        for (uint i = 0; i < u_num_triangles; ++i) {
+            HitInfo current_hit = intersect_triangle(r, u_triangles[i]);
+            if (current_hit.found && current_hit.t < closest_hit.t) {
+                closest_hit = current_hit;
+                closest_hit.triangle_idx = i;
+            }
         }
     }
 
-    // Shade the result
+    // Trace against Point Cloud using KD tree (if any)
+    if (u_num_kdtree_nodes > 0) {
+        // Stack for non-recursive traversal (64 is deep enough for millions of points)
+        uint traversal_stack[64];
+        uint stack_ptr = 0;
+        traversal_stack[stack_ptr++] = 0u; // Start at root node (index 0)
+
+        while(stack_ptr > 0u) {
+            uint node_idx = traversal_stack[--stack_ptr];
+            KdNode node = u_kdtree_nodes[node_idx];
+
+            if (node.is_leaf == 1u) {
+                for(uint i = 0u; i < node.point_count; i++) {
+                    uint p_idx = uint(node.start_index + i);
+                    Point p = u_points[p_idx];
+                    HitInfo p_hit = intersect_sphere(r, p.pos.xyz, u_point_radius);
+                    if (p_hit.found && p_hit.t < closest_hit.t) {
+                        closest_hit = p_hit;
+                        closest_hit.point_idx = p_idx;
+                    }
+                }
+            } else { // Internal node
+                uint axis = node.split_axis;
+                float plane_pos = node.split_pos;
+
+                // Check for axis-aligned ray to prevent division by zero
+                if (abs(r.direction[axis]) < 1e-6) {
+                    uint child_to_check;
+                    if (r.origin[axis] < plane_pos) {
+                        child_to_check = node_idx + 1u; // left child
+                    } else {
+                        child_to_check = node_idx + node.right_child; // right child
+                    }
+                    if (stack_ptr < 64) traversal_stack[stack_ptr++] = child_to_check;
+                    continue; // Skip rest of logic for this node
+                }
+
+                // Determine which side of the plane the ray originates on
+                uint near_child, far_child;
+                if (r.origin[axis] < plane_pos) {
+                    near_child = node_idx + 1u;
+                    far_child = node_idx + node.right_child;
+                } else {
+                    near_child = node_idx + node.right_child;
+                    far_child = node_idx + 1u;
+                }
+
+                // Calculate intersection with the splitting plane
+                float t_plane = (plane_pos - r.origin[axis]) / r.direction[axis];
+
+                // Traverse based on ray direction relative to the plane
+                if (t_plane >= closest_hit.t || t_plane < 0) {
+                    // Ray doesn't cross the plane before the closest hit (or starts on the far side moving away)
+                    // so only need to check the near child
+                    if (stack_ptr < 64) traversal_stack[stack_ptr++] = near_child;
+                } else {
+                    // Ray crosses the plane so must check both children
+                    // Push far child first, then near, so near is processed first
+                    if (stack_ptr < 64) traversal_stack[stack_ptr++] = far_child;
+                    if (stack_ptr < 64) traversal_stack[stack_ptr++] = near_child;
+                }
+            }
+        }
+    }
+
+    // Shade result
     vec3 final_color;
     if (closest_hit.found) {
-        // hit something, shade it
-        Triangle hit_tri = u_triangles[closest_hit.triangle_idx];
-        Material hit_mat = u_materials[hit_tri.material_idx];
 
-        // interpolate UV coordinates
-        vec2 hit_uv = hit_tri.uv0 * closest_hit.barycentric_coords.x +
-                      hit_tri.uv1 * closest_hit.barycentric_coords.y +
-                      hit_tri.uv2 * closest_hit.barycentric_coords.z;
+        if (closest_hit.is_point_hit) { // point hit
+            Point hit_point = u_points[closest_hit.point_idx];
 
-        // Get colour from the material struct
-        uint texture_layer = hit_mat.texture_idx;
-        final_color = texture(u_scene_textures, vec3(hit_uv, texture_layer)).rgb;
+            // Simple shading using point color and normal
+            float diffuse = max(0.0, dot(normalize(hit_point.normal.xyz), -r.direction));
+            final_color = hit_point.color.rgb * diffuse;
+
+        } else { // triangle hit
+
+            // hit something, shade it
+            Triangle hit_tri = u_triangles[closest_hit.triangle_idx];
+            Material hit_mat = u_materials[hit_tri.material_idx];
+
+            // interpolate UV coordinates
+            vec2 hit_uv = hit_tri.uv0 * closest_hit.barycentric_coords.x +
+                          hit_tri.uv1 * closest_hit.barycentric_coords.y +
+                          hit_tri.uv2 * closest_hit.barycentric_coords.z;
+
+            // Get colour from the material struct
+            uint texture_layer = hit_mat.texture_idx;
+            final_color = texture(u_scene_textures, vec3(hit_uv, texture_layer)).rgb;
+        }
 
     } else {
         // hit nothing, sample the skybox

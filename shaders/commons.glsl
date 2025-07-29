@@ -28,6 +28,24 @@ struct Triangle {
     float pad0;            // offset 76, size 4
 }; // total size = 80 bytes
 
+// Single point in the point cloud
+struct Point {
+    vec4 pos;       // position in xyz, w is padding
+    vec4 normal;    // normal in xyz, w is padding
+    vec4 color;     // color in rgb, a is padding
+};
+
+// Struct for a KD tree node
+struct KdNode {
+    uint is_leaf;     // 1 for true, 0 for false
+    uint split_axis;
+    uint point_count;
+    uint start_index; // index into point buffer for leaves
+    float split_pos;
+    uint right_child; // left child is always node_idx + 1
+    uint pad0, pad1;  // explicit padding
+}; // total size = 32 bytes
+
 struct Ray {
     vec3 origin;
     vec3 direction;
@@ -38,18 +56,14 @@ struct HitInfo {
     float t; // distance along ray
     vec3 barycentric_coords;
     uint triangle_idx;
+    uint point_idx; // idx for point cloud hits
+    bool is_point_hit;  // TODO: Maybe two different structs for point hit and triangle hit?
 };
 
 // Simple RNG with temporal dithering
 float rand(vec2 co, float dither){
     return fract(sin(dot(co.xy, vec2(12.9898, 78.233)) + dither) * 43758.5453);
 }
-
-//// Gaussian acceptance function
-//float gaussian(float angle_zeta, float acceptance_angle_rho) {
-//    return exp(-4.0 * log(2.0) * pow(angle_zeta / acceptance_angle_rho, 2.0));
-//}
-
 
 // Generates a sample direction using "true" Gaussian importance sampling
 // (as in, the distribution of samples directly matches the Gaussian acceptance function)
