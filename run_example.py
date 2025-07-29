@@ -21,7 +21,7 @@ from graphics.raster_mode import PanoramicEye
 
 def main():
 
-    USE_POINT_CLOUD = True
+    USE_POINT_CLOUD = False
 
     USE_RAYTRACER = True
 
