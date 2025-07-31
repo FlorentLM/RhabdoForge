@@ -1,4 +1,5 @@
 import os
+import string
 
 from graphics.eye_rendering import EyeRendererRay
 
@@ -11,9 +12,153 @@ from OpenGL.GL import *
 
 from graphics.scene import Scene, Instance, Mesh
 from graphics.camera import Camera
-from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_DOWN, WORLD_RIGHT, WORLD_FORWARD
+from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_DOWN, WORLD_RIGHT, WORLD_FORWARD, load_shaders
 from graphics.raster_mode import CubemapFBO
-from graphics.glm import lookat_mat
+from graphics.glm import lookat_mat, ortho_2d
+
+
+class FontRenderer:
+    """ Renders text on the GPU using a font atlas """
+
+    def __init__(self, font_name, font_size):
+        self.font_name = font_name
+        self.font_size = font_size
+        self.char_data = {}  # To store metrics and UVs for each character
+
+        self.text_program = load_shaders('shaders/text.vert', 'shaders/text.frag')
+
+        self.proj_loc = glGetUniformLocation(self.text_program, "projection")
+        self.color_loc = glGetUniformLocation(self.text_program, "textColor")
+        self.atlas_loc = glGetUniformLocation(self.text_program, "fontAtlas")
+
+        # Generate font atlas texture
+        self._create_font_atlas()
+
+        # VAO and VBO for text quads
+        self.vao = glGenVertexArrays(1)
+        self.vbo = glGenBuffers(1)
+        glBindVertexArray(self.vao)
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
+
+        # Data is buffered on the fly so just set up attributes here
+        # Each vertex has 4 floats: x, y, u, v
+        glBufferData(GL_ARRAY_BUFFER, 0, None, GL_DYNAMIC_DRAW)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), ctypes.c_void_p(0))
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glBindVertexArray(0)
+
+    def _create_font_atlas(self):
+        # Use pygame to render glyphs and build the atlas
+        font = pygame.font.SysFont(self.font_name, self.font_size)
+
+        # Characters to include in the atlas
+        chars_to_render = string.printable
+
+        # Determine atlas size (fixed grid)
+        atlas_cols = 16
+        atlas_rows = (len(chars_to_render) + atlas_cols - 1) // atlas_cols
+
+        # Get max char dimensions to size cells
+        max_w, max_h = 0, 0
+        for char in chars_to_render:
+            w, h = font.size(char)
+            if w > max_w: max_w = w
+            if h > max_h: max_h = h
+
+        cell_w, cell_h = max_w, max_h
+        atlas_width = atlas_cols * cell_w
+        atlas_height = atlas_rows * cell_h
+
+        atlas_surface = pygame.Surface((atlas_width, atlas_height), pygame.SRCALPHA)
+        atlas_surface.fill((0, 0, 0, 0))  # Transparent background
+
+        # Render each character and store its data
+        for i, char in enumerate(chars_to_render):
+            char_surface = font.render(char, True, (255, 255, 255, 255))
+            metrics = font.metrics(char)[0]  # (minx, maxx, miny, maxy, advance)
+            advance = metrics[4]
+
+            col = i % atlas_cols
+            row = i // atlas_cols
+            x, y = col * cell_w, row * cell_h
+
+            atlas_surface.blit(char_surface, (x, y))
+
+            # Store character data: size, uv coords, and advance width
+            uv_x0 = x / atlas_width
+            uv_y0 = y / atlas_height
+            uv_x1 = (x + char_surface.get_width()) / atlas_width
+            uv_y1 = (y + char_surface.get_height()) / atlas_height
+
+            self.char_data[char] = {
+                'w': char_surface.get_width(),
+                'h': char_surface.get_height(),
+                'uv_rect': (uv_x0, uv_y0, uv_x1, uv_y1),
+                'advance': advance
+            }
+
+        # Convert pygame surface to OpenGL Texture
+        texture_data = pygame.image.tostring(atlas_surface, "RGBA", False)
+        self.atlas_texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self.atlas_texture)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+
+        # Set pixel alignment
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, atlas_width, atlas_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, texture_data)
+
+        # Unbind and reset default alignment
+        glBindTexture(GL_TEXTURE_2D, 0)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4)
+
+    def get_text_width(self, text, scale=1.0):
+        """ Calculates the pixel width of a string based on the font atlas """
+        width = 0
+        for char in text:
+            if char in self.char_data:
+                # 'advance' metric is the proper way to measure character width
+                width += self.char_data[char]['advance'] * scale
+        return width
+
+    def _generate_text_vertices(self, text, x, y, scale=1.0):
+        """ Generates vertex data for a string and returns it as a list """
+        vertices = []
+        cursor_x = x
+        for char in text:
+            if char in self.char_data:
+                data = self.char_data[char]
+                w, h = data['w'] * scale, data['h'] * scale
+
+                u0, v0, u1, v1 = data['uv_rect']
+
+                # Define quad corners
+                bl = (cursor_x, y, u0, v1)          # Bottom-Left
+                br = (cursor_x + w, y, u1, v1)      # Bottom-Right
+                tr = (cursor_x + w, y + h, u1, v0)  # Top-Right
+                tl = (cursor_x, y + h, u0, v0)      # Top-Left
+
+                # Triangle 1: bl, br, tr
+                vertices.extend(bl)
+                vertices.extend(br)
+                vertices.extend(tr)
+
+                # Triangle 2: bl, tr, tl
+                vertices.extend(bl)
+                vertices.extend(tr)
+                vertices.extend(tl)
+
+                cursor_x += data['advance'] * scale
+        return vertices
+
+    def free(self):
+        glDeleteProgram(self.text_program)
+        glDeleteVertexArrays(1, [self.vao])
+        glDeleteBuffers(1, [self.vbo])
+        glDeleteTextures(1, [self.atlas_texture])
 
 
 class Engine:
@@ -59,33 +204,43 @@ class Engine:
         self.skybox_texture_id = None
 
         # -- Stuff for interactive mode --
-
-        # HUD & text rendering
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont(pygame.font.get_default_font(), 22)
-        self.fps_rolling = deque(maxlen=5)
         self.show_hud = True
 
-        # Text caching and throttling
-        self.hud_update_interval_ms = 500  # update HUD text every 500 ms
-        self._last_hud_update_time = 0
-        self._cached_hud_surface = None
+        # HUD Rendering
+        self.font_renderer = FontRenderer(pygame.font.get_default_font(), 22)
+        self.hud_projection_matrix = ortho_2d(0, self.width, 0, self.height)
 
-        self._cached_controls_surfaces = []  # cache for controls text
-        self._cache_controls_text()  # render controls text once
+        self.fps_rolling = deque(maxlen=5)
+        self.hud_update_interval_ms = 250
+        self._last_hud_update_time = 0
+
+        # Text strings updated periodically
+        self._hud_info_text = ""
+        self._controls_text_lines = []
+        self._scene_stats_lines = []
+
+        # Cached vertex data for text (np arrays)
+        self._info_shadow_verts = None
+        self._info_fg_verts = None
+        self._controls_shadow_verts = None
+        self._controls_fg_verts = None
+        self._stats_shadow_verts = None
+        self._stats_fg_verts = None
+
+        self._update_controls_text()  # Generate controls text strings once
 
         self.move_sensitivity = 0.01  # units per frame
         self.mouse_sensitivity = 0.25
         self.zoom_sensitivity = 0.25
 
-    def _cache_controls_text(self):
-        """ Renders the controls text once and caches it """
-
+    def _update_controls_text(self):
+        """ Generates the controls text strings and caches them """
         sample_label = "Samples"
         if self.compound_eye and isinstance(self.compound_eye, EyeRendererRay):
             sample_label = "Rays"
 
-        controls = [
+        self._controls_text_lines = [
             'ESC: Quit',
             'H: Show/hide HUD',
             f'+/-: {sample_label}',
@@ -96,138 +251,121 @@ class Engine:
             'Mouse: Look',
             'LShift/Space: Down/Up',
             'WASD: Move',
-            '',
-            'Controls:'
         ]
 
-        self._cached_controls_surfaces.clear()
-        for text in controls:
-            white_surf = self.font.render(text, True, (255, 255, 255, 255))
-            gray_surf = self.font.render(text, True, (0, 0, 0, 180))
-            self._cached_controls_surfaces.append((white_surf, gray_surf))
+        # Generate and cache vertex data for the controls
+        shadow_verts = []
+        fg_verts = []
+        margin = 10
+        line_height = self.font_renderer.font_size
 
-    def _render_text_surface(self, white_surf: pygame.Surface, gray_surf: pygame.Surface, x: int, y: int):
-        """ Renders pre-made Pygame surface with a simple outline """
+        for i, text in enumerate(self._controls_text_lines):
+            y_pos = margin + (i * line_height)
+            shadow_verts.extend(self.font_renderer._generate_text_vertices(text, margin + 1, y_pos - 1))
+            fg_verts.extend(self.font_renderer._generate_text_vertices(text, margin, y_pos))
 
-        # This is kinda slow
-
-        w, h = white_surf.get_width(), white_surf.get_height()
-
-        gray_data = pygame.image.tobytes(gray_surf, 'RGBA', True)
-        white_data = pygame.image.tobytes(white_surf, 'RGBA', True)
-
-        # Draw the outline in 4 directions
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            glWindowPos2d(x + dx, y + dy)
-            glDrawPixels(w, h, GL_RGBA, GL_UNSIGNED_BYTE, gray_data)
-
-        # Draw foreground
-        glWindowPos2d(x, y)
-        glDrawPixels(w, h, GL_RGBA, GL_UNSIGNED_BYTE, white_data)
+        # Store as arrays for fast concatenation later
+        self._controls_shadow_verts = np.array(shadow_verts, dtype=np.float32) if shadow_verts else None
+        self._controls_fg_verts = np.array(fg_verts, dtype=np.float32) if fg_verts else None
 
     def draw_hud(self):
-        """ Renders the HUD text with simulation info in the top-left corner """
+        """ Renders the HUD text using the fast GPU FontRenderer """
+
+        if not self.show_hud:
+            return
 
         current_time = pygame.time.get_ticks()
         self.fps_rolling.append(self.clock.get_fps())
 
-        # Throttled caching
+        # Throttled update of the text content (string formatting)
         if current_time - self._last_hud_update_time > self.hud_update_interval_ms:
             self._last_hud_update_time = current_time
             avg_fps = np.mean(self.fps_rolling) if self.fps_rolling else 0
 
-            if self.show_hud:
+            # Update info string
+            is_raytracer = isinstance(self.compound_eye, EyeRendererRay)
+            mode_name = "Ray-tracer" if is_raytracer else "Rasterizer"
+            sample_label = "Rays" if is_raytracer else "Samples"
+            pos = self.camera.position
+            num_om = getattr(self.compound_eye, 'num_ommatidia', 0)
+            num_samples = getattr(self.compound_eye, 'samples_per_ommatidium', 1)
+            total_samples = num_om * num_samples
+            self._hud_info_text = (
+                f'FPS: {avg_fps:>4.2f} | Mode: {mode_name} | Ommatidia: {num_om} | '
+                f'{sample_label}: {num_samples} | XYZ: [ {pos[0]:>5.3f}, {pos[1]:>5.3f}, {pos[2]:>5.3f} ]'
+            )
 
-                # Gather info
-                # TODO: this will not change at runtime, there should be a setter to regiser an eye and set this once
-                is_raytracer = isinstance(self.compound_eye, EyeRendererRay)
-                mode_name = "Ray-tracer" if is_raytracer else "Rasterizer"
-                sample_label = "Rays" if is_raytracer else "Samples"
-
-                # Gather info
-                pos = self.camera.position
-                num_om = getattr(self.compound_eye, 'num_ommatidia', 0)
-                num_samples = getattr(self.compound_eye, 'samples_per_ommatidium', 1)
-                dithering_on = getattr(self.compound_eye, '_time_dithering', False)
-                # total_samples = num_om * num_samples
-
-                # Format info text
-                info_text = (
-                    f'FPS: {avg_fps:>4.2f} | Mode: {mode_name} | Ommatidia: {num_om} | '
-                    f'{sample_label}: {num_samples} | Dithering: {"On " if dithering_on else "Off"} | '
-                    f'XYZ: [ {pos[0]:>5.3f}, {pos[1]:>5.3f}, {pos[2]:>5.3f} ]'
-                )
-
-                # Gather scene geometry info
-                # Use the Engine's own pre-calculated counts
-                # scene_info_lines = [
-                #     f'Scene Vertices: {self._total_scene_vertices:,}',
-                #     f'Scene Triangles: {self._total_scene_triangles:,}',
-                #     f'Total {sample_label}: {total_samples:,}',
-                # ]
-
-                # Re-render and cache the HUD surfaces
-                surfaces = []
-                # Top info bar
-                white_surf = self.font.render(info_text, True, (255, 255, 255, 255))
-                gray_surf = self.font.render(info_text, True, (0, 0, 0, 180))
-                surfaces.append(((white_surf, gray_surf), 'top_left'))
-
-                # Bottom right info
-                # for i, text in enumerate(reversed(scene_info_lines)):
-                #     white_surf = self.font.render(text, True, (255, 255, 255, 255))
-                #     gray_surf = self.font.render(text, True, (0, 0, 0, 180))
-                #     surfaces.append(((white_surf, gray_surf), 'bottom_right', i))
-
-                self._cached_hud_surface = surfaces
-
-            else:
-                # if not visible just print the FPS to the console
-                print(f'FPS: {avg_fps:.2f}')
-
-        # This block is the expensive OpenGL drawing calls
-        # TODO: move to a fully GPU-side render with a font atlas texture... but that's for later
-
-        if self.show_hud:
-
-            # Disable depth test and enable blending for transparent text background
-            glDisable(GL_DEPTH_TEST)
-            glEnable(GL_BLEND)
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-
-            # Unbind any shaders/textures to prevent state leakage
-            glUseProgram(0)
-            glBindTexture(GL_TEXTURE_2D, 0)
-
-            # Draw info text
+            # Generate vertices for the info string
             margin = 10
-            line_height = self.font.get_height() + 2
+            line_height = self.font_renderer.font_size * 1.1
+            info_sv = self.font_renderer._generate_text_vertices(self._hud_info_text, margin + 1,
+                                                                 self.height - line_height - 1)
+            info_fv = self.font_renderer._generate_text_vertices(self._hud_info_text, margin, self.height - line_height)
+            self._info_shadow_verts = np.array(info_sv, dtype=np.float32) if info_sv else None
+            self._info_fg_verts = np.array(info_fv, dtype=np.float32) if info_fv else None
 
-            # Draw the cached controls on the left
-            for i, (white_surf, gray_surf) in enumerate(self._cached_controls_surfaces):
-                x_pos = margin
+            #Add scene stats
+            self._scene_stats_lines = [
+                f'Total {sample_label}: {total_samples:,}',
+                f'Scene Triangles: {self._total_scene_triangles:,}',
+                f'Scene Vertices: {self._total_scene_vertices:,}',
+            ]
+
+            stats_sv = []
+            stats_fv = []
+            for i, text in enumerate(self._scene_stats_lines):
+                text_width = self.font_renderer.get_text_width(text)
+                x_pos = self.width - text_width - margin
                 y_pos = margin + (i * line_height)
-                self._render_text_surface(white_surf, gray_surf, x_pos, y_pos)
+                stats_sv.extend(self.font_renderer._generate_text_vertices(text, x_pos + 1, y_pos - 1))
+                stats_fv.extend(self.font_renderer._generate_text_vertices(text, x_pos, y_pos))
+            self._stats_shadow_verts = np.array(stats_sv, dtype=np.float32) if stats_sv else None
+            self._stats_fg_verts = np.array(stats_fv, dtype=np.float32) if stats_fv else None
 
-                # Draw the cached info surfaces
-                if self._cached_hud_surface:
-                    for surface_info in self._cached_hud_surface:
-                        (white_surf, gray_surf), position, *rest = surface_info
+        # Combine cached vertex arrays for a single draw call per pass
+        all_shadow_verts = [v for v in
+                            (self._info_shadow_verts, self._controls_shadow_verts, self._stats_shadow_verts) if
+                            v is not None]
+        all_fg_verts = [v for v in (self._info_fg_verts, self._controls_fg_verts, self._stats_fg_verts) if
+                        v is not None]
 
-                        if position == 'top_left':
-                            x_pos = margin
-                            y_pos = self.height - line_height
-                            self._render_text_surface(white_surf, gray_surf, x_pos, y_pos)
+        if not all_shadow_verts and not all_fg_verts:
+            return
 
-                        # elif position == 'bottom_right':
-                        #     line_index = rest[0]
-                        #     x_pos = self.width - white_surf.get_width() - margin
-                        #     y_pos = margin + (line_index * line_height)
-                        #     self._render_text_surface(white_surf, gray_surf, x_pos, y_pos)
+        # Setup GL state
+        glDisable(GL_DEPTH_TEST)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDisable(GL_CULL_FACE)
+        glUseProgram(self.font_renderer.text_program)
+        glUniformMatrix4fv(self.font_renderer.proj_loc, 1, GL_TRUE, self.hud_projection_matrix)
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, self.font_renderer.atlas_texture)
+        glUniform1i(self.font_renderer.atlas_loc, 0)
+        glBindVertexArray(self.font_renderer.vao)
+        glBindBuffer(GL_ARRAY_BUFFER, self.font_renderer.vbo)
 
-            # Restore GL state
-            glEnable(GL_DEPTH_TEST)
-            glDisable(GL_BLEND)
+        # Draw shadows
+        if all_shadow_verts:
+            shadow_data = np.concatenate(all_shadow_verts)
+            glUniform4f(self.font_renderer.color_loc, 0.0, 0.0, 0.0, 0.7)
+            glBufferData(GL_ARRAY_BUFFER, shadow_data.nbytes, shadow_data, GL_DYNAMIC_DRAW)
+            glDrawArrays(GL_TRIANGLES, 0, len(shadow_data) // 4)
+
+        # Draw foreground
+        if all_fg_verts:
+            fg_data = np.concatenate(all_fg_verts)
+            glUniform4f(self.font_renderer.color_loc, 1.0, 1.0, 1.0, 1.0)
+            glBufferData(GL_ARRAY_BUFFER, fg_data.nbytes, fg_data, GL_DYNAMIC_DRAW)
+            glDrawArrays(GL_TRIANGLES, 0, len(fg_data) // 4)
+
+        # Restore GL state
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glBindVertexArray(0)
+        glUseProgram(0)
+        glEnable(GL_CULL_FACE)
+        glEnable(GL_DEPTH_TEST)
+        glDisable(GL_BLEND)
 
     def load_mesh(self, name, *args, **kwargs) -> Mesh:
         """ Loads a mesh and caches it to avoid redundant loads """

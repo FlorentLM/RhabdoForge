@@ -111,3 +111,38 @@ def scale(matrix, vector):
 @numba.jit(nopython=True, cache=True)
 def rotate(matrix, angle_rad, axis_vector):
     return matrix @ rotation_mat(angle_rad, axis_vector)
+
+
+@numba.jit(nopython=True, cache=True)
+def ortho(left, right, bottom, top, near_plane, far_plane):
+    """
+    Creates a 4x4 orthographic projection matrix
+    (maps a cuboid defined by the parameters into the normalized device coordinate cube (from -1 to 1 on all axes))
+    """
+    # Ensure no division by zero
+    dx = right - left
+    dy = top - bottom
+    dz = far_plane - near_plane
+
+    if dx == 0 or dy == 0 or dz == 0:
+        return np.eye(4, dtype=VEC_DTYPE)
+
+    mat = np.eye(4, dtype=VEC_DTYPE)
+
+    mat[0, 0] = 2.0 / dx
+    mat[1, 1] = 2.0 / dy
+    mat[2, 2] = -2.0 / dz  # maps to OpenGL's -1 to 1 depth range
+
+    mat[0, 3] = -(right + left) / dx
+    mat[1, 3] = -(top + bottom) / dy
+    mat[2, 3] = -(far_plane + near_plane) / dz
+
+    return mat
+
+
+@numba.jit(nopython=True, cache=True)
+def ortho_2d(left, right, bottom, top):
+    """
+    Mini convenience function to create an orthographic matrix for 2D rendering
+    """
+    return ortho(left, right, bottom, top, -1.0, 1.0)
