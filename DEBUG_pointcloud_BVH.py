@@ -38,7 +38,16 @@ def main():
     if PROCESS_POINT_CLOUD:
         print(f"Loading and processing point cloud from {input_file}...")
         prim_type = "points"
-        pcd = o3d.io.read_point_cloud(str(input_file))
+        pcd = o3d.io.read_point_cloud(input_file)
+
+        aabb = pcd.get_axis_aligned_bounding_box()
+        print("--- Point Cloud Stats ---")
+        print(f"Center: {aabb.get_center()}")
+        print(f"Min bound: {aabb.get_min_bound()}")
+        print(f"Max bound: {aabb.get_max_bound()}")
+        print("-------------------------")
+
+        pcd = pcd.translate(-aabb.get_center(), relative=True)
 
         if DOWNSAMPLE_SIZE:
             pcd = pcd.voxel_down_sample(voxel_size=DOWNSAMPLE_SIZE)

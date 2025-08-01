@@ -192,7 +192,6 @@ void main() {
                 for(uint i = 0u; i < primitive_count; i++) {
                     uint prim_idx = left_or_first_idx + i;
 
-                    // This example assumes we are hitting points
                     Point p = u_points[prim_idx];
                     HitInfo p_hit = intersect_sphere(r, p.pos.xyz, u_point_radius);
                     if (p_hit.found && p_hit.t < closest_hit.t) {
