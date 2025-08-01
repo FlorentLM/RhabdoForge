@@ -11,12 +11,12 @@ layout(std430, binding = 0) readonly buffer OmmatidiaInputBuffer { Ommatidium u_
 layout(std430, binding = 1) readonly buffer TriangleBuffer { Triangle u_triangles[]; };
 layout(std430, binding = 2) readonly buffer MaterialBuffer { Material u_materials[]; };
 
-// Point clouds
-layout(std430, binding = 5) readonly buffer KdTreeBuffer { KdNode u_kdtree_nodes[]; };
-layout(std430, binding = 6) readonly buffer PointBuffer { Point u_points[]; };
-
 // Outputs
 layout(std430, binding = 3) writeonly buffer RayResultBuffer { vec4 u_ray_results[]; };
+
+// BVH accelerated geometry
+layout(std430, binding = 5) readonly buffer BvhBuffer { BvhNode u_bvh_nodes[]; };
+layout(std430, binding = 6) readonly buffer PrimitiveBuffer { Point u_points[]; };
 
 // Uniforms: skybox and texture array for scene materials
 layout(binding = 0) uniform samplerCube u_skybox;
@@ -24,16 +24,16 @@ layout(binding = 1) uniform sampler2DArray u_scene_textures;
 
 // Uniforms queried by name
 uniform int u_num_ommatidia;
-uniform uint u_num_triangles;
-uniform int u_num_materials;
-uniform uint u_num_points;
-uniform uint u_num_kdtree_nodes;
-uniform float u_point_radius;
 uniform int u_samples_per_ommatidium;
 uniform float u_time;
-uniform mat4 u_camera_orientation; // to transform ommatidia directions to world space
-uniform vec3 u_camera_position; // for ray origin
+uniform float u_point_radius;
+uniform uint u_num_triangles;
+uniform uint u_num_bvh_nodes;
+uniform int u_num_materials;
+uniform uint u_num_primitives;
 
+uniform mat4 u_camera_orientation; // to transform ommatidia directions to world space
+uniform vec3 u_camera_position;    // for ray origin
 
 // Functions
 
@@ -98,6 +98,22 @@ HitInfo intersect_sphere(Ray r, vec3 center, float radius) {
     return hit;
 }
 
+// Axis-Aligned Bounding Box (AABB) intersection function
+// Returns true if the ray intersects the box // TODO: Uodate this to return distance!!!
+bool intersect_aabb(Ray r, vec3 aabb_min, vec3 aabb_max) {
+    vec3 inv_dir = 1.0 / r.direction;
+    vec3 t_min_vec = (aabb_min - r.origin) * inv_dir;
+    vec3 t_max_vec = (aabb_max - r.origin) * inv_dir;
+
+    vec3 t1 = min(t_min_vec, t_max_vec);
+    vec3 t2 = max(t_min_vec, t_max_vec);
+
+    float t_near = max(max(t1.x, t1.y), t1.z);
+    float t_far = min(min(t2.x, t2.y), t2.z);
+
+    return t_near <= t_far && t_far > 0.0;
+}
+
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
 
@@ -149,67 +165,45 @@ void main() {
         }
     }
 
-    // Trace against Point Cloud using KD tree (if any)
-    if (u_num_kdtree_nodes > 0) {
-        // Stack for non-recursive traversal (64 is deep enough for millions of points)
+    // Trace scene using BVH
+    if (u_num_bvh_nodes > 0) {
         uint traversal_stack[64];
         uint stack_ptr = 0;
-        traversal_stack[stack_ptr++] = 0u; // Start at root node (index 0)
+        traversal_stack[stack_ptr++] = 0u; // Start at root node
 
         while(stack_ptr > 0u) {
             uint node_idx = traversal_stack[--stack_ptr];
-            KdNode node = u_kdtree_nodes[node_idx];
+            BvhNode node = u_bvh_nodes[node_idx];
 
-            if (node.is_leaf == 1u) {
-                for(uint i = 0u; i < node.point_count; i++) {
-                    uint p_idx = uint(node.start_index + i);
-                    Point p = u_points[p_idx];
+            // Use the data layout from the two vec4s
+            vec3 aabb_min = node.data1.xyz;
+            vec3 aabb_max = node.data2.xyz;
+
+            // AABB intersection test
+            if (!intersect_aabb(r, aabb_min, aabb_max)) {
+                continue;
+            }
+
+            // Extract metadata by re-interpreting the float bits as unsigned integers
+            uint left_or_first_idx = floatBitsToUint(node.data1.w);
+            uint primitive_count = floatBitsToUint(node.data2.w);
+
+            if (primitive_count > 0u) { // it's a leaf node
+                for(uint i = 0u; i < primitive_count; i++) {
+                    uint prim_idx = left_or_first_idx + i;
+
+                    // This example assumes we are hitting points
+                    Point p = u_points[prim_idx];
                     HitInfo p_hit = intersect_sphere(r, p.pos.xyz, u_point_radius);
                     if (p_hit.found && p_hit.t < closest_hit.t) {
                         closest_hit = p_hit;
-                        closest_hit.point_idx = p_idx;
+                        closest_hit.point_idx = prim_idx;
                     }
                 }
-            } else { // Internal node
-                uint axis = node.split_axis;
-                float plane_pos = node.split_pos;
-
-                // Check for axis-aligned ray to prevent division by zero
-                if (abs(r.direction[axis]) < 1e-6) {
-                    uint child_to_check;
-                    if (r.origin[axis] < plane_pos) {
-                        child_to_check = node_idx + 1u; // left child
-                    } else {
-                        child_to_check = node_idx + node.right_child; // right child
-                    }
-                    if (stack_ptr < 64) traversal_stack[stack_ptr++] = child_to_check;
-                    continue; // Skip rest of logic for this node
-                }
-
-                // Determine which side of the plane the ray originates on
-                uint near_child, far_child;
-                if (r.origin[axis] < plane_pos) {
-                    near_child = node_idx + 1u;
-                    far_child = node_idx + node.right_child;
-                } else {
-                    near_child = node_idx + node.right_child;
-                    far_child = node_idx + 1u;
-                }
-
-                // Calculate intersection with the splitting plane
-                float t_plane = (plane_pos - r.origin[axis]) / r.direction[axis];
-
-                // Traverse based on ray direction relative to the plane
-                if (t_plane >= closest_hit.t || t_plane < 0) {
-                    // Ray doesn't cross the plane before the closest hit (or starts on the far side moving away)
-                    // so only need to check the near child
-                    if (stack_ptr < 64) traversal_stack[stack_ptr++] = near_child;
-                } else {
-                    // Ray crosses the plane so must check both children
-                    // Push far child first, then near, so near is processed first
-                    if (stack_ptr < 64) traversal_stack[stack_ptr++] = far_child;
-                    if (stack_ptr < 64) traversal_stack[stack_ptr++] = near_child;
-                }
+            } else { // it's an internal node
+                // Push children to stack. Right child is always left+1.
+                if (stack_ptr < 64) traversal_stack[stack_ptr++] = left_or_first_idx + 1; // Right
+                if (stack_ptr < 64) traversal_stack[stack_ptr++] = left_or_first_idx;     // Left
             }
         }
     }

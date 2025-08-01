@@ -78,26 +78,28 @@ class Instance:
 
 class PointCloud:
     """
-    Container for point cloud data, including geometry acceleration structrure (KD tree)
+    Container for point cloud data accelerated by a BVH
     """
     def __init__(self, file_prefix: str):
-        kdtree_path = Path(f"{file_prefix}.kdtree.npy")
-        points_path = Path(f"{file_prefix}.points.npy")
+        bvh_path = Path(f"{file_prefix}.bvh.npy")
+        primitives_path = Path(f"{file_prefix}.primitives.npy")
 
-        if not kdtree_path.exists() or not points_path.exists():
+        # TODO: get rid of this file loading - should be done by the scene class
+
+        if not bvh_path.exists() or not primitives_path.exists():
             raise FileNotFoundError(
-                f"Could not find pre-processed point cloud data. "
-                f"Please run pointcloud_KDtree.py to generate '{kdtree_path.name}' and '{points_path.name}'."
+                f"Could not find pre-processed BVH data. "
+                f"Please run pointcloud_BVH.py to generate '{bvh_path.name}' and '{primitives_path.name}'."
             )
 
-        print(f"Loading point cloud k-d tree from {kdtree_path}")
-        self.kdtree_nodes = np.load(kdtree_path)
-        print(f"Loading point cloud attributes from {points_path}")
-        self.point_attributes = np.load(points_path)
+        print(f"Loading point cloud BVH from {bvh_path}")
+        self.bvh_nodes = np.load(bvh_path)
+        print(f"Loading reordered point cloud primitives from {primitives_path}")
+        self.point_attributes = np.load(primitives_path)
 
-        self.num_nodes = len(self.kdtree_nodes)
+        self.num_nodes = len(self.bvh_nodes)
         self.num_points = len(self.point_attributes)
-        print(f"Loaded point cloud with {self.num_points} points and k-d tree with {self.num_nodes} nodes.")
+        print(f"Loaded point cloud with {self.num_points} points and BVH with {self.num_nodes} nodes.")
 
     def free(self):
         # Data is just in numpy arrays, nothing to free

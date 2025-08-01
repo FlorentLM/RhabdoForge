@@ -35,16 +35,11 @@ struct Point {
     vec4 color;     // color in rgb, a is padding
 };
 
-// Struct for a KD tree node
-struct KdNode {
-    uint is_leaf;     // 1 for true, 0 for false
-    uint split_axis;
-    uint point_count;
-    uint start_index; // index into point buffer for leaves
-    float split_pos;
-    uint right_child; // left child is always node_idx + 1
-    uint pad0, pad1;  // explicit padding
-}; // total size = 32 bytes
+// BVH Node structure matching the output of pytinybvh
+struct BvhNode {
+    vec4 data1; // .xyz = AABB Min, .w = Left child/First primitive index
+    vec4 data2; // .xyz = AABB Max, .w = Primitive count (0 for internal nodes)
+}; // total size = 2 bytes (2x vec4)
 
 struct Ray {
     vec3 origin;

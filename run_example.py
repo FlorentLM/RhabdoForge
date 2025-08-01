@@ -21,8 +21,7 @@ from graphics.raster_mode import PanoramicEye
 
 def main():
 
-    USE_POINT_CLOUD = False
-
+    USE_POINT_CLOUD = True
     USE_RAYTRACER = True
 
     # TODO: move these flags to the engine
@@ -42,9 +41,9 @@ def main():
 
     if USE_POINT_CLOUD:
         # Load the pre-processed point cloud
-        point_cloud = PointCloud('assets/scene_pointcloud')
+        point_cloud = PointCloud('assets/scene_pointcloud_bvh')
         eng.scene.add_point_cloud(point_cloud)
-        print("Point cloud scene loaded.")
+        print("Point cloud scene with BVH loaded.")
     else:
         # Load the debug crates
         crate_mesh = eng.load_mesh("crate", CUBE_VERTICES, 'shaders/base.vert', 'shaders/base.frag',

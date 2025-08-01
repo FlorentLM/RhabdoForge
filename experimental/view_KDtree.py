@@ -53,7 +53,7 @@ def main():
 
     if not kdtree_path.exists() or not points_path.exists():
         print(f"Error: Could not find pre-processed data at '{OUTPUT_PREFIX}.*'")
-        print("Please run pointcloud_KDtree.py first.")
+        print("Please run DEBUG_pointcloud_BVH.py first.")
         return
 
     print("Loading pre-processed data...")
