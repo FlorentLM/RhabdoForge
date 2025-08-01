@@ -40,9 +40,9 @@ def main():
     eng = Engine(width=1280, height=720, headless=RUN_HEADLESS)
 
     if USE_POINT_CLOUD:
-        # Load the pre-processed point cloud
+        # Load the pre-processed point cloud and add it via the engine
         point_cloud = PointCloud('assets/scene_pointcloud_bvh')
-        eng.scene.add_point_cloud(point_cloud)
+        eng.add_point_cloud(point_cloud)
         print("Point cloud scene with BVH loaded.")
     else:
         # Load the debug crates

@@ -10,7 +10,7 @@ import pygame
 from pygame.locals import *
 from OpenGL.GL import *
 
-from graphics.scene import Scene, Instance, Mesh
+from graphics.scene import Scene, Instance, Mesh, PointCloud
 from graphics.camera import Camera
 from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_DOWN, WORLD_RIGHT, WORLD_FORWARD, load_shaders
 from graphics.raster_mode import CubemapFBO
@@ -305,11 +305,20 @@ class Engine:
             self._info_fg_verts = np.array(info_fv, dtype=np.float32) if info_fv else None
 
             #Add scene stats
-            self._scene_stats_lines = [
-                f'Total {sample_label}: {total_samples:,}',
-                f'Scene Triangles: {self._total_scene_triangles:,}',
-                f'Scene Vertices: {self._total_scene_vertices:,}',
-            ]
+            if self.scene.point_cloud and self.scene.point_cloud.num_points > 0:
+                # if there's a point cloud, label things clearly
+                self._scene_stats_lines = [
+                    f'Total {sample_label}: {total_samples:,}',
+                    f'Scene Triangles: {self._total_scene_triangles:,}',  # will be 0 if only points
+                    f'Scene Points: {self.scene.point_cloud.num_points:,}',
+                ]
+            else:
+                # mesh-only scenes
+                self._scene_stats_lines = [
+                    f'Total {sample_label}: {total_samples:,}',
+                    f'Scene Triangles: {self._total_scene_triangles:,}',
+                    f'Scene Vertices: {self._total_scene_vertices:,}',
+                ]
 
             stats_sv = []
             stats_fv = []
@@ -378,13 +387,28 @@ class Engine:
         self.scene.add_instance(instance)
         self._update_geometry_counts()
 
+    def add_point_cloud(self, point_cloud: PointCloud):
+        self.scene.add_point_cloud(point_cloud)
+        self._update_geometry_counts()
+
     def _update_geometry_counts(self):
-        """ Recalculates total vertices and triangles from all instances in the scene """
-        vert_count = 0
+        """ Recalculates total primitives from all geometry in the scene """
+
+        self._total_scene_vertices = 0
+        self._total_scene_triangles = 0
+
+        # Count vertices and triangles from standard mesh instances
+        mesh_vert_count = 0
         for instance in self.scene.instances:
-            vert_count += instance.asset.draw_count
-        self._total_scene_vertices = vert_count
-        self._total_scene_triangles = vert_count // 3
+            mesh_vert_count += instance.asset.draw_count
+
+        self._total_scene_vertices += mesh_vert_count
+        self._total_scene_triangles = mesh_vert_count // 3
+
+        # If a point cloud exists add its points to the vertex count
+        # (for display purposes, treats "points" as a type of "vertex")
+        if self.scene.point_cloud:
+            self._total_scene_vertices += self.scene.point_cloud.num_points
 
     def _render_instance(self, instance, view_matrix, projection_matrix):
         """ Renders a single instance using provided view and projection matrices """
