@@ -1,17 +1,18 @@
+# DEBUG_BVH.py
+
 import pygame
-import pytinybvh
 import numpy as np
 from pathlib import Path
-import open3d as o3d
+
+# --- Import the refactored PointCloud class ---
+from graphics.scene import PointCloud
 
 # --- CONFIG ---
-FILENAME = 'dolphins'
+FILENAME = 'dolphins.ply'
 ASSETS_DIR = Path('../assets')
-FILE = ASSETS_DIR / f'{FILENAME}.ply'
-BVH_FILE_PATH = ASSETS_DIR / f'{FILE.stem}.bvh.npy'
-PRIM_INDICES_FILE_PATH = ASSETS_DIR / f'{FILE.stem}.prim_indices.npy'
+FILE_PATH = ASSETS_DIR / FILENAME
 
-HIT_RADIUS = 2
+HIT_RADIUS = 3.0
 
 bvh_node_dtype = np.dtype([
     ('aabb_min', 'f4', (3,)),       # 3x 32-bit floats
@@ -21,105 +22,6 @@ bvh_node_dtype = np.dtype([
 ], align=True)
 
 # =========================================================================
-
-def build_bvh(point_cloud_open3d, save=True):
-    """
-    Builds the BVH, reorders the primitives, and saves the correct data for the renderer
-    """
-    points = np.asarray(point_cloud_open3d.points, dtype=np.float32)
-
-    if point_cloud_open3d.has_normals():
-        normals = np.asarray(point_cloud_open3d.normals, dtype=np.float32)
-    else:
-        # Create placeholder normals if they don't exist
-        print("Warning: Point cloud has no normals. Creating placeholders.")
-        normals = np.zeros_like(points)
-
-    if point_cloud_open3d.has_colors():
-        colors = np.asarray(point_cloud_open3d.colors, dtype=np.float32)
-    else:
-        # Create a default white color if none exist
-        print("Warning: Point cloud has no colors. Defaulting to white.")
-        colors = np.ones_like(points)
-
-    print("Building BVH from point data...")
-    bvh_nodes, prim_indices = pytinybvh.from_points(points, radius=HIT_RADIUS)
-
-    print("Reordering primitives according to BVH indices...")
-    # Reorder all point attributes using the indices from the BVH build
-    reordered_points = points[prim_indices]
-    reordered_normals = normals[prim_indices]
-    reordered_colors = colors[prim_indices]
-
-    # --- Pack the attributes for the GPU ---
-    # The GLSL struct 'Point' is (vec4 pos, vec4 normal, vec4 color) = 12 floats
-    num_points = len(reordered_points)
-    point_attributes = np.zeros((num_points, 12), dtype=np.float32)
-
-    point_attributes[:, 0:3] = reordered_points
-    point_attributes[:, 4:7] = reordered_normals
-    point_attributes[:, 8:11] = reordered_colors
-    # the 'w' components are left as 0.0 padding
-
-    ASSETS_DIR.mkdir(exist_ok=True, parents=True)
-    if save:
-        bvh_path = ASSETS_DIR / f'{FILE.stem}.bvh.npy'
-        primitives_path = ASSETS_DIR / f'{FILE.stem}.primitives.npy'
-
-        np.save(bvh_path, bvh_nodes)
-        np.save(primitives_path, point_attributes)
-
-        print(f"Saved BVH to: {bvh_path}")
-        print(f"Saved reordered primitive attributes to: {primitives_path}")
-
-    return bvh_nodes, reordered_points
-
-
-def build_bvh_with_fat_leaves(point_cloud, max_leaf_size, save=True):
-    """
-    Builds a BVH with "fat leaves" by grouping points before building
-    Returns:
-        - bvh_nodes: The BVH node data from pytinybvh
-        - prim_indices: The indices of the *groups*
-        - grouped_points: A list where each element is a sub-array of points belonging to a group
-    """
-    print(f"Grouping {len(point_cloud)} points into leaves of max size {max_leaf_size}...")
-
-    # Group points
-    num_points = len(point_cloud)
-    num_groups = (num_points + max_leaf_size - 1) // max_leaf_size  # ceiling division
-
-    grouped_points = np.array_split(point_cloud, num_groups)
-
-    print(f"Created {num_groups} groups.")
-
-    # Calculate Group AABBs and create surrogate triangles
-    surrogate_triangles = np.zeros((num_groups, 9), dtype=np.float32)
-    for i, group in enumerate(grouped_points):
-        if len(group) == 0: continue
-
-        # Calculate AABB for the group, expanded by HIT_RADIUS
-        group_min = np.min(group, axis=0) - HIT_RADIUS
-        group_max = np.max(group, axis=0) + HIT_RADIUS
-
-        # Create a surrogate triangle that spans the AABB
-        # v0 = min_corner, v1 = max_corner, v2 = min_corner
-        surrogate_triangles[i, 0:3] = group_min
-        surrogate_triangles[i, 3:6] = group_max
-        surrogate_triangles[i, 6:9] = group_min
-
-    # Build BVH from the surrogate triangles
-    print("Building BVH from surrogate group AABBs...")
-    # NOTE: with this method we use from_triangles, not from_points!
-    bvh_nodes, prim_indices = pytinybvh.from_triangles(surrogate_triangles)
-
-    ASSETS_DIR.mkdir(exist_ok=True, parents=True)
-    if save:
-        np.save(ASSETS_DIR / f'{FILE.stem}.bvh.npy', bvh_nodes)
-        np.save(ASSETS_DIR / f'{FILE.stem}.primitives.npy', prim_indices)
-
-    return bvh_nodes, prim_indices, grouped_points
-
 
 def intersect_aabb(ray_origin, ray_direction, aabb_min, aabb_max):
     inv_dir = np.divide(1.0, ray_direction, out=np.full_like(ray_direction, np.inf), where=ray_direction != 0)
@@ -132,7 +34,6 @@ def intersect_aabb(ray_origin, ray_direction, aabb_min, aabb_max):
     if t_near > t_far:
         return float('inf')
     return t_near
-
 
 def intersect_ray_sphere(ray_origin, ray_direction, sphere_center, sphere_radius):
     oc = ray_origin - sphere_center
@@ -156,16 +57,17 @@ def intersect_ray_sphere(ray_origin, ray_direction, sphere_center, sphere_radius
         return t2
     return float('inf')
 
-
 # =========================================================================
 
-# --- Load data ---
-pcd = o3d.io.read_point_cloud(FILE)
-bvh_nodes, reordered_primitives = build_bvh(pcd, save=True)
+point_cloud = PointCloud(FILE_PATH, hit_radius=HIT_RADIUS)
 
-bvh_nodes_structured = bvh_nodes.view(bvh_node_dtype).reshape(-1)  # reshape to a 1D array of structs
+bvh_nodes = point_cloud.bvh_nodes
+reordered_primitives = point_cloud.point_attributes[:, 0:3]
 
-# --- Pygame setup ---
+# View the raw bvh_nodes array with the structured dtype for easier access in Python
+bvh_nodes_structured = bvh_nodes.view(bvh_node_dtype).reshape(-1)
+
+# Pygame setup
 pygame.init()
 pygame.mouse.set_visible(False)
 screen_width, screen_height = 1280, 720
@@ -174,7 +76,7 @@ pygame.display.set_caption("BVH Ray Traversal Viewer (DEBUG MODE)")
 font = pygame.font.Font(None, 24)
 clock = pygame.time.Clock()
 
-# --- Viewport calculation ---
+# Viewport calculation
 scene_min = bvh_nodes_structured[0]['aabb_min']
 scene_max = bvh_nodes_structured[0]['aabb_max']
 scene_size = scene_max - scene_min
@@ -206,7 +108,7 @@ running = True
 frame_count = 0
 mouse_pos = (0, 0)
 
-# --- State variables for the interactive ray ---
+# State variables for the interactive ray
 ray_start_point = None  # will be set on mouse click
 # start the height in the middle of the scene's Y-axis
 ray_height = (scene_min[1] + scene_max[1]) / 2.0
@@ -220,7 +122,7 @@ while running:
             mouse_pos = event.pos
             frame_count = 0  # Reset to print debug info when mouse moves
 
-        # --- Handle mouse click and key presses for ray control ---
+        # Handle mouse click and key presses for ray control
         if event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:  # Left mouse click
                 world_x, world_z = screen_to_world_xz(event.pos)
@@ -238,7 +140,7 @@ while running:
                 if ray_start_point is not None:
                     ray_start_point[1] = ray_height
 
-    # --- Drawing ---
+    # Drawing
     screen.fill((20, 20, 30))
 
     # Draw all primitives in the background
@@ -250,7 +152,7 @@ while running:
 
     if ray_start_point is not None:
 
-        # --- Ray Setup ---
+        # Ray setup
         mouse_world_x, mouse_world_z = screen_to_world_xz(mouse_pos)
 
         # target is at the same height as the ray's origin for a 2D-like projection
@@ -266,7 +168,7 @@ while running:
         else:  # If start and end are the same, create a zero direction vector
             ray_direction = np.array([0.0, 0.0, 0.0], dtype=np.float32)
 
-        # --- Traversal Logic ---
+        # Traversal logic
         hit_primitives = []
         closest_hit_point = None
         stack = [0]
@@ -300,7 +202,7 @@ while running:
                             closest_hit_dist = dist_to_prim
                             closest_hit_point = ray_origin + closest_hit_dist * ray_direction
 
-        # --- Drawing ray ---
+        # Drawing ray
         # Draw the traversal path AABBs
         for node_idx, hit in reversed(traversal_path):
             aabb_min = bvh_nodes[node_idx, 0:3]
@@ -314,16 +216,16 @@ while running:
 
         # Draw the successfully hit point
         if closest_hit_point is not None:
-            pygame.draw.circle(screen, (255, 0, 255), world_to_screen(closest_hit_point), HIT_RADIUS, 2)
+            pygame.draw.circle(screen, (255, 0, 255), world_to_screen(closest_hit_point), int(HIT_RADIUS*scale), 2)
 
-        # --- Draw the ray and its origin marker ---
+
+        # Draw the ray and its origin marker
         ray_start_screen = world_to_screen(ray_start_point)
         # line from the start point to the current mouse position
         pygame.draw.line(screen, (255, 255, 0), ray_start_screen, mouse_pos, 2)
         # marker at the ray's origin
         pygame.draw.circle(screen, (0, 255, 255), ray_start_screen, 6, 2)
 
-    # --- Draw info text ---
     info_text = [
         f"Ray Height (Y): {ray_height:.2f} (+/- to change)",
         f"Click to set ray origin",

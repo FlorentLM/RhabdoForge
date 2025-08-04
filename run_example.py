@@ -37,16 +37,17 @@ def main():
 
     HEADLESS_MAX_STEPS = 1000
 
+    POINT_HIT_RADIUS = 3.0
+
     # Setup
     eng = Engine(width=1280, height=720, headless=RUN_HEADLESS)
 
     if USE_POINT_CLOUD:
-        # Load the pre-processed point cloud and add it via the engine
-        point_cloud = PointCloud('assets/dolphins')
+        point_cloud = PointCloud('assets/dolphins.ply', hit_radius=POINT_HIT_RADIUS)
         eng.add_point_cloud(point_cloud)
-        print("Point cloud scene with BVH loaded.")
+
     else:
-        # Load the debug crates
+        # Load the debug scene
         crate_mesh = eng.load_mesh("crate", CUBE_VERTICES, 'shaders/base.vert', 'shaders/base.frag',
                                    'textures/wood.jpg')
         eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([0.0, 0.0, 0.0])))

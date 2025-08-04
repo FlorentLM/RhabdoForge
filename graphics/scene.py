@@ -4,7 +4,8 @@ from typing import Optional
 import numpy as np
 from OpenGL.GL import *
 from graphics.utils import load_shaders, load_texture, VEC_DTYPE
-
+import open3d as o3d
+import pytinybvh
 
 class Mesh:
     """ Renderable object with its own shaders, texture, and vertex data """
@@ -78,28 +79,51 @@ class Instance:
 
 class PointCloud:
     """
-    Container for point cloud data accelerated by a BVH
+    Container for point cloud data, which builds the BVH and packs the data for the GPU
     """
-    def __init__(self, file_prefix: str):
-        bvh_path = Path(f"{file_prefix}.bvh.npy")
-        primitives_path = Path(f"{file_prefix}.primitives.npy")
+    def __init__(self, file_path: str, hit_radius: float = 0.1):
 
-        # TODO: get rid of this file loading - should be done by the scene class
+        self.source_path = Path(file_path)
+        if not self.source_path.exists():
+            raise FileNotFoundError(f"Could not find point cloud source file: {self.source_path}")
 
-        if not bvh_path.exists() or not primitives_path.exists():
-            raise FileNotFoundError(
-                f"Could not find pre-processed BVH data. "
-                f"Please run pointcloud_BVH.py to generate '{bvh_path.name}' and '{primitives_path.name}'."
-            )
+        print(f"Loading point cloud from {self.source_path}...")
+        pcd = o3d.io.read_point_cloud(self.source_path)
+        points = np.asarray(pcd.points, dtype=np.float32)
 
-        print(f"Loading point cloud BVH from {bvh_path}")
-        self.bvh_nodes = np.load(bvh_path)
-        print(f"Loading reordered point cloud primitives from {primitives_path}")
-        self.point_attributes = np.load(primitives_path)
+        # Build BVH and reorder primitives
+        print("Building BVH from point data...")
+        self.bvh_nodes, prim_indices = pytinybvh.from_points(points, radius=hit_radius)
+
+        print("Reordering primitive attributes according to BVH indices...")
+        # Check for normals and colors, creating placeholders if they don't exist.
+        if pcd.has_normals():
+            normals = np.asarray(pcd.normals, dtype=np.float32)[prim_indices]
+        else:
+            print("Warning: Point cloud has no normals. Creating placeholders.")
+            normals = np.zeros_like(points)
+
+        if pcd.has_colors():
+            colors = np.asarray(pcd.colors, dtype=np.float32)[prim_indices]
+        else:
+            print("Warning: Point cloud has no colors. Defaulting to white.")
+            colors = np.ones_like(points)
+
+        # Reorder the base points using the new indices
+        reordered_points = points[prim_indices]
+
+        # Pack the reordered attributes for the GPU
+        # Matches the 'Point' struct layout in commons.glsl (vec4 pos, vec4 normal, vec4 color)
+        self.num_points = len(reordered_points)
+        self.point_attributes = np.zeros((self.num_points, 12), dtype=VEC_DTYPE)
+
+        self.point_attributes[:, 0:3] = reordered_points
+        self.point_attributes[:, 4:7] = normals
+        self.point_attributes[:, 8:11] = colors
+        # The 'w' components are left as 0.0 for padding
 
         self.num_nodes = len(self.bvh_nodes)
-        self.num_points = len(self.point_attributes)
-        print(f"Loaded point cloud with {self.num_points} points and BVH with {self.num_nodes} nodes.")
+        print(f"Loaded and processed point cloud with {self.num_points} points and a BVH with {self.num_nodes} nodes.")
 
     def free(self):
         # Data is just in numpy arrays, nothing to free
