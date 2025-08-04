@@ -216,9 +216,10 @@ void main() {
     if (closest_hit.found) {
         if (closest_hit.is_point_hit) {
             Point hit_point = u_points[closest_hit.primitive_idx];
-            vec3 light_dir = normalize(vec3(0.5, 1.0, 0.5));
-            float diffuse = max(0.1, dot(normalize(hit_point.normal.xyz), light_dir));
-            final_color = hit_point.color.rgb * diffuse;
+//            vec3 light_dir = normalize(vec3(0.5, 1.0, 0.5));
+//            float diffuse = max(0.1, dot(normalize(hit_point.normal.xyz), light_dir));
+//            final_color = hit_point.color.rgb * diffuse;
+            final_color = hit_point.color.rgb;
         } else {
             Triangle hit_tri = u_triangles[closest_hit.primitive_idx];
             Material hit_mat = u_materials[hit_tri.material_idx];
@@ -227,6 +228,7 @@ void main() {
                           hit_tri.uv2 * closest_hit.barycentric_coords.z;
             final_color = texture(u_scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
         }
+
     } else {
         final_color = texture(u_skybox, direction).rgb;
     }

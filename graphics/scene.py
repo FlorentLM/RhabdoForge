@@ -81,7 +81,7 @@ class PointCloud:
     """
     Container for point cloud data, which builds the BVH and packs the data for the GPU
     """
-    def __init__(self, file_path: str, hit_radius: float = 0.1):
+    def __init__(self, file_path: str, hit_radius: Optional[float] = None):
 
         self.source_path = Path(file_path)
         if not self.source_path.exists():
@@ -91,12 +91,31 @@ class PointCloud:
         pcd = o3d.io.read_point_cloud(self.source_path)
         points = np.asarray(pcd.points, dtype=np.float32)
 
-        # Build BVH and reorder primitives
+        if hit_radius is None:
+            print("Automatically determining optimal hit radius...")
+            if len(points) < 2:
+                # Not enough points to determine density
+                self.hit_radius = 0.1
+            else:
+                from scipy.spatial import KDTree
+                tree = KDTree(points)
+                sample_size = min(len(points), 1000)
+                sample_indices = np.random.choice(len(points), sample_size, replace=False)
+                distances, _ = tree.query(points[sample_indices], k=2)
+
+                # average distance to nearest neighbour
+                avg_dist = np.mean(distances[:, 1])
+                # set the radius to a bit more than half this distance so that spheres from adjacent points touch
+                self.hit_radius = avg_dist * 0.75
+            print(f"Estimated hit radius: {self.hit_radius:.4f}")
+        else:
+            self.hit_radius = float(hit_radius)
+
         print("Building BVH from point data...")
-        self.bvh_nodes, prim_indices = pytinybvh.from_points(points, radius=hit_radius)
+        self.bvh_nodes, prim_indices = pytinybvh.from_points(points, radius=self.hit_radius)
 
         print("Reordering primitive attributes according to BVH indices...")
-        # Check for normals and colors, creating placeholders if they don't exist.
+        # Check for normals and colors, creating placeholders if they don't exist
         if pcd.has_normals():
             normals = np.asarray(pcd.normals, dtype=np.float32)[prim_indices]
         else:

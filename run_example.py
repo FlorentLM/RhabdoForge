@@ -32,18 +32,18 @@ def main():
     VORONOI_VIEW = False
 
     NB_OMMATIDIA = 1962
-    NB_OMMATIDIA = 19362
-    NB_SAMPLES = 4
+    # NB_OMMATIDIA = 1962
+    NB_SAMPLES = 16
 
     HEADLESS_MAX_STEPS = 1000
 
-    POINT_HIT_RADIUS = 3.0
+    POINT_HIT_RADIUS = 0.01
 
     # Setup
     eng = Engine(width=1280, height=720, headless=RUN_HEADLESS)
 
     if USE_POINT_CLOUD:
-        point_cloud = PointCloud('assets/dolphins.ply', hit_radius=POINT_HIT_RADIUS)
+        point_cloud = PointCloud('assets/seville_filtered.ply', hit_radius=POINT_HIT_RADIUS)
         eng.add_point_cloud(point_cloud)
 
     else:
@@ -56,15 +56,15 @@ def main():
         print("Default crate scene loaded.")
 
     eng.skybox = Skybox()
-    # eng.skybox_texture_id = load_cubemap('textures/bright_day')
-    eng.skybox_texture_id = load_cubemap('textures/black')
+    eng.skybox_texture_id = load_cubemap('textures/bright_day')
+    # eng.skybox_texture_id = load_cubemap('textures/black')
 
     # Create the eye model
     eye = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
 
     if USE_RAYTRACER:
         print("Mode: Ray-Tracer")
-        eye_renderer = EyeRendererRay(eye_model=eye, scene=eng.scene, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES, point_radius=3.0)
+        eye_renderer = EyeRendererRay(eye_model=eye, scene=eng.scene, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES, point_radius=POINT_HIT_RADIUS)
     else:
         print("Mode: Rasterizer")
         eye_renderer = EyeRendererRaster(eye_model=eye, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES)
