@@ -99,48 +99,48 @@ HitInfo intersect_sphere(Ray r, vec3 center, float radius) {
 }
 
 // Axis-Aligned Bounding Box (AABB) intersection function
-// Returns true if the ray intersects the box // TODO: Uodate this to return distance!!!
-bool intersect_aabb(Ray r, vec3 aabb_min, vec3 aabb_max) {
+float intersect_aabb(Ray r, vec3 aabb_min, vec3 aabb_max) {
     vec3 inv_dir = 1.0 / r.direction;
-    vec3 t_min_vec = (aabb_min - r.origin) * inv_dir;
-    vec3 t_max_vec = (aabb_max - r.origin) * inv_dir;
+    vec3 t1 = (aabb_min - r.origin) * inv_dir;
+    vec3 t2 = (aabb_max - r.origin) * inv_dir;
 
-    vec3 t1 = min(t_min_vec, t_max_vec);
-    vec3 t2 = max(t_min_vec, t_max_vec);
+    vec3 t_min_vec = min(t1, t2);
+    vec3 t_max_vec = max(t1, t2);
 
-    float t_near = max(max(t1.x, t1.y), t1.z);
-    float t_far = min(min(t2.x, t2.y), t2.z);
+    float t_near = max(max(t_min_vec.x, t_min_vec.y), t_min_vec.z);
+    float t_far = min(min(t_max_vec.x, t_max_vec.y), t_max_vec.z);
 
-    return t_near <= t_far && t_far > 0.0;
+    // Condition for a valid intersection:
+    // t_far >= 0.0: The entire AABB is not behind the ray origin.
+    // t_near <= t_far: The ray actually passes through the box.
+    if (t_near > t_far || t_far < 0.0) {
+        return 1.0/0.0; // infinity
+    }
+
+    // If t_near is negative, the ray starts inside the box, so the hit is at t=0.
+    return max(0.0, t_near);
 }
 
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
 
-    // Guard clause to avoid going out of bounds
+    // Guard clause
     if (global_id >= (u_num_ommatidia * u_samples_per_ommatidium)) {
         return;
     }
 
-    // Deconstruct the global ID to find which ommatidium and sample this thread is for
     uint ommatidium_idx = global_id / u_samples_per_ommatidium;
     uint sample_idx = global_id % u_samples_per_ommatidium;
 
-    // Generate the ray
+    // Generate the ray for this thread
     Ommatidium om = u_ommatidia_data[ommatidium_idx];
-
-    // Transform ommatidium direction to world space
     vec3 om_world_dir = (u_camera_orientation * om.direction).xyz;
-
-    // Transform the local origin offset by the camera's orientation and add to its position
     vec3 om_world_origin = u_camera_position + (u_camera_orientation * om.origin).xyz;
 
-    // Create local coordinate system for sampling
     vec3 up = abs(om_world_dir.y) > 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
     vec3 tangent = normalize(cross(up, om_world_dir));
     vec3 bitangent = cross(om_world_dir, tangent);
 
-    // Monte Carlo sampling within cone
     float r1 = rand(vec2(ommatidium_idx, sample_idx), u_time);
     float r2 = rand(vec2(ommatidium_idx, sample_idx) + 0.5, u_time);
 
@@ -151,77 +151,79 @@ void main() {
     // Trace the ray
     HitInfo closest_hit;
     closest_hit.found = false;
-    closest_hit.t = 1.0/0.0; // inf
+    closest_hit.t = 1.0/0.0; // initialize distance to infinity
 
-    // Trace against Meshes (if any)
-    // TODO: Also needs a geometry acceleration structure
+    // Trace against meshes (brute-force) // TODO: this should also use a BVH
     if (u_num_triangles > 0) {
         for (uint i = 0; i < u_num_triangles; ++i) {
             HitInfo current_hit = intersect_triangle(r, u_triangles[i]);
             if (current_hit.found && current_hit.t < closest_hit.t) {
                 closest_hit = current_hit;
-                closest_hit.triangle_idx = i;
+                closest_hit.is_point_hit = false;
+                closest_hit.primitive_idx = i;
             }
         }
     }
 
-    // Trace scene using BVH
+    // Trace against Point Cloud using BVH
     if (u_num_bvh_nodes > 0) {
+        // A fixed-size stack is used for traversal on the GPU (64 is deep enough for almost any BVH)
         uint traversal_stack[64];
         uint stack_ptr = 0;
-        traversal_stack[stack_ptr++] = 0u; // Start at root node
+        traversal_stack[stack_ptr++] = 0u; // Start at the root node (index 0)
 
         while(stack_ptr > 0u) {
             uint node_idx = traversal_stack[--stack_ptr];
             BvhNode node = u_bvh_nodes[node_idx];
 
-            // Use the data layout from the two vec4s
+            // Unpack node data
             vec3 aabb_min = node.data1.xyz;
             vec3 aabb_max = node.data2.xyz;
 
-            // AABB intersection test
-            if (!intersect_aabb(r, aabb_min, aabb_max)) {
-                continue;
+            // Check intersection distance against the current closest hit
+            float dist_to_aabb = intersect_aabb(r, aabb_min, aabb_max);
+            if (dist_to_aabb >= closest_hit.t) {
+                continue; // Prune this entire branch
             }
 
-            // Extract metadata by re-interpreting the float bits as unsigned integers
+            // Unpack metadata by re-interpreting the float bits as unsigned integers
             uint left_or_first_idx = floatBitsToUint(node.data1.w);
             uint primitive_count = floatBitsToUint(node.data2.w);
 
-            if (primitive_count > 0u) { // it's a leaf node
+            if (primitive_count > 0u) { // leaf: test primitives
                 for(uint i = 0u; i < primitive_count; i++) {
                     uint prim_idx = left_or_first_idx + i;
-
                     Point p = u_points[prim_idx];
+
                     HitInfo p_hit = intersect_sphere(r, p.pos.xyz, u_point_radius);
                     if (p_hit.found && p_hit.t < closest_hit.t) {
-                        closest_hit = p_hit;
-                        closest_hit.point_idx = prim_idx;
+                        closest_hit.found = true;
+                        closest_hit.is_point_hit = true;
+                        closest_hit.t = p_hit.t;
+                        closest_hit.primitive_idx = prim_idx;
                     }
                 }
-            } else { // it's an internal node
-                // Push children to stack. Right child is always left+1.
-                if (stack_ptr < 64) traversal_stack[stack_ptr++] = left_or_first_idx + 1; // Right
-                if (stack_ptr < 64) traversal_stack[stack_ptr++] = left_or_first_idx;     // Left
+            } else { // internal node: push children to stack
+                // Pushing right child first (left+1), then left, so left gets processed first
+                if (stack_ptr < 63) traversal_stack[stack_ptr++] = left_or_first_idx + 1; // Right
+                if (stack_ptr < 63) traversal_stack[stack_ptr++] = left_or_first_idx;     // Left
             }
         }
     }
 
-    // Shade result
+    // Shade the result
     vec3 final_color;
     if (closest_hit.found) {
-
-        if (closest_hit.is_point_hit) { // point hit
-            Point hit_point = u_points[closest_hit.point_idx];
-
-            // Simple shading using point color and normal
-            float diffuse = max(0.0, dot(normalize(hit_point.normal.xyz), -r.direction));
+        if (closest_hit.is_point_hit) {
+            // It was a point hit
+            Point hit_point = u_points[closest_hit.primitive_idx];
+            // Simple shading using point color and a fake directional light
+            vec3 light_dir = normalize(vec3(0.5, 1.0, 0.5));
+            float diffuse = max(0.1, dot(normalize(hit_point.normal.xyz), light_dir));
             final_color = hit_point.color.rgb * diffuse;
-
-        } else { // triangle hit
-
-            // hit something, shade it
-            Triangle hit_tri = u_triangles[closest_hit.triangle_idx];
+        } else {
+            // It was a triangle hit
+            Triangle hit_tri = u_triangles[closest_hit.primitive_idx];
             Material hit_mat = u_materials[hit_tri.material_idx];
 
             // interpolate UV coordinates
@@ -229,16 +231,14 @@ void main() {
                           hit_tri.uv1 * closest_hit.barycentric_coords.y +
                           hit_tri.uv2 * closest_hit.barycentric_coords.z;
 
-            // Get colour from the material struct
             uint texture_layer = hit_mat.texture_idx;
             final_color = texture(u_scene_textures, vec3(hit_uv, texture_layer)).rgb;
         }
-
     } else {
-        // hit nothing, sample the skybox
+        // Hit nothing, sample the skybox
         final_color = texture(u_skybox, r.direction).rgb;
     }
 
-    // write result for current ray
+    // Write final color for this single ray to the intermediate buffer
     u_ray_results[global_id] = vec4(final_color, 1.0);
 }

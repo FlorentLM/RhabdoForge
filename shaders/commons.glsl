@@ -39,7 +39,7 @@ struct Point {
 struct BvhNode {
     vec4 data1; // .xyz = AABB Min, .w = Left child/First primitive index
     vec4 data2; // .xyz = AABB Max, .w = Primitive count (0 for internal nodes)
-}; // total size = 2 bytes (2x vec4)
+}; // total size = 32 bytes (2x vec4)
 
 struct Ray {
     vec3 origin;
@@ -49,10 +49,9 @@ struct Ray {
 struct HitInfo {
     bool found;
     float t; // distance along ray
-    vec3 barycentric_coords;
-    uint triangle_idx;
-    uint point_idx; // idx for point cloud hits
-    bool is_point_hit;  // TODO: Maybe two different structs for point hit and triangle hit?
+    vec3 barycentric_coords; // for triangle hits
+    uint primitive_idx;
+    bool is_point_hit;
 };
 
 // Simple RNG with temporal dithering
