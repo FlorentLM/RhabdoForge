@@ -37,17 +37,17 @@ uniform vec3 u_camera_position;    // for ray origin
 
 // Functions
 
-// Möller–Trumbore ray-triangle intersection
-HitInfo intersect_triangle(Ray r, Triangle tri) {
+// Möller–Trumbore with direction vector (not inverse)
+HitInfo intersect_triangle(Ray r, vec3 direction, Triangle tri) {
     HitInfo hit;
     hit.found = false;
-    hit.is_point_hit = false; // Mark as triangle hit
+    hit.is_point_hit = false;
     vec3 edge1 = tri.v1.xyz - tri.v0.xyz;
     vec3 edge2 = tri.v2.xyz - tri.v0.xyz;
-    vec3 h = cross(r.direction, edge2);
+    vec3 h = cross(direction, edge2);
     float a = dot(edge1, h);
 
-    if (a > -1e-6 && a < 1e-6) return hit; // ray is parallel to the triangle
+    if (a > -1e-6 && a < 1e-6) return hit;
 
     float f = 1.0 / a;
     vec3 s = r.origin - tri.v0.xyz;
@@ -56,12 +56,12 @@ HitInfo intersect_triangle(Ray r, Triangle tri) {
     if (u < 0.0 || u > 1.0) return hit;
 
     vec3 q = cross(s, edge1);
-    float v = f * dot(r.direction, q);
+    float v = f * dot(direction, q);
 
     if (v < 0.0 || u + v > 1.0) return hit;
 
     float t = f * dot(edge2, q);
-    if (t > 1e-6) { // ray intersection
+    if (t > 1e-6 && t < r.t) { // Check against ray's max distance
         hit.found = true;
         hit.t = t;
         hit.barycentric_coords = vec3(1.0 - u - v, u, v);
@@ -69,78 +69,59 @@ HitInfo intersect_triangle(Ray r, Triangle tri) {
     return hit;
 }
 
-// Ray-sphere intersection
-HitInfo intersect_sphere(Ray r, vec3 center, float radius) {
+// Ray-sphere with direction vector (not inverse)
+HitInfo intersect_sphere(Ray r, vec3 direction, vec3 center, float radius) {
     HitInfo hit;
     hit.found = false;
     hit.is_point_hit = true;
     vec3 oc = r.origin - center;
-    float a = dot(r.direction, r.direction);
-    float b = 2.0 * dot(oc, r.direction);
+    float a = dot(direction, direction);
+    float b = 2.0 * dot(oc, direction);
     float c = dot(oc, oc) - radius * radius;
     float discriminant = b * b - 4 * a * c;
 
-    if (discriminant < 0) {
-        return hit; // No real roots, no intersection
-    }
+    if (discriminant < 0) return hit;
 
     float sqrt_d = sqrt(discriminant);
     float t1 = (-b - sqrt_d) / (2.0 * a);
     float t2 = (-b + sqrt_d) / (2.0 * a);
 
-    // Find the smallest, non-negative t value
     float t = -1.0;
-    if (t1 > 1e-6 && t2 > 1e-6) {
-        t = min(t1, t2);
-    } else if (t1 > 1e-6) {
-        t = t1;
-    } else if (t2 > 1e-6) {
-        t = t2;
-    }
+    if (t1 > 1e-6 && t1 < r.t) t = t1;
+    if (t2 > 1e-6 && t2 < r.t && (t < 0.0 || t2 < t)) t = t2;
 
-    if (t > 0) {
+    if (t > 0.0) {
         hit.found = true;
         hit.t = t;
     }
-
     return hit;
 }
 
 // Axis-Aligned Bounding Box (AABB) intersection function
 float intersect_aabb(Ray r, vec3 aabb_min, vec3 aabb_max) {
-    vec3 inv_dir = 1.0 / r.direction;
-    vec3 t1 = (aabb_min - r.origin) * inv_dir;
-    vec3 t2 = (aabb_max - r.origin) * inv_dir;
+    vec3 t1 = (aabb_min - r.origin) * r.inv_direction;
+    vec3 t2 = (aabb_max - r.origin) * r.inv_direction;
+    vec3 tmin_v = min(t1, t2);
+    vec3 tmax_v = max(t1, t2);
+    float tmin = max(tmin_v.x, max(tmin_v.y, tmin_v.z));
+    float tmax = min(tmax_v.x, min(tmax_v.y, tmax_v.z));
 
-    vec3 t_min_vec = min(t1, t2);
-    vec3 t_max_vec = max(t1, t2);
-
-    float t_near = max(max(t_min_vec.x, t_min_vec.y), t_min_vec.z);
-    float t_far = min(min(t_max_vec.x, t_max_vec.y), t_max_vec.z);
-
-    // Condition for a valid intersection:
-    // t_far >= 0.0: The entire AABB is not behind the ray origin
-    // t_near <= t_far: The ray actually passes through the box
-    if (t_near > t_far || t_far < 0.0) {
-        return 1.0/0.0; // infinity
-    }
-
-    // if t_near is negative, the ray starts inside the box, so the hit is at t=0
-    return max(0.0, t_near);
+    // AABB is behind ray OR ray misses AABB
+    if (tmax < 0.0 || tmin > tmax) return 1.0/0.0;
+    // Ray origin is inside AABB, hit is at 0 distance
+    if (tmin < 0.0) return 0.0;
+    // Return distance to closest intersection point
+    return tmin;
 }
 
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
-
-    // Guard clause
-    if (global_id >= (u_num_ommatidia * u_samples_per_ommatidium)) {
-        return;
-    }
+    if (global_id >= (u_num_ommatidia * u_samples_per_ommatidium)) return;
 
     uint ommatidium_idx = global_id / u_samples_per_ommatidium;
     uint sample_idx = global_id % u_samples_per_ommatidium;
 
-    // Generate the ray for this thread
+    // Ray Generation
     Ommatidium om = u_ommatidia_data[ommatidium_idx];
     vec3 om_world_dir = (u_camera_orientation * om.direction).xyz;
     vec3 om_world_origin = u_camera_position + (u_camera_orientation * om.origin).xyz;
@@ -152,102 +133,103 @@ void main() {
     float r1 = rand(vec2(ommatidium_idx, sample_idx), u_time);
     float r2 = rand(vec2(ommatidium_idx, sample_idx) + 0.5, u_time);
 
+    // The original direction vector, needed for intersection tests
+    vec3 direction = sampledir(om, tangent, bitangent, om_world_dir, r1, r2);
+
     Ray r;
     r.origin = om_world_origin;
-    r.direction = sampledir(om, tangent, bitangent, om_world_dir, r1, r2);
+    r.t = 1.0/0.0; // Initialize max distance to infinity
+    r.inv_direction = 1.0 / direction; // precompute inverse for AABB tests
 
-    // Trace the ray
+    // Traversal & Intersection
     HitInfo closest_hit;
     closest_hit.found = false;
-    closest_hit.t = 1.0/0.0; // initialize distance to infinity
 
-    // Trace against meshes (brute-force) // TODO: this should also use a BVH
+    // Brute-force triangle check (if any) // TODO: This should also be handled by a BVH
     if (u_num_triangles > 0) {
         for (uint i = 0; i < u_num_triangles; ++i) {
-            HitInfo current_hit = intersect_triangle(r, u_triangles[i]);
-            if (current_hit.found && current_hit.t < closest_hit.t) {
+            HitInfo current_hit = intersect_triangle(r, direction, u_triangles[i]);
+            if (current_hit.found) {
                 closest_hit = current_hit;
-                closest_hit.is_point_hit = false;
-                closest_hit.primitive_idx = i;
+                r.t = current_hit.t; // Shorten the ray
             }
         }
     }
 
-    // Trace against Point Cloud using BVH
+    // BVH traversal for Point Cloud
     if (u_num_bvh_nodes > 0) {
-        // A fixed-size stack is used for traversal on the GPU (64 is deep enough for almost any BVH)
         uint traversal_stack[64];
         uint stack_ptr = 0;
-        traversal_stack[stack_ptr++] = 0u; // Start at the root node (index 0)
 
-        while(stack_ptr > 0u) {
-            uint node_idx = traversal_stack[--stack_ptr];
-            BvhNode node = u_bvh_nodes[node_idx];
+        BvhNode node = u_bvh_nodes[0]; // Start at the root
 
-            // Unpack node data
-            vec3 aabb_min = node.data1.xyz;
-            vec3 aabb_max = node.data2.xyz;
-
-            // Check intersection distance against the current closest hit
-            float dist_to_aabb = intersect_aabb(r, aabb_min, aabb_max);
-            if (dist_to_aabb >= closest_hit.t) {
-                continue; // Prune this entire branch
-            }
-
-            // Unpack metadata by re-interpreting the float bits as unsigned integers
-            uint left_or_first_idx = floatBitsToUint(node.data1.w);
+        while(true) {
             uint primitive_count = floatBitsToUint(node.data2.w);
-
-            if (primitive_count > 0u) { // leaf: test primitives
-                for(uint i = 0u; i < primitive_count; i++) {
-                    uint prim_idx = left_or_first_idx + i;
+            if (primitive_count > 0u) { // leaf
+                uint first_prim_idx = floatBitsToUint(node.data1.w);
+                for(uint i = 0; i < primitive_count; i++) {
+                    uint prim_idx = first_prim_idx + i;
                     Point p = u_points[prim_idx];
-
-                    HitInfo p_hit = intersect_sphere(r, p.pos.xyz, u_point_radius);
-                    if (p_hit.found && p_hit.t < closest_hit.t) {
+                    HitInfo p_hit = intersect_sphere(r, direction, p.pos.xyz, u_point_radius);
+                    if (p_hit.found) {
                         closest_hit.found = true;
                         closest_hit.is_point_hit = true;
-                        closest_hit.t = p_hit.t;
                         closest_hit.primitive_idx = prim_idx;
+                        r.t = p_hit.t; // Shorten the ray
                     }
                 }
-            } else { // internal node: push children to stack
-                // Pushing right child first (left+1), then left, so left gets processed first
-                if (stack_ptr < 63) traversal_stack[stack_ptr++] = left_or_first_idx + 1; // Right
-                if (stack_ptr < 63) traversal_stack[stack_ptr++] = left_or_first_idx;     // Left
+
+                if (stack_ptr == 0) break; // Traversal finished
+                node = u_bvh_nodes[traversal_stack[--stack_ptr]]; // Pop from stack
+                continue;
+            }
+
+            // Internal node
+            uint left_child_idx = floatBitsToUint(node.data1.w);
+            BvhNode child1 = u_bvh_nodes[left_child_idx];
+            BvhNode child2 = u_bvh_nodes[left_child_idx + 1];
+
+            float dist1 = intersect_aabb(r, child1.data1.xyz, child1.data2.xyz);
+            float dist2 = intersect_aabb(r, child2.data1.xyz, child2.data2.xyz);
+
+            // Order children front-to-back
+            if (dist1 > dist2) {
+                float temp_d = dist1; dist1 = dist2; dist2 = temp_d;
+                BvhNode temp_n = child1; child1 = child2; child2 = temp_n;
+            }
+
+            // Traverse children
+            if (dist1 >= r.t) { // Both children are further than the closest hit
+                 if (stack_ptr == 0) break;
+                 node = u_bvh_nodes[traversal_stack[--stack_ptr]];
+            } else {
+                node = child1; // Traverse near child first
+                if (dist2 < r.t) { // If far child is also viable, push to stack
+                    if(stack_ptr < 64) traversal_stack[stack_ptr++] = left_child_idx + (child1.data1.w == u_bvh_nodes[left_child_idx].data1.w ? 1 : 0);
+                }
             }
         }
     }
 
-    // Shade the result
+    // Shading
     vec3 final_color;
     if (closest_hit.found) {
         if (closest_hit.is_point_hit) {
-            // It was a point hit
             Point hit_point = u_points[closest_hit.primitive_idx];
-            // Simple shading using point color and a fake directional light
             vec3 light_dir = normalize(vec3(0.5, 1.0, 0.5));
             float diffuse = max(0.1, dot(normalize(hit_point.normal.xyz), light_dir));
-//            final_color = hit_point.color.rgb * diffuse;
-            final_color = vec3(1.0, 1.0, 1.0);
+            final_color = hit_point.color.rgb * diffuse;
         } else {
-            // It was a triangle hit
             Triangle hit_tri = u_triangles[closest_hit.primitive_idx];
             Material hit_mat = u_materials[hit_tri.material_idx];
-
-            // interpolate UV coordinates
             vec2 hit_uv = hit_tri.uv0 * closest_hit.barycentric_coords.x +
                           hit_tri.uv1 * closest_hit.barycentric_coords.y +
                           hit_tri.uv2 * closest_hit.barycentric_coords.z;
-
-            uint texture_layer = hit_mat.texture_idx;
-            final_color = texture(u_scene_textures, vec3(hit_uv, texture_layer)).rgb;
+            final_color = texture(u_scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
         }
     } else {
-        // Hit nothing, sample the skybox
-        final_color = texture(u_skybox, r.direction).rgb;
+        final_color = texture(u_skybox, direction).rgb;
     }
 
-    // Write final color for this single ray to the intermediate buffer
     u_ray_results[global_id] = vec4(final_color, 1.0);
 }
