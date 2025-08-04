@@ -5,8 +5,8 @@ from pathlib import Path
 import open3d as o3d
 
 # --- CONFIG ---
-FILENAME = 'seville_filtered'
-ASSETS_DIR = Path('assets')
+FILENAME = 'dolphins'
+ASSETS_DIR = Path('../assets')
 FILE = ASSETS_DIR / f'{FILENAME}.ply'
 BVH_FILE_PATH = ASSETS_DIR / f'{FILE.stem}.bvh.npy'
 PRIM_INDICES_FILE_PATH = ASSETS_DIR / f'{FILE.stem}.prim_indices.npy'
@@ -22,13 +22,57 @@ bvh_node_dtype = np.dtype([
 
 # =========================================================================
 
-def build_bvh(point_cloud, save=True):
-    bvh_nodes, prim_indices = pytinybvh.from_points(point_cloud, radius=HIT_RADIUS)
+def build_bvh(point_cloud_open3d, save=True):
+    """
+    Builds the BVH, reorders the primitives, and saves the correct data for the renderer
+    """
+    points = np.asarray(point_cloud_open3d.points, dtype=np.float32)
+
+    if point_cloud_open3d.has_normals():
+        normals = np.asarray(point_cloud_open3d.normals, dtype=np.float32)
+    else:
+        # Create placeholder normals if they don't exist
+        print("Warning: Point cloud has no normals. Creating placeholders.")
+        normals = np.zeros_like(points)
+
+    if point_cloud_open3d.has_colors():
+        colors = np.asarray(point_cloud_open3d.colors, dtype=np.float32)
+    else:
+        # Create a default white color if none exist
+        print("Warning: Point cloud has no colors. Defaulting to white.")
+        colors = np.ones_like(points)
+
+    print("Building BVH from point data...")
+    bvh_nodes, prim_indices = pytinybvh.from_points(points, radius=HIT_RADIUS)
+
+    print("Reordering primitives according to BVH indices...")
+    # Reorder all point attributes using the indices from the BVH build
+    reordered_points = points[prim_indices]
+    reordered_normals = normals[prim_indices]
+    reordered_colors = colors[prim_indices]
+
+    # --- Pack the attributes for the GPU ---
+    # The GLSL struct 'Point' is (vec4 pos, vec4 normal, vec4 color) = 12 floats
+    num_points = len(reordered_points)
+    point_attributes = np.zeros((num_points, 12), dtype=np.float32)
+
+    point_attributes[:, 0:3] = reordered_points
+    point_attributes[:, 4:7] = reordered_normals
+    point_attributes[:, 8:11] = reordered_colors
+    # the 'w' components are left as 0.0 padding
+
     ASSETS_DIR.mkdir(exist_ok=True, parents=True)
     if save:
-        np.save(ASSETS_DIR / f'{FILE.stem}.bvh.npy', bvh_nodes)
-        np.save(ASSETS_DIR / f'{FILE.stem}.primitives.npy', prim_indices)
-    return bvh_nodes, prim_indices
+        bvh_path = ASSETS_DIR / f'{FILE.stem}.bvh.npy'
+        primitives_path = ASSETS_DIR / f'{FILE.stem}.primitives.npy'
+
+        np.save(bvh_path, bvh_nodes)
+        np.save(primitives_path, point_attributes)
+
+        print(f"Saved BVH to: {bvh_path}")
+        print(f"Saved reordered primitive attributes to: {primitives_path}")
+
+    return bvh_nodes, reordered_points
 
 
 def build_bvh_with_fat_leaves(point_cloud, max_leaf_size, save=True):
@@ -117,13 +161,9 @@ def intersect_ray_sphere(ray_origin, ray_direction, sphere_center, sphere_radius
 
 # --- Load data ---
 pcd = o3d.io.read_point_cloud(FILE)
-point_cloud = np.asarray(pcd.points, dtype=np.float32)
-bvh_nodes, prim_indices = build_bvh(point_cloud, save=True)
+bvh_nodes, reordered_primitives = build_bvh(pcd, save=True)
 
 bvh_nodes_structured = bvh_nodes.view(bvh_node_dtype).reshape(-1)  # reshape to a 1D array of structs
-
-print("Reordering primitives according to prim_indices...")
-reordered_primitives = point_cloud[prim_indices]
 
 # --- Pygame setup ---
 pygame.init()

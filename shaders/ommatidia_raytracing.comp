@@ -37,7 +37,7 @@ uniform vec3 u_camera_position;    // for ray origin
 
 // Functions
 
-// Möller–Trumbore ray-triangle intersection algorithm
+// Möller–Trumbore ray-triangle intersection
 HitInfo intersect_triangle(Ray r, Triangle tri) {
     HitInfo hit;
     hit.found = false;
@@ -73,28 +73,36 @@ HitInfo intersect_triangle(Ray r, Triangle tri) {
 HitInfo intersect_sphere(Ray r, vec3 center, float radius) {
     HitInfo hit;
     hit.found = false;
-    hit.is_point_hit = true; // Mark as point hit
+    hit.is_point_hit = true;
     vec3 oc = r.origin - center;
     float a = dot(r.direction, r.direction);
     float b = 2.0 * dot(oc, r.direction);
     float c = dot(oc, oc) - radius * radius;
     float discriminant = b * b - 4 * a * c;
-    if (discriminant >= 0) {
-        // We want the closest intersection in front of the ray
-        float t = (-b - sqrt(discriminant)) / (2.0 * a);
-        if (t > 1e-6) {
-            hit.found = true;
-            hit.t = t;
-        }
-        // Optional: If the first hit was behind, check the second one
-        // else {
-        //    t = (-b + sqrt(discriminant)) / (2.0 * a);
-        //    if (t > 1e-6) {
-        //        hit.found = true;
-        //        hit.t = t;
-        //    }
-        // }
+
+    if (discriminant < 0) {
+        return hit; // No real roots, no intersection
     }
+
+    float sqrt_d = sqrt(discriminant);
+    float t1 = (-b - sqrt_d) / (2.0 * a);
+    float t2 = (-b + sqrt_d) / (2.0 * a);
+
+    // Find the smallest, non-negative t value
+    float t = -1.0;
+    if (t1 > 1e-6 && t2 > 1e-6) {
+        t = min(t1, t2);
+    } else if (t1 > 1e-6) {
+        t = t1;
+    } else if (t2 > 1e-6) {
+        t = t2;
+    }
+
+    if (t > 0) {
+        hit.found = true;
+        hit.t = t;
+    }
+
     return hit;
 }
 
@@ -111,13 +119,13 @@ float intersect_aabb(Ray r, vec3 aabb_min, vec3 aabb_max) {
     float t_far = min(min(t_max_vec.x, t_max_vec.y), t_max_vec.z);
 
     // Condition for a valid intersection:
-    // t_far >= 0.0: The entire AABB is not behind the ray origin.
-    // t_near <= t_far: The ray actually passes through the box.
+    // t_far >= 0.0: The entire AABB is not behind the ray origin
+    // t_near <= t_far: The ray actually passes through the box
     if (t_near > t_far || t_far < 0.0) {
         return 1.0/0.0; // infinity
     }
 
-    // If t_near is negative, the ray starts inside the box, so the hit is at t=0.
+    // if t_near is negative, the ray starts inside the box, so the hit is at t=0
     return max(0.0, t_near);
 }
 
@@ -220,7 +228,8 @@ void main() {
             // Simple shading using point color and a fake directional light
             vec3 light_dir = normalize(vec3(0.5, 1.0, 0.5));
             float diffuse = max(0.1, dot(normalize(hit_point.normal.xyz), light_dir));
-            final_color = hit_point.color.rgb * diffuse;
+//            final_color = hit_point.color.rgb * diffuse;
+            final_color = vec3(1.0, 1.0, 1.0);
         } else {
             // It was a triangle hit
             Triangle hit_tri = u_triangles[closest_hit.primitive_idx];

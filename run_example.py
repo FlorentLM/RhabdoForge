@@ -32,7 +32,8 @@ def main():
     VORONOI_VIEW = False
 
     NB_OMMATIDIA = 1962
-    NB_SAMPLES = 64
+    NB_OMMATIDIA = 19362
+    NB_SAMPLES = 4
 
     HEADLESS_MAX_STEPS = 1000
 
@@ -41,7 +42,7 @@ def main():
 
     if USE_POINT_CLOUD:
         # Load the pre-processed point cloud and add it via the engine
-        point_cloud = PointCloud('assets/scene_pointcloud_bvh')
+        point_cloud = PointCloud('assets/dolphins')
         eng.add_point_cloud(point_cloud)
         print("Point cloud scene with BVH loaded.")
     else:
@@ -54,14 +55,15 @@ def main():
         print("Default crate scene loaded.")
 
     eng.skybox = Skybox()
-    eng.skybox_texture_id = load_cubemap('textures/bright_day')
+    # eng.skybox_texture_id = load_cubemap('textures/bright_day')
+    eng.skybox_texture_id = load_cubemap('textures/black')
 
     # Create the eye model
     eye = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
 
     if USE_RAYTRACER:
         print("Mode: Ray-Tracer")
-        eye_renderer = EyeRendererRay(eye_model=eye, scene=eng.scene, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES)
+        eye_renderer = EyeRendererRay(eye_model=eye, scene=eng.scene, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES, point_radius=3.0)
     else:
         print("Mode: Rasterizer")
         eye_renderer = EyeRendererRaster(eye_model=eye, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES)
