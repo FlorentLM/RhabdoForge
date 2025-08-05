@@ -114,11 +114,13 @@ def main():
                 # compoundeye.replace_scene(eng.scene)  # Slower update, to use when elements are added / removed from scene
 
         # Data Acquisition
+        TO_CPU = True
+
         if USE_RAYTRACER:
-            ommatidia_values = eye_renderer.get_ommatidia_data(eng.camera, eng.skybox_texture_id)
+            ommatidia_values = eye_renderer.get_ommatidia_data(eng.camera, eng.skybox_texture_id, to_cpu=TO_CPU)
         else:
             scene_cubemap_id = eng.render_to_cubemap(eng.scene, eng.camera)
-            ommatidia_values = eye_renderer.get_ommatidia_data(scene_cubemap_id)
+            ommatidia_values = eye_renderer.get_ommatidia_data(scene_cubemap_id, to_cpu=TO_CPU)
 
         # # Example of CPU-side use of ommatidia data
         # if frame_count % 100 == 0:  # Print a sample every 100 frames

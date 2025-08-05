@@ -92,43 +92,44 @@ class EyeRendererBase(ABC):
         # Each subclass implements its own core rendering logic
         raise NotImplementedError
 
-    def get_ommatidia_data(self, *args, **kwargs) -> np.ndarray:
+    def get_ommatidia_data(self, *args, to_cpu=False, **kwargs) -> np.ndarray:
 
         # Subclass runs its specific compute pass
         self._compute_colors(*args, **kwargs)
 
-        # Determine which PBO to read from (current) and which to write to (next)
-        current_pbo_idx = self.pbo_index
-        next_pbo_idx = (self.pbo_index + 1) % 2
+        if to_cpu:
+            # Determine which PBO to read from (current) and which to write to (next)
+            current_pbo_idx = self.pbo_index
+            next_pbo_idx = (self.pbo_index + 1) % 2
 
-        # This is a GPU-to-GPU copy, so it is asynchronous (the command returns immediately).
-        # it initiates the copy from the SSBO to the *next* PBO
-        glBindBuffer(GL_COPY_READ_BUFFER, self.final_colors_ssbo)
-        glBindBuffer(GL_COPY_WRITE_BUFFER, self.pbo_ids[next_pbo_idx])
-        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, self.cpu_read_buffer.nbytes)
+            # This is a GPU-to-GPU copy, so it is asynchronous (the command returns immediately).
+            # it initiates the copy from the SSBO to the *next* PBO
+            glBindBuffer(GL_COPY_READ_BUFFER, self.final_colors_ssbo)
+            glBindBuffer(GL_COPY_WRITE_BUFFER, self.pbo_ids[next_pbo_idx])
+            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, self.cpu_read_buffer.nbytes)
 
-        # Process data from the *current* PBO (it was filled in the previous frame)
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, self.pbo_ids[current_pbo_idx])
+            # Process data from the *current* PBO (it was filled in the previous frame)
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, self.pbo_ids[current_pbo_idx])
 
-        # Map the buffer ('GL_MAP_READ_BIT' is very important!)
-        ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, self.cpu_read_buffer.nbytes, GL_MAP_READ_BIT)
+            # Map the buffer ('GL_MAP_READ_BIT' is very important!)
+            ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, self.cpu_read_buffer.nbytes, GL_MAP_READ_BIT)
 
-        if ptr:
-            # Copy the data from the mapped GPU memory to our CPU-side numpy array.
-            ctypes.memmove(self.cpu_read_buffer.ctypes.data, ptr, self.cpu_read_buffer.nbytes)
-            # IMPORTANT: Unmap the buffer to return control to the GPU
-            glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
-        else:
-            # Handle error if mapping fails
-            print("Warning: Failed to map PBO for reading.")
+            if ptr:
+                # Copy the data from the mapped GPU memory to our CPU-side numpy array.
+                ctypes.memmove(self.cpu_read_buffer.ctypes.data, ptr, self.cpu_read_buffer.nbytes)
+                # IMPORTANT: Unmap the buffer to return control to the GPU
+                glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
+            else:
+                # Handle error if mapping fails
+                print("Warning: Failed to map PBO for reading.")
 
-        # Unbind all buffers used in the copy and map operations
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
-        glBindBuffer(GL_COPY_READ_BUFFER, 0)
-        glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
+            # Unbind all buffers used in the copy and map operations
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+            glBindBuffer(GL_COPY_READ_BUFFER, 0)
+            glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
 
-        # Swap PBO index for the next frame
-        self.pbo_index = next_pbo_idx
+            # Swap PBO index for the next frame
+            self.pbo_index = next_pbo_idx
 
         # And update the counter for time dithering
         if self._time_dithering:
