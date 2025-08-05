@@ -151,6 +151,7 @@ def main():
     total_time = (time.time_ns() - start) * 1e-9
     print(f"Simulation finished.")
     print(f"Total: {frame_count} frames in {total_time:.3f} seconds ({int(frame_count / total_time)} fps (avg.), {(total_time / frame_count) * 1e4:.3f} ms per frame).")
+    pano_debug_view.free()
     eye_renderer.free()
     eng.close()
 
