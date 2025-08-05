@@ -80,6 +80,7 @@ class Instance:
 class PointCloud:
     """
     Container for point cloud data, which builds the BVH and packs the data for the GPU
+    # TODO: this should probably move to the RayTracing scene now
     """
     def __init__(self, file_path: str, hit_radius: Optional[float] = None):
 
@@ -166,41 +167,131 @@ class Scene:
     def free(self):
         for asset in self.assets.values():
             asset.free()
+        if self.point_cloud:
+            self.point_cloud.free()
         self.instances.clear()
         self.assets.clear()
 
 
 class RaytracingScene:
     def __init__(self, scene: Scene):
-        """ Initializes and packs the scene """
+        """ Initializes and packs the scene, and builds acceleration structures """
 
-        # Material and Texture packing
+        # Common data packing
         self.materials = None
         self.texture_ids = []
         self._pack_materials(scene.assets.values())
 
-        # Static geometry packing
-        self.base_positions = None      # Untransformed vertex positions
-        self.base_uvs = None            # Vertex UVs
-        self.material_indices = None    # Per-triangle material index
+        # Triangle data and BVH
+        self.triangles = None
+        self.triangle_bvh_nodes = None
+        self.num_triangles = 0
 
-        # State for the update() method
+        # State for dynamic updates
+        self._base_positions = None         # untransformed vertex positions
+        self._base_uvs = None               # vertex UVs
+        self._material_indices = None       # Per-triangle material index
         self._vert_counts = []
         self._transforms_stack = None
 
-        self._pack_static_geometry(scene.instances)
+        # Pack static geometry and build the initial BVH
+        self._pack_and_build_bvh(scene.instances)
 
-        # Buffer allocation
-        num_triangles = len(self.base_positions) // 3 if self.base_positions is not None else 0
-
-        # GLSL Triangle struct is 80 bytes (so 20 floats) with final std430 padding
-        self.triangles = np.zeros(num_triangles * 20, dtype=VEC_DTYPE)
-
-        # Populate the .triangles buffer with the initial state of the scene
+        # Populate triangles buffer with initial (reordered) state of the scene
         self.update(scene.instances)
 
+    def _pack_and_build_bvh(self, instances):
+        """ Gathers all geometry, builds a BVH for all triangles and reorders them """
+
+        all_verts_pos = []
+        all_verts_uv = []
+        all_material_indices = []
+
+        if not instances:
+            print("No mesh instances in the scene to build BVH from.")
+            return
+
+        print("Gathering mesh data for BVH construction...")
+        for instance in instances:
+            if not isinstance(instance.asset, Mesh):
+                continue
+
+            mesh = instance.asset
+            interleaved_data = mesh.data.reshape(-1, 5)
+
+            # Apply instance transform directly to vertices
+            # (this 'flattens' the scene into a single large mesh for the BVH)
+            positions = interleaved_data[:, :3]
+            positions_h = np.hstack([positions, np.ones((len(positions), 1), dtype=VEC_DTYPE)])
+            transformed_pos_h = (instance.transform @ positions_h.T).T
+
+            all_verts_pos.append(transformed_pos_h[:, :3])
+            all_verts_uv.append(interleaved_data[:, 3:])
+
+            material_idx = self.material_map[mesh]
+            num_triangles_in_instance = len(interleaved_data) // 3
+            all_material_indices.append(np.full(num_triangles_in_instance, material_idx, dtype=np.uint32))
+
+        if not all_verts_pos:
+            self.num_triangles = 0
+            return
+
+        # Concatenate all transformed vertices into one large array
+        all_verts_pos_np = np.concatenate(all_verts_pos, axis=0)
+        all_verts_uv_np = np.concatenate(all_verts_uv, axis=0)
+        self.material_indices = np.concatenate(all_material_indices)
+
+        # Reshape for pytinybvh which expects (N, 9) for triangles
+        triangles_for_bvh = all_verts_pos_np.reshape(-1, 9)
+        self.num_triangles = len(triangles_for_bvh)
+
+        print(f"Building BVH for {self.num_triangles:,} total triangles...")
+        self.triangle_bvh_nodes, prim_indices = pytinybvh.from_triangles(triangles_for_bvh)
+        print(f"Triangle BVH built with {len(self.triangle_bvh_nodes)} nodes.")
+
+        # Reorder triangle attributes based on BVH primitive indices
+        reordered_verts_pos = all_verts_pos_np.reshape(-1, 3)[
+            np.repeat(prim_indices * 3, 3) + np.tile([0, 1, 2], len(prim_indices))]
+
+        reordered_verts_uv = all_verts_uv_np.reshape(-1, 2)[
+            np.repeat(prim_indices * 3, 3) + np.tile([0, 1, 2], len(prim_indices))]
+
+        self.material_indices = self.material_indices[prim_indices]
+
+        # Store reordered untransformed data for dynamic updates
+        # TODO: TLAS for animations
+        self._base_positions = reordered_verts_pos
+        self._base_uvs = reordered_verts_uv
+
+        # Allocate buffer for the GPU
+        # GLSL Triangle struct is 80 bytes (so 20 floats) with final std430 padding
+        self.triangles = np.zeros(self.num_triangles * 20, dtype=VEC_DTYPE)
+        self._fill_gpu_triangle_buffer()
+
+    def _fill_gpu_triangle_buffer(self):
+
+        if self.num_triangles == 0:
+            return
+
+        flat_view = self.triangles.reshape(self.num_triangles, 20)
+
+        v = self._base_positions.reshape(self.num_triangles, 3, 3)
+        uv = self._base_uvs.reshape(self.num_triangles, 3, 2)
+
+        flat_view[:, 0:3] = v[:, 0, :]
+        flat_view[:, 4:7] = v[:, 1, :]
+        flat_view[:, 8:11] = v[:, 2, :]
+        flat_view[:, 12:14] = uv[:, 0, :]
+        flat_view[:, 14:16] = uv[:, 1, :]
+        flat_view[:, 16:18] = uv[:, 2, :]
+        flat_view[:, 18] = self.material_indices.view(VEC_DTYPE)
+
+    def update(self, instances):
+        # TODO: TLAS and/or BVH refitting (need to add this in pytinybvh)
+        pass
+
     def _pack_materials(self, assets):
-        """ Packs materials and unique textures once """
+        """ Packs materials and unique textures """
 
         material_list = []
         texture_map = {}
@@ -227,80 +318,3 @@ class RaytracingScene:
         # View as uint32 to place the texture index correctly
         materials_u32 = self.materials.view(np.uint32)
         materials_u32[0::4] = material_list
-
-    def _pack_static_geometry(self, instances):
-        """ Gathers all untransformed geometry (positions, UVs) from instances """
-        all_verts_pos = []
-        all_verts_uv = []
-        all_material_indices = []
-
-        for instance in instances:
-            if not isinstance(instance.asset, Mesh):
-                continue
-
-            mesh = instance.asset
-            interleaved_data = mesh.data.reshape(-1, 5)
-            num_vertices = len(interleaved_data)
-
-            all_verts_pos.append(interleaved_data[:, :3])
-            all_verts_uv.append(interleaved_data[:, 3:])
-
-            material_idx = self.material_map[mesh]
-
-            # One material index per triangle
-            all_material_indices.append(np.full(num_vertices // 3, material_idx, dtype=np.uint32))
-
-            self._vert_counts.append(num_vertices)
-
-        if not all_verts_pos:
-            print("Packed scene for ray tracing: 0 triangles.")
-            self.num_vertices = 0
-            self.num_triangles = 0
-            return
-
-        # Concat into large untransformed scene data array
-        self.base_positions = np.concatenate(all_verts_pos, axis=0)
-        self.base_uvs = np.concatenate(all_verts_uv, axis=0)
-        self.material_indices = np.concatenate(all_material_indices)
-
-        self.num_vertices = len(self.base_positions)
-        self.num_triangles = self.num_vertices // 3
-
-    def update(self, instances):
-        """
-        Updates the ray-tracing scene by only re-transforming vertex positions
-        This is called every frame if objects are dynamic
-        """
-
-        if self.base_positions is None:
-            return  # nothing to update
-
-        # Get current transforms from instances
-        self._transforms_stack = np.array([inst.transform for inst in instances], dtype=VEC_DTYPE)
-
-        # Apply all transformations
-        # convert base positions to homogeneous coordinates for matrix multiplication
-        positions_h = np.hstack([self.base_positions, np.ones((self.base_positions.shape[0], 1), dtype=VEC_DTYPE)])
-        repeated_transforms = np.repeat(self._transforms_stack, self._vert_counts, axis=0)
-        transformed_pos_h = np.einsum('aij,aj->ai', repeated_transforms, positions_h)
-
-        # Fill the final flat buffer with all data (static and dynamic)
-        num_triangles = len(transformed_pos_h) // 3
-
-        # Reshape data for assignment
-        v = transformed_pos_h[:, :3].reshape(num_triangles, 3, 3)   # (N, 3 verts, 3 coords)
-        uv = self.base_uvs.reshape(num_triangles, 3, 2)             # (N, 3 verts, 2 coords)
-
-        # view of flat buffer reshaped for easy triangle-wise assignment
-        flat_view = self.triangles.reshape(num_triangles, 20)   # stride 20 (80 bytes total, 4 bytes per float)
-
-        # Assign the data in chunks
-        flat_view[:, 0:3] = v[:, 0, :]      # v0 positions
-        flat_view[:, 4:7] = v[:, 1, :]      # v1 positions
-        flat_view[:, 8:11] = v[:, 2, :]     # v2 positions
-        flat_view[:, 12:14] = uv[:, 0, :]   # uv0s
-        flat_view[:, 14:16] = uv[:, 1, :]   # uv1s
-        flat_view[:, 16:18] = uv[:, 2, :]   # uv2s
-
-        # Bit-cast and assign the static material indices
-        flat_view[:, 18] = self.material_indices.view(VEC_DTYPE)

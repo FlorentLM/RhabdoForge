@@ -6,62 +6,59 @@
 layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 // Inputs
-// Triangles
+
+// Ommatidia
 layout(std430, binding = 0) readonly buffer OmmatidiaInputBuffer { Ommatidium u_ommatidia_data[]; };
+// Triangles
 layout(std430, binding = 1) readonly buffer TriangleBuffer { Triangle u_triangles[]; };
 layout(std430, binding = 2) readonly buffer MaterialBuffer { Material u_materials[]; };
-
-// Outputs
-layout(std430, binding = 3) writeonly buffer RayResultBuffer { vec4 u_ray_results[]; };
-
-// BVH accelerated geometry
-layout(std430, binding = 5) readonly buffer BvhBuffer { BvhNode u_bvh_nodes[]; };
+layout(std430, binding = 3) readonly buffer TriangleBvhBuffer { BvhNode u_triangle_bvh_nodes[]; };
+// Point Cloud
+layout(std430, binding = 5) readonly buffer PointBvhBuffer { BvhNode u_point_bvh_nodes[]; };
 layout(std430, binding = 6) readonly buffer PrimitiveBuffer { Point u_points[]; };
 
-// Uniforms: skybox and texture array for scene materials
+// Outputs
+layout(std430, binding = 4) writeonly buffer RayResultBuffer { vec4 u_ray_results[]; };
+
+// Uniforms
 layout(binding = 0) uniform samplerCube u_skybox;
 layout(binding = 1) uniform sampler2DArray u_scene_textures;
 
 // Uniforms queried by name
-uniform int u_num_ommatidia;
+
+// Counts
+uniform uint u_num_triangle_bvh_nodes;
+uniform uint u_num_point_bvh_nodes;
+
+// Config
 uniform int u_samples_per_ommatidium;
 uniform float u_time;
 uniform float u_point_radius;
-uniform uint u_num_triangles;
-uniform uint u_num_bvh_nodes;
-uniform int u_num_materials;
-uniform uint u_num_primitives;
-
-uniform mat4 u_camera_orientation; // to transform ommatidia directions to world space
-uniform vec3 u_camera_position;    // for ray origin
+uniform mat4 u_camera_orientation;
+uniform vec3 u_camera_position;
 
 // Functions
 
-// Möller–Trumbore with direction vector (not inverse)
-HitInfo intersect_triangle(Ray r, vec3 direction, Triangle tri) {
+// Intersection functions
+
+// Möller–Trumbore ray-triangle intersection
+HitInfo intersect_triangle(inout Ray r, vec3 direction, Triangle tri) {
     HitInfo hit;
     hit.found = false;
-    hit.is_point_hit = false;
     vec3 edge1 = tri.v1.xyz - tri.v0.xyz;
     vec3 edge2 = tri.v2.xyz - tri.v0.xyz;
     vec3 h = cross(direction, edge2);
     float a = dot(edge1, h);
-
     if (a > -1e-6 && a < 1e-6) return hit;
-
     float f = 1.0 / a;
     vec3 s = r.origin - tri.v0.xyz;
     float u = f * dot(s, h);
-
     if (u < 0.0 || u > 1.0) return hit;
-
     vec3 q = cross(s, edge1);
     float v = f * dot(direction, q);
-
     if (v < 0.0 || u + v > 1.0) return hit;
-
     float t = f * dot(edge2, q);
-    if (t > 1e-6 && t < r.t) { // Check against ray's max distance
+    if (t > 1e-6 && t < r.t) {
         hit.found = true;
         hit.t = t;
         hit.barycentric_coords = vec3(1.0 - u - v, u, v);
@@ -69,27 +66,22 @@ HitInfo intersect_triangle(Ray r, vec3 direction, Triangle tri) {
     return hit;
 }
 
-// Ray-sphere with direction vector (not inverse)
-HitInfo intersect_sphere(Ray r, vec3 direction, vec3 center, float radius) {
+// Ray-sphere intersection
+HitInfo intersect_sphere(inout Ray r, vec3 direction, vec3 center, float radius) {
     HitInfo hit;
     hit.found = false;
-    hit.is_point_hit = true;
     vec3 oc = r.origin - center;
     float a = dot(direction, direction);
     float b = 2.0 * dot(oc, direction);
     float c = dot(oc, oc) - radius * radius;
     float discriminant = b * b - 4 * a * c;
-
     if (discriminant < 0) return hit;
-
     float sqrt_d = sqrt(discriminant);
     float t1 = (-b - sqrt_d) / (2.0 * a);
     float t2 = (-b + sqrt_d) / (2.0 * a);
-
     float t = -1.0;
     if (t1 > 1e-6 && t1 < r.t) t = t1;
     if (t2 > 1e-6 && t2 < r.t && (t < 0.0 || t2 < t)) t = t2;
-
     if (t > 0.0) {
         hit.found = true;
         hit.t = t;
@@ -97,118 +89,142 @@ HitInfo intersect_sphere(Ray r, vec3 direction, vec3 center, float radius) {
     return hit;
 }
 
-// Axis-Aligned Bounding Box (AABB) intersection function
-float intersect_aabb(Ray r, vec3 aabb_min, vec3 aabb_max) {
+// Axis-Aligned Bounding Box (AABB) intersection
+float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max) {
     vec3 t1 = (aabb_min - r.origin) * r.inv_direction;
     vec3 t2 = (aabb_max - r.origin) * r.inv_direction;
     vec3 tmin_v = min(t1, t2);
     vec3 tmax_v = max(t1, t2);
     float tmin = max(tmin_v.x, max(tmin_v.y, tmin_v.z));
     float tmax = min(tmax_v.x, min(tmax_v.y, tmax_v.z));
-
-    // AABB is behind ray OR ray misses AABB
     if (tmax < 0.0 || tmin > tmax) return 1.0/0.0;
-    // Ray origin is inside AABB, hit is at 0 distance
     if (tmin < 0.0) return 0.0;
-    // Return distance to closest intersection point
     return tmin;
+}
+
+// Traversal functions
+
+// Traverse Triangle BVH, update ray and closest hit
+void traverse_triangles(inout Ray r, vec3 direction, inout HitInfo closest_hit) {
+    uint stack[64];
+    uint stack_ptr = 0;
+    stack[stack_ptr++] = 0u;
+
+    while(stack_ptr > 0u) {
+        uint node_idx = stack[--stack_ptr];
+        BvhNode node = u_triangle_bvh_nodes[node_idx];
+
+        if (intersect_aabb(r, node.data1.xyz, node.data2.xyz) >= r.t) continue;
+
+        uint prim_count = floatBitsToUint(node.data2.w);
+        uint first_idx = floatBitsToUint(node.data1.w);
+
+        if (prim_count > 0u) { // Leaf node: test triangles
+            for (uint i = 0; i < prim_count; i++) {
+                uint tri_idx = first_idx + i;
+                HitInfo tri_hit = intersect_triangle(r, direction, u_triangles[tri_idx]);
+                if (tri_hit.found) {
+                    closest_hit.found = true;
+                    closest_hit.is_point_hit = false;
+                    closest_hit.primitive_idx = tri_idx;
+                    closest_hit.barycentric_coords = tri_hit.barycentric_coords;
+                    r.t = tri_hit.t; // Shorten the ray
+                }
+            }
+        } else { // Internal node: push children to stack (ordered)
+            uint left_idx = first_idx;
+            uint right_idx = first_idx + 1;
+            float d1 = intersect_aabb(r, u_triangle_bvh_nodes[left_idx].data1.xyz, u_triangle_bvh_nodes[left_idx].data2.xyz);
+            float d2 = intersect_aabb(r, u_triangle_bvh_nodes[right_idx].data1.xyz, u_triangle_bvh_nodes[right_idx].data2.xyz);
+
+            if (d1 > d2) { // Swap to ensure d1 is closer
+                float temp_d = d1; d1 = d2; d2 = temp_d;
+                uint temp_i = left_idx; left_idx = right_idx; right_idx = temp_i;
+            }
+            if (d2 < r.t && stack_ptr < 64) stack[stack_ptr++] = right_idx;
+            if (d1 < r.t && stack_ptr < 64) stack[stack_ptr++] = left_idx;
+        }
+    }
+}
+
+// Traverse Point Cloud BVH, update ray and closest hit
+void traverse_points(inout Ray r, vec3 direction, inout HitInfo closest_hit) {
+    uint stack[64];
+    uint stack_ptr = 0;
+    stack[stack_ptr++] = 0u;
+
+    while(stack_ptr > 0u) {
+        uint node_idx = stack[--stack_ptr];
+        BvhNode node = u_point_bvh_nodes[node_idx];
+
+        if (intersect_aabb(r, node.data1.xyz, node.data2.xyz) >= r.t) continue;
+
+        uint prim_count = floatBitsToUint(node.data2.w);
+        uint first_idx = floatBitsToUint(node.data1.w);
+
+        if (prim_count > 0u) { // Leaf node: test points
+            for (uint i = 0; i < prim_count; i++) {
+                uint prim_idx = first_idx + i;
+                HitInfo p_hit = intersect_sphere(r, direction, u_points[prim_idx].pos.xyz, u_point_radius);
+                if (p_hit.found) {
+                    closest_hit.found = true;
+                    closest_hit.is_point_hit = true;
+                    closest_hit.primitive_idx = prim_idx;
+                    r.t = p_hit.t; // Shorten the ray
+                }
+            }
+        } else { // Internal node: push children to stack (ordered)
+            uint left_idx = first_idx;
+            uint right_idx = first_idx + 1;
+            float d1 = intersect_aabb(r, u_point_bvh_nodes[left_idx].data1.xyz, u_point_bvh_nodes[left_idx].data2.xyz);
+            float d2 = intersect_aabb(r, u_point_bvh_nodes[right_idx].data1.xyz, u_point_bvh_nodes[right_idx].data2.xyz);
+
+            if (d1 > d2) { // Swap to ensure d1 is closer
+                float temp_d = d1; d1 = d2; d2 = temp_d;
+                uint temp_i = left_idx; left_idx = right_idx; right_idx = temp_i;
+            }
+            if (d2 < r.t && stack_ptr < 64) stack[stack_ptr++] = right_idx;
+            if (d1 < r.t && stack_ptr < 64) stack[stack_ptr++] = left_idx;
+        }
+    }
 }
 
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
-    if (global_id >= (u_num_ommatidia * u_samples_per_ommatidium)) return;
 
+    if (global_id >= (u_samples_per_ommatidium * u_ommatidia_data.length()))
+        return;
+
+    // Ray generation
     uint ommatidium_idx = global_id / u_samples_per_ommatidium;
     uint sample_idx = global_id % u_samples_per_ommatidium;
 
-    // Ray Generation
     Ommatidium om = u_ommatidia_data[ommatidium_idx];
     vec3 om_world_dir = (u_camera_orientation * om.direction).xyz;
     vec3 om_world_origin = u_camera_position + (u_camera_orientation * om.origin).xyz;
-
     vec3 up = abs(om_world_dir.y) > 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+
     vec3 tangent = normalize(cross(up, om_world_dir));
     vec3 bitangent = cross(om_world_dir, tangent);
 
-    float r1 = rand(vec2(ommatidium_idx, sample_idx), u_time);
-    float r2 = rand(vec2(ommatidium_idx, sample_idx) + 0.5, u_time);
-
-    // The original direction vector, needed for intersection tests
+     float r1 = rand(vec2(ommatidium_idx, sample_idx), u_time);
+    float r2 = rand(vec2(ommatidium_idx, sample_idx) + 0.5, u_time); // offset to get a different second number
     vec3 direction = sampledir(om, tangent, bitangent, om_world_dir, r1, r2);
 
     Ray r;
     r.origin = om_world_origin;
-    r.t = 1.0/0.0; // Initialize max distance to infinity
-    r.inv_direction = 1.0 / direction; // precompute inverse for AABB tests
+    r.t = 1.0/0.0;
+    r.inv_direction = 1.0 / direction;
 
-    // Traversal & Intersection
     HitInfo closest_hit;
     closest_hit.found = false;
 
-    // Brute-force triangle check (if any) // TODO: This should also be handled by a BVH
-    if (u_num_triangles > 0) {
-        for (uint i = 0; i < u_num_triangles; ++i) {
-            HitInfo current_hit = intersect_triangle(r, direction, u_triangles[i]);
-            if (current_hit.found) {
-                closest_hit = current_hit;
-                r.t = current_hit.t; // Shorten the ray
-            }
-        }
+    // Traversal
+    if (u_num_triangle_bvh_nodes > 0) {
+        traverse_triangles(r, direction, closest_hit);
     }
-
-    // BVH traversal for Point Cloud
-    if (u_num_bvh_nodes > 0) {
-        uint traversal_stack[64];
-        uint stack_ptr = 0;
-
-        BvhNode node = u_bvh_nodes[0]; // Start at the root
-
-        while(true) {
-            uint primitive_count = floatBitsToUint(node.data2.w);
-            if (primitive_count > 0u) { // leaf
-                uint first_prim_idx = floatBitsToUint(node.data1.w);
-                for(uint i = 0; i < primitive_count; i++) {
-                    uint prim_idx = first_prim_idx + i;
-                    Point p = u_points[prim_idx];
-                    HitInfo p_hit = intersect_sphere(r, direction, p.pos.xyz, u_point_radius);
-                    if (p_hit.found) {
-                        closest_hit.found = true;
-                        closest_hit.is_point_hit = true;
-                        closest_hit.primitive_idx = prim_idx;
-                        r.t = p_hit.t; // Shorten the ray
-                    }
-                }
-
-                if (stack_ptr == 0) break; // Traversal finished
-                node = u_bvh_nodes[traversal_stack[--stack_ptr]]; // Pop from stack
-                continue;
-            }
-
-            // Internal node
-            uint left_child_idx = floatBitsToUint(node.data1.w);
-            BvhNode child1 = u_bvh_nodes[left_child_idx];
-            BvhNode child2 = u_bvh_nodes[left_child_idx + 1];
-
-            float dist1 = intersect_aabb(r, child1.data1.xyz, child1.data2.xyz);
-            float dist2 = intersect_aabb(r, child2.data1.xyz, child2.data2.xyz);
-
-            // Order children front-to-back
-            if (dist1 > dist2) {
-                float temp_d = dist1; dist1 = dist2; dist2 = temp_d;
-                BvhNode temp_n = child1; child1 = child2; child2 = temp_n;
-            }
-
-            // Traverse children
-            if (dist1 >= r.t) { // Both children are further than the closest hit
-                 if (stack_ptr == 0) break;
-                 node = u_bvh_nodes[traversal_stack[--stack_ptr]];
-            } else {
-                node = child1; // Traverse near child first
-                if (dist2 < r.t) { // If far child is also viable, push to stack
-                    if(stack_ptr < 64) traversal_stack[stack_ptr++] = left_child_idx + (child1.data1.w == u_bvh_nodes[left_child_idx].data1.w ? 1 : 0);
-                }
-            }
-        }
+    if (u_num_point_bvh_nodes > 0) {
+        traverse_points(r, direction, closest_hit);
     }
 
     // Shading
@@ -228,7 +244,6 @@ void main() {
                           hit_tri.uv2 * closest_hit.barycentric_coords.z;
             final_color = texture(u_scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
         }
-
     } else {
         final_color = texture(u_skybox, direction).rgb;
     }

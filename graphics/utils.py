@@ -204,3 +204,45 @@ def check_MetalGL_context():
     print("GL version:", glGetString(GL_VERSION).decode())
     print("Renderer:", glGetString(GL_RENDERER).decode())
     print("---------------------------------")
+
+
+class ShaderProgram:
+    """ A wrapper for a GLSL shader program and its uniform locations """
+
+    def __init__(self, vert_path=None, frag_path=None, comp_path=None):
+        if comp_path:
+            self.program_id = load_compute_shader(comp_path)
+        else:
+            self.program_id = load_shaders(vert_path, frag_path)
+        self.locations = {}
+        self.use()
+        self._cache_all_uniforms()
+        self.stop()
+
+    def _cache_all_uniforms(self):
+        """ Automatically queries and caches all active uniform locations """
+
+        num_uniforms = glGetProgramiv(self.program_id, GL_ACTIVE_UNIFORMS)
+        for i in range(num_uniforms):
+            name, size, type = glGetActiveUniform(self.program_id, i)
+            name = name.decode('utf-8')
+            # Handle arrays by removing the '[0]' suffix if present
+            if name.endswith('[0]'):
+                name = name[:-3]
+            self.locations[name] = glGetUniformLocation(self.program_id, name)
+
+    def use(self):
+        """ Binds the shader program """
+        glUseProgram(self.program_id)
+
+    def stop(self):
+        """ Unbinds the shader program """
+        glUseProgram(0)
+
+    def get_loc(self, name):
+        """ Gets a cached uniform location """
+        return self.locations.get(name)
+
+    def free(self):
+        """ Deletes the shader program """
+        glDeleteProgram(self.program_id)

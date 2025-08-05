@@ -6,6 +6,8 @@ import pygame
 from pygame.locals import *
 import numpy as np
 
+import OpenGL
+OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 from graphics.engine import Engine
@@ -31,19 +33,19 @@ def main():
     COMPOUND_EYE_VIEW = True
     VORONOI_VIEW = False
 
+    # NB_OMMATIDIA = 19362
     NB_OMMATIDIA = 1962
-    # NB_OMMATIDIA = 1962
     NB_SAMPLES = 16
 
     HEADLESS_MAX_STEPS = 1000
 
-    POINT_HIT_RADIUS = 0.01
+    POINT_HIT_RADIUS = 0.1
 
     # Setup
     eng = Engine(width=1280, height=720, headless=RUN_HEADLESS)
 
     if USE_POINT_CLOUD:
-        point_cloud = PointCloud('assets/seville_filtered.ply', hit_radius=POINT_HIT_RADIUS)
+        point_cloud = PointCloud('assets/canberra_filtered.ply', hit_radius=POINT_HIT_RADIUS)
         eng.add_point_cloud(point_cloud)
 
     else:
@@ -151,7 +153,8 @@ def main():
             pygame.display.flip()
 
         frame_count += 1
-        if RUN_HEADLESS and frame_count >= HEADLESS_MAX_STEPS: is_running = False
+        if RUN_HEADLESS and frame_count >= HEADLESS_MAX_STEPS:
+            is_running = False
 
     total_time = (time.time_ns() - start) * 1e-9
     print(f"Simulation finished.")

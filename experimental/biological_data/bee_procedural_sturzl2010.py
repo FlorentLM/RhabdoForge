@@ -29,7 +29,7 @@ def akima_interpolator(x, y, fill_value):
     return wrapper
 
 
-def load_azimuth_data(file_path="experimental/azimuth_max.csv", interp='akima'):
+def load_azimuth_data(file_path="experimental/biological_data/azimuth_max.csv", interp='akima'):
     """ Loads and prepares the azimuth boundary data using the robust interpolator """
 
     try:
