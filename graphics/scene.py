@@ -2,10 +2,12 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+from pyglm import glm
 from OpenGL.GL import *
 from graphics.utils import load_shaders, load_texture, VEC_DTYPE
 import open3d as o3d
 import pytinybvh
+
 
 class Mesh:
     """ Renderable object with its own shaders, texture, and vertex data """
@@ -69,10 +71,10 @@ class Mesh:
 class Instance:
     """ A specific instance of a Mesh in the scene, with its own transform """
 
-    def __init__(self, asset: Mesh, transform=None):
+    def __init__(self, asset: Mesh, transform: Optional[glm.mat4] = None):
         self.asset = asset
         if transform is None:
-            self.transform = np.eye(4, dtype=VEC_DTYPE)
+            self.transform = glm.mat4(1.0)
         else:
             self.transform = transform
 
@@ -82,6 +84,7 @@ class PointCloud:
     Container for point cloud data, which builds the BVH and packs the data for the GPU
     # TODO: this should probably move to the RayTracing scene now
     """
+
     def __init__(self, file_path: str, hit_radius: Optional[float] = None):
 
         self.source_path = Path(file_path)
@@ -223,7 +226,11 @@ class RaytracingScene:
             # (this 'flattens' the scene into a single large mesh for the BVH)
             positions = interleaved_data[:, :3]
             positions_h = np.hstack([positions, np.ones((len(positions), 1), dtype=VEC_DTYPE)])
-            transformed_pos_h = (instance.transform @ positions_h.T).T
+
+            # Convert glm.mat4 to numpy array for batch multiplication.
+            # np.asarray creates a column-major numpy array from the glm matrix.
+            np_transform = np.asarray(instance.transform)
+            transformed_pos_h = (np_transform @ positions_h.T).T
 
             all_verts_pos.append(transformed_pos_h[:, :3])
             all_verts_uv.append(interleaved_data[:, 3:])

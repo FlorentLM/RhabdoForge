@@ -1,6 +1,7 @@
 from pathlib import Path
 from PIL import Image
 import numpy as np
+from pyglm import glm
 from OpenGL.GL import *
 import re
 
@@ -9,13 +10,13 @@ import re
 VEC_DTYPE = np.float32
 
 # World unit vectors
-WORLD_RIGHT = WORLD_X = np.array([1.0, 0.0, 0.0], dtype=VEC_DTYPE)
-WORLD_UP = WORLD_Y = np.array([0.0, 1.0, 0.0], dtype=VEC_DTYPE)
-WORLD_FORWARD = WORLD_Z = np.array([0.0, 0.0, -1.0], dtype=VEC_DTYPE)
+WORLD_RIGHT = WORLD_X = glm.vec3(1.0, 0.0, 0.0)
+WORLD_UP = WORLD_Y = glm.vec3(0.0, 1.0, 0.0)
+WORLD_FORWARD = WORLD_Z = glm.vec3(0.0, 0.0, -1.0)
 
-WORLD_LEFT = - WORLD_RIGHT
-WORLD_DOWN = - WORLD_UP
-WORLD_BACKWARD = - WORLD_FORWARD
+WORLD_LEFT = -WORLD_RIGHT
+WORLD_DOWN = -WORLD_UP
+WORLD_BACKWARD = -WORLD_FORWARD
 
 
 # Loader functions

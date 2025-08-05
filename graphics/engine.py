@@ -8,13 +8,13 @@ from collections import deque
 import numpy as np
 import pygame
 from pygame.locals import *
+from pyglm import glm
 from OpenGL.GL import *
 
 from graphics.scene import Scene, Instance, Mesh, PointCloud
 from graphics.camera import Camera
 from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_DOWN, WORLD_RIGHT, WORLD_FORWARD, load_shaders
 from graphics.raster_mode import CubemapFBO
-from graphics.glm import lookat_mat, ortho_2d
 
 
 class FontRenderer:
@@ -209,7 +209,7 @@ class Engine:
 
         # HUD Rendering
         self.font_renderer = FontRenderer(pygame.font.get_default_font(), 22)
-        self.hud_projection_matrix = ortho_2d(0, self.width, 0, self.height)
+        self.hud_projection_matrix = glm.ortho(0, self.width, 0, self.height, -1.0, 1.0)
 
         self.fps_rolling = deque(maxlen=5)
         self.hud_update_interval_ms = 250
@@ -292,7 +292,7 @@ class Engine:
             total_samples = num_om * num_samples
             self._hud_info_text = (
                 f'FPS: {avg_fps:>4.2f} | Mode: {mode_name} | Ommatidia: {num_om} | '
-                f'{sample_label}: {num_samples} | XYZ: [ {pos[0]:>5.3f}, {pos[1]:>5.3f}, {pos[2]:>5.3f} ]'
+                f'{sample_label}: {num_samples} | XYZ: [ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ]'
             )
 
             # Generate vertices for the info string
@@ -347,7 +347,7 @@ class Engine:
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glDisable(GL_CULL_FACE)
         glUseProgram(self.font_renderer.text_program)
-        glUniformMatrix4fv(self.font_renderer.proj_loc, 1, GL_TRUE, self.hud_projection_matrix)
+        glUniformMatrix4fv(self.font_renderer.proj_loc, 1, False, glm.value_ptr(self.hud_projection_matrix))
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, self.font_renderer.atlas_texture)
         glUniform1i(self.font_renderer.atlas_loc, 0)
@@ -419,13 +419,13 @@ class Engine:
             glUseProgram(mesh.shaders)
             glBindVertexArray(mesh.vao)
 
-            # Column-major so final matrix is P * V * M
-            camera_matrix = projection_matrix @ view_matrix
+            # For column-major, final matrix is P * V * M
+            camera_matrix = projection_matrix * view_matrix
 
             glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "camera"),
-                               1, True, camera_matrix)
+                               1, False, glm.value_ptr(camera_matrix))
             glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "model"),
-                               1, True, instance.transform)
+                               1, False, glm.value_ptr(instance.transform))
 
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, mesh.texture)
@@ -507,10 +507,10 @@ class Engine:
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
             # Generate the specific view matrix for this face
-            view = lookat_mat(
-                camera.position,
-                camera.position + lookat_directions[i],  # target point is eye + direction
-                ups[i]
+            view = glm.lookAt(
+                glm.vec3(camera.position),
+                glm.vec3(camera.position + lookat_directions[i]),  # target point is eye + direction
+                glm.vec3(ups[i])
             )
 
             # Draw skybox first into the cubemap face
@@ -538,7 +538,7 @@ class Engine:
 
         # Handle continuous key presses
         keys = pygame.key.get_pressed()
-        cam_displacement = np.zeros(3, dtype=VEC_DTYPE)
+        cam_displacement = glm.vec3(0.0)
 
         if keys[K_w]: cam_displacement += self.camera.forward
         if keys[K_s]: cam_displacement += self.camera.backward
@@ -548,16 +548,16 @@ class Engine:
         if keys[K_LSHIFT]: cam_displacement += WORLD_DOWN
 
         # Normalize (prevents faster diagonal movement) and apply speed
-        norm = np.linalg.norm(cam_displacement)
-        if norm > 0:
-            cam_displacement = (cam_displacement / norm) * self.move_sensitivity
+        if glm.length(cam_displacement) > 0:
+            cam_displacement = glm.normalize(cam_displacement) * self.move_sensitivity
             self.camera.pos += cam_displacement
 
         # Handle mouse look
         mouse_x, mouse_y = pygame.mouse.get_rel()
         if mouse_x != 0 or mouse_y != 0:
-            self.camera.yaw += mouse_x * self.mouse_sensitivity
-            self.camera.pitch = np.clip(self.camera.pitch + mouse_y * self.mouse_sensitivity, -89.0, 89.0, dtype=VEC_DTYPE)
+            self.camera.yaw -= mouse_x * self.mouse_sensitivity
+            self.camera.pitch -= mouse_y * self.mouse_sensitivity
+            self.camera.pitch = np.clip(self.camera.pitch, -89.0, 89.0)
 
     def close(self):
         """ Frees all allocated resources """
@@ -565,4 +565,3 @@ class Engine:
         if self._cubemap_fbo:
             self._cubemap_fbo.free()
         pygame.quit()
-

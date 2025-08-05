@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 
 import numpy as np
+from pyglm import glm
 from OpenGL.GL import *
 import ctypes
 
@@ -160,6 +161,7 @@ class EyeRendererBase(ABC):
 
             glBindVertexArray(0)
             self._voronoi_vao = vao
+
         return self._voronoi_vao
 
     def draw(self, tiled_mode=False):
@@ -196,9 +198,12 @@ class EyeRendererBase(ABC):
 
     def free(self):
         """ Free GPU resources """
+
         glDeleteBuffers(4, [self.input_om_ssbo, self.final_colors_ssbo, self.pbo_ids[0], self.pbo_ids[1]])
+
         if self._voronoi_shader:
             self._voronoi_shader.free()
+
         if self._voronoi_vao:
             glDeleteVertexArrays(1, [self._voronoi_vao])
 
@@ -303,14 +308,17 @@ class EyeRendererRay(EyeRendererBase):
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.triangles_ssbo)
             glBufferData(GL_SHADER_STORAGE_BUFFER, self.rt_scene.triangles.nbytes, self.rt_scene.triangles,
                          GL_STATIC_DRAW)
+
         if self.rt_scene.triangle_bvh_nodes is not None:
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.triangle_bvh_ssbo)
             glBufferData(GL_SHADER_STORAGE_BUFFER, self.rt_scene.triangle_bvh_nodes.nbytes,
                          self.rt_scene.triangle_bvh_nodes, GL_STATIC_DRAW)
+
         if self.rt_scene.materials is not None:
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.materials_ssbo)
             glBufferData(GL_SHADER_STORAGE_BUFFER, self.rt_scene.materials.nbytes, self.rt_scene.materials,
                          GL_STATIC_DRAW)
+
         self.scene_texture_array = self._create_texture_array(self.rt_scene.texture_ids)
 
         # Point cloud bufefrs
@@ -318,60 +326,72 @@ class EyeRendererRay(EyeRendererBase):
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.point_bvh_ssbo)
             glBufferData(GL_SHADER_STORAGE_BUFFER, self.point_cloud.bvh_nodes.nbytes, self.point_cloud.bvh_nodes,
                          GL_STATIC_DRAW)
+
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.point_primitives_ssbo)
             glBufferData(GL_SHADER_STORAGE_BUFFER, self.point_cloud.point_attributes.nbytes,
                          self.point_cloud.point_attributes, GL_STATIC_DRAW)
+
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     def _free_scene_buffers(self):
         """ Deletes all GPU buffers associated with current scene """
+
         buffers_to_delete = [
             self.triangles_ssbo, self.triangle_bvh_ssbo, self.materials_ssbo,
             self.point_bvh_ssbo, self.point_primitives_ssbo
         ]
+
         # Filter out any buffers that were not created (ID is 0)
         buffers_to_delete = [buf for buf in buffers_to_delete if buf != 0]
+
         if buffers_to_delete:
             glDeleteBuffers(len(buffers_to_delete), buffers_to_delete)
+
         if self.scene_texture_array != 0:
             glDeleteTextures(1, [self.scene_texture_array])
+
         self.triangles_ssbo = self.triangle_bvh_ssbo = self.materials_ssbo = 0
         self.point_bvh_ssbo = self.point_primitives_ssbo = self.scene_texture_array = 0
 
     def _create_texture_array(self, texture_ids):
+
         if not texture_ids:
             return 0
+
         glBindTexture(GL_TEXTURE_2D, texture_ids[0])
         tex_w = glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH)
         tex_h = glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT)
         glBindTexture(GL_TEXTURE_2D, 0)
+
         layer_count = len(texture_ids)
         tex_array_id = glGenTextures(1)
+
         glBindTexture(GL_TEXTURE_2D_ARRAY, tex_array_id)
         glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA8, tex_w, tex_h, layer_count)
+
         for i, tex_id in enumerate(texture_ids):
             glCopyImageSubData(
                 tex_id, GL_TEXTURE_2D, 0, 0, 0, 0,
                 tex_array_id, GL_TEXTURE_2D_ARRAY, 0, 0, 0, i,
                 tex_w, tex_h, 1
             )
+
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
+
         return tex_array_id
 
     def replace_scene(self, scene: Scene):
         """
         Rebuilds the entire ray tracing scene on the GPU
         """
-        print("--- Replacing entire ray tracing scene ---")
         self._free_scene_buffers()
         self.rt_scene = RaytracingScene(scene)
         self.point_cloud = scene.point_cloud
         self._create_scene_buffers()
-        print("--- Scene replacement complete ---")
 
     @property
     def samples_per_ommatidium(self):
@@ -383,14 +403,19 @@ class EyeRendererRay(EyeRendererBase):
         max_total_samples = self._max_ssbo_size_bytes // bytes_per_sample
         max_samples_per_om = max(1, max_total_samples // self.num_ommatidia)
         new_value = int(np.clip(value, 1, max_samples_per_om))
+
         if new_value != value:
             print(f"Warning: Clamped samples per ommatidium to {new_value} (HW limit is {max_samples_per_om}).")
+
         if new_value == self._samples_per_ommatidium:
             return
+
         self._samples_per_ommatidium = new_value
         self.total_samples = self.num_ommatidia * self._samples_per_ommatidium
         required_buffer_size = self.total_samples * bytes_per_sample
+
         print(f"Allocating ray result buffer for {self.total_samples:,} total samples ({required_buffer_size / (1024*1024):.2f} MB).")
+
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ray_results_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, required_buffer_size, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
@@ -431,8 +456,11 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1i(self.raytrace_shader.get_loc('u_samples_per_ommatidium'), self.samples_per_ommatidium)
         glUniform1f(self.raytrace_shader.get_loc('u_point_radius'), self.point_radius)
         glUniform1f(self.raytrace_shader.get_loc('u_time'), float(self._time_counter))
-        glUniform3fv(self.raytrace_shader.get_loc('u_camera_position'), 1, camera.position)
-        glUniformMatrix4fv(self.raytrace_shader.get_loc('u_camera_orientation'), 1, True, camera.orientation)
+        # glUniform3fv(self.raytrace_shader.get_loc('u_camera_position'), 1, glm.value_ptr(camera.position))
+        # glUniformMatrix4fv(self.raytrace_shader.get_loc('u_camera_orientation'), 1, False, glm.value_ptr(camera.orientation))
+
+        camera_to_world_matrix = glm.inverse(camera.view)
+        glUniformMatrix4fv(self.raytrace_shader.get_loc('u_camera_to_world'), 1, False, glm.value_ptr(camera_to_world_matrix))
 
         # Dispatch ray tracing pass
         work_groups = (self.total_samples + 255) // 256
@@ -458,11 +486,16 @@ class EyeRendererRay(EyeRendererBase):
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
     def free(self):
-        """Frees all GPU resources, including shaders and all buffers."""
+        """ Frees all GPU resources, including shaders and all buffers """
+
         self._free_scene_buffers()
+
         glDeleteBuffers(1, [self.ray_results_ssbo])
+
         if self.raytrace_shader:
             self.raytrace_shader.free()
+
         if self.reduction_shader:
             self.reduction_shader.free()
+
         super().free()

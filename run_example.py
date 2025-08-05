@@ -5,6 +5,7 @@ os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
 from pygame.locals import *
 import numpy as np
+from pyglm import glm
 
 import OpenGL
 OpenGL.ERROR_CHECKING = False
@@ -13,10 +14,9 @@ from OpenGL.GL import *
 from graphics.engine import Engine
 from graphics.scene import Instance, PointCloud
 from geometry.compound_eyes import CompoundEye
-from graphics.glm import translation_mat, rotation_mat
 from geometry.primitives import CUBE_VERTICES
 from graphics.skybox import Skybox
-from graphics.utils import load_cubemap, WORLD_UP
+from graphics.utils import load_cubemap
 from graphics.eye_rendering import EyeRendererRaster, EyeRendererRay
 from graphics.raster_mode import PanoramicEye
 
@@ -52,9 +52,9 @@ def main():
         # Load the debug scene
         crate_mesh = eng.load_mesh("crate", CUBE_VERTICES, 'shaders/base.vert', 'shaders/base.frag',
                                    'textures/wood.jpg')
-        eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([0.0, 0.0, 0.0])))
-        eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([-3.0, 0.0, 0.0])))
-        eng.add_instance(Instance(asset=crate_mesh, transform=translation_mat([3.0, 0.0, 0.0])))
+        eng.add_instance(Instance(asset=crate_mesh, transform=glm.mat4(1.0)))
+        eng.add_instance(Instance(asset=crate_mesh, transform=glm.translate(glm.mat4(1.0), glm.vec3(-3.0, 0.0, 0.0))))
+        eng.add_instance(Instance(asset=crate_mesh, transform=glm.translate(glm.mat4(1.0), glm.vec3(3.0, 0.0, 0.0))))
         print("Default crate scene loaded.")
 
     eng.skybox = Skybox()
@@ -102,16 +102,6 @@ def main():
             if event.type == KEYDOWN and event.key in (K_KP_PLUS, K_EQUALS): eye_renderer.samples_per_ommatidium *= 2
             if event.type == KEYDOWN and event.key in (K_KP_MINUS, K_MINUS): eye_renderer.samples_per_ommatidium //= 2
         eng.update_movement()
-
-        # Update scene and re-packing for dynamic elements (optional)
-        if not USE_POINT_CLOUD:
-            current_rotation_deg = (current_rotation_deg + rotation_per_step_deg) % 360.0
-            eng.scene.instances[0].transform = rotation_mat(
-                np.deg2rad(current_rotation_deg), WORLD_UP
-            )
-            if USE_RAYTRACER:
-                eye_renderer.update_geometry(eng.scene.instances)     # fast update method
-                # compoundeye.replace_scene(eng.scene)  # Slower update, to use when elements are added / removed from scene
 
         # Data Acquisition
         TO_CPU = True

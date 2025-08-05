@@ -1,10 +1,10 @@
 import numpy as np
-from graphics.glm import rotation_mat, perspective_mat, translation_mat
-from graphics.utils import VEC_DTYPE, WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
+from pyglm import glm
+from graphics.utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
 
-RIGHT_HOMOGENEOUS = np.array([*WORLD_RIGHT, 0.0], dtype=VEC_DTYPE)
-UP_HOMOGENEOUS = np.array([*WORLD_UP, 0.0], dtype=VEC_DTYPE)
-FORWARD_HOMOGENEOUS = np.array([*WORLD_FORWARD, 0.0], dtype=VEC_DTYPE)
+RIGHT_HOMOGENEOUS = glm.vec4(WORLD_RIGHT, 0.0)
+UP_HOMOGENEOUS = glm.vec4(WORLD_UP, 0.0)
+FORWARD_HOMOGENEOUS = glm.vec4(WORLD_FORWARD, 0.0)
 
 
 class Camera:
@@ -19,7 +19,7 @@ class Camera:
                  far=100.0,
                  ratio=4.0/3.0):
 
-        self._position = np.asarray(position, dtype=VEC_DTYPE)
+        self._position = glm.vec3(position)
         self.tilt = self.pitch = self.vertical_angle = pitch
         self.pan = self.yaw = self.horizontal_angle = yaw
         self.roll = self.forward_angle = forward_roll
@@ -29,7 +29,7 @@ class Camera:
         self._near = near
         self._far = far
 
-        self._ident = np.eye(4, dtype=VEC_DTYPE)
+        self._ident = glm.mat4(1.0)
 
     @property
     def position(self):
@@ -37,7 +37,7 @@ class Camera:
 
     @position.setter
     def position(self, value):
-        self._position = np.asarray(value, dtype=VEC_DTYPE)[:3]
+        self._position = glm.vec3(value)
 
     @property
     def fov(self):
@@ -45,7 +45,7 @@ class Camera:
 
     @fov.setter
     def fov(self, val):
-        self._fov = np.clip(val, 0.001, 180.0, dtype=VEC_DTYPE)
+        self._fov = np.clip(val, 0.001, 180.0)
 
     @property
     def near(self):
@@ -53,8 +53,7 @@ class Camera:
 
     @near.setter
     def near(self, val):
-        val = np.maximum(0.001, val, dtype=VEC_DTYPE)
-        self._near = val
+        self._near = max(0.001, val)
 
     @property
     def far(self):
@@ -62,8 +61,7 @@ class Camera:
 
     @far.setter
     def far(self, val):
-        val = np.maximum(self._near, val, dtype=VEC_DTYPE)
-        self._far = val
+        self._far = max(self._near, val)
 
     @property
     def ratio(self):
@@ -71,8 +69,7 @@ class Camera:
 
     @ratio.setter
     def ratio(self, val):
-        val = np.maximum(0.001, val, dtype=VEC_DTYPE)
-        self._aspect_ratio = val
+        self._aspect_ratio = max(0.001, val)
 
     pos = position
     far_plane = far
@@ -87,16 +84,16 @@ class Camera:
     @property
     def orientation(self):
         """ The camera's orientation matrix (rotates from local to world space) """
-        # column-major, so post-multiply: Parent_Transform * Local_Transform
-        # Yaw (around world up) is the parent, pitch is the local rotation
-        yaw_mat = rotation_mat(np.deg2rad(self.yaw, dtype=VEC_DTYPE), WORLD_UP)
-        pitch_mat = rotation_mat(np.deg2rad(self.pitch, dtype=VEC_DTYPE), WORLD_RIGHT)
-        return yaw_mat @ pitch_mat
+        orientation = glm.mat4(1.0)
+        orientation = glm.rotate(orientation, glm.radians(self.yaw), WORLD_UP)
+        orientation = glm.rotate(orientation, glm.radians(self.pitch), WORLD_RIGHT)
+        return orientation
 
     @property
     def forward(self):
-        # Transform the world's forward vector into the camera's local space
-        return (self.orientation @ FORWARD_HOMOGENEOUS)[:3]
+        # Transform the world's forward vector by the orientation
+        # (negative sign to look "forward" into a right-handed system)
+        return glm.normalize((self.orientation * glm.vec4(0, 0, -1, 0)).xyz)
 
     @property
     def backward(self):
@@ -104,8 +101,8 @@ class Camera:
 
     @property
     def right(self):
-        # Transform the world's right vector into the camera's local space
-        return (self.orientation @ RIGHT_HOMOGENEOUS)[:3]
+        # Transform the world's right vector by the orientation
+        return glm.normalize((self.orientation * glm.vec4(1, 0, 0, 0)).xyz)
 
     @property
     def left(self):
@@ -114,7 +111,7 @@ class Camera:
     @property
     def up(self):
         # The camera's 'up' is the cross product of its right and forward vectors
-        return np.cross(self.right, self.forward)
+        return glm.cross(self.right, self.forward)
 
     @property
     def down(self):
@@ -122,40 +119,35 @@ class Camera:
 
     @property
     def projection(self):
-        return perspective_mat(np.deg2rad(self.fov, dtype=VEC_DTYPE), self._aspect_ratio, self.near, self.far)
+        return glm.perspective(glm.radians(self.fov), self._aspect_ratio, self.near, self.far)
 
     @property
     def view(self):
-        # The view matrix is the inverse of the camera's world transform
-        # Inverse of (T * R) is (R_inv * T_inv), which is (R_transpose * T_negative)
-        return self.orientation.T @ translation_mat(-self.pos)
+        target = self.position + self.forward
+        return glm.lookAt(self.position, target, self.up)
 
     @property
     def matrix(self):
-        return self.view @ self.projection
+        # For column-major matrices (like pyglm), the order is P * V
+        return self.projection * self.view
 
     def lookat(self, target_pos):
         """
         Orients the camera to look at a specific target position
         """
+        target_pos = glm.vec3(target_pos)
 
-        target_pos = np.asarray(target_pos, dtype=VEC_DTYPE)
-
-        # Avoid division by zero if the target is at the camera's position
-        if np.allclose(target_pos, self.position):
+        # Avoid issues if the target is at the camera's position
+        if glm.distance(target_pos, self.position) < 1e-6:
             return
 
         # direction from the camera to the target
-        direction = target_pos - self.position
-        direction_norm = np.linalg.norm(direction)
-        if direction_norm < 1e-6:
-            return
-        direction /= direction_norm
+        direction = glm.normalize(target_pos - self.position)
 
         # Calculate pitch (up/down look) from the Y component
         # Clamp the argument to asin (avoids domain errors from floating point inaccuracies)
-        self.pitch = np.rad2deg(np.arcsin(np.clip(direction[1], -1.0, 1.0)), dtype=VEC_DTYPE)
+        self.pitch = glm.degrees(glm.asin(glm.clamp(direction.y, -1.0, 1.0)))
 
         # Calculate yaw (left/right look) from the X and Z components
-        self.yaw = np.rad2deg(np.arctan2(direction[0], -direction[2]), dtype=VEC_DTYPE)
-
+        # (negative Z component for a right-handed coordinate system)
+        self.yaw = glm.degrees(glm.atan2(direction.x, -direction.z))

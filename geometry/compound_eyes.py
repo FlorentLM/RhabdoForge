@@ -459,7 +459,8 @@ class CompoundEye:
 
         # Fill with data
         packed_data[:, 0:3] = np.array([om.origin for om in self.ommatidia])
-        packed_data[:, 4:7] = self.directions
+        packed_data[:, 3] = 1.0  # Set w=1.0 for origin (position vector)
+        packed_data[:, 4:7] = self.directions # w=0.0 for direction (direction vector)
         packed_data[:, 8] = np.array([om.acceptance_h for om in self.ommatidia])
         packed_data[:, 9] = np.array([om.acceptance_v for om in self.ommatidia])
 

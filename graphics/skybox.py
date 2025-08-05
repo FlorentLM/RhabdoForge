@@ -1,4 +1,5 @@
 from OpenGL.GL import *
+from pyglm import glm
 
 from graphics.utils import load_shaders
 from geometry.primitives import CUBE_VERTICES
@@ -31,8 +32,8 @@ class Skybox:
         # We are inside the skybox so we need to see the back-faces
         glDisable(GL_CULL_FACE)
 
-        glUniformMatrix4fv(glGetUniformLocation(self.program, "projection"), 1, True, projection_matrix)
-        glUniformMatrix4fv(glGetUniformLocation(self.program, "view"), 1, True, view_matrix)
+        glUniformMatrix4fv(glGetUniformLocation(self.program, "projection"), 1, False, glm.value_ptr(projection_matrix))
+        glUniformMatrix4fv(glGetUniformLocation(self.program, "view"), 1, False, glm.value_ptr(view_matrix))
 
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_tex_id)
