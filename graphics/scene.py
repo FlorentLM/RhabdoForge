@@ -6,7 +6,7 @@ from pyglm import glm
 from OpenGL.GL import *
 from graphics.utils import load_shaders, load_texture, VEC_DTYPE
 import open3d as o3d
-import pytinybvh
+from pytinybvh import BVH, supports_layout, Layout
 
 
 class Mesh:
@@ -116,27 +116,28 @@ class PointCloud:
             self.hit_radius = float(hit_radius)
 
         print("Building BVH from point data...")
-        self.bvh_nodes, prim_indices = pytinybvh.from_points(points, radius=self.hit_radius)
+
+        bvh = BVH.from_points(points, radius=self.hit_radius)
+        buffers = bvh.get_buffers()
+        self.bvh_nodes = buffers['nodes']
+        prim_indices = buffers['prim_indices']
 
         print("Reordering primitive attributes according to BVH indices...")
-        # Check for normals and colors, creating placeholders if they don't exist
         if pcd.has_normals():
             normals = np.asarray(pcd.normals, dtype=np.float32)[prim_indices]
         else:
             print("Warning: Point cloud has no normals. Creating placeholders.")
-            normals = np.zeros_like(points)
+            normals = np.zeros_like(points)[prim_indices]
 
         if pcd.has_colors():
             colors = np.asarray(pcd.colors, dtype=np.float32)[prim_indices]
         else:
             print("Warning: Point cloud has no colors. Defaulting to white.")
-            colors = np.ones_like(points)
+            colors = np.ones_like(points)[prim_indices]
 
-        # Reorder the base points using the new indices
         reordered_points = points[prim_indices]
 
         # Pack the reordered attributes for the GPU
-        # Matches the 'Point' struct layout in commons.glsl (vec4 pos, vec4 normal, vec4 color)
         self.num_points = len(reordered_points)
         self.point_attributes = np.zeros((self.num_points, 12), dtype=VEC_DTYPE)
 
@@ -145,7 +146,7 @@ class PointCloud:
         self.point_attributes[:, 8:11] = colors
         # The 'w' components are left as 0.0 for padding
 
-        self.num_nodes = len(self.bvh_nodes)
+        self.num_nodes = bvh.node_count
         print(f"Loaded and processed point cloud with {self.num_points} points and a BVH with {self.num_nodes} nodes.")
 
     def free(self):
@@ -243,17 +244,23 @@ class RaytracingScene:
             self.num_triangles = 0
             return
 
+        # TODO: Use indexed geometry instead
         # Concatenate all transformed vertices into one large array
         all_verts_pos_np = np.concatenate(all_verts_pos, axis=0)
         all_verts_uv_np = np.concatenate(all_verts_uv, axis=0)
         self.material_indices = np.concatenate(all_material_indices)
 
-        # Reshape for pytinybvh which expects (N, 9) for triangles
         triangles_for_bvh = all_verts_pos_np.reshape(-1, 9)
         self.num_triangles = len(triangles_for_bvh)
 
         print(f"Building BVH for {self.num_triangles:,} total triangles...")
-        self.triangle_bvh_nodes, prim_indices = pytinybvh.from_triangles(triangles_for_bvh)
+
+        bvh = BVH.from_triangles(triangles_for_bvh)
+
+        buffers = bvh.get_buffers()
+        self.triangle_bvh_nodes = buffers['nodes']
+        prim_indices = buffers['prim_indices']
+
         print(f"Triangle BVH built with {len(self.triangle_bvh_nodes)} nodes.")
 
         # Reorder triangle attributes based on BVH primitive indices

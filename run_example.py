@@ -4,7 +4,6 @@ import time
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
 from pygame.locals import *
-import numpy as np
 from pyglm import glm
 
 import OpenGL
@@ -33,8 +32,8 @@ def main():
     COMPOUND_EYE_VIEW = True
     VORONOI_VIEW = False
 
-    # NB_OMMATIDIA = 19362
-    NB_OMMATIDIA = 1962
+    NB_OMMATIDIA = 19362
+    # NB_OMMATIDIA = 1962
     NB_SAMPLES = 16
 
     HEADLESS_MAX_STEPS = 1000

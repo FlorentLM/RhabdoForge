@@ -226,7 +226,13 @@ class ShaderProgram:
         num_uniforms = glGetProgramiv(self.program_id, GL_ACTIVE_UNIFORMS)
         for i in range(num_uniforms):
             name, size, type = glGetActiveUniform(self.program_id, i)
-            name = name.decode('utf-8')
+            # Handle the case where drivers return the name as a numpy array
+            if isinstance(name, np.ndarray):
+                # Convert numpy array to bytes, then decode to a string, stripping any null terminators
+                name = name.tobytes().decode('utf-8').rstrip('\x00')
+            else:
+                # decode a bytes object to a string
+                name = name.decode('utf-8')
             # Handle arrays by removing the '[0]' suffix if present
             if name.endswith('[0]'):
                 name = name[:-3]
