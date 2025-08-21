@@ -1,158 +1,157 @@
 import os
-import time
-
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
-import pygame
-from pygame.locals import *
-from pyglm import glm
-
 import OpenGL
 OpenGL.ERROR_CHECKING = False
+
+import pygame
+from pygame.locals import *
+import time
+from pyglm import glm
+
 from OpenGL.GL import *
 
 from graphics.engine import Engine
-from graphics.scene import Instance, PointCloud
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CUBE_VERTICES
-from graphics.skybox import Skybox
 from graphics.utils import load_cubemap
-from graphics.eye_rendering import EyeRendererRaster, EyeRendererRay
-from graphics.raster_mode import PanoramicEye
+from graphics.renderers.rasterizer import EyeRendererRaster
+from graphics.renderers.raytracer import EyeRendererRay
+from graphics.scene import Scene, Skybox
 
 
 def main():
 
-    USE_POINT_CLOUD = True
-    USE_RAYTRACER = True
-
-    # TODO: move these flags to the engine
-    PANORAMIC_VIEW = False
+    # Configuration flags
+    WINDOW_SIZE = (1280, 720)
+    USE_POINT_CLOUD = False
+    USE_RAYTRACER = False
     RUN_HEADLESS = False
-    TIME_DITHERING = False
-    COMPOUND_EYE_VIEW = True
+
+    # View mode management
+    view_modes = ['compound_eye', 'panoramic', 'standard_3d']
+    current_view_idx = 0
     VORONOI_VIEW = False
 
+    # Simulation Config
     NB_OMMATIDIA = 19362
-    # NB_OMMATIDIA = 1962
     NB_SAMPLES = 16
-
+    TIME_DITHERING = False
+    POINT_RADIUS = 0.1
     HEADLESS_MAX_STEPS = 1000
 
-    POINT_HIT_RADIUS = 0.1
-
-    # Setup
-    eng = Engine(width=1280, height=720, headless=RUN_HEADLESS)
-
+    # Setup Engine and Scene
+    eng = Engine(width=WINDOW_SIZE[0], height=WINDOW_SIZE[1], headless=RUN_HEADLESS)
+    scene = Scene()
     if USE_POINT_CLOUD:
-        point_cloud = PointCloud('assets/canberra_filtered.ply', hit_radius=POINT_HIT_RADIUS)
-        eng.add_point_cloud(point_cloud)
-
+        scene.add_point_cloud("canberra", 'assets/canberra_filtered.ply')
     else:
-        # Load the debug scene
-        crate_mesh = eng.load_mesh("crate", CUBE_VERTICES, 'shaders/base.vert', 'shaders/base.frag',
-                                   'textures/wood.jpg')
-        eng.add_instance(Instance(asset=crate_mesh, transform=glm.mat4(1.0)))
-        eng.add_instance(Instance(asset=crate_mesh, transform=glm.translate(glm.mat4(1.0), glm.vec3(-3.0, 0.0, 0.0))))
-        eng.add_instance(Instance(asset=crate_mesh, transform=glm.translate(glm.mat4(1.0), glm.vec3(3.0, 0.0, 0.0))))
-        print("Default crate scene loaded.")
+        crate_asset = scene.load_mesh("crate", CUBE_VERTICES, 'textures/wood.jpg')
+        scene.add_instance(asset=crate_asset)
+        scene.add_instance(asset=crate_asset, transform=glm.translate(glm.mat4(1.0), glm.vec3(-3.0, 0.0, 0.0)))
+        scene.add_instance(asset=crate_asset, transform=glm.translate(glm.mat4(1.0), glm.vec3(3.0, 0.0, 0.0)))
 
-    eng.skybox = Skybox()
-    eng.skybox_texture_id = load_cubemap('textures/bright_day')
-    # eng.skybox_texture_id = load_cubemap('textures/black')
+    scene.skybox = Skybox()
+    scene.skybox_texture_id = load_cubemap('textures/bright_day')
 
-    # Create the eye model
-    eye = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
+    eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
+
+    debug_renderer = None  # this is only be used for raytracer debug view
 
     if USE_RAYTRACER:
-        print("Mode: Ray-Tracer")
-        eye_renderer = EyeRendererRay(eye_model=eye, scene=eng.scene, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES, point_radius=POINT_HIT_RADIUS)
+        renderer = EyeRendererRay(
+            eye_model=eye_model,
+            scene=scene,
+            time_dithering=TIME_DITHERING,
+            nb_samples=NB_SAMPLES,
+            point_radius=POINT_RADIUS
+        )
+
+        # The debug renderer is only needed when the primary is a raytracer
+        if not RUN_HEADLESS:
+            debug_renderer = EyeRendererRaster(
+                eye_model=eye_model,
+                scene=scene,
+                window_size=WINDOW_SIZE,
+                time_dithering=TIME_DITHERING,
+                nb_samples=NB_SAMPLES
+            )
     else:
-        print("Mode: Rasterizer")
-        eye_renderer = EyeRendererRaster(eye_model=eye, time_dithering=TIME_DITHERING, nb_samples=NB_SAMPLES)
+        # If not using raytracer, the rasterizer the one and only renderer
+        renderer = EyeRendererRaster(
+            eye_model=eye_model,
+            scene=scene,
+            window_size=WINDOW_SIZE,
+            time_dithering=TIME_DITHERING,
+            nb_samples=NB_SAMPLES
+        )
 
-    pano_debug_view = PanoramicEye()
-
-    # Assign the eye to the engine
-    eng.compound_eye = eye_renderer
-
-    # Simulation variables
-    rotation_per_step_deg = 0.5
-    current_rotation_deg = 0.0
 
     if not RUN_HEADLESS:
         pygame.mouse.set_visible(False)
         pygame.event.set_grab(True)
-        print(f"Interactive mode with {NB_OMMATIDIA} ommatidia.")
-    else:
-        print(f"Simulation started with {NB_OMMATIDIA} ommatidia...")
 
     is_running = True
-    frame_count = 0
+
     start = time.time_ns()
-    while is_running:
-        # Event handling
+    for frame_count in range(HEADLESS_MAX_STEPS if RUN_HEADLESS else 10000):
         for event in pygame.event.get():
-            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE): is_running = False
-            if event.type == KEYDOWN and event.key == K_c: COMPOUND_EYE_VIEW = not COMPOUND_EYE_VIEW
-            if event.type == KEYDOWN and event.key == K_v: VORONOI_VIEW = not VORONOI_VIEW
-            if event.type == KEYDOWN and event.key == K_p: PANORAMIC_VIEW = not PANORAMIC_VIEW
-            if event.type == KEYDOWN and event.key == K_t: eye_renderer.time_dithering = not eye_renderer.time_dithering
-            if event.type == KEYDOWN and event.key == K_h: eng.show_hud = not eng.show_hud
-            if event.type == KEYDOWN and event.key in (K_KP_PLUS, K_EQUALS): eye_renderer.samples_per_ommatidium *= 2
-            if event.type == KEYDOWN and event.key in (K_KP_MINUS, K_MINUS): eye_renderer.samples_per_ommatidium //= 2
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                is_running = False
+
+            if event.type == KEYDOWN:
+                if event.key == K_c: current_view_idx = (current_view_idx + 1) % len(view_modes)
+                if event.key == K_v: VORONOI_VIEW = not VORONOI_VIEW
+                # if event.key == K_h: eng.hud.show = not eng.hud.show
+
+                # TODO: Re-implement these controls properly
+                # if event.type == KEYDOWN and event.key == K_t: eye_renderer.time_dithering = not eye_renderer.time_dithering
+                # if event.type == KEYDOWN and event.key == K_h: eng.show_hud = not eng.show_hud
+                # if event.type == KEYDOWN and event.key in (K_KP_PLUS,
+                #                                            K_EQUALS): eye_renderer.samples_per_ommatidium *= 2
+                # if event.type == KEYDOWN and event.key in (K_KP_MINUS,
+                #                                            K_MINUS): eye_renderer.samples_per_ommatidium //= 2
+            eng.update_movement()
+
+        if not is_running:
+            break
+
         eng.update_movement()
 
-        # Data Acquisition
-        TO_CPU = True
-
-        if USE_RAYTRACER:
-            ommatidia_values = eye_renderer.get_ommatidia_data(eng.camera, eng.skybox_texture_id, to_cpu=TO_CPU)
-        else:
-            scene_cubemap_id = eng.render_to_cubemap(eng.scene, eng.camera)
-            ommatidia_values = eye_renderer.get_ommatidia_data(scene_cubemap_id, to_cpu=TO_CPU)
-
-        # # Example of CPU-side use of ommatidia data
-        # if frame_count % 100 == 0:  # Print a sample every 100 frames
-        #     print(f"Step {frame_count}: Ommatidium 0 value: {ommatidia_values[0]}")
-        # # np.save(f'data/frame_{frame_count}.npy', ommatidia_values)
+        # Data acquisition
+        # The primary renderer is always responsible for generating the eye data
+        ommatidia_values = renderer.get_ommatidia_data(eng.camera, to_cpu=True)
 
         # Drawing
         if not RUN_HEADLESS:
-            glViewport(0, 0, eng.width, eng.height)
+
+            glViewport(0, 0, WINDOW_SIZE[0], WINDOW_SIZE[1])
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-            if COMPOUND_EYE_VIEW:
-                eye_renderer.draw(tiled_mode=VORONOI_VIEW)
+            view_mode = view_modes[current_view_idx]
 
-            elif PANORAMIC_VIEW:
-                scene_cubemap_id = eng.render_to_cubemap(eng.scene, eng.camera)
-                pano_debug_view.draw(scene_cubemap_id)
+            renderer_to_use = renderer
 
-            else:
-                if USE_POINT_CLOUD:
-                    # The default renderer only draws triangles for now
-                    # TODO: raster-based point cloud renderer
-                    # For now just draw the skybox
-                    if eng.skybox and eng.skybox_texture_id is not None:
-                        eng.skybox.draw(eng.camera.projection, eng.camera.view, eng.skybox_texture_id)
-                else:
-                    eng.render_frame()  # default to normal 3D view for debug crates
+            # if raytracing and in debug view, switch to debug renderer
+            if USE_RAYTRACER and view_mode != 'compound_eye':
+                renderer_to_use = debug_renderer
 
+            renderer_to_use.draw(view_mode, eng.camera, VORONOI_VIEW)
+
+            # eng.hud.draw()
             eng.clock.tick()
-            eng.draw_hud()
-
             pygame.display.flip()
 
-        frame_count += 1
-        if RUN_HEADLESS and frame_count >= HEADLESS_MAX_STEPS:
-            is_running = False
-
     total_time = (time.time_ns() - start) * 1e-9
-    print(f"Simulation finished.")
-    print(f"Total: {frame_count} frames in {total_time:.3f} seconds ({int(frame_count / total_time)} fps (avg.), {(total_time / frame_count) * 1e4:.3f} ms per frame).")
-    pano_debug_view.free()
-    eye_renderer.free()
+    print(f"Finished. Total: {frame_count} frames in {total_time:.3f}s ({frame_count / total_time:.2f} FPS).")
+
+    if renderer:
+        renderer.free()
+
+    if debug_renderer:
+        debug_renderer.free()
+
     eng.close()
+    scene.free()
 
 
 if __name__ == "__main__":

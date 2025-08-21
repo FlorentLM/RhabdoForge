@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 
 # --- Import the refactored PointCloud class ---
-from graphics.scene import PointCloud
+from graphics.scene import RaytracingPointCloud
 
 # --- CONFIG ---
 FILENAME = 'dolphins.ply'
@@ -59,7 +59,7 @@ def intersect_ray_sphere(ray_origin, ray_direction, sphere_center, sphere_radius
 
 # =========================================================================
 
-point_cloud = PointCloud(FILE_PATH, hit_radius=HIT_RADIUS)
+point_cloud = RaytracingPointCloud(FILE_PATH, hit_radius=HIT_RADIUS)
 
 bvh_nodes = point_cloud.bvh_nodes
 reordered_primitives = point_cloud.point_attributes[:, 0:3]
