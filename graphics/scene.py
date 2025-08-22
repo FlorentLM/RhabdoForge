@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -33,16 +33,54 @@ class MeshAsset(Asset):
     Contains geometry and material properties
     """
 
-    def __init__(self, name: str, vertex_data: np.ndarray, texture_path: str):
+    def __init__(self,
+                 name: str,
+                 file_path: Optional[Path | str] = None,
+                 vertex_data: Optional[np.ndarray] = None,
+                 texture_path: Path | str = 'textures/wood.jpg'):
         super().__init__(name)
 
-        self.vertex_data = vertex_data
+        if file_path is None and vertex_data is None:
+            raise ValueError("MeshAsset requires either 'file_path' or 'vertex_data'.")
+
+        if file_path is not None and vertex_data is not None:
+            raise ValueError("Provide either 'file_path' or 'vertex_data', not both.")
+
         self.texture_path = Path(texture_path)
+
+        if file_path is not None:
+            path = Path(file_path)
+            if not path.exists():
+                raise FileNotFoundError(f"Could not find mesh file: {path}")
+
+            print(f"Loading mesh data from {path}...")
+            mesh = o3d.io.read_triangle_mesh(path, enable_post_processing=True)
+
+            if not mesh.has_vertex_normals():
+                mesh.compute_vertex_normals()
+
+            if not mesh.has_triangle_uvs():
+                raise ValueError(f"Mesh file '{path}' does not contain texture coordinates (UVs).")
+
+            # Get the raw data from the mesh
+            vertices = np.asarray(mesh.vertices, dtype=VEC_DTYPE)
+            uvs = np.asarray(mesh.triangle_uvs, dtype=VEC_DTYPE)
+            triangle_indices = np.asarray(mesh.triangles)
+
+            positions_by_face = vertices[triangle_indices]
+            uvs_by_face = uvs.reshape(-1, 3, 2)
+            interleaved_data = np.concatenate((positions_by_face, uvs_by_face), axis=2)
+
+            # Flatten the array to the [v1_pos, v1_uv, v2_pos, v2_uv, ...] structure for the VBO
+            self.vertex_data = interleaved_data.flatten()
+
+        else:
+            self.vertex_data = vertex_data
 
     @property
     def num_triangles(self):
-        # Each vertex has 5 components (pos, uv), 3 vertices per triangle
-        return self.vertex_data.shape[0] // 3
+        # Each vertex has 5 float components (pos, uv) and there are 3 vertices per triangle
+        return self.vertex_data.shape[0] // (3*5)
 
 
 class PointsAsset(Asset):
@@ -51,25 +89,41 @@ class PointsAsset(Asset):
     Contains geometry and material properties
     """
 
-    def __init__(self, name: str, file_path: str):
+    def __init__(self,
+                 name: str,
+                 file_path: Optional[Path | str] = None,
+                 points: Optional[np.ndarray] = None,
+                 colors: Optional[np.ndarray] = None,
+                 normals: Optional[np.ndarray] = None
+                 ):
         super().__init__(name)
-        path = Path(file_path)
 
-        if not path.exists():
-            raise FileNotFoundError(f"Could not find point cloud file: {path}")
+        if file_path is None and points is None:
+            raise ValueError("PointsAsset requires either 'file_path' or 'points' data.")
+        if file_path is not None and points is not None:
+            raise ValueError("Provide either 'file_path' or 'points' data, not both.")
 
-        print(f"Loading point cloud data from {path}...")
-        pcd = o3d.io.read_point_cloud(path)
+        if file_path is not None:
+            path = Path(file_path)
+            if not path.exists():
+                raise FileNotFoundError(f"Could not find point cloud file: {path}")
 
-        self.points = np.asarray(pcd.points, dtype=VEC_DTYPE)
-        self.normals = np.zeros_like(self.points)
-        self.colors = np.ones_like(self.points)
+            print(f"Loading point cloud data from {path}...")
+            pcd = o3d.io.read_point_cloud(path)
 
-        if pcd.has_normals():
-            self.normals = np.asarray(pcd.normals, dtype=VEC_DTYPE)
+            self.points = np.asarray(pcd.points, dtype=VEC_DTYPE)
+            self.normals = np.zeros_like(self.points)
+            self.colors = np.ones_like(self.points)
 
-        if pcd.has_colors():
-            self.colors = np.asarray(pcd.colors, dtype=VEC_DTYPE)
+            if pcd.has_normals():
+                self.normals = np.asarray(pcd.normals, dtype=VEC_DTYPE)
+            if pcd.has_colors():
+                self.colors = np.asarray(pcd.colors, dtype=VEC_DTYPE)
+
+        else:
+            self.points = points
+            self.colors = colors if colors is not None else np.ones_like(points)
+            self.normals = normals if normals is not None else np.zeros_like(points)
 
         self.num_points = len(self.points)
         print(f"Loaded {self.num_points} points for asset '{name}'.")
@@ -102,7 +156,7 @@ class Skybox:
         glBufferData(GL_ARRAY_BUFFER, skybox_vertices.nbytes, skybox_vertices, GL_STATIC_DRAW)
 
         glEnableVertexAttribArray(0)
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
+        glVertexAttribPointer(0, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
 
         glBindVertexArray(0)
 
@@ -141,32 +195,39 @@ class Scene:
         self.skybox: Optional[Skybox] = None
         self.skybox_texture_id: Optional[int] = None
 
-    def load_mesh_asset(self, name: str, vertex_data, texture_path: str) -> MeshAsset:
-        if name in self.assets:
-            print(f"Warning: Asset with name '{name}' already exists. Overwriting.")
+    def add_instance(self, asset: Union[Asset, str], transform: glm.mat4 = None, **kwargs) -> Instance:
 
-        asset = MeshAsset(name, vertex_data, texture_path)
-        self.assets[name] = asset
-        return asset
+        if isinstance(asset, Asset):
+            asset_obj = asset
 
-    def load_point_cloud_asset(self, name: str, file_path: str) -> PointsAsset:
-        if name in self.assets:
-            print(f"Warning: Asset with name '{name}' already exists. Overwriting.")
+            if asset_obj.name not in self.assets:
+                print(f"New {type(asset_obj).__name__} asset '{asset_obj.name}' registered with the scene.")
+                self.assets[asset_obj.name] = asset_obj
 
-        asset = PointsAsset(name, file_path)
-        self.assets[name] = asset
-        return asset
+            elif self.assets[asset_obj.name].id != asset_obj.id:
+                raise ValueError(
+                    f"An asset named '{asset_obj.name}' already exists but is a different object. "
+                    "Asset names must be unique.")
 
-    def add_instance(self, asset: Asset, transform: glm.mat4 = None, **kwargs) -> Instance:
-        if asset.name not in self.assets:
-            raise ValueError(f"Asset '{asset.name}' not loaded into the scene. Call a load_*_asset method first.")
+        elif isinstance(asset, str):
+            if asset not in self.assets:
+                raise ValueError(
+                    f"Asset with name '{asset}' not found. "
+                    "You must add an instance of the asset object itself first to register it."
+                )
+            asset_obj = self.assets[asset]
 
-        instance = Instance(asset, transform, **kwargs)
+        else:
+            raise TypeError(
+                f"Invalid type for asset_or_name. Expected Asset or str, but got {type(asset).__name__}.")
+
+        instance = Instance(asset_obj, transform, **kwargs)
         self.instances.append(instance)
         return instance
 
     def add_skybox(self, texture_path: str):
         """ Creates and loads a skybox from a directory of textures """
+
         self.skybox = Skybox()
         self.skybox_texture_id = load_cubemap(texture_path)
         print(f"Loaded skybox from {texture_path}")

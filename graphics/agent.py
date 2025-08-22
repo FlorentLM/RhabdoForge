@@ -3,7 +3,6 @@ from numpy.typing import ArrayLike
 from pyglm import glm
 import numpy as np
 from graphics.camera import Camera
-from graphics.utils import WORLD_UP, WORLD_DOWN
 
 
 class Agent:
@@ -34,10 +33,16 @@ class Agent:
         self.camera.pitch -= pitch_delta * self.mouse_sensitivity
         self.camera.pitch = np.clip(self.camera.pitch, -89.0, 89.0)
 
+    # TODO: add automatic getters to avoid wrapping every single property
+
     @property
     def position(self):
         return self.camera.pos
 
     @property
-    def view_matrix(self):
-        return self.camera.view
+    def forward(self):
+        return self.camera.forward
+
+    @property
+    def backward(self):
+        return self.camera.backward

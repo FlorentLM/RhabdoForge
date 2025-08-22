@@ -1,7 +1,7 @@
 import time
 from pyglm import glm
 
-from graphics.scene import Scene
+from graphics.scene import Scene, PointsAsset, MeshAsset
 from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CUBE_VERTICES
@@ -18,29 +18,29 @@ def main():
     USE_RAYTRACER = True
     USE_POINT_CLOUD = True
     NB_OMMATIDIA = 19362
-    NB_SAMPLES = 16
-    TIME_DITHERING = False
     HEADLESS = False
 
-    context = Context(window_size=WINDOW_SIZE, headless=HEADLESS)
+    context = Context(window_size=WINDOW_SIZE, headless=HEADLESS)  # TODO: This probably should always start as headless
 
     # Setup Scene
     scene = Scene()
 
     if USE_POINT_CLOUD:
         # Load the asset data once
-        point_cloud_asset = scene.load_point_cloud_asset('canberra', 'assets/canberra_filtered.ply')
+        point_cloud_asset = PointsAsset('canberra', file_path='assets/canberra_filtered.ply')
+
         # Add an instance of it with specific properties
-        scene.add_instance(point_cloud_asset, point_radius=0.15)
+        scene.add_instance(point_cloud_asset, point_radius=0.05)
 
     # Load the mesh asset data
-    crate_asset = scene.load_mesh_asset("crate", CUBE_VERTICES, 'textures/wood.jpg')
+    crate_asset = MeshAsset('crate', vertex_data=CUBE_VERTICES, texture_path='textures/wood.jpg')
+
     # Add multiple instances of the same asset
     scene.add_instance(asset=crate_asset)
     scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(-3.0, 0.0, 0.0)))
     scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(3.0, 0.0, 0.0)))
 
-    # Add one skybox
+    # Add a skybox
     scene.add_skybox('textures/bright_day')
 
     # Setup eye model
@@ -50,23 +50,16 @@ def main():
     agent = Agent(position=(0.0, 0.0, 4.0))
 
     # Setup Renderers
-
-    renderer = None
-    debug_renderer = None
-
     if USE_RAYTRACER:
-        renderer = EyeRendererRay(eye_model=eye_model, scene=scene,
-                                  window_size=WINDOW_SIZE,
-                                  nb_samples=NB_SAMPLES, time_dithering=TIME_DITHERING)
+        renderer = EyeRendererRay(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE)
+        # The debug renderer allows to see the scene geometry without raytracing
+        debug_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE)
 
-        # The debug renderer allows us to see the scene geometry without raytracing
-        debug_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene,
-                                           window_size=WINDOW_SIZE,
-                                           nb_samples=NB_SAMPLES, time_dithering=TIME_DITHERING)
     else:
-        renderer = EyeRendererRaster(eye_model=eye_model, scene=scene,
-                                     window_size=WINDOW_SIZE,
-                                     nb_samples=NB_SAMPLES, time_dithering=TIME_DITHERING)
+        renderer = EyeRendererRaster(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE)
+        debug_renderer = None
+
+    # Run
 
     if not HEADLESS:
         # Setup and run interactive viewer
@@ -76,7 +69,7 @@ def main():
             context.handle_input()
 
             # Get sensory data from the renderer via the context
-            ommatidia_values = context.active_renderer.get_ommatidia_data(agent.camera, to_cpu=True)
+            ommatidia_values = context.active_renderer.get_ommatidia_data(agent, to_cpu=True)
 
             context.draw()
 
@@ -92,11 +85,11 @@ def main():
         for i in range(max_steps):
 
             # Programmatically control the agent
-            agent.move(agent.camera.forward * 0.05)
+            agent.move(agent.forward * 0.05)
             agent.rotate(yaw_delta=-0.5, pitch_delta=0)
 
             # Get sensory data from the renderer directly
-            ommatidia_values = renderer.get_ommatidia_data(agent.camera, to_cpu=True)
+            ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=True)
 
             results.append(ommatidia_values)
 

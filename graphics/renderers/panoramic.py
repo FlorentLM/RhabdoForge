@@ -45,6 +45,7 @@ class PanoramicEye:
 
     def free(self):
         """ Frees the GPU resources (shader and VAO) """
+
         if self._shader:
             self._shader.free()
         if self._vao:

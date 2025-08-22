@@ -1,7 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Tuple
+from typing import Tuple, Union
 import numpy as np
 import OpenGL
+
+from graphics.agent import Agent
+from graphics.camera import Camera
+
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 from geometry.compound_eyes import CompoundEye
@@ -99,6 +103,14 @@ class EyeRendererBase(ABC):
         # Each subclass implements its own core rendering logic
         raise NotImplementedError
 
+    def _get_camera(self, camera_or_agent: Union[Camera, Agent]) -> Camera:
+
+        if isinstance(camera_or_agent, Agent):
+            return camera_or_agent.camera
+        elif isinstance(camera_or_agent, Camera):
+            return camera_or_agent
+        raise TypeError("Expected a Camera or Agent object.")
+
     def _fetch_to_cpu(self):
 
         # Determine which PBO to read from (current) and which to write to (next)
@@ -153,7 +165,7 @@ class EyeRendererBase(ABC):
 
             pos_loc = glGetAttribLocation(self.voronoi_shader.program_id, "a_cone_vertex_pos")
             glEnableVertexAttribArray(pos_loc)
-            glVertexAttribPointer(pos_loc, 3, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
+            glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
 
             glBindVertexArray(0)
             self._voronoi_vao = vao

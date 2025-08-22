@@ -19,10 +19,8 @@ class CubemapFBO:
     def __init__(self, resolution=256):
         self.resolution = resolution
 
-        # Create Framebuffer object
+        # Create FBO and Color cubemap texture
         self.fbo_id = glGenFramebuffers(1)
-
-        # Create the Color cubemap texture
         self.color_texture_id = glGenTextures(1)
 
         glBindTexture(GL_TEXTURE_CUBE_MAP, self.color_texture_id)
@@ -97,11 +95,11 @@ class RasterMesh:
 
         pos_loc = glGetAttribLocation(self.shaders, "pos")
         glEnableVertexAttribArray(pos_loc)
-        glVertexAttribPointer(pos_loc, 3, GL_FLOAT, GL_FALSE, 5 * self.data.itemsize, ctypes.c_void_p(0))
+        glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, 5 * self.data.itemsize, ctypes.c_void_p(0))
 
         tex_loc = glGetAttribLocation(self.shaders, "vertTexCoord")
         glEnableVertexAttribArray(tex_loc)
-        glVertexAttribPointer(tex_loc, 2, GL_FLOAT, GL_FALSE, 5 * self.data.itemsize,
+        glVertexAttribPointer(tex_loc, 2, GL_FLOAT, False, 5 * self.data.itemsize,
                               ctypes.c_void_p(3 * self.data.itemsize))
 
         glBindVertexArray(0)
@@ -139,12 +137,12 @@ class RasterPoints:
         # Vertex attribute for position
         pos_loc = glGetAttribLocation(self.shaders, "a_pos")
         glEnableVertexAttribArray(pos_loc)
-        glVertexAttribPointer(pos_loc, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
+        glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, stride, ctypes.c_void_p(0))
 
         # Vertex attribute for color
         color_loc = glGetAttribLocation(self.shaders, "a_color")
         glEnableVertexAttribArray(color_loc)
-        glVertexAttribPointer(color_loc, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(packed_data.itemsize * 3))
+        glVertexAttribPointer(color_loc, 3, GL_FLOAT, False, stride, ctypes.c_void_p(packed_data.itemsize * 3))
 
         glBindVertexArray(0)
 
@@ -278,9 +276,11 @@ class EyeRendererRaster(EyeRendererBase):
         glBindVertexArray(0)
         glUseProgram(0)
 
-    def _render_to_cubemap(self, camera):
+    def _render_to_cubemap(self, camera_or_agent):
 
         self._cubemap_fbo.bind()
+
+        camera = self._get_camera(camera_or_agent)
 
         # look-at directions and 'up' vectors for each face must correspond to the OpenGL cubemap coordinate system:
         #  - GL_TEXTURE_CUBE_MAP_POSITIVE_X  ->  Right
@@ -372,11 +372,11 @@ class EyeRendererRaster(EyeRendererBase):
 
         self._rasterizer_shader.stop()
 
-    def _compute_colors(self, camera):
+    def _compute_colors(self, camera_or_agent):
         """ The core ommatidia rendering logic """
 
         # Pass 1: Render to cubemap
-        self._render_to_cubemap(camera)
+        self._render_to_cubemap(camera_or_agent)
 
         # Pass 2: Sample from cubemap
         self._sample_cubemap()
@@ -387,10 +387,10 @@ class EyeRendererRaster(EyeRendererBase):
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 
-    def get_ommatidia_data(self, camera, to_cpu=False):
+    def get_ommatidia_data(self, camera_or_agent, to_cpu=False):
         """ Generates a cubemap and then computes ommatidia data from it """
 
-        self._compute_colors(camera)
+        self._compute_colors(camera_or_agent)
 
         if self._time_dithering:
             self._time_counter += 1
@@ -400,8 +400,10 @@ class EyeRendererRaster(EyeRendererBase):
 
         return self.cpu_read_buffer
 
-    def draw(self, view_mode: str, camera, tiled_mode: bool = False):
+    def draw(self, view_mode: str, camera_or_agent, tiled_mode: bool = False):
         """ Renders one of the rasterizer's supported views to the screen """
+
+        camera = self._get_camera(camera_or_agent)
 
         if view_mode == 'compound_eye':
             # This calls the draw() method in EyeRendererBase for Voronoi rendering

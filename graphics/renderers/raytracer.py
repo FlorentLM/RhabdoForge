@@ -332,7 +332,9 @@ class EyeRendererRay(EyeRendererBase):
         glBufferData(GL_SHADER_STORAGE_BUFFER, required_buffer_size, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
-    def _raytrace(self, camera):
+    def _raytrace(self, camera_or_agent):
+
+        camera = self._get_camera(camera_or_agent)
 
         # Pass 1: Ray-tracing
 
@@ -437,11 +439,11 @@ class EyeRendererRay(EyeRendererBase):
 
         self.reduction_shader.stop()
 
-    def _compute_colors(self, camera):
+    def _compute_colors(self, camera_or_agent):
         """ The core ommatidia rendering logic """
 
         # Pass 1: Ray-trace
-        self._raytrace(camera)
+        self._raytrace(camera_or_agent)
 
         # Pass 2: Reduction
         self._reduction()
@@ -455,9 +457,9 @@ class EyeRendererRay(EyeRendererBase):
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
-    def get_ommatidia_data(self, camera, to_cpu=False):
+    def get_ommatidia_data(self, camera_or_agent, to_cpu=False):
 
-        self._compute_colors(camera)
+        self._compute_colors(camera_or_agent)
 
         if self._time_dithering:
             self._time_counter += 1
@@ -467,7 +469,7 @@ class EyeRendererRay(EyeRendererBase):
 
         return self.cpu_read_buffer
 
-    def draw(self, view_mode: str, camera, tiled_mode: bool = False):
+    def draw(self, view_mode: str, camera_or_agent, tiled_mode: bool = False):
         """ Renders one of the rasterizer's supported views to the screen """
 
         if view_mode == 'compound_eye':
