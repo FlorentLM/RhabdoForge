@@ -67,13 +67,8 @@ def main():
 
             context.handle_input()
 
-            # TODO: Temporary hacky way to select the renderer for the get_ommatidia_data call
-            renderer_to_use = renderer
-            if debug_renderer and context.view_mode != 'compound_eye':
-                renderer_to_use = debug_renderer
-
-            # Get sensory data from the renderer
-            ommatidia_values = renderer_to_use.get_ommatidia_data(agent.camera, to_cpu=True)
+            # Get sensory data from the renderer via the context
+            ommatidia_values = context.active_renderer.get_ommatidia_data(agent.camera, to_cpu=True)
 
             context.draw()
 
@@ -92,7 +87,7 @@ def main():
             agent.move(agent.camera.forward * 0.05)
             agent.rotate(yaw_delta=-0.5, pitch_delta=0)
 
-            # Get sensory data from the renderer
+            # Get sensory data from the renderer directly
             ommatidia_values = renderer.get_ommatidia_data(agent.camera, to_cpu=True)
 
             results.append(ommatidia_values)

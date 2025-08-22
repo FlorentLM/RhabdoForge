@@ -13,8 +13,7 @@ from OpenGL.GL import *
 from pyglm import glm
 
 from graphics.utils import load_shaders
-
-# TODO: HUD class needs to be improved
+from graphics.renderers.raytracer import EyeRendererRay
 
 
 class FontRenderer:
@@ -124,7 +123,7 @@ class FontRenderer:
                 width += self.char_data[char]['advance'] * scale
         return width
 
-    def _generate_text_vertices(self, text, x, y, scale=1.0):
+    def generate_text_vertices(self, text, x, y, scale=1.0):
         """ Generates vertex data for a string and returns it as a list """
         vertices = []
         cursor_x = x
@@ -166,11 +165,11 @@ class HUD:
 
     # TODO: Comment this class a bit more
 
-    def __init__(self, engine):
-        self.eng = engine
+    def __init__(self, context):
+        self.ctx = context
 
-        self.width = engine.width
-        self.height = engine.height
+        self.width = self.ctx.window_size[0]
+        self.height = self.ctx.window_size[1]
 
         self.show = True
 
@@ -185,13 +184,11 @@ class HUD:
         self._info_shadow_verts, self._info_fg_verts = None, None
         self._controls_shadow_verts, self._controls_fg_verts = None, None
         self._stats_shadow_verts, self._stats_fg_verts = None, None
-        self._update_controls_text()
 
     def _update_controls_text(self):
-        from graphics.renderers.raytracer import EyeRendererRay  # local import to avoid circular dependency
+        # The main renderer (not the debug one) determines the "sample" label
+        sample_label = "Rays" if self.ctx.renderer and isinstance(self.ctx.renderer, EyeRendererRay) else "Samples"
 
-        sample_label = "Rays" if self.eng.compound_eye and isinstance(self.eng.compound_eye,
-                                                                      EyeRendererRay) else "Samples"
         self._controls_text_lines = [
             'ESC: Quit', 'H: Show/hide HUD', f'+/-: {sample_label}', 'T: Time dithering',
             'V: Voronoi view', 'P: Panoramic view', 'C: Compound eye view',
@@ -199,42 +196,53 @@ class HUD:
         ]
         shadow_verts, fg_verts = [], []
         margin, line_height = 10, self.font_renderer.font_size
+
         for i, text in enumerate(self._controls_text_lines):
             y_pos = margin + (i * line_height)
-            shadow_verts.extend(self.font_renderer._generate_text_vertices(text, margin + 1, y_pos - 1))
-            fg_verts.extend(self.font_renderer._generate_text_vertices(text, margin, y_pos))
+            shadow_verts.extend(self.font_renderer.generate_text_vertices(text, margin + 1, y_pos - 1))
+            fg_verts.extend(self.font_renderer.generate_text_vertices(text, margin, y_pos))
+
         self._controls_shadow_verts = np.array(shadow_verts, dtype=np.float32) if shadow_verts else None
         self._controls_fg_verts = np.array(fg_verts, dtype=np.float32) if fg_verts else None
 
     def _update_text_vertices(self):
-        from graphics.renderers.raytracer import EyeRendererRay # local import to avoid circular dependency
-
         current_time = pygame.time.get_ticks()
-        self.fps_rolling.append(self.eng.clock.get_fps())
+
+        self.fps_rolling.append(self.ctx.clock.get_fps())
 
         if current_time - self._last_update_time > self.update_interval_ms:
             self._last_update_time = current_time
+
             avg_fps = np.mean(self.fps_rolling) if self.fps_rolling else 0
 
-            is_raytracer = isinstance(self.eng.compound_eye, EyeRendererRay)
+            active_renderer = self.ctx.active_renderer
+
+            is_raytracer = isinstance(active_renderer, EyeRendererRay)
+
             mode_name = "Ray-Tracer" if is_raytracer else "Rasterizer"
             sample_label = "Rays" if is_raytracer else "Samples"
-            pos = self.eng.camera.position
-            num_om = getattr(self.eng.compound_eye, 'num_ommatidia', 0)
-            num_samples = getattr(self.eng.compound_eye, 'samples_per_ommatidium', 1)
+
+            pos = self.ctx.agent.position
+
+            num_om = getattr(active_renderer, 'num_ommatidia', 0)
+            num_samples = getattr(active_renderer, 'samples_per_ommatidium', 1)
+
             total_samples = num_om * num_samples
             self._info_text = (f'FPS: {avg_fps:>4.2f} | Mode: {mode_name} | Ommatidia: {num_om} | '
                              f'{sample_label}: {num_samples} | XYZ: [ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ]')
 
             margin, line_height = 10, self.font_renderer.font_size * 1.1
-            info_sv = self.font_renderer._generate_text_vertices(self._info_text, margin + 1,
-                                                                 self.height - line_height - 1)
-            info_fv = self.font_renderer._generate_text_vertices(self._info_text, margin, self.height - line_height)
+            info_sv = self.font_renderer.generate_text_vertices(self._info_text, margin + 1,
+                                                                self.height - line_height - 1)
+            info_fv = self.font_renderer.generate_text_vertices(self._info_text, margin, self.height - line_height)
             self._info_shadow_verts = np.array(info_sv, dtype=np.float32) if info_sv else None
             self._info_fg_verts = np.array(info_fv, dtype=np.float32) if info_fv else None
 
-            tri_count = self.eng.renderer_data.num_total_triangles if hasattr(self.eng.renderer_data, 'num_total_triangles') else 0
-            point_count = self.eng.renderer_data.num_total_points if hasattr(self.eng.renderer_data, 'num_total_points') else 0
+            # Get scene stats from the renderer's scene data representation
+            renderer_data = getattr(active_renderer, 'rt_scene', None)
+            tri_count = getattr(renderer_data, 'num_total_triangles', 0)
+            point_count = getattr(renderer_data, 'num_total_points', 0)
+
 
             if point_count > 0:
                 self._stats_text_lines = [f'Total {sample_label}: {total_samples:,}',
@@ -250,8 +258,8 @@ class HUD:
                 text_width = self.font_renderer.get_text_width(text)
                 x_pos = self.width - text_width - margin
                 y_pos = margin + (i * line_height)
-                stats_sv.extend(self.font_renderer._generate_text_vertices(text, x_pos + 1, y_pos - 1))
-                stats_fv.extend(self.font_renderer._generate_text_vertices(text, x_pos, y_pos))
+                stats_sv.extend(self.font_renderer.generate_text_vertices(text, x_pos + 1, y_pos - 1))
+                stats_fv.extend(self.font_renderer.generate_text_vertices(text, x_pos, y_pos))
 
             self._stats_shadow_verts = np.array(stats_sv, dtype=np.float32) if stats_sv else None
             self._stats_fg_verts = np.array(stats_fv, dtype=np.float32) if stats_fv else None

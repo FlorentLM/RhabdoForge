@@ -10,6 +10,7 @@ from OpenGL.GL import *
 
 from graphics.agent import Agent
 from graphics.utils import WORLD_UP, WORLD_DOWN
+from graphics.interactive.hud import HUD
 
 
 class Context:
@@ -23,7 +24,6 @@ class Context:
         self.headless = headless
 
         # Initialize Pygame and create the OpenGL context
-
         pygame.init()
         flags = DOUBLEBUF | OPENGL
         if self.headless:
@@ -31,7 +31,7 @@ class Context:
         pygame.display.set_mode(self.window_size, flags)
 
         # Interactive-mode specific setup
-
+        self.hud = None
         if not self.headless:
             self._interactive_initialised = False
             self.agent = None
@@ -40,6 +40,8 @@ class Context:
             self.view_modes = None
             self.current_view_idx = 0
             self.voronoi_view = False
+            self.clock = pygame.time.Clock()
+            self.hud = HUD(self)
 
         self._running = True
 
@@ -62,6 +64,10 @@ class Context:
                     self.current_view_idx = (self.current_view_idx + 1) % len(self.view_modes)
                 if event.key == K_v:
                     self.voronoi_view = not self.voronoi_view
+                if event.key == K_h:
+                    if self.hud:
+                        self.hud.show = not self.hud.show
+
 
         # Process continuous input
         pressed_keys = pygame.key.get_pressed()
@@ -93,6 +99,11 @@ class Context:
             self.current_view_idx = 0
             self.voronoi_view = False
 
+            # The HUD needs to know about the renderers to display correct info,
+            # so we update its text here after the renderers have been set.
+            if self.hud:
+                self.hud._update_controls_text()
+
             self._interactive_initialised = True
 
         return self._running
@@ -107,18 +118,28 @@ class Context:
         glViewport(0, 0, w, h)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        renderer_to_use = self.renderer
-        if self.debug_renderer and self.view_mode != 'compound_eye':
-            renderer_to_use = self.debug_renderer
+        self.active_renderer.draw(self.view_mode, self.agent.camera, self.voronoi_view)
 
-        renderer_to_use.draw(self.view_mode, self.agent.camera, self.voronoi_view)
+        if self.hud:
+            self.hud.draw()
 
         pygame.display.flip()
+        self.clock.tick()
+
 
     def free(self):
         """ Destroys the window and quits Pygame """
+        if self.hud:
+            self.hud.free()
         pygame.quit()
 
     @property
     def view_mode(self):
         return self.view_modes[self.current_view_idx]
+
+    @property
+    def active_renderer(self):
+        """ Returns the renderer that should be used for the current view mode """
+        if self.debug_renderer and self.view_mode != 'compound_eye':
+            return self.debug_renderer
+        return self.renderer
