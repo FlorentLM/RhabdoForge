@@ -11,7 +11,7 @@ from OpenGL.GL import *
 from pyglm import glm
 
 from geometry.primitives import CUBE_VERTICES
-from graphics.utils import VEC_DTYPE, load_shaders
+from graphics.utils import VEC_DTYPE, load_shaders, load_cubemap
 
 
 class MeshAsset:
@@ -23,6 +23,12 @@ class MeshAsset:
         self.vertex_data = vertex_data
         self.texture_path = Path(texture_path)
 
+    @property
+    def num_triangles(self):
+        # Each triangle has 3 vertices, and each vertex has 5 components (pos, uv)
+        # So, total number of values divided by (3*5) = number of triangles
+        # A simpler way is to count vertices and divide by 3
+        return self.vertex_data.shape[0] // 3
 
 class PointCloudAsset:
     """ A pure data container for a point cloud """
@@ -129,6 +135,26 @@ class Scene:
         instance = Instance(asset, transform)
         self.instances.append(instance)
         return instance
+
+    def add_skybox(self, texture_path: str):
+        """ Creates and loads a skybox from a directory of textures """
+        self.skybox = Skybox()
+        self.skybox_texture_id = load_cubemap(texture_path)
+        print(f"Loaded skybox from {texture_path}")
+
+    @property
+    def total_triangles(self) -> int:
+        """ Calculates the total number of triangles in the scene from all mesh instances """
+        count = 0
+        for instance in self.instances:
+            if isinstance(instance.asset, MeshAsset):
+                count += instance.asset.num_triangles
+        return count
+
+    @property
+    def total_points(self) -> int:
+        """ Returns the total number of points in the scene's point cloud """
+        return self.point_cloud.num_points if self.point_cloud else 0
 
     def free(self):
         """ Clears all logical scene data """

@@ -164,7 +164,8 @@ class EyeRendererRaster(EyeRendererBase):
     def __init__(self, eye_model: CompoundEye, scene: Scene, window_size: Tuple[int, int] = (1280, 720), time_dithering: bool = False, nb_samples: int = 256, cubemap_res: int = 512):
         super().__init__(eye_model, window_size=window_size, time_dithering=time_dithering, nb_samples=nb_samples)
 
-        self.scene_data = RasterSceneBaker(scene, 'shaders/base.vert', 'shaders/base.frag')
+        self.scene = scene  # just for convenience
+        self._scene_baked = RasterSceneBaker(scene, 'shaders/base.vert', 'shaders/base.frag')
 
         self._rasterizer_shader = ShaderProgram(comp_path='shaders/ommatidia_rasterizer.comp')
 
@@ -177,7 +178,7 @@ class EyeRendererRaster(EyeRendererBase):
         self._pano_view = PanoramicEye()
 
         # Get renderables once
-        self.renderables = self.scene_data.get_renderables()
+        self.renderables = self._scene_baked.get_renderables()
 
     @property
     def samples_per_ommatidium(self):
@@ -258,8 +259,8 @@ class EyeRendererRaster(EyeRendererBase):
             )
 
             # Draw skybox first into the cubemap face
-            if self.scene_data.scene.skybox and self.scene_data.scene.skybox_texture_id is not None:
-                self.scene_data.scene.skybox.draw(self._proj_mat, view, self.scene_data.scene.skybox_texture_id)
+            if self._scene_baked.scene.skybox and self._scene_baked.scene.skybox_texture_id is not None:
+                self._scene_baked.scene.skybox.draw(self._proj_mat, view, self._scene_baked.scene.skybox_texture_id)
 
             for instance in self.renderables:
                 self._render_instance(instance, view, self._proj_mat)
@@ -342,15 +343,15 @@ class EyeRendererRaster(EyeRendererBase):
             self._pano_view.draw(self._cubemap_id)
 
         elif view_mode == 'standard_3d':
-            if self.scene_data.scene.skybox and self.scene_data.scene.skybox_texture_id is not None:
-                self.scene_data.scene.skybox.draw(camera.projection, camera.view,
-                                                  self.scene_data.scene.skybox_texture_id)
-            renderables = self.scene_data.get_renderables()
+            if self._scene_baked.scene.skybox and self._scene_baked.scene.skybox_texture_id is not None:
+                self._scene_baked.scene.skybox.draw(camera.projection, camera.view,
+                                                    self._scene_baked.scene.skybox_texture_id)
+            renderables = self._scene_baked.get_renderables()
             for instance in renderables:
                 self._render_instance(instance, camera.view, camera.projection)
 
     def free(self):
-        self.scene_data.free()
+        self._scene_baked.free()
 
         self._rasterizer_shader.free()
         self._cubemap_fbo.free()

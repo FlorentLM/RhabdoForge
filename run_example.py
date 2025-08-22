@@ -1,11 +1,10 @@
 import time
 from pyglm import glm
 
-from graphics.scene import Scene, Skybox
+from graphics.scene import Scene
 from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CUBE_VERTICES
-from graphics.utils import load_cubemap
 
 from graphics.renderers.rasterizer import EyeRendererRaster
 from graphics.renderers.raytracer import EyeRendererRay
@@ -16,7 +15,8 @@ def main():
 
     # Configuration
     WINDOW_SIZE = (1280, 720)
-    USE_RAYTRACER = False
+    USE_RAYTRACER = True
+    USE_POINT_CLOUD = True
     NB_OMMATIDIA = 19362
     NB_SAMPLES = 16
     TIME_DITHERING = False
@@ -27,19 +27,21 @@ def main():
     # Setup Scene
     scene = Scene()
 
+    if USE_POINT_CLOUD:
+        scene.add_point_cloud('canberra', 'assets/canberra_filtered.ply')
+
     crate_asset = scene.load_mesh("crate", CUBE_VERTICES, 'textures/wood.jpg')
     scene.add_instance(asset=crate_asset)
     scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(-3.0, 0.0, 0.0)))
     scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(3.0, 0.0, 0.0)))
 
-    scene.skybox = Skybox()
-    scene.skybox_texture_id = load_cubemap('textures/bright_day')
+    scene.add_skybox('textures/bright_day')
 
     # Setup eye model
     eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
 
     # Setup Agent
-    agent = Agent()
+    agent = Agent(position=(0.0, 0.0, 4.0))
 
     # Setup Renderers
 
@@ -63,7 +65,7 @@ def main():
     if not HEADLESS:
         # Setup and run interactive viewer
 
-        while context.interactive(agent=agent, renderer=renderer, debug_renderer=debug_renderer):
+        while context.interactive(agent=agent, scene=scene, renderer=renderer, debug_renderer=debug_renderer):
 
             context.handle_input()
 

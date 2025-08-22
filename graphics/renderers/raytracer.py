@@ -255,7 +255,8 @@ class EyeRendererRay(EyeRendererBase):
         super().__init__(eye_model, window_size=window_size, time_dithering=time_dithering, nb_samples=nb_samples)
 
         # Store a reference to the scene manager
-        self.rt_scene = RaytracingSceneBaker(scene, point_radius=point_radius)
+        self.scene = scene   # just for convenience
+        self._scene_baked = RaytracingSceneBaker(scene, point_radius=point_radius)
         self.point_radius = point_radius
 
         print("Compiling ray-tracing and reduction shaders...")
@@ -305,11 +306,11 @@ class EyeRendererRay(EyeRendererBase):
         # Bind Textures
         # Bind skybox cubemap to texture unit 0
         glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_CUBE_MAP, self.rt_scene.skybox_texture)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, self._scene_baked.skybox_texture)
 
         # Bind the scene's texture array (managed by rt_scene_manager) to texture unit 1
         glActiveTexture(GL_TEXTURE1)
-        glBindTexture(GL_TEXTURE_2D_ARRAY, self.rt_scene.scene_texture_array)
+        glBindTexture(GL_TEXTURE_2D_ARRAY, self._scene_baked.scene_texture_array)
 
         # Tell the shader which texture unit to use for each sampler
         glUniform1i(self.raytrace_shader.get_loc('u_skybox'), 0)
@@ -323,22 +324,22 @@ class EyeRendererRay(EyeRendererBase):
 
         # Bind all scene geometry and BVH data
         # Binding 1: Triangle primitive data
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.rt_scene.triangles_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self._scene_baked.triangles_ssbo)
         # Binding 2: Material data
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self.rt_scene.materials_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self._scene_baked.materials_ssbo)
         # Binding 3: Triangle BVH nodes
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self.rt_scene.triangle_bvh_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self._scene_baked.triangle_bvh_ssbo)
         # Binding 5: Point cloud BVH nodes
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, self.rt_scene.point_bvh_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, self._scene_baked.point_bvh_ssbo)
         # Binding 6: Point primitive data
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, self.rt_scene.point_primitives_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, self._scene_baked.point_primitives_ssbo)
 
         # Set Uniforms
         num_tri_nodes = len(
-            self.rt_scene.triangle_bvh_nodes) if self.rt_scene.triangle_bvh_nodes is not None else 0
+            self._scene_baked.triangle_bvh_nodes) if self._scene_baked.triangle_bvh_nodes is not None else 0
 
         num_point_nodes = len(
-            self.rt_scene.point_bvh_nodes) if self.rt_scene.point_bvh_nodes is not None else 0
+            self._scene_baked.point_bvh_nodes) if self._scene_baked.point_bvh_nodes is not None else 0
 
         glUniform1ui(self.raytrace_shader.get_loc('u_num_triangle_bvh_nodes'), num_tri_nodes)
         glUniform1ui(self.raytrace_shader.get_loc('u_num_point_bvh_nodes'), num_point_nodes)
@@ -436,6 +437,6 @@ class EyeRendererRay(EyeRendererBase):
         if self.raytrace_shader: self.raytrace_shader.free()
         if self.reduction_shader: self.reduction_shader.free()
 
-        self.rt_scene.free()
+        self._scene_baked.free()
 
         super().free()

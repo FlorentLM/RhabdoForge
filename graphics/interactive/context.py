@@ -1,4 +1,7 @@
 import os
+from graphics.renderers.base import EyeRendererBase
+from graphics.scene import Scene
+
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 
 import pygame
@@ -30,18 +33,21 @@ class Context:
             flags |= pygame.HIDDEN
         pygame.display.set_mode(self.window_size, flags)
 
+        glEnable(GL_DEPTH_TEST)
+
         # Interactive-mode specific setup
-        self.hud = None
+
         if not self.headless:
             self._interactive_initialised = False
             self.agent = None
             self.renderer = None
             self.debug_renderer = None
+            self.scene = None
             self.view_modes = None
             self.current_view_idx = 0
             self.voronoi_view = False
             self.clock = pygame.time.Clock()
-            self.hud = HUD(self)
+            self.hud = None
 
         self._running = True
 
@@ -67,7 +73,12 @@ class Context:
                 if event.key == K_h:
                     if self.hud:
                         self.hud.show = not self.hud.show
-
+                if event.key == K_t:
+                    self.renderer.time_dithering = not self.renderer.time_dithering
+                if event.key in (K_KP_PLUS, K_EQUALS):
+                    self.renderer.samples_per_ommatidium *= 2
+                if event.key in (K_KP_MINUS, K_MINUS):
+                    self.renderer.samples_per_ommatidium //= 2
 
         # Process continuous input
         pressed_keys = pygame.key.get_pressed()
@@ -85,24 +96,24 @@ class Context:
         if mouse_x != 0 or mouse_y != 0:
             self.agent.rotate(mouse_x, mouse_y)
 
-    def interactive(self, agent: Agent, renderer, debug_renderer=None):
+    def interactive(self, agent: Agent, scene: Scene, renderer: EyeRendererBase, debug_renderer=None):
 
         if not self._interactive_initialised:
             self.agent = agent
+            self.scene = scene
             self.renderer = renderer
             self.debug_renderer = debug_renderer
 
             pygame.mouse.set_visible(False)
             pygame.event.set_grab(True)
 
+            self.hud = HUD(self)
+
             self.view_modes = ['compound_eye', 'panoramic', 'standard_3d']
             self.current_view_idx = 0
             self.voronoi_view = False
 
-            # The HUD needs to know about the renderers to display correct info,
-            # so we update its text here after the renderers have been set.
-            if self.hud:
-                self.hud._update_controls_text()
+            self.hud._update_controls_text()
 
             self._interactive_initialised = True
 

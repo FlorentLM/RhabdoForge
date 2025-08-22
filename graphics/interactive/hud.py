@@ -239,9 +239,9 @@ class HUD:
             self._info_fg_verts = np.array(info_fv, dtype=np.float32) if info_fv else None
 
             # Get scene stats from the renderer's scene data representation
-            renderer_data = getattr(active_renderer, 'rt_scene', None)
-            tri_count = getattr(renderer_data, 'num_total_triangles', 0)
-            point_count = getattr(renderer_data, 'num_total_points', 0)
+
+            tri_count = self.ctx.scene.total_triangles
+            point_count = self.ctx.scene.total_points
 
 
             if point_count > 0:
