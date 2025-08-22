@@ -8,7 +8,7 @@ from pyglm import glm
 from pytinybvh import BVH
 
 from graphics.renderers.base import EyeRendererBase
-from graphics.scene import Scene, MeshAsset
+from graphics.scene import Scene, MeshAsset, PointsAsset, Instance
 from graphics.utils import load_texture, VEC_DTYPE, ShaderProgram
 
 
@@ -18,9 +18,8 @@ class RaytracingSceneBaker:
     This class builds acceleration structures and manages all necessary SSBOs
     """
 
-    def __init__(self, scene: Scene, point_radius: float = 0.1):
+    def __init__(self, scene: Scene):
         self.scene = scene
-        self.point_radius = point_radius
 
         # OpenGL handles (SSBOs, textures)
         self.skybox_texture = 0
@@ -45,21 +44,17 @@ class RaytracingSceneBaker:
         self._build()
 
     def _build(self):
+        """ The main coordinator method for building the raytracing scene """
 
-        print("Building Ray Tracing scene representation...")
+        print("Baking ray-tracing scene representation...")
 
         self.skybox_texture = self.scene.skybox_texture_id
 
-        # Pack materials and textures for mesh instances
-        if self.scene.instances:
-            self._pack_materials_and_textures()
-            self._build_triangle_bvh()
+        self._pack_materials_and_textures()
+        self._build_triangle_bvh()
+        self._build_point_cloud_bvh()
 
-        # Process and build point cloud geometry
-        if self.scene.point_cloud:
-            self._build_point_cloud_bvh()
-
-        print("Ray Tracing scene build complete.")
+        print("Ray-tracing scene baking complete.")
 
     def _pack_materials_and_textures(self):
         """ Creates a texture array and a material buffer from all unique meshes """
@@ -70,11 +65,10 @@ class RaytracingSceneBaker:
             return
 
         self.material_map = {mesh.id: i for i, mesh in enumerate(unique_meshes)}
-
         texture_paths = sorted(list({mesh.texture_path for mesh in unique_meshes}))
         texture_map = {path: i for i, path in enumerate(texture_paths)}
-
         texture_ids = [load_texture(path) for path in texture_paths]
+
         if texture_ids:
             self.scene_texture_array = self._create_texture_array(texture_ids)
             glDeleteTextures(len(texture_ids), texture_ids)
@@ -96,14 +90,18 @@ class RaytracingSceneBaker:
     def _build_triangle_bvh(self):
         """ Flattens all scene instances, builds a single BVH, and packs data for the GPU """
 
+        # Filter for mesh instances only
+        mesh_instances = [inst for inst in self.scene.instances if isinstance(inst.asset, MeshAsset)]
+
+        if not mesh_instances:
+            self.num_total_triangles = 0
+            return  # nothing to build
+
         all_verts_pos = []
         all_verts_uv = []
         all_material_indices = []
 
-        for instance in self.scene.instances:
-            if not isinstance(instance.asset, MeshAsset):
-                continue
-
+        for instance in mesh_instances:
             mesh = instance.asset
             interleaved = mesh.vertex_data.reshape(-1, 5)
             positions = interleaved[:, :3]
@@ -122,10 +120,12 @@ class RaytracingSceneBaker:
         if not all_verts_pos:
             return
 
+        # Concatenate all instance data into single large arrays
         flat_verts_pos = np.concatenate(all_verts_pos, axis=0)
         flat_verts_uv = np.concatenate(all_verts_uv, axis=0)
         flat_material_indices = np.concatenate(all_material_indices)
 
+        #  Build the BVH from the flattened data
         triangles_for_bvh = flat_verts_pos.reshape(-1, 9)
         self.num_total_triangles = len(triangles_for_bvh)
 
@@ -138,6 +138,7 @@ class RaytracingSceneBaker:
 
         print(f"Triangle BVH built with {bvh.node_count} nodes.")
 
+        # Reorder and pack data for GPU
         reordered_verts_pos = self._reorder_vertices(flat_verts_pos, prim_indices)
         reordered_verts_uv = self._reorder_vertices(flat_verts_uv, prim_indices)
         reordered_mat_indices = flat_material_indices[prim_indices]
@@ -164,23 +165,58 @@ class RaytracingSceneBaker:
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     def _build_point_cloud_bvh(self):
-        """ Builds a BVH for the scene's point cloud and packs data """
+        """ Builds a BVH for all point cloud instances and packs data """
 
-        pc = self.scene.point_cloud
-        self.num_total_points = pc.num_points
+        point_instances = [inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)]
+        if not point_instances:
+            self.num_total_points = 0
+            return  # nothing to build
 
-        print(f"Building BVH for {self.num_total_points:,} points with radius {self.point_radius}...")
+        all_points = []
+        all_normals = []
+        all_colors = []
 
-        bvh = BVH.from_points(pc.points, radius=self.point_radius)
+        for inst in point_instances:
+            points_asset = inst.asset
+
+            # NOTE: For TLAS/BLAS, we would not transform vertices on the CPU
+
+            # For this flattened BVH approach, we pre-transform
+            points_h = np.hstack([points_asset.points, np.ones((points_asset.num_points, 1), dtype=VEC_DTYPE)])
+            np_transform = np.asarray(inst.transform)
+            transformed_pos_h = (np_transform @ points_h.T).T
+
+            all_points.append(transformed_pos_h[:, :3])
+            all_normals.append(points_asset.normals)  # Normals would also need transforming
+            all_colors.append(points_asset.colors)
+
+            # Here we would also pack the inst.properties['point_radius']
+            # For simplicity in this example, we assume a global radius for now
+
+        # Concatenate all instance data into single large arrays
+        flat_points = np.concatenate(all_points, axis=0)
+        flat_normals = np.concatenate(all_normals, axis=0)
+        flat_colors = np.concatenate(all_colors, axis=0)
+
+        self.num_total_points = len(flat_points)
+
+        # Use a default radius if not specified, or handle per-point radii
+        # For now we take the radius of the first instance as a global one
+        default_radius = point_instances[0].properties.get('point_radius', 0.1)
+
+        print(f"Building BVH for {self.num_total_points:,} points with radius {default_radius}...")
+
+        bvh = BVH.from_points(flat_points, radius=default_radius)
+
         bvh_buffers = bvh.get_buffers()
         self.point_bvh_nodes = bvh_buffers['nodes']
         prim_indices = bvh_buffers['prim_indices']
 
         print(f"Point BVH built with {bvh.node_count} nodes.")
 
-        reordered_points = pc.points[prim_indices]
-        reordered_normals = pc.normals[prim_indices]
-        reordered_colors = pc.colors[prim_indices]
+        reordered_points = points_asset.points[prim_indices]
+        reordered_normals = points_asset.normals[prim_indices]
+        reordered_colors = points_asset.colors[prim_indices]
 
         packed_points = np.zeros((self.num_total_points, 12), dtype=VEC_DTYPE)
         packed_points[:, 0:3] = reordered_points
@@ -251,13 +287,12 @@ class RaytracingSceneBaker:
 
 
 class EyeRendererRay(EyeRendererBase):
-    def __init__(self, eye_model, scene: Scene, time_dithering: bool = True, nb_samples: int = 256, window_size: Tuple[int, int] = (1280, 720), point_radius: float = 0.1):
+    def __init__(self, eye_model, scene: Scene, time_dithering: bool = True, nb_samples: int = 256, window_size: Tuple[int, int] = (1280, 720)):
         super().__init__(eye_model, window_size=window_size, time_dithering=time_dithering, nb_samples=nb_samples)
 
         # Store a reference to the scene manager
         self.scene = scene   # just for convenience
-        self._scene_baked = RaytracingSceneBaker(scene, point_radius=point_radius)
-        self.point_radius = point_radius
+        self._scene_baked = RaytracingSceneBaker(scene)
 
         print("Compiling ray-tracing and reduction shaders...")
         self.raytrace_shader = ShaderProgram(comp_path='shaders/ommatidia_raytracing.comp')
@@ -345,8 +380,18 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1ui(self.raytrace_shader.get_loc('u_num_point_bvh_nodes'), num_point_nodes)
 
         # Set renderer-specific uniforms
+
+        # We would update the uniform for point radius here if it's dynamic
+        # or if different instances have different radii, we'd need a more
+        # complex data layout (packing radius into the primitive SSBO)
+
+        # For now, let's assume we can set a global one from the first instance.
+        point_inst = next((inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)), None)
+        radius = point_inst.properties.get('point_radius', 0.1) if point_inst else 0.1
+
+        glUniform1f(self.raytrace_shader.get_loc('u_point_radius'), radius)
+
         glUniform1i(self.raytrace_shader.get_loc('u_samples_per_ommatidium'), self.samples_per_ommatidium)
-        glUniform1f(self.raytrace_shader.get_loc('u_point_radius'), self.point_radius)
         glUniform1f(self.raytrace_shader.get_loc('u_time'), float(self._time_counter))
 
         # Set camera uniforms for transforming rays into world space

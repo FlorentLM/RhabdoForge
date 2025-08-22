@@ -1,5 +1,7 @@
 from typing import Tuple
 import OpenGL
+import numpy as np
+
 OpenGL.ERROR_CHECKING = False
 
 from OpenGL.GL import *
@@ -9,7 +11,7 @@ from geometry.compound_eyes import CompoundEye
 from graphics.camera import Camera
 from graphics.renderers.panoramic import PanoramicEye
 from graphics.renderers.base import EyeRendererBase
-from graphics.scene import Scene, MeshAsset
+from graphics.scene import Scene, MeshAsset, PointsAsset, Instance
 from graphics.utils import load_shaders, load_texture, ShaderProgram
 
 
@@ -74,7 +76,10 @@ class CubemapFBO:
 
 
 class RasterMesh:
-    """ A renderable (rasterization) representation of a MeshAsset. Holds OpenGL resources. """
+    """
+    A renderable (rasterization) representation of a mesh asset
+    Holds OpenGL resources
+    """
 
     def __init__(self, asset: MeshAsset, vert_shader_path, frag_shader_path):
         self.source_asset_id = asset.id
@@ -108,55 +113,104 @@ class RasterMesh:
         glDeleteTextures(1, [self.texture])
 
 
-class RasterInstance:
-    """ An instance wrapper for the rasterizer, holding a RasterMesh """
+class RasterPoints:
+    """
+    A renderable (rasterization) representation of a point cloud asset
+    Holds OpenGL resources
+    """
 
-    def __init__(self, raster_mesh: RasterMesh, transform: glm.mat4):
-        self.asset = raster_mesh
+    def __init__(self, asset: PointsAsset, vert_shader_path: str, frag_shader_path: str):
+        self.source_asset_id = asset.id
+        self.draw_count = asset.num_points
+
+        self.shaders = load_shaders(vert_shader_path, frag_shader_path)
+        self.vao = glGenVertexArrays(1)
+        self.vbo = glGenBuffers(1)
+
+        # Interleave positions and colors (x, y, z, r, g, b)
+        packed_data = np.hstack([asset.points, asset.colors]).astype(np.float32)
+
+        glBindVertexArray(self.vao)
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
+        glBufferData(GL_ARRAY_BUFFER, packed_data.nbytes, packed_data, GL_STATIC_DRAW)
+
+        stride = packed_data.itemsize * 6  # 3 for pos, 3 for color
+
+        # Vertex attribute for position
+        pos_loc = glGetAttribLocation(self.shaders, "a_pos")
+        glEnableVertexAttribArray(pos_loc)
+        glVertexAttribPointer(pos_loc, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
+
+        # Vertex attribute for color
+        color_loc = glGetAttribLocation(self.shaders, "a_color")
+        glEnableVertexAttribArray(color_loc)
+        glVertexAttribPointer(color_loc, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(packed_data.itemsize * 3))
+
+        glBindVertexArray(0)
+
+    def free(self):
+        glDeleteVertexArrays(1, [self.vao])
+        glDeleteBuffers(1, [self.vbo])
+        glDeleteProgram(self.shaders)
+
+
+class RasterInstance:
+    """ An instance wrapper for the rasterizer, holding a baked asset and transform. """
+    def __init__(self, asset: RasterMesh | RasterPoints, transform: glm.mat4, properties: dict):
+        self.asset = asset
         self.transform = transform
+        self.properties = properties
 
 
 class RasterSceneBaker:
     """
-    Manages the conversion of a logical Scene into GPU-ready data for the rasterizer.
-    This involves creating and caching OpenGL vertex arrays (VAOs) for each unique mesh asset.
+    Creates and caches OpenGL vertex arrays (VAOs) for each unique asset
     """
-    def __init__(self, scene: Scene, vert_shader_path: str, frag_shader_path: str):
+
+    def __init__(self, scene: Scene):
         self.scene = scene
-        self.vert_shader_path = vert_shader_path
-        self.frag_shader_path = frag_shader_path
-        self._raster_mesh_cache = {}
+        self._raster_asset_cache = {}
 
     def get_renderables(self):
         """
         Provides a list of all instances in a format ready for the rasterizer.
         Creates and caches OpenGL resources on the fly.
         """
-
-        # TODO: This should not recreate the list every time, only on scene change
-
         renderables = []
-        for logical_inst in self.scene.instances:
-            asset = logical_inst.asset
-            if not isinstance(asset, MeshAsset):
+
+        for instance in self.scene.instances:
+            asset = instance.asset
+
+            # Skip any unknown assets
+            if not isinstance(asset, (MeshAsset, PointsAsset)):
                 continue
 
-            if asset.id not in self._raster_mesh_cache:
-                print(f"Creating raster representation for asset '{asset.name}'...")
-                self._raster_mesh_cache[asset.id] = RasterMesh(asset, self.vert_shader_path, self.frag_shader_path)
+            # Create the raster wrapper if it doesn't exist yet
+            if asset.id not in self._raster_asset_cache:
 
-            raster_mesh = self._raster_mesh_cache[asset.id]
-            renderables.append(RasterInstance(raster_mesh, logical_inst.transform))
+                if isinstance(asset, MeshAsset):
+                    self._raster_asset_cache[asset.id] = RasterMesh(
+                        asset, 'shaders/mesh.vert', 'shaders/mesh.frag'
+                    )
+
+                elif isinstance(asset, PointsAsset):
+                    self._raster_asset_cache[asset.id] = RasterPoints(
+                        asset, 'shaders/point.vert', 'shaders/point.frag'
+                    )
+
+            # Create a renderable instance with the cached raster asset and the instance's transform
+            raster_asset = self._raster_asset_cache[asset.id]
+            renderables.append(RasterInstance(raster_asset, instance.transform, instance.properties))
+
         return renderables
 
     def free(self):
         """ Frees all cached OpenGL resources """
 
-        for raster_mesh in self._raster_mesh_cache.values():
-            raster_mesh.free()
-        self._raster_mesh_cache.clear()
+        for raster_asset in self._raster_asset_cache.values():
+            raster_asset.free()
 
-        print("RasterSceneData resources freed.")
+        self._raster_asset_cache.clear()
 
 
 class EyeRendererRaster(EyeRendererBase):
@@ -165,7 +219,7 @@ class EyeRendererRaster(EyeRendererBase):
         super().__init__(eye_model, window_size=window_size, time_dithering=time_dithering, nb_samples=nb_samples)
 
         self.scene = scene  # just for convenience
-        self._scene_baked = RasterSceneBaker(scene, 'shaders/base.vert', 'shaders/base.frag')
+        self._scene_baked = RasterSceneBaker(scene)
 
         self._rasterizer_shader = ShaderProgram(comp_path='shaders/ommatidia_rasterizer.comp')
 
@@ -192,21 +246,35 @@ class EyeRendererRaster(EyeRendererBase):
     def _render_instance(self, instance: RasterInstance, view_matrix, projection_matrix):
         """ Renders a single RasterInstance """
 
-        mesh = instance.asset
+        asset = instance.asset
 
-        glUseProgram(mesh.shaders)
-        glBindVertexArray(mesh.vao)
+        glUseProgram(asset.shaders)
+        glBindVertexArray(asset.vao)
 
         camera_matrix = projection_matrix * view_matrix
-        glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "camera"), 1, False, glm.value_ptr(camera_matrix))
-        glUniformMatrix4fv(glGetUniformLocation(mesh.shaders, "model"), 1, False, glm.value_ptr(instance.transform))
+        glUniformMatrix4fv(glGetUniformLocation(asset.shaders, "camera"), 1, False, glm.value_ptr(camera_matrix))
+        glUniformMatrix4fv(glGetUniformLocation(asset.shaders, "model"), 1, False, glm.value_ptr(instance.transform))
 
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, mesh.texture)
-        glDrawArrays(GL_TRIANGLES, 0, mesh.draw_count)
+        # TODO: unbinding may be skipped when rendering several instances of the same thing
 
-        # TODO: these may be skipped when rendering several instances of the same thing
-        glBindTexture(GL_TEXTURE_2D, 0)
+        if isinstance(asset, RasterMesh):
+
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, asset.texture)
+            glDrawArrays(GL_TRIANGLES, 0, asset.draw_count)
+
+            glBindTexture(GL_TEXTURE_2D, 0)
+
+        elif isinstance(asset, RasterPoints):
+            glEnable(GL_PROGRAM_POINT_SIZE)
+
+            # Set a fixed point size for now
+            glUniform1f(glGetUniformLocation(asset.shaders, "u_point_size"), 2.0)
+
+            glDrawArrays(GL_POINTS, 0, asset.draw_count)
+
+            glDisable(GL_PROGRAM_POINT_SIZE)
+
         glBindVertexArray(0)
         glUseProgram(0)
 

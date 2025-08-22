@@ -1,42 +1,60 @@
 from pathlib import Path
 from typing import Dict, List, Optional
+from abc import ABC, abstractmethod
 
 import numpy as np
 import open3d as o3d
-
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
-
 from pyglm import glm
 
 from geometry.primitives import CUBE_VERTICES
 from graphics.utils import VEC_DTYPE, load_shaders, load_cubemap
 
 
-class MeshAsset:
-    """ A pure data container for a mesh, contains geometry and material """
+class Asset(ABC):
+    """
+    Abstract base class for a renderable asset
+    Contains the raw data (vertices, points, etc)
+    """
 
-    def __init__(self, name: str, vertex_data: np.ndarray, texture_path: str):
+    def __init__(self, name: str):
         self.id = id(self)
         self.name = name
+
+
+# TODO: Assets loading interface need to be unified. Either load a file, or vertex / indices data
+
+
+class MeshAsset(Asset):
+    """
+    Pure data container for a mesh
+    Contains geometry and material properties
+    """
+
+    def __init__(self, name: str, vertex_data: np.ndarray, texture_path: str):
+        super().__init__(name)
+
         self.vertex_data = vertex_data
         self.texture_path = Path(texture_path)
 
     @property
     def num_triangles(self):
-        # Each triangle has 3 vertices, and each vertex has 5 components (pos, uv)
-        # So, total number of values divided by (3*5) = number of triangles
-        # A simpler way is to count vertices and divide by 3
+        # Each vertex has 5 components (pos, uv), 3 vertices per triangle
         return self.vertex_data.shape[0] // 3
 
-class PointCloudAsset:
-    """ A pure data container for a point cloud """
+
+class PointsAsset(Asset):
+    """
+    Pure data container for a point cloud
+    Contains geometry and material properties
+    """
 
     def __init__(self, name: str, file_path: str):
-        self.id = id(self)
-        self.name = name
+        super().__init__(name)
         path = Path(file_path)
+
         if not path.exists():
             raise FileNotFoundError(f"Could not find point cloud file: {path}")
 
@@ -49,6 +67,7 @@ class PointCloudAsset:
 
         if pcd.has_normals():
             self.normals = np.asarray(pcd.normals, dtype=VEC_DTYPE)
+
         if pcd.has_colors():
             self.colors = np.asarray(pcd.colors, dtype=VEC_DTYPE)
 
@@ -57,11 +76,15 @@ class PointCloudAsset:
 
 
 class Instance:
-    """ A logical instance of an asset in the scene, with its own transform. Renderer-agnostic. """
+    """
+    Logical instance of an Asset in the scene
+    Renderer-agnostic
+    """
 
-    def __init__(self, asset: MeshAsset | PointCloudAsset, transform: glm.mat4 = None):
+    def __init__(self, asset: Asset, transform: glm.mat4 = None, **kwargs):
         self.asset = asset
-        self.transform = transform if transform is not None else glm.mat4(1.0)
+        self.transform = transform or glm.mat4(1.0)
+        self.properties = kwargs  # for example point_radius
 
 
 class Skybox:
@@ -106,33 +129,39 @@ class Skybox:
         glDepthFunc(GL_LESS) # restore default depth function
 
 
-
 class Scene:
     """
-    The logical scene representation. Maintains a list of assets and instances, completely renderer-agnostic
+    The logical scene representation
+    Maintains a list of assets and instances
     """
 
     def __init__(self):
-        self.assets: Dict[str, MeshAsset | PointCloudAsset] = {}
+        self.assets: Dict[str, Asset] = {}
         self.instances: List[Instance] = []
-        self.point_cloud: Optional[PointCloudAsset] = None
         self.skybox: Optional[Skybox] = None
         self.skybox_texture_id: Optional[int] = None
 
-    def load_mesh(self, name: str, vertex_data, texture_path: str) -> MeshAsset:
-        if name not in self.assets:
-            self.assets[name] = MeshAsset(name, vertex_data, texture_path)
-        return self.assets[name]
+    def load_mesh_asset(self, name: str, vertex_data, texture_path: str) -> MeshAsset:
+        if name in self.assets:
+            print(f"Warning: Asset with name '{name}' already exists. Overwriting.")
 
-    def add_point_cloud(self, name: str, file_path: str) -> PointCloudAsset:
-        if name not in self.assets:
-            asset = PointCloudAsset(name, file_path)
-            self.assets[name] = asset
-            self.point_cloud = asset  # just one point cloud for now
-        return self.assets[name]
+        asset = MeshAsset(name, vertex_data, texture_path)
+        self.assets[name] = asset
+        return asset
 
-    def add_instance(self, asset: MeshAsset, transform: glm.mat4 = None) -> Instance:
-        instance = Instance(asset, transform)
+    def load_point_cloud_asset(self, name: str, file_path: str) -> PointsAsset:
+        if name in self.assets:
+            print(f"Warning: Asset with name '{name}' already exists. Overwriting.")
+
+        asset = PointsAsset(name, file_path)
+        self.assets[name] = asset
+        return asset
+
+    def add_instance(self, asset: Asset, transform: glm.mat4 = None, **kwargs) -> Instance:
+        if asset.name not in self.assets:
+            raise ValueError(f"Asset '{asset.name}' not loaded into the scene. Call a load_*_asset method first.")
+
+        instance = Instance(asset, transform, **kwargs)
         self.instances.append(instance)
         return instance
 
@@ -144,7 +173,6 @@ class Scene:
 
     @property
     def total_triangles(self) -> int:
-        """ Calculates the total number of triangles in the scene from all mesh instances """
         count = 0
         for instance in self.instances:
             if isinstance(instance.asset, MeshAsset):
@@ -153,13 +181,13 @@ class Scene:
 
     @property
     def total_points(self) -> int:
-        """ Returns the total number of points in the scene's point cloud """
-        return self.point_cloud.num_points if self.point_cloud else 0
+        count = 0
+        for instance in self.instances:
+            if isinstance(instance.asset, PointsAsset):
+                count += instance.asset.num_points
+        return count
 
     def free(self):
-        """ Clears all logical scene data """
-
         self.assets.clear()
         self.instances.clear()
-        self.point_cloud = None
-
+        # Note: GPU resources tied to skybox/assets are freed by the bakers/renderers

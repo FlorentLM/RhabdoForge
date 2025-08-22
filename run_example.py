@@ -28,13 +28,19 @@ def main():
     scene = Scene()
 
     if USE_POINT_CLOUD:
-        scene.add_point_cloud('canberra', 'assets/canberra_filtered.ply')
+        # Load the asset data once
+        point_cloud_asset = scene.load_point_cloud_asset('canberra', 'assets/canberra_filtered.ply')
+        # Add an instance of it with specific properties
+        scene.add_instance(point_cloud_asset, point_radius=0.15)
 
-    crate_asset = scene.load_mesh("crate", CUBE_VERTICES, 'textures/wood.jpg')
+    # Load the mesh asset data
+    crate_asset = scene.load_mesh_asset("crate", CUBE_VERTICES, 'textures/wood.jpg')
+    # Add multiple instances of the same asset
     scene.add_instance(asset=crate_asset)
     scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(-3.0, 0.0, 0.0)))
     scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(3.0, 0.0, 0.0)))
 
+    # Add one skybox
     scene.add_skybox('textures/bright_day')
 
     # Setup eye model
