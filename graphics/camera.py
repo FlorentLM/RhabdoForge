@@ -1,3 +1,5 @@
+from typing import Sequence
+
 import numpy as np
 from pyglm import glm
 from graphics.utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
@@ -10,14 +12,14 @@ FORWARD_HOMOGENEOUS = glm.vec4(WORLD_FORWARD, 0.0)
 class Camera:
 
     def __init__(self,
-                 position=(0.0, 0.0, 0.0),
-                 yaw=0.0,
-                 pitch=0.0,
-                 forward_roll=0.0,
-                 fov=50.0,
-                 near=0.1,
-                 far=100.0,
-                 ratio=4.0/3.0):
+                 position: Sequence[float | int] = (0.0, 0.0, 0.0),
+                 yaw: float = 0.0,
+                 pitch: float = 0.0,
+                 forward_roll: float = 0.0,
+                 fov: float = 50.0,
+                 near: float = 0.1,
+                 far: float = 100.0,
+                 ratio: float = 4.0/3.0):
 
         self._position = glm.vec3(position)
         self.tilt = self.pitch = self.vertical_angle = pitch

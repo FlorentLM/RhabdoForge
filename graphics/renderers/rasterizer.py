@@ -161,10 +161,8 @@ class RasterSceneBaker:
 
 class EyeRendererRaster(EyeRendererBase):
 
-    def __init__(self, eye_model: CompoundEye, scene: Scene, window_size: Tuple[int, int], time_dithering: bool, cubemap_res: int = 512, nb_samples: int = 256):
-        super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
-
-        self.window_w, self.window_h = window_size
+    def __init__(self, eye_model: CompoundEye, scene: Scene, window_size: Tuple[int, int] = (1280, 720), time_dithering: bool = False, nb_samples: int = 256, cubemap_res: int = 512):
+        super().__init__(eye_model, window_size=window_size, time_dithering=time_dithering, nb_samples=nb_samples)
 
         self.scene_data = RasterSceneBaker(scene, 'shaders/base.vert', 'shaders/base.frag')
 
@@ -274,7 +272,7 @@ class EyeRendererRaster(EyeRendererBase):
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 
         # Restore the viewport to the main window's dimensions
-        glViewport(0, 0, self.window_w, self.window_h)
+        glViewport(0, 0, self.w, self.h)
 
     def _sample_cubemap(self):
 

@@ -1,158 +1,112 @@
-import os
-os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
-import OpenGL
-OpenGL.ERROR_CHECKING = False
-
-import pygame
-from pygame.locals import *
 import time
 from pyglm import glm
 
-from OpenGL.GL import *
-
-from graphics.engine import Engine
+from graphics.scene import Scene, Skybox
+from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CUBE_VERTICES
 from graphics.utils import load_cubemap
+
 from graphics.renderers.rasterizer import EyeRendererRaster
 from graphics.renderers.raytracer import EyeRendererRay
-from graphics.scene import Scene, Skybox
+from graphics.interactive.context import Context
 
 
 def main():
 
-    # Configuration flags
+    # Configuration
     WINDOW_SIZE = (1280, 720)
-    USE_POINT_CLOUD = False
     USE_RAYTRACER = False
-    RUN_HEADLESS = False
-
-    # View mode management
-    view_modes = ['compound_eye', 'panoramic', 'standard_3d']
-    current_view_idx = 0
-    VORONOI_VIEW = False
-
-    # Simulation Config
     NB_OMMATIDIA = 19362
     NB_SAMPLES = 16
     TIME_DITHERING = False
-    POINT_RADIUS = 0.1
-    HEADLESS_MAX_STEPS = 1000
+    HEADLESS = False
 
-    # Setup Engine and Scene
-    eng = Engine(width=WINDOW_SIZE[0], height=WINDOW_SIZE[1], headless=RUN_HEADLESS)
+    context = Context(window_size=WINDOW_SIZE, headless=HEADLESS)
+
+    # Setup Scene
     scene = Scene()
-    if USE_POINT_CLOUD:
-        scene.add_point_cloud("canberra", 'assets/canberra_filtered.ply')
-    else:
-        crate_asset = scene.load_mesh("crate", CUBE_VERTICES, 'textures/wood.jpg')
-        scene.add_instance(asset=crate_asset)
-        scene.add_instance(asset=crate_asset, transform=glm.translate(glm.mat4(1.0), glm.vec3(-3.0, 0.0, 0.0)))
-        scene.add_instance(asset=crate_asset, transform=glm.translate(glm.mat4(1.0), glm.vec3(3.0, 0.0, 0.0)))
+
+    crate_asset = scene.load_mesh("crate", CUBE_VERTICES, 'textures/wood.jpg')
+    scene.add_instance(asset=crate_asset)
+    scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(-3.0, 0.0, 0.0)))
+    scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(3.0, 0.0, 0.0)))
 
     scene.skybox = Skybox()
     scene.skybox_texture_id = load_cubemap('textures/bright_day')
 
+    # Setup eye model
     eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
 
-    debug_renderer = None  # this is only be used for raytracer debug view
+    # Setup Agent
+    agent = Agent()
+
+    # Setup Renderers
+
+    renderer = None
+    debug_renderer = None
 
     if USE_RAYTRACER:
-        renderer = EyeRendererRay(
-            eye_model=eye_model,
-            scene=scene,
-            time_dithering=TIME_DITHERING,
-            nb_samples=NB_SAMPLES,
-            point_radius=POINT_RADIUS
-        )
+        renderer = EyeRendererRay(eye_model=eye_model, scene=scene,
+                                  window_size=WINDOW_SIZE,
+                                  nb_samples=NB_SAMPLES, time_dithering=TIME_DITHERING)
 
-        # The debug renderer is only needed when the primary is a raytracer
-        if not RUN_HEADLESS:
-            debug_renderer = EyeRendererRaster(
-                eye_model=eye_model,
-                scene=scene,
-                window_size=WINDOW_SIZE,
-                time_dithering=TIME_DITHERING,
-                nb_samples=NB_SAMPLES
-            )
+        # The debug renderer allows us to see the scene geometry without raytracing
+        debug_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene,
+                                           window_size=WINDOW_SIZE,
+                                           nb_samples=NB_SAMPLES, time_dithering=TIME_DITHERING)
     else:
-        # If not using raytracer, the rasterizer the one and only renderer
-        renderer = EyeRendererRaster(
-            eye_model=eye_model,
-            scene=scene,
-            window_size=WINDOW_SIZE,
-            time_dithering=TIME_DITHERING,
-            nb_samples=NB_SAMPLES
-        )
+        renderer = EyeRendererRaster(eye_model=eye_model, scene=scene,
+                                     window_size=WINDOW_SIZE,
+                                     nb_samples=NB_SAMPLES, time_dithering=TIME_DITHERING)
 
+    if not HEADLESS:
+        # Setup and run interactive viewer
 
-    if not RUN_HEADLESS:
-        pygame.mouse.set_visible(False)
-        pygame.event.set_grab(True)
+        while context.interactive(agent=agent, renderer=renderer, debug_renderer=debug_renderer):
 
-    is_running = True
+            context.handle_input()
 
-    start = time.time_ns()
-    for frame_count in range(HEADLESS_MAX_STEPS if RUN_HEADLESS else 10000):
-        for event in pygame.event.get():
-            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
-                is_running = False
-
-            if event.type == KEYDOWN:
-                if event.key == K_c: current_view_idx = (current_view_idx + 1) % len(view_modes)
-                if event.key == K_v: VORONOI_VIEW = not VORONOI_VIEW
-                # if event.key == K_h: eng.hud.show = not eng.hud.show
-
-                # TODO: Re-implement these controls properly
-                # if event.type == KEYDOWN and event.key == K_t: eye_renderer.time_dithering = not eye_renderer.time_dithering
-                # if event.type == KEYDOWN and event.key == K_h: eng.show_hud = not eng.show_hud
-                # if event.type == KEYDOWN and event.key in (K_KP_PLUS,
-                #                                            K_EQUALS): eye_renderer.samples_per_ommatidium *= 2
-                # if event.type == KEYDOWN and event.key in (K_KP_MINUS,
-                #                                            K_MINUS): eye_renderer.samples_per_ommatidium //= 2
-            eng.update_movement()
-
-        if not is_running:
-            break
-
-        eng.update_movement()
-
-        # Data acquisition
-        # The primary renderer is always responsible for generating the eye data
-        ommatidia_values = renderer.get_ommatidia_data(eng.camera, to_cpu=True)
-
-        # Drawing
-        if not RUN_HEADLESS:
-
-            glViewport(0, 0, WINDOW_SIZE[0], WINDOW_SIZE[1])
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-            view_mode = view_modes[current_view_idx]
-
+            # TODO: Temporary hacky way to select the renderer for the get_ommatidia_data call
             renderer_to_use = renderer
-
-            # if raytracing and in debug view, switch to debug renderer
-            if USE_RAYTRACER and view_mode != 'compound_eye':
+            if debug_renderer and context.view_mode != 'compound_eye':
                 renderer_to_use = debug_renderer
 
-            renderer_to_use.draw(view_mode, eng.camera, VORONOI_VIEW)
+            # Get sensory data from the renderer
+            ommatidia_values = renderer_to_use.get_ommatidia_data(agent.camera, to_cpu=True)
 
-            # eng.hud.draw()
-            eng.clock.tick()
-            pygame.display.flip()
+            context.draw()
 
-    total_time = (time.time_ns() - start) * 1e-9
-    print(f"Finished. Total: {frame_count} frames in {total_time:.3f}s ({frame_count / total_time:.2f} FPS).")
+    else:
+        # Run headless experiment loop
 
-    if renderer:
-        renderer.free()
+        max_steps = 1000
+        results = []
 
-    if debug_renderer:
-        debug_renderer.free()
+        print(f"Running headless simulation for {max_steps} steps...")
+        start_time = time.time()
 
-    eng.close()
+        for i in range(max_steps):
+
+            # Programmatically control the agent
+            agent.move(agent.camera.forward * 0.05)
+            agent.rotate(yaw_delta=-0.5, pitch_delta=0)
+
+            # Get sensory data from the renderer
+            ommatidia_values = renderer.get_ommatidia_data(agent.camera, to_cpu=True)
+
+            results.append(ommatidia_values)
+
+        total_time = time.time() - start_time
+        print(f"Finished. {max_steps} frames in {total_time:.2f}s ({max_steps / total_time:.2f} FPS).")
+
+    # Cleanup
+    print("Cleaning up resources...")
+
+    renderer.free()
+    if debug_renderer: debug_renderer.free()
     scene.free()
-
+    context.free()
 
 if __name__ == "__main__":
     main()

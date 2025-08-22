@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import numpy as np
 import OpenGL
 OpenGL.ERROR_CHECKING = False
@@ -249,8 +251,8 @@ class RaytracingSceneBaker:
 
 
 class EyeRendererRay(EyeRendererBase):
-    def __init__(self, eye_model, scene: Scene, time_dithering: bool = True, point_radius: float = 0.1, nb_samples: int = 256):
-        super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
+    def __init__(self, eye_model, scene: Scene, time_dithering: bool = True, nb_samples: int = 256, window_size: Tuple[int, int] = (1280, 720), point_radius: float = 0.1):
+        super().__init__(eye_model, window_size=window_size, time_dithering=time_dithering, nb_samples=nb_samples)
 
         # Store a reference to the scene manager
         self.rt_scene = RaytracingSceneBaker(scene, point_radius=point_radius)
@@ -294,7 +296,7 @@ class EyeRendererRay(EyeRendererBase):
         glBufferData(GL_SHADER_STORAGE_BUFFER, required_buffer_size, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
-    def _ray_trace(self, camera):
+    def _raytrace(self, camera):
 
         # Pass 1: Ray-tracing
 
@@ -393,7 +395,7 @@ class EyeRendererRay(EyeRendererBase):
         """ The core ommatidia rendering logic """
 
         # Pass 1: Ray-trace
-        self._ray_trace(camera)
+        self._raytrace(camera)
 
         # Pass 2: Reduction
         self._reduction()
