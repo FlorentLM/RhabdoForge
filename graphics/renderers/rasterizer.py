@@ -229,9 +229,6 @@ class EyeRendererRaster(EyeRendererBase):
 
         self._pano_view = PanoramicEye()
 
-        # Get renderables once
-        self.renderables = self._scene_baked.get_renderables()
-
     @property
     def samples_per_ommatidium(self):
         return self._samples_per_ommatidium
@@ -311,6 +308,8 @@ class EyeRendererRaster(EyeRendererBase):
             camera.down,
         ]
 
+        renderables = self._scene_baked.get_renderables()
+
         for i in range(6):
             # Attach the correct face of the cubemap texture for rendering
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -330,7 +329,7 @@ class EyeRendererRaster(EyeRendererBase):
             if self._scene_baked.scene.skybox and self._scene_baked.scene.skybox_texture_id is not None:
                 self._scene_baked.scene.skybox.draw(self._proj_mat, view, self._scene_baked.scene.skybox_texture_id)
 
-            for instance in self.renderables:
+            for instance in renderables:
                 self._render_instance(instance, view, self._proj_mat)
 
         self._cubemap_fbo.unbind()
