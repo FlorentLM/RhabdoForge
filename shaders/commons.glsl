@@ -52,6 +52,7 @@ struct HitInfo {
     float t; // distance along ray
     vec3 barycentric_coords; // for triangle hits
     uint primitive_idx;
+    uint instance_id;        // ID of the instance hit in the TLAS
     bool is_point_hit;
 };
 

@@ -1,4 +1,6 @@
 import time
+
+import pygame
 from pyglm import glm
 
 from graphics.scene import Scene, PointsAsset, MeshAsset
@@ -30,18 +32,21 @@ def main():
         point_cloud_asset = PointsAsset('canberra', file_path='assets/canberra_filtered.ply')
 
         # Add an instance of it with specific properties
-        scene.add_instance(point_cloud_asset, point_radius=0.05)
+        scene.add_instance(point_cloud_asset, point_radius=0.15)
 
     # Load the mesh asset data
     crate_asset = MeshAsset('crate', vertex_data=CUBE_VERTICES, texture_path='textures/wood.jpg')
 
     # Add multiple instances of the same asset
-    scene.add_instance(asset=crate_asset)
     scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(-3.0, 0.0, 0.0)))
     scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(3.0, 0.0, 0.0)))
 
+    # A crate that will move
+    dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True)
+
     # Add a skybox
     scene.add_skybox('textures/bright_day')
+    # scene.add_skybox('textures/black')
 
     # Setup eye model
     eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
@@ -51,7 +56,7 @@ def main():
 
     # Setup Renderers
     if USE_RAYTRACER:
-        renderer = EyeRendererRay(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE)
+        renderer = EyeRendererRay(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE, nb_samples=2)
         # The debug renderer allows to see the scene geometry without raytracing
         debug_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE)
 
@@ -67,6 +72,12 @@ def main():
         while context.interactive(agent=agent, scene=scene, renderer=renderer, debug_renderer=debug_renderer):
 
             context.handle_input()
+
+            # Rotate dynamic test crate
+            elapsed_time = pygame.time.get_ticks() / 1000.0
+            spin_speed = 1.5
+            angle = elapsed_time * spin_speed
+            dynamic_crate.transform = glm.rotate(glm.mat4(1.0), angle, glm.vec3(0.0, 1.0, 0.0))
 
             # Get sensory data from the renderer via the context
             ommatidia_values = context.active_renderer.get_ommatidia_data(agent, to_cpu=True)

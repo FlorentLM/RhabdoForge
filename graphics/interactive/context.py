@@ -109,7 +109,8 @@ class Context:
 
             self.hud = HUD(self)
 
-            self.view_modes = ['compound_eye', 'panoramic', 'standard_3d']
+            # self.view_modes = ['compound_eye', 'panoramic', 'standard_3d']
+            self.view_modes = ['compound_eye', 'panoramic',]
             self.current_view_idx = 0
             self.voronoi_view = False
 

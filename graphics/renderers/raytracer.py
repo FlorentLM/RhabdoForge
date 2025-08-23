@@ -1,244 +1,371 @@
-from typing import Tuple
+from typing import Tuple, List, Dict, Optional
 
 import numpy as np
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 from pyglm import glm
-from pytinybvh import BVH
+from pytinybvh import BVH, instance_dtype
 
 from graphics.renderers.base import EyeRendererBase
-from graphics.scene import Scene, MeshAsset, PointsAsset, Instance
+from graphics.scene import Scene, MeshAsset, PointsAsset
 from graphics.utils import load_texture, VEC_DTYPE, ShaderProgram
+
+
+# structured numpy dtype for an instance information SSBO
+instance_info_dtype = np.dtype([
+    ('transform', np.float32, (4, 4)),
+    ('inverse_transform', np.float32, (4, 4)),
+    ('blas_node_offset', np.uint32),
+    ('primitive_offset', np.uint32),
+    ('material_id', np.uint32),
+    ('is_point_cloud', np.uint32),
+])
 
 
 class RaytracingSceneBaker:
     """
-    Manages the conversion of a high-level Scene into a GPU-ready format for ray tracing
-    This class builds acceleration structures and manages all necessary SSBOs
+    Manages the conversion of a Scene into a GPU-ready TLAS/BLAS structure
     """
-
     def __init__(self, scene: Scene):
         self.scene = scene
+        self.TLAS = None
+        self.BLASes: List[BVH] = []
+        self.dynamic_instance_map: Dict[int, int] = {} # Maps scene instance index to TLAS instance index
 
-        # OpenGL handles (SSBOs, textures)
+        # OpenGL handles
         self.skybox_texture = 0
-        self.triangles_ssbo = 0
-        self.triangle_bvh_ssbo = 0
         self.materials_ssbo = 0
-        self.scene_texture_array = 0
-        self.point_primitives_ssbo = 0
-        self.point_bvh_ssbo = 0
+        self.tex_array = 0
+        self.triangles_ssbo = 0
+        self.points_ssbo = 0
+        self.tlas_nodes_ssbo = 0
+        self.blas_nodes_ssbo = 0
+        self.instances_ssbo = 0
 
-        # CPU-side data buffers
-        self.triangle_bvh_nodes = None
-        self.point_bvh_nodes = None
+        # CPU-side data
+        self.instances_info: Optional[np.ndarray] = None
+        self.nb_TLAS_nodes: int = 0
+        self.material_map: Dict[int, int] = {}
+        self.asset_to_blas_map: Dict[int, Dict] = {}
 
-        # Build statistics
-        self.num_total_triangles = 0
-        self.num_total_points = 0
+        self.point_radius_by_asset = {}
 
-        # Material mapping
-        self.material_map = {}
-
-        self._build()
-
-    def _build(self):
-        """ The main coordinator method for building the raytracing scene """
-
-        print("Baking ray-tracing scene representation...")
+        print("Baking ray-tracing scene...")
 
         self.skybox_texture = self.scene.skybox_texture_id
 
-        self._pack_materials_and_textures()
-        self._build_triangle_bvh()
-        self._build_point_cloud_bvh()
+        self._pack_materials()
+        self._build_BLASes()
+        self._build_TLAS()
+
+        # self.debug_tlas_setup()
+
+        self._upload_buffers()
 
         print("Ray-tracing scene baking complete.")
 
-    def _pack_materials_and_textures(self):
-        """ Creates a texture array and a material buffer from all unique meshes """
+    def _pack_materials(self):
 
-        unique_meshes = {inst.asset for inst in self.scene.instances if isinstance(inst.asset, MeshAsset)}
+        assets = [inst.asset for inst in self.scene.instances if isinstance(inst.asset, MeshAsset)]
+        assets = list(dict.fromkeys(assets))
 
-        if not unique_meshes:
+        if not assets:
             return
 
-        self.material_map = {mesh.id: i for i, mesh in enumerate(unique_meshes)}
-        texture_paths = sorted(list({mesh.texture_path for mesh in unique_meshes}))
-        texture_map = {path: i for i, path in enumerate(texture_paths)}
-        texture_ids = [load_texture(path) for path in texture_paths]
+        self.material_map = {mesh.id: i for i, mesh in enumerate(assets)}
 
-        if texture_ids:
-            self.scene_texture_array = self._create_texture_array(texture_ids)
-            glDeleteTextures(len(texture_ids), texture_ids)
+        tex_paths = sorted(list({mesh.texture_path for mesh in assets}))
 
-        num_materials = len(unique_meshes)
-        material_data = np.zeros(num_materials * 4, dtype=VEC_DTYPE)
-        mat_data_u32 = material_data.view(np.uint32)
+        tex_map = {path: i for i, path in enumerate(tex_paths)}
+        tex_ids = [load_texture(path) for path in tex_paths]
 
-        for mesh in unique_meshes:
-            mat_idx = self.material_map[mesh.id]
-            tex_idx = texture_map[mesh.texture_path]
-            mat_data_u32[mat_idx * 4] = tex_idx
+        if tex_ids:
+            self.tex_array = self._create_texture_array(tex_ids)
+            glDeleteTextures(len(tex_ids), tex_ids)
+
+        mat_data = np.zeros((len(assets), 4), dtype=np.uint32)
+        for mesh in assets:
+            mat_data[self.material_map[mesh.id], 0] = tex_map[mesh.texture_path]
 
         self.materials_ssbo = glGenBuffers(1)
+
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.materials_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, material_data.nbytes, material_data, GL_STATIC_DRAW)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, mat_data.nbytes, mat_data, GL_STATIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
-    def _build_triangle_bvh(self):
-        """ Flattens all scene instances, builds a single BVH, and packs data for the GPU """
+    def _pack_triangles(self, mesh_asset: MeshAsset, prim_indices: np.ndarray):
+        num_tris = mesh_asset.num_triangles
+        packed = np.empty((num_tris, 20), dtype=VEC_DTYPE)
+        interleaved = mesh_asset.vertex_data.reshape(-1, 3, 5)  # 3 vertices per tri, 5 floats per vert
 
-        # Filter for mesh instances only
-        mesh_instances = [inst for inst in self.scene.instances if isinstance(inst.asset, MeshAsset)]
+        # Reorder the triangles according to the BVH's primitive indices
+        reordered_interleaved = interleaved[prim_indices]
 
-        if not mesh_instances:
-            self.num_total_triangles = 0
-            return  # nothing to build
+        v = reordered_interleaved[:, :, :3]
+        uv = reordered_interleaved[:, :, 3:5]
 
-        all_verts_pos = []
-        all_verts_uv = []
-        all_material_indices = []
+        packed[:, 0:3] = v[:, 0, :]
+        packed[:, 4:7] = v[:, 1, :]
+        packed[:, 8:11] = v[:, 2, :]
+        packed[:, 12:14] = uv[:, 0, :]
+        packed[:, 14:16] = uv[:, 1, :]
+        packed[:, 16:18] = uv[:, 2, :]
 
-        for instance in mesh_instances:
-            mesh = instance.asset
-            interleaved = mesh.vertex_data.reshape(-1, 5)
-            positions = interleaved[:, :3]
-            positions_h = np.hstack([positions, np.ones((len(positions), 1), dtype=VEC_DTYPE)])
+        mat_idx = self.material_map.get(mesh_asset.id, 0)
+        # The material index is per-triangle, so it doesn't need reordering itself,
+        # it just gets assigned to the already reordered packed data.
+        packed[:, 18] = np.full(num_tris, mat_idx, dtype=np.uint32).view(VEC_DTYPE)
 
-            np_transform = np.asarray(instance.transform)
-            transformed_pos_h = (np_transform @ positions_h.T).T
+        return packed
 
-            all_verts_pos.append(transformed_pos_h[:, :3])
-            all_verts_uv.append(interleaved[:, 3:5])
+    def _pack_points(self, points_asset: PointsAsset, prim_indices: np.ndarray):
+        num_points = points_asset.num_points
+        packed = np.zeros((num_points, 12), dtype=VEC_DTYPE)
 
-            num_tris = len(positions) // 3
-            mat_idx = self.material_map[mesh.id]
-            all_material_indices.append(np.full(num_tris, mat_idx, dtype=np.uint32))
-
-        if not all_verts_pos:
-            return
-
-        # Concatenate all instance data into single large arrays
-        flat_verts_pos = np.concatenate(all_verts_pos, axis=0)
-        flat_verts_uv = np.concatenate(all_verts_uv, axis=0)
-        flat_material_indices = np.concatenate(all_material_indices)
-
-        #  Build the BVH from the flattened data
-        triangles_for_bvh = flat_verts_pos.reshape(-1, 9)
-        self.num_total_triangles = len(triangles_for_bvh)
-
-        print(f"Building BVH for {self.num_total_triangles:,} total triangles...")
-
-        bvh = BVH.from_triangles(triangles_for_bvh)
-        bvh_buffers = bvh.get_buffers()
-        self.triangle_bvh_nodes = bvh_buffers['nodes']
-        prim_indices = bvh_buffers['prim_indices']
-
-        print(f"Triangle BVH built with {bvh.node_count} nodes.")
-
-        # Reorder and pack data for GPU
-        reordered_verts_pos = self._reorder_vertices(flat_verts_pos, prim_indices)
-        reordered_verts_uv = self._reorder_vertices(flat_verts_uv, prim_indices)
-        reordered_mat_indices = flat_material_indices[prim_indices]
-
-        packed_triangles = np.zeros((self.num_total_triangles, 20), dtype=VEC_DTYPE)
-        v = reordered_verts_pos.reshape(self.num_total_triangles, 3, 3)
-        uv = reordered_verts_uv.reshape(self.num_total_triangles, 3, 2)
-
-        packed_triangles[:, 0:3] = v[:, 0, :]
-        packed_triangles[:, 4:7] = v[:, 1, :]
-        packed_triangles[:, 8:11] = v[:, 2, :]
-        packed_triangles[:, 12:14] = uv[:, 0, :]
-        packed_triangles[:, 14:16] = uv[:, 1, :]
-        packed_triangles[:, 16:18] = uv[:, 2, :]
-        packed_triangles[:, 18] = reordered_mat_indices.view(VEC_DTYPE)
-
-        self.triangles_ssbo = glGenBuffers(1)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.triangles_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, packed_triangles.nbytes, packed_triangles.flatten(), GL_STATIC_DRAW)
-
-        self.triangle_bvh_ssbo = glGenBuffers(1)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.triangle_bvh_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, self.triangle_bvh_nodes.nbytes, self.triangle_bvh_nodes, GL_STATIC_DRAW)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-
-    def _build_point_cloud_bvh(self):
-        """ Builds a BVH for all point cloud instances and packs data """
-
-        point_instances = [inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)]
-        if not point_instances:
-            self.num_total_points = 0
-            return  # nothing to build
-
-        all_points = []
-        all_normals = []
-        all_colors = []
-
-        for inst in point_instances:
-            points_asset = inst.asset
-
-            # NOTE: For TLAS/BLAS, we would not transform vertices on the CPU
-
-            # For this flattened BVH approach, we pre-transform
-            points_h = np.hstack([points_asset.points, np.ones((points_asset.num_points, 1), dtype=VEC_DTYPE)])
-            np_transform = np.asarray(inst.transform)
-            transformed_pos_h = (np_transform @ points_h.T).T
-
-            all_points.append(transformed_pos_h[:, :3])
-            all_normals.append(points_asset.normals)  # Normals would also need transforming
-            all_colors.append(points_asset.colors)
-
-            # Here we would also pack the inst.properties['point_radius']
-            # For simplicity in this example, we assume a global radius for now
-
-        # Concatenate all instance data into single large arrays
-        flat_points = np.concatenate(all_points, axis=0)
-        flat_normals = np.concatenate(all_normals, axis=0)
-        flat_colors = np.concatenate(all_colors, axis=0)
-
-        self.num_total_points = len(flat_points)
-
-        # Use a default radius if not specified, or handle per-point radii
-        # For now we take the radius of the first instance as a global one
-        default_radius = point_instances[0].properties.get('point_radius', 0.1)
-
-        print(f"Building BVH for {self.num_total_points:,} points with radius {default_radius}...")
-
-        bvh = BVH.from_points(flat_points, radius=default_radius)
-
-        bvh_buffers = bvh.get_buffers()
-        self.point_bvh_nodes = bvh_buffers['nodes']
-        prim_indices = bvh_buffers['prim_indices']
-
-        print(f"Point BVH built with {bvh.node_count} nodes.")
-
+        # Reorder all point attributes based on the BVH primitive indices
         reordered_points = points_asset.points[prim_indices]
         reordered_normals = points_asset.normals[prim_indices]
         reordered_colors = points_asset.colors[prim_indices]
 
-        packed_points = np.zeros((self.num_total_points, 12), dtype=VEC_DTYPE)
-        packed_points[:, 0:3] = reordered_points
-        packed_points[:, 4:7] = reordered_normals
-        packed_points[:, 8:11] = reordered_colors
+        packed[:, 0:3] = reordered_points
+        packed[:, 4:7] = reordered_normals
+        packed[:, 8:11] = reordered_colors
 
-        self.point_primitives_ssbo = glGenBuffers(1)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.point_primitives_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, packed_points.nbytes, packed_points.flatten(), GL_STATIC_DRAW)
+        return packed
 
-        self.point_bvh_ssbo = glGenBuffers(1)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.point_bvh_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, self.point_bvh_nodes.nbytes, self.point_bvh_nodes, GL_STATIC_DRAW)
+    def _build_BLASes(self):
+
+        # Master lists to collect all primitive and node data
+        packed_tris = []
+        packed_points = []
+        blas_nodes = []
+
+        # keep track of the current total size to calculate offsets
+        current_tri_offset = 0
+        current_point_offset = 0
+        current_node_offset = 0
+
+        print(f"Building BLASes for {len(self.scene.assets)} unique assets...")
+        for asset in self.scene.assets.values():
+
+            # ensure each unique asset gets only one BLAS
+            if asset.id in self.asset_to_blas_map:
+                continue
+
+            # 'blas_id' is the index in the self.blases list
+            blas_id = len(self.BLASes)
+
+            # Create the BLAS for the asset
+            if isinstance(asset, MeshAsset):
+                interleaved = asset.vertex_data.reshape(-1, 5)
+                xyz = interleaved[:, :3]
+
+                verts4 = np.empty((xyz.shape[0], 4), dtype=np.float32)
+                verts4[:, :3] = xyz.astype(np.float32, copy=False)
+                verts4[:, 3] = 1.0
+
+                # TODO: Use indexed meshes instead
+                blas = BVH.from_vertices(verts4)
+
+                bvh_buffers = blas.get_buffers()
+                prim_indices = bvh_buffers['prim_indices']
+
+                # Pack this asset's triangles
+                newly_packed_tris = self._pack_triangles(asset, prim_indices)
+                prim_offset = current_tri_offset
+                packed_tris.append(newly_packed_tris)
+                current_tri_offset += len(newly_packed_tris)
+
+            elif isinstance(asset, PointsAsset):
+
+                point_inst = next((inst for inst in self.scene.instances if inst.asset.id == asset.id), None)
+
+                radius = point_inst.properties.get('point_radius', 0.1) if point_inst else 0.1
+                self.point_radius_by_asset[asset.id] = radius
+
+                blas = BVH.from_points(asset.points.astype(np.float32, copy=False), radius=radius)
+
+                bvh_buffers = blas.get_buffers()
+                prim_indices = bvh_buffers['prim_indices']
+
+                # Pack this asset's points
+                newly_packed_points = self._pack_points(asset, prim_indices)
+                prim_offset = current_point_offset
+                packed_points.append(newly_packed_points)
+                current_point_offset += len(newly_packed_points)
+
+            else:
+                continue
+
+            # Store map from the asset's unique ID to its BLAS index and data offsets
+            self.asset_to_blas_map[asset.id] = {
+                'id': blas_id,
+                'prim_offset': prim_offset,
+                'node_offset': current_node_offset
+            }
+
+            self.BLASes.append(blas)
+
+            # Append this BLAS's node data to the master node list
+            nodes = bvh_buffers['nodes']
+
+            blas_nodes.append(nodes)
+            current_node_offset += len(nodes)
+
+            asset_str = 'Mesh' if isinstance(asset, MeshAsset) else 'Points'
+            prim_str = 'triangles' if isinstance(asset, MeshAsset) else 'points'
+            print(f"Built BLAS {blas_id} for {asset_str} asset '{asset.name}' with {blas.prim_count:,} {prim_str}")
+
+        # Create final flat arrays for GPU upload by concatenating the lists of arrays
+        self.cpu_triangles = np.concatenate(packed_tris).ravel() if packed_tris else None
+        self.cpu_points = np.concatenate(packed_points).ravel() if packed_points else None
+        self.cpu_BLASes = np.concatenate(blas_nodes).astype(np.float32, copy=False) if blas_nodes else None
+
+    def _build_TLAS(self):
+
+        if not self.BLASes:
+            return
+
+        nb_instances = len(self.scene.instances)
+
+        tlas_instances_data = np.zeros(nb_instances, dtype=instance_dtype)
+        self.instances_info = np.zeros(nb_instances, dtype=instance_info_dtype)
+
+        for i, inst in enumerate(self.scene.instances):
+            blas_map_entry = self.asset_to_blas_map[inst.asset.id]
+
+            # Get the blas_id, which is the index into the self.blases list
+            blas_id = blas_map_entry['id']
+
+            # we want the transforms as row-major
+            transform = np.asarray(inst.transform)
+            inverse_transform = np.asarray(glm.inverse(inst.transform))
+
+            tlas_instances_data[i]['transform'] = transform
+            tlas_instances_data[i]['blas_id'] = blas_id
+            tlas_instances_data[i]['mask'] = 0xFFFFFFFF
+
+            self.instances_info[i]['transform'] = transform
+            self.instances_info[i]['inverse_transform'] = inverse_transform
+
+            self.instances_info[i]['blas_node_offset'] = blas_map_entry['node_offset']
+            self.instances_info[i]['primitive_offset'] = blas_map_entry['prim_offset']
+
+            self.instances_info[i]['is_point_cloud'] = int(isinstance(inst.asset, PointsAsset))
+
+            if isinstance(inst.asset, MeshAsset):
+                self.instances_info[i]['material_id'] = self.material_map.get(inst.asset.id, 0)
+
+            if inst.dynamic:
+                self.dynamic_instance_map[i] = i
+
+        self.TLAS = BVH.build_tlas(tlas_instances_data, self.BLASes)
+
+        tlas_bufs = self.TLAS.get_buffers()
+        self.cpu_TLAS_nodes = tlas_bufs['nodes'].astype(np.float32, copy=False)
+        self.cpu_TLAS_prim_indices = tlas_bufs['prim_indices'].astype(np.uint32, copy=False)
+        self.nb_TLAS_nodes = len(self.cpu_TLAS_nodes)
+
+    def debug_tlas_setup(self):
+
+        print("\n=== TLAS DEBUG INFO ===")
+
+        print(f"Number of instances: {len(self.scene.instances)}")
+        print(f"Number of unique assets: {len(self.scene.assets)}")
+        print(f"Number of BLASes: {len(self.BLASes)}")
+
+        for i, inst in enumerate(self.scene.instances):
+            asset = inst.asset
+            blas_info = self.asset_to_blas_map[asset.id]
+
+            print(f"\nInstance {i}: {asset.name}")
+            print(f"  Asset ID: {asset.id}")
+            print(f"  BLAS ID: {blas_info['id']}")
+            print(f"  Node offset: {blas_info['node_offset']}")
+            print(f"  Primitive offset: {blas_info['prim_offset']}")
+            print(f"  Is point cloud: {isinstance(asset, PointsAsset)}")
+
+            if isinstance(asset, MeshAsset):
+                print(f"  Num triangles: {asset.num_triangles}")
+                print(f"  Material ID: {self.material_map.get(asset.id, 0)}")
+            elif isinstance(asset, PointsAsset):
+                print(f"  Num points: {asset.num_points}")
+
+        print(f"\nTLAS primitive indices: {self.cpu_TLAS_prim_indices}")
+        print(f"TLAS nodes count: {self.nb_TLAS_nodes}")
+
+        # Check if multiple instances share the same BLAS
+        blas_usage = {}
+        for inst in self.scene.instances:
+            blas_id = self.asset_to_blas_map[inst.asset.id]['id']
+            if blas_id not in blas_usage:
+                blas_usage[blas_id] = []
+            blas_usage[blas_id].append(inst.asset.name)
+
+        print(f"\nBLAS usage:")
+        for blas_id, asset_names in blas_usage.items():
+            print(f"  BLAS {blas_id}: {asset_names}")
+
+        print("======================\n")
+
+    def _upload_buffers(self):
+
+        def upload(buffer_id, data, usage, dtype, min_elms: int = 1):
+            if data is None or getattr(data, "nbytes", 0) == 0:
+                data = np.zeros((min_elms,), dtype=dtype)
+
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer_id)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, data.nbytes, data, usage)
+
+        (self.triangles_ssbo, self.points_ssbo, self.blas_nodes_ssbo,
+         self.tlas_nodes_ssbo, self.instances_ssbo, self.tlas_indices_ssbo) = glGenBuffers(6)
+
+        upload(self.triangles_ssbo, self.cpu_triangles, GL_STATIC_DRAW, np.float32, 20)
+        upload(self.points_ssbo, self.cpu_points, GL_STATIC_DRAW, np.float32, 12)
+        upload(self.blas_nodes_ssbo, self.cpu_BLASes, GL_STATIC_DRAW, np.float32, 1)
+        upload(self.tlas_nodes_ssbo, self.cpu_TLAS_nodes, GL_DYNAMIC_DRAW, np.float32, 1)
+        upload(self.tlas_indices_ssbo, self.cpu_TLAS_prim_indices, GL_STATIC_DRAW, np.uint32, 1)
+        upload(self.instances_ssbo, self.instances_info, GL_DYNAMIC_DRAW, instance_info_dtype, 1)
+
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
-    def _reorder_vertices(self, vertices, prim_indices):
-        """ Helper to reorder vertex attributes based on primitive indices """
+    def update(self):
+        """ Updates transforms of dynamic instances and refits the TLAS """
 
-        num_verts_per_prim = vertices.shape[0] // len(prim_indices)
-        indices = np.repeat(prim_indices * num_verts_per_prim, num_verts_per_prim) + \
-                  np.tile(np.arange(num_verts_per_prim), len(prim_indices))
-        return vertices[indices]
+        if not self.dynamic_instance_map or self.TLAS is None:
+            return
+
+        needs_refit = False
+        for scene_idx, tlas_idx in self.dynamic_instance_map.items():
+            instance = self.scene.instances[scene_idx]
+
+            # we want the transforms as row-major
+            transform = np.asarray(instance.transform)
+            inverse_transform = np.asarray(glm.inverse(instance.transform))
+
+            # Update TLAS instance data for pytinybvh refit
+            self.TLAS.instances[tlas_idx]['transform'] = transform
+
+            # Update our custom SSBO data for the shader
+            self.instances_info[tlas_idx]['transform'] = transform
+            self.instances_info[tlas_idx]['inverse_transform'] = inverse_transform
+            needs_refit = True
+
+        if needs_refit:
+            # Refit the BVH structure
+            self.TLAS.refit_tlas()
+
+            # Re-upload the updated TLAS node data to the GPU
+            tlas_nodes_data = self.TLAS.get_buffers()['nodes']
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.tlas_nodes_ssbo)
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, tlas_nodes_data.nbytes, tlas_nodes_data)
+
+            # Re-upload the updated instance data (transforms) to the GPU
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.instances_ssbo)
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.instances_info.nbytes, self.instances_info)
+
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     def _create_texture_array(self, texture_ids):
 
@@ -275,13 +402,16 @@ class RaytracingSceneBaker:
         """ Deletes all OpenGL resources managed by this class """
 
         buffers = [b for b in [
-            self.triangles_ssbo, self.triangle_bvh_ssbo, self.materials_ssbo,
-            self.point_primitives_ssbo, self.point_bvh_ssbo
+            self.triangles_ssbo, self.points_ssbo, self.materials_ssbo,
+            self.tlas_nodes_ssbo, self.blas_nodes_ssbo, self.instances_ssbo,
+            self.tlas_indices_ssbo
         ] if b != 0]
+
         if buffers:
             glDeleteBuffers(len(buffers), buffers)
-        if self.scene_texture_array != 0:
-            glDeleteTextures(1, [self.scene_texture_array])
+
+        if self.tex_array != 0:
+            glDeleteTextures(1, [self.tex_array])
 
         print("RayTracingSceneManager resources freed.")
 
@@ -341,55 +471,43 @@ class EyeRendererRay(EyeRendererBase):
         self.raytrace_shader.use()
 
         # Bind Textures
-        # Bind skybox cubemap to texture unit 0
+        # Skybox
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, self._scene_baked.skybox_texture)
-
-        # Bind the scene's texture array (managed by rt_scene_manager) to texture unit 1
-        glActiveTexture(GL_TEXTURE1)
-        glBindTexture(GL_TEXTURE_2D_ARRAY, self._scene_baked.scene_texture_array)
-
-        # Tell the shader which texture unit to use for each sampler
         glUniform1i(self.raytrace_shader.get_loc('u_skybox'), 0)
+
+        # Scene textures
+        glActiveTexture(GL_TEXTURE1)
+        glBindTexture(GL_TEXTURE_2D_ARRAY, self._scene_baked.tex_array)
         glUniform1i(self.raytrace_shader.get_loc('u_scene_textures'), 1)
 
         # Bind Shader Storage Buffers (SSBOs)
-        # Binding 0: Input ommatidia data (owned by this renderer)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
-        # Binding 4: Output for this pass - the raw results for every single ray (owned by this renderer)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, self.ray_results_ssbo)
 
-        # Bind all scene geometry and BVH data
-        # Binding 1: Triangle primitive data
+        # Binding 0: Input ommatidia data
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
+        # Binding 1: Triangle primitive data (for triangle intersection, shading)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self._scene_baked.triangles_ssbo)
-        # Binding 2: Material data
+        # Binding 2: Material data (to fetch texture_idx from material_idx on triangles)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self._scene_baked.materials_ssbo)
-        # Binding 3: Triangle BVH nodes
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self._scene_baked.triangle_bvh_ssbo)
-        # Binding 5: Point cloud BVH nodes
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, self._scene_baked.point_bvh_ssbo)
-        # Binding 6: Point primitive data
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, self._scene_baked.point_primitives_ssbo)
+        # Binding 3: Points primitive data (for sphere intersection, shading)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self._scene_baked.points_ssbo)
+        # Binding 4: Output for this pass - the raw results for every single ray
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, self.ray_results_ssbo)
+        # Binding 5: BLAS nodes for traversal
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, self._scene_baked.blas_nodes_ssbo)
+        # Binding 6: TLAS nodes for traversal
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, self._scene_baked.tlas_nodes_ssbo)
+        # Binding 7: per-instance info: transform, inverse, offsets, flags
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, self._scene_baked.instances_ssbo)
+        # Binding 8: TLAS leaf -> instance id lookup
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, self._scene_baked.tlas_indices_ssbo)
 
         # Set Uniforms
-        num_tri_nodes = len(
-            self._scene_baked.triangle_bvh_nodes) if self._scene_baked.triangle_bvh_nodes is not None else 0
+        glUniform1ui(self.raytrace_shader.get_loc('u_num_tlas_nodes'), self._scene_baked.nb_TLAS_nodes)
 
-        num_point_nodes = len(
-            self._scene_baked.point_bvh_nodes) if self._scene_baked.point_bvh_nodes is not None else 0
-
-        glUniform1ui(self.raytrace_shader.get_loc('u_num_triangle_bvh_nodes'), num_tri_nodes)
-        glUniform1ui(self.raytrace_shader.get_loc('u_num_point_bvh_nodes'), num_point_nodes)
-
-        # Set renderer-specific uniforms
-
-        # We would update the uniform for point radius here if it's dynamic
-        # or if different instances have different radii, we'd need a more
-        # complex data layout (packing radius into the primitive SSBO)
-
-        # For now, let's assume we can set a global one from the first instance.
+        # TODO: Would be better with one radius per point, based on neighbours density
         point_inst = next((inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)), None)
-        radius = point_inst.properties.get('point_radius', 0.1) if point_inst else 0.1
+        radius = self._scene_baked.point_radius_by_asset.get(point_inst.asset.id, 0.1)
 
         glUniform1f(self.raytrace_shader.get_loc('u_point_radius'), radius)
 
@@ -419,10 +537,10 @@ class EyeRendererRay(EyeRendererBase):
         self.reduction_shader.use()
 
         # Bind buffers
-        # Binding 3: Input for this pass - the raw ray results from Pass 1
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self.ray_results_ssbo)
-        # Binding 4: Output for this pass - the final averaged color for each ommatidium
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, self.final_colors_ssbo)
+        # Binding 0: Input for this pass - the raw ray results from Pass 1
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.ray_results_ssbo)
+        # Binding 1: Output for this pass - the final averaged color for each ommatidium
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
 
         # Set uniforms
         glUniform1i(self.reduction_shader.get_loc('u_samples_per_ommatidium'), self.samples_per_ommatidium)
@@ -442,6 +560,9 @@ class EyeRendererRay(EyeRendererBase):
     def _compute_colors(self, camera_or_agent):
         """ The core ommatidia rendering logic """
 
+        # First refresh the scene for anything that moved / changed
+        self._scene_baked.update()
+
         # Pass 1: Ray-trace
         self._raytrace(camera_or_agent)
 
@@ -449,7 +570,7 @@ class EyeRendererRay(EyeRendererBase):
         self._reduction()
 
         # Unbind all resources
-        for i in range(7):
+        for i in range(9):
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0)
 
         glActiveTexture(GL_TEXTURE0)

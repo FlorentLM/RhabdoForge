@@ -24,9 +24,6 @@ class Asset(ABC):
         self.name = name
 
 
-# TODO: Assets loading interface need to be unified. Either load a file, or vertex / indices data
-
-
 class MeshAsset(Asset):
     """
     Pure data container for a mesh
@@ -135,10 +132,11 @@ class Instance:
     Renderer-agnostic
     """
 
-    def __init__(self, asset: Asset, transform: glm.mat4 = None, **kwargs):
+    def __init__(self, asset: Asset, transform: glm.mat4 = None, dynamic: bool = False, **kwargs):
         self.asset = asset
         self.transform = transform or glm.mat4(1.0)
-        self.properties = kwargs  # for example point_radius
+        self.dynamic = dynamic
+        self.properties = kwargs  # like for point_radius
 
 
 class Skybox:
