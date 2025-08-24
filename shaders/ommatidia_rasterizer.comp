@@ -6,21 +6,21 @@ layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 // Input: SSBO from binding point 0 contains an array of these structs
 layout(std430, binding = 0) readonly buffer OmmatidiaInputBlock {
-   Ommatidium u_ommatidia_data[];
+   Ommatidium ommatidia_data[];
 };
 
 // Output: SSBO to write the results to
 layout(std430, binding = 1) writeonly buffer OmmatidiaColorOutput {
-   vec4 u_ommatidia_colors[];
+   vec4 ommatidia_colors[];
 };
 
 // Input: scene rendered to a cubemap
-layout(binding = 0) uniform samplerCube u_scene_cubemap;
+layout(binding = 0) uniform samplerCube scene_cubemap;
 
 // Uniforms
-uniform int u_num_ommatidia;
-uniform int u_samples_per_ommatidium;
-uniform float u_time; // For temporal dithering
+uniform int nb_ommatidia;
+uniform int nb_samples;
+uniform float time; // For temporal dithering
 
 
 void main()

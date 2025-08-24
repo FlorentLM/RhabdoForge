@@ -33,7 +33,7 @@ class PanoramicEye:
         # Bind the cubemap texture we want to inspect
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_texture_id)
-        glUniform1i(self.shader.get_loc("u_cubemap"), 0)
+        glUniform1i(self.shader.get_loc("cubemap"), 0)
 
         # Draw a full-screen triangle
         glBindVertexArray(self.vao)
@@ -82,7 +82,7 @@ class TextureViewer:
 
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, texture_id)
-        glUniform1i(self.shader.get_loc("u_texture"), 0)
+        glUniform1i(self.shader.get_loc("texture"), 0)
 
         glBindVertexArray(self.vao)
         glDrawArrays(GL_TRIANGLES, 0, 3)

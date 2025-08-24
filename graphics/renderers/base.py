@@ -1,10 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Tuple, Union
 import numpy as np
 import OpenGL
-
-from graphics.agent import Agent
-from graphics.camera import Camera
 
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
@@ -101,14 +97,6 @@ class EyeRendererBase(ABC):
         # Each subclass implements its own core rendering logic
         raise NotImplementedError
 
-    def _get_camera(self, camera_or_agent: Union[Camera, Agent]) -> Camera:
-
-        if isinstance(camera_or_agent, Agent):
-            return camera_or_agent.camera
-        elif isinstance(camera_or_agent, Camera):
-            return camera_or_agent
-        raise TypeError("Expected a Camera or Agent object.")
-
     def _fetch_to_cpu(self):
 
         # Determine which PBO to read from (current) and which to write to (next)
@@ -161,7 +149,7 @@ class EyeRendererBase(ABC):
             glBindBuffer(GL_ARRAY_BUFFER, vbo)
             glBufferData(GL_ARRAY_BUFFER, CONE_VERTICES.nbytes, CONE_VERTICES, GL_STATIC_DRAW)
 
-            pos_loc = glGetAttribLocation(self.voronoi_shader.program_id, "a_cone_vertex_pos")
+            pos_loc = glGetAttribLocation(self.voronoi_shader.program_id, "cone_vertex")
             glEnableVertexAttribArray(pos_loc)
             glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
 
@@ -183,10 +171,10 @@ class EyeRendererBase(ABC):
         # avoid division by zero if window is not yet setup
         aspect_ratio = viewport[2] / viewport[3] if viewport[3] > 0 else 1.0
 
-        glUniform1f(self.voronoi_shader.get_loc('u_aspect_ratio'), 1.0)
-        # glUniform1f(self.voronoi_shader.get_loc('u_aspect_ratio'), aspect_ratio)
-        glUniform1i(self.voronoi_shader.get_loc('u_tiled_mode'), tiled_mode)
-        glUniform1f(self.voronoi_shader.get_loc('u_cone_scale'), cone_scale)
+        glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), 1.0)
+        # glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), aspect_ratio)
+        glUniform1i(self.voronoi_shader.get_loc('tiled_mode'), tiled_mode)
+        glUniform1f(self.voronoi_shader.get_loc('cone_scale'), cone_scale)
 
         # Binding 0: Ommatidia geometry (directions, origins, etc)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)

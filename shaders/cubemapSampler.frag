@@ -7,7 +7,7 @@ layout (location = 0) in vec2 v_tex_coord;
 layout (location = 0) out vec4 FragColor;
 
 // Uniforms
-layout (binding = 0) uniform samplerCube u_cubemap;
+layout (binding = 0) uniform samplerCube cubemap;
 
 const float PI = 3.14159265359;
 const float HPI = PI * 0.5;
@@ -30,5 +30,5 @@ void main()
     dir.z = -cos_lat * cos(longitude);
 
     // Sample the cubemap
-    FragColor = texture(u_cubemap, dir);
+    FragColor = texture(cubemap, dir);
 }

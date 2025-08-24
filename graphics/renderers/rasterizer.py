@@ -8,7 +8,7 @@ from OpenGL.GL import *
 from pyglm import glm
 
 from geometry.compound_eyes import CompoundEye
-from graphics.camera import Camera
+from graphics.agent import Agent
 from graphics.renderers.panoramic import PanoramicEye
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, MeshAsset, PointsAsset, Instance
@@ -93,7 +93,7 @@ class RasterMesh:
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
         glBufferData(GL_ARRAY_BUFFER, self.data.nbytes, self.data, GL_STATIC_DRAW)
 
-        pos_loc = glGetAttribLocation(self.shaders, "pos")
+        pos_loc = glGetAttribLocation(self.shaders, "position")
         glEnableVertexAttribArray(pos_loc)
         glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, 5 * self.data.itemsize, ctypes.c_void_p(0))
 
@@ -135,12 +135,12 @@ class RasterPoints:
         stride = packed_data.itemsize * 6  # 3 for pos, 3 for color
 
         # Vertex attribute for position
-        pos_loc = glGetAttribLocation(self.shaders, "a_pos")
+        pos_loc = glGetAttribLocation(self.shaders, "position")
         glEnableVertexAttribArray(pos_loc)
         glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, stride, ctypes.c_void_p(0))
 
         # Vertex attribute for color
-        color_loc = glGetAttribLocation(self.shaders, "a_color")
+        color_loc = glGetAttribLocation(self.shaders, "color")
         glEnableVertexAttribArray(color_loc)
         glVertexAttribPointer(color_loc, 3, GL_FLOAT, False, stride, ctypes.c_void_p(packed_data.itemsize * 3))
 
@@ -225,7 +225,7 @@ class EyeRendererRaster(EyeRendererBase):
         self._cubemap_id = self._cubemap_fbo.color_texture_id
 
         # simple 90 degrees view projection matrix for each cube face
-        self._proj_mat = Camera(fov=90.0, ratio=1.0).projection
+        self._proj_mat = Agent(fov=90.0, ratio=1.0).projection
 
         self._pano_view = PanoramicEye()
 
@@ -246,8 +246,8 @@ class EyeRendererRaster(EyeRendererBase):
         glUseProgram(asset.shaders)
         glBindVertexArray(asset.vao)
 
-        camera_matrix = projection_matrix * view_matrix
-        glUniformMatrix4fv(glGetUniformLocation(asset.shaders, "camera"), 1, False, glm.value_ptr(camera_matrix))
+        cam_mat = projection_matrix * view_matrix
+        glUniformMatrix4fv(glGetUniformLocation(asset.shaders, "camera"), 1, False, glm.value_ptr(cam_mat))
         glUniformMatrix4fv(glGetUniformLocation(asset.shaders, "model"), 1, False, glm.value_ptr(instance.transform))
 
         # TODO: unbinding may be skipped when rendering several instances of the same thing
@@ -264,7 +264,7 @@ class EyeRendererRaster(EyeRendererBase):
             glEnable(GL_PROGRAM_POINT_SIZE)
 
             # Set a fixed point size for now
-            glUniform1f(glGetUniformLocation(asset.shaders, "u_point_size"), 2.0)
+            glUniform1f(glGetUniformLocation(asset.shaders, "point_size"), 2.0)
 
             glDrawArrays(GL_POINTS, 0, asset.draw_count)
 
@@ -273,13 +273,11 @@ class EyeRendererRaster(EyeRendererBase):
         glBindVertexArray(0)
         glUseProgram(0)
 
-    def _render_to_cubemap(self, camera_or_agent):
+    def _render_to_cubemap(self, agent):
 
         main_viewport = glGetIntegerv(GL_VIEWPORT)
 
         self._cubemap_fbo.bind()
-
-        camera = self._get_camera(camera_or_agent)
 
         # look-at directions and 'up' vectors for each face must correspond to the OpenGL cubemap coordinate system:
         #  - GL_TEXTURE_CUBE_MAP_POSITIVE_X  ->  Right
@@ -289,25 +287,25 @@ class EyeRendererRaster(EyeRendererBase):
         #  - GL_TEXTURE_CUBE_MAP_POSITIVE_Z  ->  Back
         #  - GL_TEXTURE_CUBE_MAP_NEGATIVE_Z  ->  Front
         #
-        # Note: the camera's local vectors are used to maintain its orientation (roll)
+        # Note: the agent's local vectors are used to maintain its orientation (roll)
 
         look_dirs = [
-            camera.right,  # For +X face (index 0), we look to the camera's right
-            camera.left,  # For -X face (index 1), we look to the camera's left
-            camera.up,  # For +Y face (index 2), we look up
-            camera.down,  # For -Y face (index 3), we look down
-            camera.backward,  # For +Z face (index 4), we look backward
-            camera.forward,  # For -Z face (index 5), we look forward
+            agent.right,  # For +X face (index 0), we look to the agent's right
+            agent.left,  # For -X face (index 1), we look to the agent's left
+            agent.up,  # For +Y face (index 2), we look up
+            agent.down,  # For -Y face (index 3), we look down
+            agent.backward,  # For +Z face (index 4), we look backward
+            agent.forward,  # For -Z face (index 5), we look forward
         ]
 
         # The 'up' vectors for each look-at direction
         ups = [
-            camera.down,  # Up for looking right/left is camera's down
-            camera.down,
-            camera.backward,  # Up for looking up is camera's backward
-            camera.forward,  # Up for looking down is camera's forward
-            camera.down,  # Up for looking backward/forward is camera's down
-            camera.down,
+            agent.down,  # Up for looking right/left is agent's down
+            agent.down,
+            agent.backward,  # Up for looking up is agent's backward
+            agent.forward,  # Up for looking down is agent's forward
+            agent.down,  # Up for looking backward/forward is agent's down
+            agent.down,
         ]
 
         renderables = self._scene_baked.get_renderables()
@@ -322,8 +320,8 @@ class EyeRendererRaster(EyeRendererBase):
 
             # Generate the specific view matrix for this face
             view = glm.lookAt(
-                glm.vec3(camera.position),
-                glm.vec3(camera.position + look_dirs[i]),  # target point is eye + direction
+                glm.vec3(agent.position),
+                glm.vec3(agent.position + look_dirs[i]),  # target point is eye + direction
                 glm.vec3(ups[i])
             )
 
@@ -349,14 +347,14 @@ class EyeRendererRaster(EyeRendererBase):
         self._rasterizer_shader.use()
 
         # Set uniforms for the data pass
-        glUniform1i(self._rasterizer_shader.get_loc('u_num_ommatidia'), self.num_ommatidia)
-        glUniform1i(self._rasterizer_shader.get_loc('u_samples_per_ommatidium'), self.samples_per_ommatidium)
-        glUniform1f(self._rasterizer_shader.get_loc('u_time'), float(self._time_counter))
+        glUniform1i(self._rasterizer_shader.get_loc('nb_ommatidia'), self.num_ommatidia)
+        glUniform1i(self._rasterizer_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
+        glUniform1f(self._rasterizer_shader.get_loc('time'), float(self._time_counter))
 
         # Bind input cubemap (texture unit 0)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_id)
-        glUniform1i(self._rasterizer_shader.get_loc('u_scene_cubemap'), 0)
+        glUniform1i(self._rasterizer_shader.get_loc('scene_cubemap'), 0)
 
         # Bind directions SSBO to binding point 0 (for reading)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
@@ -373,11 +371,11 @@ class EyeRendererRaster(EyeRendererBase):
 
         self._rasterizer_shader.stop()
 
-    def _compute_colors(self, camera_or_agent):
+    def _compute_colors(self, agent):
         """ The core ommatidia rendering logic """
 
         # Pass 1: Render to cubemap
-        self._render_to_cubemap(camera_or_agent)
+        self._render_to_cubemap(agent)
 
         # Pass 2: Sample from cubemap
         self._sample_cubemap()
@@ -388,10 +386,10 @@ class EyeRendererRaster(EyeRendererBase):
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 
-    def get_ommatidia_data(self, camera_or_agent, to_cpu=False):
+    def get_ommatidia_data(self, agent, to_cpu=False):
         """ Generates a cubemap and then computes ommatidia data from it """
 
-        self._compute_colors(camera_or_agent)
+        self._compute_colors(agent)
 
         if self._time_dithering:
             self._time_counter += 1
@@ -401,10 +399,8 @@ class EyeRendererRaster(EyeRendererBase):
 
         return self.cpu_read_buffer
 
-    def draw(self, view_mode: str, camera_or_agent, tiled_mode: bool = False):
+    def draw(self, view_mode: str, agent, tiled_mode: bool = False):
         """ Renders one of the rasterizer's supported views to the screen """
-
-        camera = self._get_camera(camera_or_agent)
 
         if view_mode == 'compound_eye':
             # This calls the draw() method in EyeRendererBase for Voronoi rendering
@@ -415,11 +411,11 @@ class EyeRendererRaster(EyeRendererBase):
 
         elif view_mode == 'standard_3d':
             if self._scene_baked.scene.skybox and self._scene_baked.scene.skybox_texture_id is not None:
-                self._scene_baked.scene.skybox.draw(camera.projection, camera.view,
+                self._scene_baked.scene.skybox.draw(agent.projection, agent.view,
                                                     self._scene_baked.scene.skybox_texture_id)
             renderables = self._scene_baked.get_renderables()
             for instance in renderables:
-                self._render_instance(instance, camera.view, camera.projection)
+                self._render_instance(instance, agent.view, agent.projection)
 
     def free(self):
         self._scene_baked.free()

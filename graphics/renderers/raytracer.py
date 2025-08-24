@@ -455,10 +455,8 @@ class EyeRendererRay(EyeRendererBase):
         if self._texture_viewer is None:
             self._texture_viewer = TextureViewer()
 
-    def _raytrace_panoramic(self, camera_or_agent):
+    def _raytrace_panoramic(self, agent):
         """ Dispatches a compute shader to generate a ray-traced panoramic image """
-
-        camera = self._get_camera(camera_or_agent)
 
         self.pano_raytrace_shader.use()
 
@@ -468,10 +466,10 @@ class EyeRendererRay(EyeRendererBase):
         # Bind Textures (for reading)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, self._scene_baked.skybox_texture)
-        glUniform1i(self.pano_raytrace_shader.get_loc('u_skybox'), 0)
+        glUniform1i(self.pano_raytrace_shader.get_loc('skybox'), 0)
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, self._scene_baked.tex_array)
-        glUniform1i(self.pano_raytrace_shader.get_loc('u_scene_textures'), 1)
+        glUniform1i(self.pano_raytrace_shader.get_loc('scene_textures'), 1)
 
         # Bind Scene SSBOs (same as ommatidia shader, but starting at binding 1)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self._scene_baked.triangles_ssbo)
@@ -483,16 +481,16 @@ class EyeRendererRay(EyeRendererBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, self._scene_baked.tlas_indices_ssbo)
 
         # Set Uniforms
-        glUniform1ui(self.pano_raytrace_shader.get_loc('u_num_tlas_nodes'), self._scene_baked.nb_TLAS_nodes)
+        glUniform1ui(self.pano_raytrace_shader.get_loc('nb_tlas_nodes'), self._scene_baked.nb_TLAS_nodes)
 
         # TODO: Handle point radius better for scenes with multiple point assets
         point_inst = next((inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)), None)
         radius = self._scene_baked.point_radius_by_asset.get(point_inst.asset.id, 0.1) if point_inst else 0.1
 
-        glUniform1f(self.pano_raytrace_shader.get_loc('u_point_radius'), radius)
-        camera_to_world_matrix = glm.inverse(camera.view)
-        glUniformMatrix4fv(self.pano_raytrace_shader.get_loc('u_camera_to_world'), 1, False,
-                           glm.value_ptr(camera_to_world_matrix))
+        glUniform1f(self.pano_raytrace_shader.get_loc('point_radius'), radius)
+
+        c2w_mat = glm.inverse(agent.view)
+        glUniformMatrix4fv(self.pano_raytrace_shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
         # Dispatch compute shader
         work_groups_x = (self._pano_res[0] + 15) // 16
@@ -504,9 +502,7 @@ class EyeRendererRay(EyeRendererBase):
 
         self.pano_raytrace_shader.stop()
 
-    def _raytrace(self, camera_or_agent):
-
-        camera = self._get_camera(camera_or_agent)
+    def _raytrace(self, agent):
 
         # Pass 1: Ray-tracing
 
@@ -516,12 +512,12 @@ class EyeRendererRay(EyeRendererBase):
         # Skybox
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, self._scene_baked.skybox_texture)
-        glUniform1i(self.raytrace_shader.get_loc('u_skybox'), 0)
+        glUniform1i(self.raytrace_shader.get_loc('skybox'), 0)
 
         # Scene textures
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, self._scene_baked.tex_array)
-        glUniform1i(self.raytrace_shader.get_loc('u_scene_textures'), 1)
+        glUniform1i(self.raytrace_shader.get_loc('scene_textures'), 1)
 
         # Bind Shader Storage Buffers (SSBOs)
 
@@ -545,21 +541,21 @@ class EyeRendererRay(EyeRendererBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, self._scene_baked.tlas_indices_ssbo)
 
         # Set Uniforms
-        glUniform1ui(self.raytrace_shader.get_loc('u_num_tlas_nodes'), self._scene_baked.nb_TLAS_nodes)
+        glUniform1ui(self.raytrace_shader.get_loc('nb_tlas_nodes'), self._scene_baked.nb_TLAS_nodes)
 
         # TODO: Would be better with one radius per point, based on neighbours density
         point_inst = next((inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)), None)
         radius = self._scene_baked.point_radius_by_asset.get(point_inst.asset.id, 0.1) if point_inst else 0.1
 
-        glUniform1f(self.raytrace_shader.get_loc('u_point_radius'), radius)
+        glUniform1f(self.raytrace_shader.get_loc('point_radius'), radius)
 
-        glUniform1i(self.raytrace_shader.get_loc('u_samples_per_ommatidium'), self.samples_per_ommatidium)
-        glUniform1f(self.raytrace_shader.get_loc('u_time'), float(self._time_counter))
+        glUniform1i(self.raytrace_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
+        glUniform1f(self.raytrace_shader.get_loc('time'), float(self._time_counter))
 
         # Set camera uniforms for transforming rays into world space
-        camera_to_world_matrix = glm.inverse(camera.view)
-        glUniformMatrix4fv(self.raytrace_shader.get_loc('u_camera_to_world'), 1, False,
-                           glm.value_ptr(camera_to_world_matrix))
+        c2w_mat = glm.inverse(agent.view)
+        glUniformMatrix4fv(self.raytrace_shader.get_loc('cam_to_world'), 1, False,
+                           glm.value_ptr(c2w_mat))
 
         # Dispatch compute shader
         # Calculate the number of workgroups needed to process all rays
@@ -585,8 +581,8 @@ class EyeRendererRay(EyeRendererBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
 
         # Set uniforms
-        glUniform1i(self.reduction_shader.get_loc('u_samples_per_ommatidium'), self.samples_per_ommatidium)
-        glUniform1i(self.reduction_shader.get_loc('u_num_ommatidia'), self.num_ommatidia)
+        glUniform1i(self.reduction_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
+        glUniform1i(self.reduction_shader.get_loc('nb_ommatidia'), self.num_ommatidia)
 
         # Dispatch compute shader
         # Calculate workgroups needed to process all ommatidia
@@ -599,14 +595,14 @@ class EyeRendererRay(EyeRendererBase):
 
         self.reduction_shader.stop()
 
-    def _compute_colors(self, camera_or_agent):
+    def _compute_colors(self, agent):
         """ The core ommatidia rendering logic """
 
         # First refresh the scene for anything that moved / changed
         self._scene_baked.update()
 
         # Pass 1: Ray-trace
-        self._raytrace(camera_or_agent)
+        self._raytrace(agent)
 
         # Pass 2: Reduction
         self._reduction()
@@ -620,9 +616,9 @@ class EyeRendererRay(EyeRendererBase):
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
-    def get_ommatidia_data(self, camera_or_agent, to_cpu=False):
+    def get_ommatidia_data(self, agent, to_cpu=False):
 
-        self._compute_colors(camera_or_agent)
+        self._compute_colors(agent)
 
         if self._time_dithering:
             self._time_counter += 1
@@ -632,7 +628,7 @@ class EyeRendererRay(EyeRendererBase):
 
         return self.cpu_read_buffer
 
-    def draw(self, view_mode: str, camera_or_agent, tiled_mode: bool = False):
+    def draw(self, view_mode: str, agent, tiled_mode: bool = False):
         """ Renders one of the rasterizer's supported views to the screen """
 
         if view_mode == 'compound_eye':
@@ -644,7 +640,7 @@ class EyeRendererRay(EyeRendererBase):
                 self._initialize_pano_resources()
 
             self._scene_baked.update()
-            self._raytrace_panoramic(camera_or_agent)
+            self._raytrace_panoramic(agent)
             self._texture_viewer.draw(self._pano_texture_id)
 
     def free(self):

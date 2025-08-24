@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Union
 from abc import ABC, abstractmethod
 
 import numpy as np
+from numpy.typing import ArrayLike
 import open3d as o3d
 import OpenGL
 OpenGL.ERROR_CHECKING = False
@@ -132,11 +133,32 @@ class Instance:
     Renderer-agnostic
     """
 
-    def __init__(self, asset: Asset, transform: glm.mat4 = None, dynamic: bool = False, **kwargs):
+    def __init__(self,
+                 asset: Asset,
+                 transform: Optional[Union[glm.mat4, ArrayLike]] = None,
+                 dynamic: bool = False,
+                 **kwargs):
         self.asset = asset
-        self.transform = transform or glm.mat4(1.0)
+
+        if transform is not None:
+            self.transform = glm.mat4(transform)
+        else:
+            self.transform = glm.mat4(1.0)
+
         self.dynamic = dynamic
         self.properties = kwargs  # like for point_radius
+
+    def translate(self, translation: Union[glm.vec3, ArrayLike]):
+        self.transform = glm.translate(self.transform, glm.vec3(translation))
+        return self
+
+    def rotate(self, angle_degrees: float, axis: Union[glm.vec3, ArrayLike]):
+        self.transform = glm.rotate(self.transform, glm.radians(angle_degrees), glm.vec3(axis))
+        return self
+
+    def scale(self, scale_factors: Union[glm.vec3, ArrayLike]):
+        self.transform = glm.scale(self.transform, glm.vec3(scale_factors))
+        return self
 
 
 class Skybox:
@@ -193,7 +215,7 @@ class Scene:
         self.skybox: Optional[Skybox] = None
         self.skybox_texture_id: Optional[int] = None
 
-    def add_instance(self, asset: Union[Asset, str], transform: glm.mat4 = None, **kwargs) -> Instance:
+    def add_instance(self, asset: Union[Asset, str], transform: Optional[Union[glm.mat4, ArrayLike]] = None, **kwargs) -> Instance:
 
         if isinstance(asset, Asset):
             asset_obj = asset

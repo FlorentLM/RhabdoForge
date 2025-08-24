@@ -14,18 +14,18 @@ struct InstanceInfo {
 };
 
 // Bindings (To be used by including shaders)
-layout(std430, binding = 1) readonly buffer TriangleBuffer { Triangle u_triangles[]; };
-layout(std430, binding = 2) readonly buffer MaterialBuffer { Material u_materials[]; };
-layout(std430, binding = 3) readonly buffer PrimitiveBuffer { Point u_points[]; };
-layout(std430, binding = 5) readonly buffer AllBlasNodesBuffer { BvhNode u_blas_nodes[]; };
-layout(std430, binding = 6) readonly buffer TlasNodesBuffer { BvhNode u_tlas_nodes[]; };
-layout(row_major, std430, binding = 7) readonly buffer InstancesBuffer { InstanceInfo u_instances[]; }; // row major!!!!
-layout(std430, binding = 8) readonly buffer TlasPrimIndexBuffer { uint u_tlas_prim_indices[]; };
+layout(std430, binding = 1) readonly buffer TriangleBuffer { Triangle triangles[]; };
+layout(std430, binding = 2) readonly buffer MaterialBuffer { Material materials[]; };
+layout(std430, binding = 3) readonly buffer PrimitiveBuffer { Point points[]; };
+layout(std430, binding = 5) readonly buffer AllBlasNodesBuffer { BvhNode blas_nodes[]; };
+layout(std430, binding = 6) readonly buffer TlasNodesBuffer { BvhNode tlas_nodes[]; };
+layout(row_major, std430, binding = 7) readonly buffer InstancesBuffer { InstanceInfo instances[]; }; // row major!!!!
+layout(std430, binding = 8) readonly buffer TlasPrimIndexBuffer { uint tlas_prim_indices[]; };
 
-layout(binding = 0) uniform samplerCube u_skybox;
-layout(binding = 1) uniform sampler2DArray u_scene_textures;
-uniform uint u_num_tlas_nodes;
-uniform float u_point_radius;
+layout(binding = 0) uniform samplerCube skybox;
+layout(binding = 1) uniform sampler2DArray scene_textures;
+uniform uint nb_tlas_nodes;
+uniform float point_radius;
 
 // Forward declarations
 
@@ -39,7 +39,7 @@ void find_closest_hit(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit
 
 void find_closest_hit(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
     closest_hit.found = false;
-    if (u_num_tlas_nodes == 0u) return;
+    if (nb_tlas_nodes == 0u) return;
 
     uint stack[64];
     uint stack_ptr = 0;
@@ -47,7 +47,7 @@ void find_closest_hit(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit
 
     while (stack_ptr > 0u) {
         uint node_idx = stack[--stack_ptr];
-        BvhNode node = u_tlas_nodes[node_idx];
+        BvhNode node = tlas_nodes[node_idx];
 
         if (intersect_aabb(r_world, node.data1.xyz, node.data2.xyz) >= r_world.t) continue;
 
@@ -56,8 +56,8 @@ void find_closest_hit(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit
 
         if (prim_count > 0u) { // TLAS leaf node
             for (uint j = 0u; j < prim_count; ++j) {
-                uint instance_id = u_tlas_prim_indices[first_idx + j];
-                InstanceInfo inst = u_instances[instance_id];
+                uint instance_id = tlas_prim_indices[first_idx + j];
+                InstanceInfo inst = instances[instance_id];
 
                 // Transform ray to object space
                 Ray r_obj;
@@ -80,7 +80,7 @@ void find_closest_hit(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit
                         closest_hit.found = true;
                         closest_hit.t = new_world_t;
                         closest_hit.barycentric_coords = blas_hit.barycentric_coords;
-                        // blas_hit.primitive_idx is the index into the global primitive buffer (u_triangles or u_points)
+                        // blas_hit.primitive_idx is the index into the global primitive buffer (triangles or points)
                         closest_hit.primitive_idx = blas_hit.primitive_idx;
                         closest_hit.is_point_hit = blas_hit.is_point_hit;
                         closest_hit.instance_id = instance_id;
@@ -90,8 +90,8 @@ void find_closest_hit(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit
         } else { // TLAS internal node
             uint left_idx = first_idx;
             uint right_idx = first_idx + 1;
-            float d1 = intersect_aabb(r_world, u_tlas_nodes[left_idx].data1.xyz, u_tlas_nodes[left_idx].data2.xyz);
-            float d2 = intersect_aabb(r_world, u_tlas_nodes[right_idx].data1.xyz, u_tlas_nodes[right_idx].data2.xyz);
+            float d1 = intersect_aabb(r_world, tlas_nodes[left_idx].data1.xyz, tlas_nodes[left_idx].data2.xyz);
+            float d2 = intersect_aabb(r_world, tlas_nodes[right_idx].data1.xyz, tlas_nodes[right_idx].data2.xyz);
 
             if (d1 > d2) { float temp_d = d1; d1 = d2; d2 = temp_d; uint temp_i = left_idx; left_idx = right_idx; right_idx = temp_i; }
             if (d2 < r_world.t && stack_ptr < 64) stack[stack_ptr++] = right_idx;
@@ -109,7 +109,7 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
 
     while (stack_ptr > 0u) {
         uint node_idx = stack[--stack_ptr];
-        BvhNode node = u_blas_nodes[node_idx];
+        BvhNode node = blas_nodes[node_idx];
 
         if (intersect_aabb(r_obj, node.data1.xyz, node.data2.xyz) >= r_obj.t) continue;
 
@@ -123,7 +123,7 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
                 uint prim_idx = inst.primitive_offset + first_idx + i;
 
                 if (inst.is_point_cloud == 1u) {
-                    HitInfo p_hit = intersect_sphere(r_obj, dir_obj, u_points[prim_idx].pos.xyz, u_point_radius);
+                    HitInfo p_hit = intersect_sphere(r_obj, dir_obj, points[prim_idx].pos.xyz, point_radius);
                     if (p_hit.found) {
                         blas_hit.found = true;
                         blas_hit.is_point_hit = true;
@@ -132,7 +132,7 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
                         r_obj.t = p_hit.t;
                     }
                 } else {
-                    HitInfo tri_hit = intersect_triangle(r_obj, dir_obj, u_triangles[prim_idx]);
+                    HitInfo tri_hit = intersect_triangle(r_obj, dir_obj, triangles[prim_idx]);
                     if (tri_hit.found) {
                         blas_hit.found = true;
                         blas_hit.is_point_hit = false;
@@ -147,8 +147,8 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
             uint left_idx = inst.blas_node_offset + first_idx;
             uint right_idx = left_idx + 1;
 
-            float d1 = intersect_aabb(r_obj, u_blas_nodes[left_idx].data1.xyz, u_blas_nodes[left_idx].data2.xyz);
-            float d2 = intersect_aabb(r_obj, u_blas_nodes[right_idx].data1.xyz, u_blas_nodes[right_idx].data2.xyz);
+            float d1 = intersect_aabb(r_obj, blas_nodes[left_idx].data1.xyz, blas_nodes[left_idx].data2.xyz);
+            float d2 = intersect_aabb(r_obj, blas_nodes[right_idx].data1.xyz, blas_nodes[right_idx].data2.xyz);
 
             if (d1 > d2) { float temp_d = d1; d1 = d2; d2 = temp_d; uint temp_i = left_idx; left_idx = right_idx; right_idx = temp_i; }
             if (d2 < r_obj.t && stack_ptr < 64) stack[stack_ptr++] = right_idx;
@@ -258,20 +258,20 @@ vec3 trace(Ray r) {
 
     vec3 final_color;
     if (closest_hit.found) {
-        InstanceInfo hit_inst = u_instances[closest_hit.instance_id];
+        InstanceInfo hit_inst = instances[closest_hit.instance_id];
         if (closest_hit.is_point_hit) {
-            Point hit_point = u_points[closest_hit.primitive_idx];
+            Point hit_point = points[closest_hit.primitive_idx];
             final_color = hit_point.color.rgb;
         } else {
-            Triangle hit_tri = u_triangles[closest_hit.primitive_idx];
-            Material hit_mat = u_materials[hit_tri.material_idx];
+            Triangle hit_tri = triangles[closest_hit.primitive_idx];
+            Material hit_mat = materials[hit_tri.material_idx];
             vec2 hit_uv = hit_tri.uv0 * closest_hit.barycentric_coords.x +
                           hit_tri.uv1 * closest_hit.barycentric_coords.y +
                           hit_tri.uv2 * closest_hit.barycentric_coords.z;
-            final_color = texture(u_scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
+            final_color = texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
         }
     } else {
-        final_color = texture(u_skybox, direction).rgb;
+        final_color = texture(skybox, direction).rgb;
     }
     return final_color;
 }

@@ -1,7 +1,7 @@
 #version 430 core
 
 // Input: Vertex attributes from VBO
-layout (location = 0) in vec3 pos;
+layout (location = 0) in vec3 position;
 layout (location = 1) in vec2 vertTexCoord;
 
 // Output: Varying to fragment shader
@@ -16,5 +16,5 @@ void main()
     fragTexCoord = vertTexCoord;
 
     // Transform for column-major vertex is: P * V * M * v
-    gl_Position = camera * model * vec4(pos, 1.0);
+    gl_Position = camera * model * vec4(position, 1.0);
 }
