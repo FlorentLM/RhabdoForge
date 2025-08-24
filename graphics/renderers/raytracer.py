@@ -2,6 +2,9 @@ from typing import Tuple, List, Dict, Optional
 
 import numpy as np
 import OpenGL
+
+from graphics.renderers.panoramic import TextureViewer
+
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 from pyglm import glm
@@ -375,7 +378,7 @@ class RaytracingSceneBaker:
 
 
 class EyeRendererRay(EyeRendererBase):
-    def __init__(self, eye_model, scene: Scene, time_dithering: bool = True, nb_samples: int = 256):
+    def __init__(self, eye_model, scene: Scene, time_dithering: bool = True, nb_samples: int = 256, pano_res: Tuple[int, int] = (1024, 512)):
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
 
         # Store a reference to the scene manager
@@ -385,6 +388,11 @@ class EyeRendererRay(EyeRendererBase):
         print("Compiling ray-tracing and reduction shaders...")
         self.raytrace_shader = ShaderProgram(comp_path='shaders/ommatidia_raytracing.comp')
         self.reduction_shader = ShaderProgram(comp_path='shaders/rays_reduction.comp')
+        self.pano_raytrace_shader = None    # lazily-loaded
+
+        self._pano_res = pano_res
+        self._pano_texture_id = 0
+        self._texture_viewer = TextureViewer()
 
         # Intermediate Ray result SSBO
         self.ray_results_ssbo = glGenBuffers(1)
@@ -419,6 +427,82 @@ class EyeRendererRay(EyeRendererBase):
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ray_results_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, required_buffer_size, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
+    def _initialize_pano_resources(self):
+        """ Creates all resources needed for the panoramic view """
+
+        print("Lazy-loading panoramic ray-tracer resources...")
+
+        if self.pano_raytrace_shader is None:
+            self.pano_raytrace_shader = ShaderProgram(comp_path='shaders/panoramic_raytracing.comp')
+
+        if self._pano_texture_id == 0:
+
+            texture_id = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, texture_id)
+
+            # Use a high-precision format for the raytracing output
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, self._pano_res[0], self._pano_res[1], 0, GL_RGBA, GL_FLOAT, None)
+
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            glBindTexture(GL_TEXTURE_2D, 0)
+
+            self._pano_texture_id = texture_id
+
+        if self._texture_viewer is None:
+            self._texture_viewer = TextureViewer()
+
+    def _raytrace_panoramic(self, camera_or_agent):
+        """ Dispatches a compute shader to generate a ray-traced panoramic image """
+
+        camera = self._get_camera(camera_or_agent)
+
+        self.pano_raytrace_shader.use()
+
+        # Bind the output texture to image unit 0 for writing
+        glBindImageTexture(0, self._pano_texture_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
+
+        # Bind Textures (for reading)
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, self._scene_baked.skybox_texture)
+        glUniform1i(self.pano_raytrace_shader.get_loc('u_skybox'), 0)
+        glActiveTexture(GL_TEXTURE1)
+        glBindTexture(GL_TEXTURE_2D_ARRAY, self._scene_baked.tex_array)
+        glUniform1i(self.pano_raytrace_shader.get_loc('u_scene_textures'), 1)
+
+        # Bind Scene SSBOs (same as ommatidia shader, but starting at binding 1)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self._scene_baked.triangles_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self._scene_baked.materials_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self._scene_baked.points_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, self._scene_baked.blas_nodes_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, self._scene_baked.tlas_nodes_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, self._scene_baked.instances_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, self._scene_baked.tlas_indices_ssbo)
+
+        # Set Uniforms
+        glUniform1ui(self.pano_raytrace_shader.get_loc('u_num_tlas_nodes'), self._scene_baked.nb_TLAS_nodes)
+
+        # TODO: Handle point radius better for scenes with multiple point assets
+        point_inst = next((inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)), None)
+        radius = self._scene_baked.point_radius_by_asset.get(point_inst.asset.id, 0.1) if point_inst else 0.1
+
+        glUniform1f(self.pano_raytrace_shader.get_loc('u_point_radius'), radius)
+        camera_to_world_matrix = glm.inverse(camera.view)
+        glUniformMatrix4fv(self.pano_raytrace_shader.get_loc('u_camera_to_world'), 1, False,
+                           glm.value_ptr(camera_to_world_matrix))
+
+        # Dispatch compute shader
+        work_groups_x = (self._pano_res[0] + 15) // 16
+        work_groups_y = (self._pano_res[1] + 15) // 16
+        glDispatchCompute(work_groups_x, work_groups_y, 1)
+
+        # Barrier to ensure imageStore operations are complete before the texture is used for drawing
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
+
+        self.pano_raytrace_shader.stop()
 
     def _raytrace(self, camera_or_agent):
 
@@ -552,17 +636,27 @@ class EyeRendererRay(EyeRendererBase):
         """ Renders one of the rasterizer's supported views to the screen """
 
         if view_mode == 'compound_eye':
-            # This calls the draw() method in EyeRendererBase for Voronoi rendering
             super().draw(tiled_mode=tiled_mode)
+
+        elif view_mode == 'panoramic':
+
+            if self._pano_texture_id == 0 or self.pano_raytrace_shader is None:
+                self._initialize_pano_resources()
+
+            self._scene_baked.update()
+            self._raytrace_panoramic(camera_or_agent)
+            self._texture_viewer.draw(self._pano_texture_id)
 
     def free(self):
         """ Frees all GPU resources, including shaders and all buffers """
 
         glDeleteBuffers(1, [self.ray_results_ssbo])
-
         if self.raytrace_shader: self.raytrace_shader.free()
         if self.reduction_shader: self.reduction_shader.free()
 
-        self._scene_baked.free()
+        if self.pano_raytrace_shader: self.pano_raytrace_shader.free()
+        if self._pano_texture_id != 0: glDeleteTextures(1, [self._pano_texture_id])
+        if self._texture_viewer: self._texture_viewer.free()
 
+        self._scene_baked.free()
         super().free()

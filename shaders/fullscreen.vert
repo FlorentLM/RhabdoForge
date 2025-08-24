@@ -8,10 +8,10 @@ const vec2 positions[3] = vec2[](
 );
 
 // Output: Varying to fragment shader
-layout (location = 0) out vec2 v_screen_pos;
+layout (location = 0) out vec2 v_tex_coord;
 
-void main()
-{
-    v_screen_pos = positions[gl_VertexID];
-    gl_Position = vec4(v_screen_pos, 0.0, 1.0);
+void main() {
+    vec2 pos = positions[gl_VertexID];
+    gl_Position = vec4(pos, 0.0, 1.0);
+    v_tex_coord = pos * 0.5 + 0.5; // UVs for texture sampling
 }

@@ -197,7 +197,7 @@ class HUD:
             else:
                 avg_fps = 0
 
-            active_renderer = self.ctx.active_renderer
+            active_renderer = self.ctx.renderer
 
             is_raytracer = isinstance(active_renderer, EyeRendererRay)
 

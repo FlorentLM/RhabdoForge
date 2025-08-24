@@ -44,7 +44,6 @@ class Context:
 
         self.agent = None
         self.renderer = None
-        self.debug_renderer = None
         self.scene = None
         self.view_modes = None
         self.current_view_idx = 0
@@ -55,7 +54,6 @@ class Context:
 
     def run_interactive(self,
                         agent: Agent, scene: Scene, renderer: EyeRendererBase,
-                        debug_renderer=None,
                         window_size=None,
                         fps_limit=None,
                         v_sync=None):
@@ -79,7 +77,6 @@ class Context:
             self.agent = agent
             self.scene = scene
             self.renderer = renderer
-            self.debug_renderer = debug_renderer
 
             glfw.set_key_callback(self.window, self.key_callback)
             glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
@@ -159,7 +156,7 @@ class Context:
         glViewport(0, 0, self._window_size[0], self._window_size[1])
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        self.active_renderer.draw(self.view_mode, self.agent.camera, self.voronoi_view)
+        self.renderer.draw(self.view_mode, self.agent.camera, self.voronoi_view)
 
         if self.hud:
             self.hud.draw()
@@ -214,9 +211,3 @@ class Context:
     @property
     def view_mode(self):
         return self.view_modes[self.current_view_idx] if self.view_modes else 'compound_eye'
-
-    @property
-    def active_renderer(self):
-        if self.debug_renderer and self.view_mode != 'compound_eye':
-            return self.debug_renderer
-        return self.renderer

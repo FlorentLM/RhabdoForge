@@ -2,6 +2,9 @@
 #define COMMONS_GLSL
 
 const float PI = 3.14159265359;
+const float HPI = PI * 0.5;
+const float TWOPI = 2.0 * PI;
+
 // Constant k = 4 * log(2) for a Gaussian with FWHM = acceptance_angle
 const float GAUSS_CONSTANT_K = 2.77258872224;
 
@@ -76,7 +79,7 @@ vec3 sampledir(
 ) {
 
     // Azimuthal angle phi (uniform)
-    float phi = 2.0 * PI * u2;
+    float phi = TWOPI * u2;
 
     // Importance sample the polar angle theta for each axis (H and V)
     // using the inverse CDF of the Gaussian distribution

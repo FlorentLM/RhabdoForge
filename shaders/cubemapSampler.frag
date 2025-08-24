@@ -1,7 +1,7 @@
 #version 430 core
 
 // Input: Varying from vertex shader
-layout (location = 0) in vec2 v_screen_pos;
+layout (location = 0) in vec2 v_tex_coord;
 
 // Output: Final color to framebuffer
 layout (location = 0) out vec4 FragColor;
@@ -10,16 +10,19 @@ layout (location = 0) out vec4 FragColor;
 layout (binding = 0) uniform samplerCube u_cubemap;
 
 const float PI = 3.14159265359;
+const float HPI = PI * 0.5;
 
 void main()
 {
+    // Convert incoming UVs [0, 1] to screen position [-1, 1]
+     vec2 v_screen_pos = v_tex_coord * 2.0 - 1.0;
+
     // Convert the incoming screen position [-1, 1] into panoramic coordinates
     // longitude [-PI, PI] and latitude [-PI/2, PI/2]
     float longitude = v_screen_pos.x * PI;
-    float latitude = v_screen_pos.y * (PI / 2.0);
+    float latitude = v_screen_pos.y * HPI;
 
-    // Convert spherical coordinates back to a 3D direction vector
-    // (note: this is the reverse of the math in William Martin's eul2geo)
+    // Convert spherical coordinates back to 3D direction vector
     vec3 dir;
     dir.y = sin(latitude);
     float cos_lat = cos(latitude);

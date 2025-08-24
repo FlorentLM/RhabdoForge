@@ -36,7 +36,7 @@ void main() {
 
     // Map longitude/latitude to screen space [-1, 1]
     float screen_x = longitude / PI;
-    float screen_y = latitude / (PI / 2.0);
+    float screen_y = latitude / HPI;
     vec2 instance_screen_pos = vec2(screen_x, screen_y);
 
     vec2 acceptance_angles = om.acceptance_angles;

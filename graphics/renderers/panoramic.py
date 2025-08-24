@@ -16,7 +16,7 @@ class PanoramicEye:
     def shader(self):
         if self._shader is None:
             print("Compiling panoramic debug shaders...")
-            self._shader = ShaderProgram(vert_path='shaders/panoramic.vert', frag_path='shaders/panoramic.frag')
+            self._shader = ShaderProgram(vert_path='shaders/fullscreen.vert', frag_path='shaders/cubemapSampler.frag')
         return self._shader
 
     @property
@@ -46,6 +46,53 @@ class PanoramicEye:
     def free(self):
         """ Frees the GPU resources (shader and VAO) """
 
+        if self._shader:
+            self._shader.free()
+        if self._vao:
+            glDeleteVertexArrays(1, [self._vao])
+        self._shader = None
+        self._vao = None
+
+
+class TextureViewer:
+    """ A simple helper to render a 2D texture to a full-screen quad """
+
+    def __init__(self):
+        self._shader = None
+        self._vao = None
+
+    @property
+    def shader(self):
+        if self._shader is None:
+            print("Compiling fullscreen texture viewer shaders...")
+            self._shader = ShaderProgram(vert_path='shaders/fullscreen.vert', frag_path='shaders/textureSampler.frag')
+        return self._shader
+
+    @property
+    def vao(self):
+        if self._vao is None:
+            self._vao = glGenVertexArrays(1)
+        return self._vao
+
+    def draw(self, texture_id):
+        """ Draws the given 2D texture to the screen """
+
+        self.shader.use()
+        glDisable(GL_DEPTH_TEST)
+
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, texture_id)
+        glUniform1i(self.shader.get_loc("u_texture"), 0)
+
+        glBindVertexArray(self.vao)
+        glDrawArrays(GL_TRIANGLES, 0, 3)
+
+        glBindVertexArray(0)
+        self.shader.stop()
+        glEnable(GL_DEPTH_TEST)
+
+
+    def free(self):
         if self._shader:
             self._shader.free()
         if self._vao:

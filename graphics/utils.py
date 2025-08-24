@@ -20,38 +20,76 @@ WORLD_BACKWARD = -WORLD_FORWARD
 
 # Loader functions
 
-def compile_single_shader(path, shader_type):
-    """ Compiles a single shader from a file path """
+def _process_shader_includes_recursive(path: Path, include_stack: set):
+    """
+    Recursively processes #include directives in a shader file
+    """
+    if path in include_stack:
+        raise RuntimeError(f"Circular #include detected: {path} is already in the include stack.")
 
-    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Cannot find include file: {path}")
 
-    # Regex to find #include "some/path.glsl"
+    # Add the current file to the stack for the duration of this call
+    include_stack.add(path)
+
+    code = ""
     include_pattern = re.compile(r'#include\s+"(.*?)"')
 
-    # Start with the code from the main shader file
-    code = path.read_text()
+    with open(path, 'r') as f:
+        for line in f:
+            match = include_pattern.match(line.strip())
+            if match:
+                include_path_str = match.group(1)
+                # Included paths are relative to the file they are in
+                include_path = path.parent / include_path_str
+                # Recursively process the included file
+                code += _process_shader_includes_recursive(include_path, include_stack) + "\n"
+            else:
+                code += line
 
-    # Find all '#include' directives
-    for match in include_pattern.finditer(code):
-        include_path_str = match.group(1)
-        # The path in the '#include' is relative to the current shader file
-        include_path = path.parent / include_path_str
+    # Remove the file from the stack after processing is complete
+    include_stack.remove(path)
+    return code
 
-        if include_path.exists():
-            include_content = include_path.read_text()
-            # replace the '#include' directive with the content of the included file
-            code = code.replace(match.group(0), include_content)
-        else:
-            raise FileNotFoundError(f"Cannot find include file: {include_path}")
 
+def compile_single_shader(path, shader_type):
+    """ Compiles a single shader from a file path, processing all nested includes """
+
+    shader_path = Path(path)
+
+    # Recursively process all includes to get a single string of code
+    combined_code = _process_shader_includes_recursive(shader_path, set())
+
+    # Find and manage all #version directives in the combined code
+    version_pattern = re.compile(r'^\s*#version\s+.*$', re.MULTILINE)
+    matches = version_pattern.findall(combined_code)
+
+    if not matches:
+        raise RuntimeError(f"Shader '{shader_path}' and its includes contain no #version directive.")
+
+    if len(matches) > 1:
+        # Create a formatted error message showing the conflicting directives
+        conflicts = "\n".join(f"  - {match.strip()}" for match in matches)
+        raise RuntimeError(f"Shader '{shader_path}' contains multiple conflicting #version directives:\n{conflicts}")
+
+    # Remove the #version directive from its original position
+    version_directive = matches[0]
+    code_without_version = version_pattern.sub('', combined_code)
+
+    # SPrepend the single, valid #version directive to the top of the final code
+    final_code = version_directive + '\n' + code_without_version
+
+    # Compile the final, correctly formatted shader code
     shader = glCreateShader(shader_type)
-    glShaderSource(shader, code)
+    glShaderSource(shader, final_code)
     glCompileShader(shader)
 
     if not glGetShaderiv(shader, GL_COMPILE_STATUS):
         error = glGetShaderInfoLog(shader).decode()
-        glDeleteShader(shader)  # Don't leak the shader
+        glDeleteShader(shader)
         raise RuntimeError(f"Shader compilation error in {path}:\n{error}")
+
     return shader
 
 

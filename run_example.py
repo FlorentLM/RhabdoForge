@@ -15,7 +15,7 @@ from graphics.interactive.context import Context
 def main():
 
     # Configuration
-    USE_RAYTRACER = True
+    USE_RAYTRACER = False
     USE_POINT_CLOUD = True
     NB_OMMATIDIA = 119362
     NB_SAMPLES = 16
@@ -57,18 +57,14 @@ def main():
     # Setup Renderers
     if USE_RAYTRACER:
         renderer = EyeRendererRay(eye_model=eye_model, scene=scene, nb_samples=NB_SAMPLES, time_dithering=False)
-        # The debug renderer allows to see the scene geometry without raytracing
-        debug_renderer = EyeRendererRaster(eye_model=eye_model, nb_samples=NB_SAMPLES, scene=scene)
 
     else:
-        renderer = EyeRendererRaster(eye_model=eye_model, nb_samples=NB_SAMPLES, scene=scene)
-        debug_renderer = None
-
+        renderer = EyeRendererRaster(eye_model=eye_model, scene=scene, nb_samples=NB_SAMPLES, time_dithering=False)
 
     # Run
     if not HEADLESS:
 
-        while context.run_interactive(agent=agent, scene=scene, renderer=renderer, debug_renderer=debug_renderer):
+        while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
 
             context.input()
 
@@ -79,8 +75,8 @@ def main():
 
             dynamic_crate.transform = initial_transform * rotation
 
-            # Get sensory data from the renderer via the context
-            ommatidia_values = context.active_renderer.get_ommatidia_data(agent, to_cpu=True)
+            # Get sensory data from the renderer
+            ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=True)
 
             context.draw()
 
@@ -98,7 +94,7 @@ def main():
             agent.move(agent.forward * 0.05)
             agent.rotate(yaw_delta=-0.5, pitch_delta=0)
 
-            # Get sensory data from the renderer directly
+            # Get sensory data from the renderer
             ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=True)
 
         total_time = time.time() - start_time
@@ -107,7 +103,6 @@ def main():
 
     # Cleanup
     renderer.free()
-    if debug_renderer: debug_renderer.free()
     scene.free()
     context.free()
 
