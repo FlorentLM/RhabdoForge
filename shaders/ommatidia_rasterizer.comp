@@ -29,12 +29,12 @@ void main()
     uint ommatidium_idx = gl_GlobalInvocationID.x;
 
     // Stop if out of bounds
-    if (ommatidium_idx >= u_num_ommatidia) {
+    if (ommatidium_idx >= nb_ommatidia) {
         return;
     }
 
     // Unpack data for this specific ommatidium
-    Ommatidium om = u_ommatidia_data[ommatidium_idx];
+    Ommatidium om = ommatidia_data[ommatidium_idx];
 
     vec3 om_dir = normalize(om.direction.xyz);
 
@@ -47,25 +47,25 @@ void main()
     vec3 bitangent = cross(om_dir, tangent);
 
     // Monte Carlo sampling within a cone
-    for (int i = 0; i < u_samples_per_ommatidium; i++) {
+    for (int i = 0; i < nb_samples; i++) {
 
         // Generate two random numbers
-        float r1 = rand(vec2(ommatidium_idx, i), u_time);
-        float r2 = rand(vec2(ommatidium_idx, i) + 0.5, u_time);
+        float r1 = rand(vec2(ommatidium_idx, i), time);
+        float r2 = rand(vec2(ommatidium_idx, i) + 0.5, time);
 
         vec3 sample_dir = sampledir(om, tangent, bitangent, om_dir, r1, r2);
 
         // Each sample has equal weight (distribution is already biased)
-        vec3 sampled_color = texture(u_scene_cubemap, sample_dir).rgb;
+        vec3 sampled_color = texture(scene_cubemap, sample_dir).rgb;
         total_color += sampled_color;
     }
 
     // Simple Averaging
     // Normalize by the total number of samples taken
-    if (u_samples_per_ommatidium > 0) {
-        total_color /= float(u_samples_per_ommatidium);
+    if (nb_samples > 0) {
+        total_color /= float(nb_samples);
     }
 
     // Write the final color to the output SSBO at the correct index
-    u_ommatidia_colors[ommatidium_idx] = vec4(total_color, 1.0);
+    ommatidia_colors[ommatidium_idx] = vec4(total_color, 1.0);
 }
