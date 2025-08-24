@@ -21,10 +21,11 @@ class Context:
     Minimal OpenGL context provider for headless mode, and viewer for interactive mode
     """
 
-    def __init__(self, window_size: tuple, headless: bool = False):
+    def __init__(self, window_size: tuple, headless: bool = False, fps_limit=None):
 
         self.window_size = window_size
         self.headless = headless
+        self._fps_limit = fps_limit
 
         # Initialize Pygame and create the OpenGL context
         pygame.init()
@@ -136,7 +137,7 @@ class Context:
             self.hud.draw()
 
         pygame.display.flip()
-        self.clock.tick()
+        self.clock.tick(self._fps_limit)
 
 
     def free(self):

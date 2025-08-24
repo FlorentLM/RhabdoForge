@@ -19,10 +19,10 @@ def main():
     WINDOW_SIZE = (1280, 720)
     USE_RAYTRACER = True
     USE_POINT_CLOUD = True
-    NB_OMMATIDIA = 19362
+    NB_OMMATIDIA = 129362
     HEADLESS = False
 
-    context = Context(window_size=WINDOW_SIZE, headless=HEADLESS)  # TODO: This probably should always start as headless
+    context = Context(window_size=WINDOW_SIZE, headless=HEADLESS, fps_limit=0)  # TODO: This probably should always start as headless
 
     # Setup Scene
     scene = Scene()
@@ -40,9 +40,13 @@ def main():
     # Add multiple instances of the same asset
     scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(-3.0, 0.0, 0.0)))
     scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(3.0, 0.0, 0.0)))
+    scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(0.0, 2.0, 6.0)))
+    scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(0.0, -2.0, 6.0)))
 
     # A crate that will move
-    dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True)
+    initial_transform = glm.translate(glm.vec3(0.0, 0.0, 2.0))
+
+    dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=initial_transform)
 
     # Add a skybox
     scene.add_skybox('textures/bright_day')
@@ -56,7 +60,7 @@ def main():
 
     # Setup Renderers
     if USE_RAYTRACER:
-        renderer = EyeRendererRay(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE, nb_samples=2)
+        renderer = EyeRendererRay(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE, nb_samples=2, time_dithering=False)
         # The debug renderer allows to see the scene geometry without raytracing
         debug_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE)
 
@@ -77,7 +81,10 @@ def main():
             elapsed_time = pygame.time.get_ticks() / 1000.0
             spin_speed = 1.5
             angle = elapsed_time * spin_speed
-            dynamic_crate.transform = glm.rotate(glm.mat4(1.0), angle, glm.vec3(0.0, 1.0, 0.0))
+
+            rotation = glm.rotate(glm.mat4(1.0), angle, glm.vec3(0.0, 1.0, 0.0))
+
+            dynamic_crate.transform = initial_transform * rotation
 
             # Get sensory data from the renderer via the context
             ommatidia_values = context.active_renderer.get_ommatidia_data(agent, to_cpu=True)

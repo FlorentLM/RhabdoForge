@@ -267,48 +267,6 @@ class RaytracingSceneBaker:
         self.cpu_TLAS_prim_indices = tlas_bufs['prim_indices'].astype(np.uint32, copy=False)
         self.nb_TLAS_nodes = len(self.cpu_TLAS_nodes)
 
-    def debug_tlas_setup(self):
-
-        print("\n=== TLAS DEBUG INFO ===")
-
-        print(f"Number of instances: {len(self.scene.instances)}")
-        print(f"Number of unique assets: {len(self.scene.assets)}")
-        print(f"Number of BLASes: {len(self.BLASes)}")
-
-        for i, inst in enumerate(self.scene.instances):
-            asset = inst.asset
-            blas_info = self.asset_to_blas_map[asset.id]
-
-            print(f"\nInstance {i}: {asset.name}")
-            print(f"  Asset ID: {asset.id}")
-            print(f"  BLAS ID: {blas_info['id']}")
-            print(f"  Node offset: {blas_info['node_offset']}")
-            print(f"  Primitive offset: {blas_info['prim_offset']}")
-            print(f"  Is point cloud: {isinstance(asset, PointsAsset)}")
-
-            if isinstance(asset, MeshAsset):
-                print(f"  Num triangles: {asset.num_triangles}")
-                print(f"  Material ID: {self.material_map.get(asset.id, 0)}")
-            elif isinstance(asset, PointsAsset):
-                print(f"  Num points: {asset.num_points}")
-
-        print(f"\nTLAS primitive indices: {self.cpu_TLAS_prim_indices}")
-        print(f"TLAS nodes count: {self.nb_TLAS_nodes}")
-
-        # Check if multiple instances share the same BLAS
-        blas_usage = {}
-        for inst in self.scene.instances:
-            blas_id = self.asset_to_blas_map[inst.asset.id]['id']
-            if blas_id not in blas_usage:
-                blas_usage[blas_id] = []
-            blas_usage[blas_id].append(inst.asset.name)
-
-        print(f"\nBLAS usage:")
-        for blas_id, asset_names in blas_usage.items():
-            print(f"  BLAS {blas_id}: {asset_names}")
-
-        print("======================\n")
-
     def _upload_buffers(self):
 
         def upload(buffer_id, data, usage, dtype, min_elms: int = 1):
@@ -340,28 +298,28 @@ class RaytracingSceneBaker:
         for scene_idx, tlas_idx in self.dynamic_instance_map.items():
             instance = self.scene.instances[scene_idx]
 
-            # we want the transforms as row-major
             transform = np.asarray(instance.transform)
             inverse_transform = np.asarray(glm.inverse(instance.transform))
 
-            # Update TLAS instance data for pytinybvh refit
-            self.TLAS.instances[tlas_idx]['transform'] = transform
+            # Update TLAS instance data
+            self.TLAS.set_instance_transform(tlas_idx, transform)
 
-            # Update our custom SSBO data for the shader
             self.instances_info[tlas_idx]['transform'] = transform
             self.instances_info[tlas_idx]['inverse_transform'] = inverse_transform
+
             needs_refit = True
 
         if needs_refit:
-            # Refit the BVH structure
             self.TLAS.refit_tlas()
 
-            # Re-upload the updated TLAS node data to the GPU
-            tlas_nodes_data = self.TLAS.get_buffers()['nodes']
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.tlas_nodes_ssbo)
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, tlas_nodes_data.nbytes, tlas_nodes_data)
+            # Get new TLAS bounds
+            new_tlas_data = self.TLAS.get_buffers()['nodes']
 
-            # Re-upload the updated instance data (transforms) to the GPU
+            # Re-upload the updated TLAS data
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.tlas_nodes_ssbo)
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, new_tlas_data.nbytes, new_tlas_data)
+
+            # Re-upload the updated instance data
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.instances_ssbo)
             glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.instances_info.nbytes, self.instances_info)
 
@@ -507,7 +465,7 @@ class EyeRendererRay(EyeRendererBase):
 
         # TODO: Would be better with one radius per point, based on neighbours density
         point_inst = next((inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)), None)
-        radius = self._scene_baked.point_radius_by_asset.get(point_inst.asset.id, 0.1)
+        radius = self._scene_baked.point_radius_by_asset.get(point_inst.asset.id, 0.1) if point_inst else 0.1
 
         glUniform1f(self.raytrace_shader.get_loc('u_point_radius'), radius)
 
