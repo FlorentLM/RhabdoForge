@@ -59,11 +59,8 @@ class Context:
                         window_size=None,
                         fps_limit=None,
                         v_sync=None):
-        """
-        Checks if the interactive loop should continue.
-        On the first call, it initializes and shows the window.
-        GUI parameters can be overridden here.
-        """
+        """ On first call, initialises and shows the window. Then checks if the interactive loop should continue. """
+
         if not self._interactive_initialised:
 
             if window_size is not None:
@@ -87,11 +84,12 @@ class Context:
             glfw.set_key_callback(self.window, self.key_callback)
             glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
 
-            self.hud = HUD(self)
             self.view_modes = ['compound_eye', 'panoramic']
             self.current_view_idx = 0
             self.voronoi_view = False
-            self.hud._update_controls_text()
+
+            self.hud = HUD(self)
+
             self._interactive_initialised = True
 
         return not glfw.window_should_close(self.window)

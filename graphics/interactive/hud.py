@@ -158,7 +158,10 @@ class HUD:
         self._controls_shadow_verts, self._controls_fg_verts = None, None
         self._stats_shadow_verts, self._stats_fg_verts = None, None
 
+        self._update_controls_text()
+
     def _update_controls_text(self):
+
         # The main renderer (not the debug one) determines the "sample" label
         sample_label = "Rays" if self.ctx.renderer and isinstance(self.ctx.renderer, EyeRendererRay) else "Samples"
 
