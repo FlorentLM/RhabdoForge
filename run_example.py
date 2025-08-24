@@ -15,7 +15,6 @@ from graphics.interactive.context import Context
 def main():
 
     # Configuration
-    WINDOW_SIZE = (1280, 720)
     USE_RAYTRACER = True
     USE_POINT_CLOUD = True
     NB_OMMATIDIA = 119362
@@ -56,12 +55,12 @@ def main():
 
     # Setup Renderers
     if USE_RAYTRACER:
-        renderer = EyeRendererRay(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE, nb_samples=2, time_dithering=False)
+        renderer = EyeRendererRay(eye_model=eye_model, scene=scene, nb_samples=2, time_dithering=False)
         # The debug renderer allows to see the scene geometry without raytracing
-        debug_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE)
+        debug_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene)
 
     else:
-        renderer = EyeRendererRaster(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE)
+        renderer = EyeRendererRaster(eye_model=eye_model, scene=scene)
         debug_renderer = None
 
 

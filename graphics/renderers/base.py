@@ -17,11 +17,9 @@ class EyeRendererBase(ABC):
     """
     Abstract base class for an insect eye model, handling visualization and common properties
     """
-    def __init__(self, eye_model: CompoundEye, time_dithering: bool = True, nb_samples: int = 256, window_size: Tuple[int, int] = (1280, 720)):
+    def __init__(self, eye_model: CompoundEye, time_dithering: bool = True, nb_samples: int = 256):
         self.model = eye_model
         self.num_ommatidia = self.model.num_ommatidia
-
-        self.w, self.h = window_size
 
         self.ommatidia_input_data = self.model.pack()
 

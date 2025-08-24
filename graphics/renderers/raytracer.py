@@ -375,8 +375,8 @@ class RaytracingSceneBaker:
 
 
 class EyeRendererRay(EyeRendererBase):
-    def __init__(self, eye_model, scene: Scene, time_dithering: bool = True, nb_samples: int = 256, window_size: Tuple[int, int] = (1280, 720)):
-        super().__init__(eye_model, window_size=window_size, time_dithering=time_dithering, nb_samples=nb_samples)
+    def __init__(self, eye_model, scene: Scene, time_dithering: bool = True, nb_samples: int = 256):
+        super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
 
         # Store a reference to the scene manager
         self.scene = scene   # just for convenience
