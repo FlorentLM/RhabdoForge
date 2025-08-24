@@ -1,6 +1,5 @@
 import time
 
-import pygame
 from pyglm import glm
 
 from graphics.scene import Scene, PointsAsset, MeshAsset
@@ -19,10 +18,10 @@ def main():
     WINDOW_SIZE = (1280, 720)
     USE_RAYTRACER = True
     USE_POINT_CLOUD = True
-    NB_OMMATIDIA = 129362
+    NB_OMMATIDIA = 119362
     HEADLESS = False
 
-    context = Context(window_size=WINDOW_SIZE, headless=HEADLESS, fps_limit=0)  # TODO: This probably should always start as headless
+    context = Context()
 
     # Setup Scene
     scene = Scene()
@@ -36,6 +35,7 @@ def main():
 
     # Load the mesh asset data
     crate_asset = MeshAsset('crate', vertex_data=CUBE_VERTICES, texture_path='textures/wood.jpg')
+    # rock_asset = MeshAsset('rock', vertex_data=CUBE_VERTICES, texture_path='textures/rock.jpg')
 
     # Add multiple instances of the same asset
     scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(-3.0, 0.0, 0.0)))
@@ -71,16 +71,14 @@ def main():
     # Run
 
     if not HEADLESS:
-        # Setup and run interactive viewer
 
-        while context.interactive(agent=agent, scene=scene, renderer=renderer, debug_renderer=debug_renderer):
+        while context.run_interactive(agent=agent, scene=scene, renderer=renderer, debug_renderer=debug_renderer):
 
-            context.handle_input()
+            context.input()
 
             # Rotate dynamic test crate
-            elapsed_time = pygame.time.get_ticks() / 1000.0
             spin_speed = 1.5
-            angle = elapsed_time * spin_speed
+            angle = context.elapsed_time * spin_speed
 
             rotation = glm.rotate(glm.mat4(1.0), angle, glm.vec3(0.0, 1.0, 0.0))
 

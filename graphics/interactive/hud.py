@@ -1,14 +1,16 @@
-import os
-os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
+
 import OpenGL
+
+from graphics import utils
+
 OpenGL.ERROR_CHECKING = False
 
-import string
+from pathlib import Path
 from collections import deque
-
 import numpy as np
-import pygame
+import json
 
+from PIL import Image
 from OpenGL.GL import *
 from pyglm import glm
 
@@ -19,19 +21,15 @@ from graphics.renderers.raytracer import EyeRendererRay
 class FontRenderer:
     """ Renders text on the GPU using a font atlas """
 
-    def __init__(self, font_name, font_size):
-        self.font_name = font_name
-        self.font_size = font_size
-        self.char_data = {}  # to store metrics and UVs for each character
-
+    def __init__(self):
+        self.char_data = {}
         self.text_program = load_shaders('shaders/text.vert', 'shaders/text.frag')
 
         self.proj_loc = glGetUniformLocation(self.text_program, "projection")
         self.color_loc = glGetUniformLocation(self.text_program, "textColor")
         self.atlas_loc = glGetUniformLocation(self.text_program, "fontAtlas")
 
-        # Generate font atlas texture
-        self._create_font_atlas()
+        self._load_atlas_data()
 
         # VAO and VBO for text quads
         self.vao = glGenVertexArrays(1)
@@ -47,72 +45,42 @@ class FontRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
-    def _create_font_atlas(self):
-        # Use pygame to render glyphs and build the atlas
-        font = pygame.font.SysFont(self.font_name, self.font_size)
+    def _load_atlas_data(self, font_name='freesansbold.ttf'):
+        """ Loads atlas metadata from JSON and the texture from the associated PNG file """
 
-        # Characters to include in the atlas
-        chars_to_render = string.printable
+        atlas_dir = Path('graphics/font')
 
-        # Determine atlas size (fixed grid)
-        atlas_cols = 16
-        atlas_rows = (len(chars_to_render) + atlas_cols - 1) // atlas_cols
+        json_path = (atlas_dir / f'{font_name}.json')
+        if not json_path.exists():
+            utils.generate_and_save_atlas(font_name=font_name, font_size=22, output_dir=atlas_dir)
 
-        # Get max char dimensions to size cells
-        max_w, max_h = 0, 0
-        for char in chars_to_render:
-            w, h = font.size(char)
-            if w > max_w: max_w = w
-            if h > max_h: max_h = h
+        # Load metadata from JSON
+        with json_path.open(encoding="UTF-8") as f:
+            data = json.load(f)
+            self.char_data = data['char_data']
+            self.font_size = data['font_size']
+            image_filename = data['atlas_image']
 
-        cell_w, cell_h = max_w, max_h
-        atlas_width = atlas_cols * cell_w
-        atlas_height = atlas_rows * cell_h
+        # Load image texture
+        image_path = atlas_dir / image_filename
+        image = Image.open(image_path).convert("RGBA")
 
-        atlas_surface = pygame.Surface((atlas_width, atlas_height), pygame.SRCALPHA)
-        atlas_surface.fill((0, 0, 0, 0))  # Transparent background
+        image_data = image.tobytes()
+        atlas_width, atlas_height = image.size
 
-        # Render each character and store its data
-        for i, char in enumerate(chars_to_render):
-            char_surface = font.render(char, True, (255, 255, 255, 255))
-            metrics = font.metrics(char)[0]  # (minx, maxx, miny, maxy, advance)
-            advance = metrics[4]
-
-            col = i % atlas_cols
-            row = i // atlas_cols
-            x, y = col * cell_w, row * cell_h
-
-            atlas_surface.blit(char_surface, (x, y))
-
-            # Store character data: size, uv coords, and advance width
-            uv_x0 = x / atlas_width
-            uv_y0 = y / atlas_height
-            uv_x1 = (x + char_surface.get_width()) / atlas_width
-            uv_y1 = (y + char_surface.get_height()) / atlas_height
-
-            self.char_data[char] = {
-                'w': char_surface.get_width(),
-                'h': char_surface.get_height(),
-                'uv_rect': (uv_x0, uv_y0, uv_x1, uv_y1),
-                'advance': advance
-            }
-
-        # Convert pygame surface to OpenGL Texture
-        texture_data = pygame.image.tostring(atlas_surface, "RGBA", False)
+        # Create OpenGL Texture
         self.atlas_texture = glGenTextures(1)
+
         glBindTexture(GL_TEXTURE_2D, self.atlas_texture)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-
-        # Set pixel alignment
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, atlas_width, atlas_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, texture_data)
 
-        # Unbind and reset default alignment
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, atlas_width, atlas_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image_data)
         glBindTexture(GL_TEXTURE_2D, 0)
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4)  # Reset to default
 
     def get_text_width(self, text, scale=1.0):
         """ Calculates the pixel width of a string based on the font atlas """
@@ -173,10 +141,15 @@ class HUD:
 
         self.show = True
 
-        self.font_renderer = FontRenderer(pygame.font.get_default_font(), 22)
+        self.font_renderer = FontRenderer()
+
         self.projection_matrix = glm.ortho(0, self.width, 0, self.height, -1.0, 1.0)
-        self.fps_rolling = deque(maxlen=5)
-        self.update_interval_ms = 250
+
+        # FPS tracking logic
+        self.frame_times = deque(maxlen=60)  # Store timestamps of last 60 frames
+        self.last_fps_update_time = 0
+
+        self.update_interval = 0.25  # update text every 250ms
         self._last_update_time = 0
         self._info_text = ""
         self._controls_text_lines = []
@@ -206,14 +179,20 @@ class HUD:
         self._controls_fg_verts = np.array(fg_verts, dtype=np.float32) if fg_verts else None
 
     def _update_text_vertices(self):
-        current_time = pygame.time.get_ticks()
 
-        self.fps_rolling.append(self.ctx.clock.get_fps())
+        current_time = self.ctx.elapsed_time
 
-        if current_time - self._last_update_time > self.update_interval_ms:
+        self.frame_times.append(current_time)
+
+        if current_time - self._last_update_time > self.update_interval:
             self._last_update_time = current_time
 
-            avg_fps = np.mean(self.fps_rolling) if self.fps_rolling else 0
+            # Calculate FPS based on timestamps
+            if len(self.frame_times) > 1:
+                time_diff = self.frame_times[-1] - self.frame_times[0]
+                avg_fps = (len(self.frame_times) - 1) / time_diff if time_diff > 0 else 0
+            else:
+                avg_fps = 0
 
             active_renderer = self.ctx.active_renderer
 
