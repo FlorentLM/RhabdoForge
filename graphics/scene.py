@@ -141,7 +141,7 @@ class Instance:
         self.asset = asset
 
         if transform is not None:
-            self.transform = glm.mat4(transform)
+            self.transform = glm.mat4(1.0) * glm.vec3(transform)
         else:
             self.transform = glm.mat4(1.0)
 

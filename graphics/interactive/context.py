@@ -126,10 +126,10 @@ class Context:
 
         move_direction = glm.vec3(0.0)
 
-        if glfw.get_key(self.window, glfw.KEY_W) == glfw.PRESS: move_direction += self.agent.camera.forward
-        if glfw.get_key(self.window, glfw.KEY_S) == glfw.PRESS: move_direction += self.agent.camera.backward
-        if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS: move_direction += self.agent.camera.left
-        if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS: move_direction += self.agent.camera.right
+        if glfw.get_key(self.window, glfw.KEY_W) == glfw.PRESS: move_direction += self.agent.forward
+        if glfw.get_key(self.window, glfw.KEY_S) == glfw.PRESS: move_direction += self.agent.backward
+        if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS: move_direction += self.agent.left
+        if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS: move_direction += self.agent.right
         if glfw.get_key(self.window, glfw.KEY_SPACE) == glfw.PRESS: move_direction += WORLD_UP
         if glfw.get_key(self.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS: move_direction += WORLD_DOWN
 
@@ -156,7 +156,7 @@ class Context:
         glViewport(0, 0, self._window_size[0], self._window_size[1])
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        self.renderer.draw(self.view_mode, self.agent.camera, self.voronoi_view)
+        self.renderer.draw(self.view_mode, self.agent, self.voronoi_view)
 
         if self.hud:
             self.hud.draw()

@@ -15,7 +15,7 @@ from graphics.interactive.context import Context
 def main():
 
     # Configuration
-    USE_RAYTRACER = False
+    USE_RAYTRACER = True
     USE_POINT_CLOUD = True
     NB_OMMATIDIA = 119362
     NB_SAMPLES = 16
@@ -34,15 +34,13 @@ def main():
     # rock_asset = MeshAsset('rock', vertex_data=CUBE_VERTICES, texture_path='textures/rock.jpg')
 
     # Add multiple instances of the same asset
-    scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(-3.0, 0.0, 0.0)))
-    scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(3.0, 0.0, 0.0)))
-    scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(0.0, 2.0, 6.0)))
-    scene.add_instance(asset=crate_asset, transform=glm.translate(glm.vec3(0.0, -2.0, 6.0)))
+    scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))
+    scene.add_instance(asset=crate_asset, transform=(3.0, 0.0, 0.0))
+    scene.add_instance(asset=crate_asset, transform=(0.0, 2.0, 6.0))
+    scene.add_instance(asset=crate_asset, transform=(0.0, -2.0, 6.0))
 
     # A crate that will move
-    initial_transform = glm.translate(glm.vec3(0.0, 0.0, 2.0))
-
-    dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=initial_transform)
+    dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
 
     # Add a skybox
     scene.add_skybox('textures/bright_day')
@@ -71,9 +69,8 @@ def main():
             # Rotate dynamic test crate
             spin_speed = 1.5
             angle = context.elapsed_time * spin_speed
-            rotation = glm.rotate(glm.mat4(1.0), angle, glm.vec3(0.0, 1.0, 0.0))    # TODO: A cleaner interface for transforms
 
-            dynamic_crate.transform = initial_transform * rotation
+            dynamic_crate.rotate(angle, (0.0, 1.0, 0.0))
 
             # Get sensory data from the renderer
             ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=True)
