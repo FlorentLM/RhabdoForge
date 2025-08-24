@@ -7,7 +7,7 @@ uniform sampler2D fontAtlas;
 uniform vec4 textColor;
 
 void main() {
-    // Sample the font atlas (which we stored in the red channel)
+    // Sample the fonts atlas (which we stored in the red channel)
     float alpha = texture(fontAtlas, TexCoords).a;
 
     // Discard fragment if it's fully transparent to avoid artifacts

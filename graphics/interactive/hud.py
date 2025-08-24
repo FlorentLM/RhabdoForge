@@ -19,7 +19,7 @@ from graphics.renderers.raytracer import EyeRendererRay
 
 
 class FontRenderer:
-    """ Renders text on the GPU using a font atlas """
+    """ Renders text on the GPU using a fonts atlas """
 
     def __init__(self):
         self.char_data = {}
@@ -48,7 +48,7 @@ class FontRenderer:
     def _load_atlas_data(self, font_name='freesansbold.ttf'):
         """ Loads atlas metadata from JSON and the texture from the associated PNG file """
 
-        atlas_dir = Path('graphics/font')
+        atlas_dir = Path('graphics/interactive/fonts')
 
         json_path = (atlas_dir / f'{font_name}.json')
         if not json_path.exists():
@@ -83,7 +83,7 @@ class FontRenderer:
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4)  # Reset to default
 
     def get_text_width(self, text, scale=1.0):
-        """ Calculates the pixel width of a string based on the font atlas """
+        """ Calculates the pixel width of a string based on the fonts atlas """
         width = 0
         for char in text:
             if char in self.char_data:

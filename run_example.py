@@ -1,7 +1,5 @@
 import time
 
-from pyglm import glm
-
 from graphics.scene import Scene, PointsAsset, MeshAsset
 from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
@@ -9,15 +7,15 @@ from geometry.primitives import CUBE_VERTICES
 
 from graphics.renderers.rasterizer import EyeRendererRaster
 from graphics.renderers.raytracer import EyeRendererRay
-from graphics.interactive.context import Context
+from graphics.context import Context
 
 
 def main():
 
     # Configuration
-    USE_RAYTRACER = False
+    USE_RAYTRACER = True
     USE_POINT_CLOUD = True
-    NB_OMMATIDIA = 119362
+    NB_OMMATIDIA = 19362
     NB_SAMPLES = 16
     HEADLESS = False
 
@@ -67,10 +65,7 @@ def main():
             context.input()
 
             # Rotate dynamic test crate
-            spin_speed = 0.1
-            angle = context.elapsed_time * spin_speed
-
-            dynamic_crate.rotate(angle, (0.0, 1.0, 0.0))
+            dynamic_crate.rotate(0.5, (0.0, 1.0, 0.0))
 
             # Get sensory data from the renderer
             ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=True)
@@ -80,7 +75,7 @@ def main():
     else:
         # Run headless experiment loop
 
-        max_steps = 1000
+        max_steps = 10000
 
         print(f"Running headless simulation for {max_steps} steps...")
         start_time = time.time()
@@ -96,7 +91,6 @@ def main():
 
         total_time = time.time() - start_time
         print(f"Finished. {max_steps} frames in {total_time:.2f}s ({max_steps / total_time:.2f} FPS).")
-
 
     # Cleanup
     renderer.free()

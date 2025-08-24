@@ -293,9 +293,9 @@ class ShaderProgram:
 
 ##
 
-def generate_and_save_atlas(font_name=None, font_size=22, output_dir='font', color=(255, 255, 255, 255)):
+def generate_and_save_atlas(font_name=None, font_size=22, output_dir='interactive/fonts', color=(255, 255, 255, 255)):
     """
-    Generates a font atlas texture and its corresponding metadata file
+    Generates a fonts atlas texture and its corresponding metadata file
     """
     from os import environ
     environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
@@ -308,7 +308,7 @@ def generate_and_save_atlas(font_name=None, font_size=22, output_dir='font', col
     if font_name is None:
         font_name = pygame.font.get_default_font()
 
-    print(f"Generating font atlas for '{font_name}' (size {font_size})...")
+    print(f"Generating fonts atlas for '{font_name}' (size {font_size})...")
 
     font = pygame.font.SysFont(font_name, font_size)
 
@@ -374,6 +374,6 @@ def generate_and_save_atlas(font_name=None, font_size=22, output_dir='font', col
             'char_data': char_data
         }, f, indent=4)
 
-    print(f"Saved font atlas for '{font_name}' (size {font_size}).")
+    print(f"Saved fonts atlas for '{font_name}' (size {font_size}).")
 
     pygame.quit()
