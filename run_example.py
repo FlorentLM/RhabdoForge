@@ -23,14 +23,10 @@ def main():
 
     context = Context()
 
-    # Setup Scene
     scene = Scene()
 
     if USE_POINT_CLOUD:
-        # Load the asset data once
         point_cloud_asset = PointsAsset('canberra', file_path='assets/canberra_filtered.ply')
-
-        # Add an instance of it with specific properties
         scene.add_instance(point_cloud_asset, point_radius=0.15)
 
     # Load the mesh asset data
@@ -68,8 +64,8 @@ def main():
         renderer = EyeRendererRaster(eye_model=eye_model, scene=scene, window_size=WINDOW_SIZE)
         debug_renderer = None
 
-    # Run
 
+    # Run
     if not HEADLESS:
 
         while context.run_interactive(agent=agent, scene=scene, renderer=renderer, debug_renderer=debug_renderer):
@@ -79,8 +75,7 @@ def main():
             # Rotate dynamic test crate
             spin_speed = 1.5
             angle = context.elapsed_time * spin_speed
-
-            rotation = glm.rotate(glm.mat4(1.0), angle, glm.vec3(0.0, 1.0, 0.0))
+            rotation = glm.rotate(glm.mat4(1.0), angle, glm.vec3(0.0, 1.0, 0.0))    # TODO: A cleaner interface for transforms
 
             dynamic_crate.transform = initial_transform * rotation
 
@@ -93,7 +88,6 @@ def main():
         # Run headless experiment loop
 
         max_steps = 1000
-        results = []
 
         print(f"Running headless simulation for {max_steps} steps...")
         start_time = time.time()
@@ -107,14 +101,11 @@ def main():
             # Get sensory data from the renderer directly
             ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=True)
 
-            results.append(ommatidia_values)
-
         total_time = time.time() - start_time
         print(f"Finished. {max_steps} frames in {total_time:.2f}s ({max_steps / total_time:.2f} FPS).")
 
-    # Cleanup
-    print("Cleaning up resources...")
 
+    # Cleanup
     renderer.free()
     if debug_renderer: debug_renderer.free()
     scene.free()
