@@ -11,13 +11,13 @@ FORWARD_VEC4 = glm.vec4(WORLD_FORWARD, 0.0)
 
 
 class Agent:
-    """ Represents an agent (an insect) in the 3D world """
+    """ Represents an agent in the 3D world """
 
     def __init__(self,
                  position: Sequence[float | int] = (0.0, 0.0, 0.0),
                  yaw: float = 0.0,
                  pitch: float = 0.0,
-                 forward_roll: float = 0.0,
+                 roll: float = 0.0,
                  fov: float = 50.0,
                  near: float = 0.1,
                  far: float = 100.0,
@@ -28,7 +28,7 @@ class Agent:
         self._position = glm.vec3(position)
         self.tilt = self.pitch = self.vertical_angle = pitch
         self.pan = self.yaw = self.horizontal_angle = yaw
-        self.roll = self.forward_angle = forward_roll
+        self.roll = self.forward_angle = roll
 
         self._aspect_ratio = ratio
         self._fov = fov
@@ -42,19 +42,23 @@ class Agent:
 
     def move(self, direction: glm.vec3 | ArrayLike):
         """ Moves the agent in a specified direction vector """
+
         direction = glm.vec3(direction)
+
         if glm.length(direction) > 0:
             displacement = glm.normalize(direction) * self.move_sensitivity
             self._position += displacement
 
     def rotate(self, yaw_delta: float, pitch_delta: float):
         """ Rotates the agent's view """
-        self.yaw -= yaw_delta * self.mouse_sensitivity
-        self.pitch -= pitch_delta * self.mouse_sensitivity
-        self.pitch = np.clip(self.pitch, -89.0, 89.0)
+
+        self.yaw = -yaw_delta * self.mouse_sensitivity
+        self.pitch = -pitch_delta * self.mouse_sensitivity
+        self.pitch = np.clip(self.pitch, -89.999, 89.999)
 
     def lookat(self, target_pos: glm.vec3 | ArrayLike):
         """ Orients the agent to look at a specific target position """
+
         target_pos = glm.vec3(target_pos)
 
         # Avoid issues if the target is at the agent's position
@@ -133,7 +137,7 @@ class Agent:
     @property
     def forward(self):
         # Transform the world's forward vector by the orientation
-        # (negative sign to look "forward" into a right-handed system)
+        # (negative sign to look 'forward' into a right-handed system)
         return glm.normalize((self.orientation * glm.vec4(0, 0, -1, 0)).xyz)
 
     @property
@@ -169,5 +173,5 @@ class Agent:
 
     @property
     def matrix(self):
-        # For column-major matrices (like pyglm), the order is P * V
+        # For column-major matrices (like glm), the order is P * V
         return self.projection * self.view

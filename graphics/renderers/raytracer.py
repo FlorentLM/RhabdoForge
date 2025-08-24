@@ -1,22 +1,21 @@
-from typing import Tuple, List, Dict, Optional
-
-import numpy as np
 import OpenGL
-
-from graphics.renderers.panoramic import TextureViewer
-
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
+
+from typing import Tuple, List, Dict, Optional
+import numpy as np
+
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype
 
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, MeshAsset, PointsAsset
 from graphics.utils import load_texture, VEC_DTYPE, ShaderProgram
+from graphics.renderers.panoramic import TextureViewer
 
 
-# structured numpy dtype for an instance information SSBO
-instance_info_dtype = np.dtype([
+# Custom more detailed dtype for the GPU SSBO
+gpu_instance_dtype = np.dtype([
     ('transform', np.float32, (4, 4)),
     ('inverse_transform', np.float32, (4, 4)),
     ('blas_node_offset', np.uint32),
@@ -28,45 +27,47 @@ instance_info_dtype = np.dtype([
 
 class RaytracingSceneBaker:
     """
-    Manages the conversion of a Scene into a GPU-ready TLAS/BLAS structure
+    Manages the creation, ownership, and updating of BVH structures
+    and GPU buffers from a logical Scene object.
     """
     def __init__(self, scene: Scene):
         self.scene = scene
-        self.TLAS = None
+
+        self.TLAS: Optional[BVH] = None
         self.BLASes: List[BVH] = []
-        self.dynamic_instance_map: Dict[int, int] = {} # Maps scene instance index to TLAS instance index
+
+        # Maps the ID of a Scene.Instance to its index in the TLAS array
+        self.dynamic_instance_map: Dict[int, int] = {}
 
         # OpenGL handles
         self.skybox_texture = 0
-        self.materials_ssbo = 0
-        self.tex_array = 0
-        self.triangles_ssbo = 0
-        self.points_ssbo = 0
-        self.tlas_nodes_ssbo = 0
-        self.blas_nodes_ssbo = 0
-        self.instances_ssbo = 0
+        self.materials_ssbo, self.tex_array = 0, 0
+        self.triangles_ssbo, self.points_ssbo = 0, 0
+        self.tlas_nodes_ssbo, self.blas_nodes_ssbo = 0, 0
+        self.instances_info_ssbo, self.tlas_indices_ssbo = 0, 0
 
-        # CPU-side data
-        self.instances_info: Optional[np.ndarray] = None
-        self.nb_TLAS_nodes: int = 0
+        # CPU-side data for building and updating
+        self.gpu_instances_info: Optional[np.ndarray] = None
         self.material_map: Dict[int, int] = {}
         self.asset_to_blas_map: Dict[int, Dict] = {}
-
-        self.point_radius_by_asset = {}
+        self.point_radius_by_asset: Dict[int, float] = {}
 
         print("Baking ray-tracing scene...")
+        if not self.scene.instances:
+            print("Warning: Scene is empty, nothing to bake.")
+            return
 
         self.skybox_texture = self.scene.skybox_texture_id
 
         self._pack_materials()
+
         self._build_BLASes()
         self._build_TLAS()
-
-        # self.debug_tlas_setup()
 
         self._upload_buffers()
 
         print("Ray-tracing scene baking complete.")
+
 
     def _pack_materials(self):
 
@@ -139,136 +140,103 @@ class RaytracingSceneBaker:
 
     def _build_BLASes(self):
 
-        # Master lists to collect all primitive and node data
-        packed_tris = []
-        packed_points = []
-        blas_nodes = []
-
-        # keep track of the current total size to calculate offsets
-        current_tri_offset = 0
-        current_point_offset = 0
-        current_node_offset = 0
+        packed_tris, packed_points, blas_nodes = [], [], []
+        current_tri_offset, current_point_offset, current_node_offset = 0, 0, 0
 
         print(f"Building BLASes for {len(self.scene.assets)} unique assets...")
         for asset in self.scene.assets.values():
 
-            # ensure each unique asset gets only one BLAS
             if asset.id in self.asset_to_blas_map:
                 continue
 
-            # 'blas_id' is the index in the self.blases list
             blas_id = len(self.BLASes)
+            prim_offset = 0
+            blas = None
 
-            # Create the BLAS for the asset
             if isinstance(asset, MeshAsset):
                 interleaved = asset.vertex_data.reshape(-1, 5)
-                xyz = interleaved[:, :3]
+                xyz = interleaved[:, :3].astype(np.float32)
+                verts4 = np.zeros((xyz.shape[0], 4), dtype=np.float32)
+                verts4[:, :3] = xyz
 
-                verts4 = np.empty((xyz.shape[0], 4), dtype=np.float32)
-                verts4[:, :3] = xyz.astype(np.float32, copy=False)
-                verts4[:, 3] = 1.0
-
-                # TODO: Use indexed meshes instead
                 blas = BVH.from_vertices(verts4)
 
-                bvh_buffers = blas.get_buffers()
-                prim_indices = bvh_buffers['prim_indices']
+                prim_indices = blas.get_buffers()['prim_indices']
 
-                # Pack this asset's triangles
                 newly_packed_tris = self._pack_triangles(asset, prim_indices)
                 prim_offset = current_tri_offset
                 packed_tris.append(newly_packed_tris)
                 current_tri_offset += len(newly_packed_tris)
 
             elif isinstance(asset, PointsAsset):
-
                 point_inst = next((inst for inst in self.scene.instances if inst.asset.id == asset.id), None)
-
                 radius = point_inst.properties.get('point_radius', 0.1) if point_inst else 0.1
                 self.point_radius_by_asset[asset.id] = radius
 
-                blas = BVH.from_points(asset.points.astype(np.float32, copy=False), radius=radius)
+                blas = BVH.from_points(asset.points.astype(np.float32), radius=radius)
 
-                bvh_buffers = blas.get_buffers()
-                prim_indices = bvh_buffers['prim_indices']
+                prim_indices = blas.get_buffers()['prim_indices']
 
-                # Pack this asset's points
                 newly_packed_points = self._pack_points(asset, prim_indices)
                 prim_offset = current_point_offset
                 packed_points.append(newly_packed_points)
                 current_point_offset += len(newly_packed_points)
 
-            else:
-                continue
+            if blas:
+                self.asset_to_blas_map[asset.id] = {
+                    'id': blas_id,
+                    'prim_offset': prim_offset,
+                    'node_offset': current_node_offset
+                }
+                self.BLASes.append(blas)
+                nodes = blas.get_buffers()['nodes']
+                blas_nodes.append(nodes)
+                current_node_offset += len(nodes)
 
-            # Store map from the asset's unique ID to its BLAS index and data offsets
-            self.asset_to_blas_map[asset.id] = {
-                'id': blas_id,
-                'prim_offset': prim_offset,
-                'node_offset': current_node_offset
-            }
-
-            self.BLASes.append(blas)
-
-            # Append this BLAS's node data to the master node list
-            nodes = bvh_buffers['nodes']
-
-            blas_nodes.append(nodes)
-            current_node_offset += len(nodes)
-
-            asset_str = 'Mesh' if isinstance(asset, MeshAsset) else 'Points'
-            prim_str = 'triangles' if isinstance(asset, MeshAsset) else 'points'
-            print(f"Built BLAS {blas_id} for {asset_str} asset '{asset.name}' with {blas.prim_count:,} {prim_str}")
-
-        # Create final flat arrays for GPU upload by concatenating the lists of arrays
         self.cpu_triangles = np.concatenate(packed_tris).ravel() if packed_tris else None
         self.cpu_points = np.concatenate(packed_points).ravel() if packed_points else None
-        self.cpu_BLASes = np.concatenate(blas_nodes).astype(np.float32, copy=False) if blas_nodes else None
+        self.cpu_BLASes = np.concatenate(blas_nodes).astype(np.float32) if blas_nodes else None
 
     def _build_TLAS(self):
 
         if not self.BLASes:
             return
 
-        nb_instances = len(self.scene.instances)
+        num_instances = len(self.scene.instances)
 
-        tlas_instances_data = np.zeros(nb_instances, dtype=instance_dtype)
-        self.instances_info = np.zeros(nb_instances, dtype=instance_info_dtype)
+        # Array for pytinybvh to build the TLAS
+        tlas_build_data = np.zeros(num_instances, dtype=instance_dtype)
+        # Array for our GPU SSBO
+        self.gpu_instances_info = np.zeros(num_instances, dtype=gpu_instance_dtype)
 
         for i, inst in enumerate(self.scene.instances):
             blas_map_entry = self.asset_to_blas_map[inst.asset.id]
-
-            # Get the blas_id, which is the index into the self.blases list
             blas_id = blas_map_entry['id']
-
-            # we want the transforms as row-major
             transform = np.asarray(inst.transform)
-            inverse_transform = np.asarray(glm.inverse(inst.transform))
 
-            tlas_instances_data[i]['transform'] = transform
-            tlas_instances_data[i]['blas_id'] = blas_id
-            tlas_instances_data[i]['mask'] = 0xFFFFFFFF
+            # Populate data for pytinybvh
+            tlas_build_data[i]['transform'] = transform
+            tlas_build_data[i]['blas_id'] = blas_id
+            tlas_build_data[i]['mask'] = 0xFFFFFFFF
 
-            self.instances_info[i]['transform'] = transform
-            self.instances_info[i]['inverse_transform'] = inverse_transform
-
-            self.instances_info[i]['blas_node_offset'] = blas_map_entry['node_offset']
-            self.instances_info[i]['primitive_offset'] = blas_map_entry['prim_offset']
-
-            self.instances_info[i]['is_point_cloud'] = int(isinstance(inst.asset, PointsAsset))
+            # Populate data for our GPU buffer
+            self.gpu_instances_info[i]['transform'] = transform
+            self.gpu_instances_info[i]['inverse_transform'] = np.asarray(glm.inverse(inst.transform))
+            self.gpu_instances_info[i]['blas_node_offset'] = blas_map_entry['node_offset']
+            self.gpu_instances_info[i]['primitive_offset'] = blas_map_entry['prim_offset']
+            self.gpu_instances_info[i]['is_point_cloud'] = int(isinstance(inst.asset, PointsAsset))
 
             if isinstance(inst.asset, MeshAsset):
-                self.instances_info[i]['material_id'] = self.material_map.get(inst.asset.id, 0)
+                self.gpu_instances_info[i]['material_id'] = self.material_map.get(inst.asset.id, 0)
 
+            # If the instance is dynamic, map its unique ID to its index in the TLAS
             if inst.dynamic:
-                self.dynamic_instance_map[i] = i
+                self.dynamic_instance_map[inst.id] = i
 
-        self.TLAS = BVH.build_tlas(tlas_instances_data, self.BLASes)
-
+        self.TLAS = BVH.build_tlas(tlas_build_data, self.BLASes)
         tlas_bufs = self.TLAS.get_buffers()
-        self.cpu_TLAS_nodes = tlas_bufs['nodes'].astype(np.float32, copy=False)
-        self.cpu_TLAS_prim_indices = tlas_bufs['prim_indices'].astype(np.uint32, copy=False)
-        self.nb_TLAS_nodes = len(self.cpu_TLAS_nodes)
+        self.cpu_TLAS_nodes = tlas_bufs['nodes'].astype(np.float32)
+        self.cpu_TLAS_prim_indices = tlas_bufs['prim_indices'].astype(np.uint32)
 
     def _upload_buffers(self):
 
@@ -280,53 +248,57 @@ class RaytracingSceneBaker:
             glBufferData(GL_SHADER_STORAGE_BUFFER, data.nbytes, data, usage)
 
         (self.triangles_ssbo, self.points_ssbo, self.blas_nodes_ssbo,
-         self.tlas_nodes_ssbo, self.instances_ssbo, self.tlas_indices_ssbo) = glGenBuffers(6)
+         self.tlas_nodes_ssbo, self.instances_info_ssbo, self.tlas_indices_ssbo) = glGenBuffers(6)
 
         upload(self.triangles_ssbo, self.cpu_triangles, GL_STATIC_DRAW, np.float32, 20)
         upload(self.points_ssbo, self.cpu_points, GL_STATIC_DRAW, np.float32, 12)
         upload(self.blas_nodes_ssbo, self.cpu_BLASes, GL_STATIC_DRAW, np.float32, 1)
         upload(self.tlas_nodes_ssbo, self.cpu_TLAS_nodes, GL_DYNAMIC_DRAW, np.float32, 1)
         upload(self.tlas_indices_ssbo, self.cpu_TLAS_prim_indices, GL_STATIC_DRAW, np.uint32, 1)
-        upload(self.instances_ssbo, self.instances_info, GL_DYNAMIC_DRAW, instance_info_dtype, 1)
+        upload(self.instances_info_ssbo, self.gpu_instances_info, GL_DYNAMIC_DRAW, gpu_instance_dtype, 1)
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     def update(self):
-        """ Updates transforms of dynamic instances and refits the TLAS """
+        """ Pulls transforms from dynamic scene instances, updates and refits the TLAS, and uploads to GPU """
 
         if not self.dynamic_instance_map or self.TLAS is None:
             return
 
-        needs_refit = False
-        for scene_idx, tlas_idx in self.dynamic_instance_map.items():
-            instance = self.scene.instances[scene_idx]
+        # Find the scene instances that are marked as dynamic
+        dynamic_instances = {inst.id: inst for inst in self.scene.instances if inst.id in self.dynamic_instance_map}
+
+        if not dynamic_instances:
+            return
+
+        for inst_id, tlas_idx in self.dynamic_instance_map.items():
+            instance = dynamic_instances.get(inst_id)
+
+            if instance is None:
+                continue  # Should not happen if scene is consistent
 
             transform = np.asarray(instance.transform)
-            inverse_transform = np.asarray(glm.inverse(instance.transform))
 
-            # Update TLAS instance data
+            # Update the C++ TLAS object (fast copy)
             self.TLAS.set_instance_transform(tlas_idx, transform)
 
-            self.instances_info[tlas_idx]['transform'] = transform
-            self.instances_info[tlas_idx]['inverse_transform'] = inverse_transform
+            # Update the CPU-side buffer destined for the GPU
+            self.gpu_instances_info[tlas_idx]['transform'] = transform
+            self.gpu_instances_info[tlas_idx]['inverse_transform'] = np.asarray(glm.inverse(instance.transform))
 
-            needs_refit = True
+        # Refit the TLAS in C++ after all transforms are set
+        self.TLAS.refit_tlas()
 
-        if needs_refit:
-            self.TLAS.refit_tlas()
+        # Re-upload the updated buffers to the GPU
+        new_tlas_nodes = self.TLAS.get_buffers()['nodes']
 
-            # Get new TLAS bounds
-            new_tlas_data = self.TLAS.get_buffers()['nodes']
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.tlas_nodes_ssbo)
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, new_tlas_nodes.nbytes, new_tlas_nodes)
 
-            # Re-upload the updated TLAS data
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.tlas_nodes_ssbo)
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, new_tlas_data.nbytes, new_tlas_data)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.instances_info_ssbo)
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.gpu_instances_info.nbytes, self.gpu_instances_info)
 
-            # Re-upload the updated instance data
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.instances_ssbo)
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.instances_info.nbytes, self.instances_info)
-
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     def _create_texture_array(self, texture_ids):
 
@@ -364,7 +336,7 @@ class RaytracingSceneBaker:
 
         buffers = [b for b in [
             self.triangles_ssbo, self.points_ssbo, self.materials_ssbo,
-            self.tlas_nodes_ssbo, self.blas_nodes_ssbo, self.instances_ssbo,
+            self.tlas_nodes_ssbo, self.blas_nodes_ssbo, self.instances_info_ssbo,
             self.tlas_indices_ssbo
         ] if b != 0]
 
@@ -477,11 +449,11 @@ class EyeRendererRay(EyeRendererBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self._scene_baked.points_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, self._scene_baked.blas_nodes_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, self._scene_baked.tlas_nodes_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, self._scene_baked.instances_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, self._scene_baked.instances_info_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, self._scene_baked.tlas_indices_ssbo)
 
         # Set Uniforms
-        glUniform1ui(self.pano_raytrace_shader.get_loc('nb_tlas_nodes'), self._scene_baked.nb_TLAS_nodes)
+        glUniform1ui(self.pano_raytrace_shader.get_loc('nb_tlas_nodes'), len(self._scene_baked.cpu_TLAS_nodes))
 
         # TODO: Handle point radius better for scenes with multiple point assets
         point_inst = next((inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)), None)
@@ -536,12 +508,12 @@ class EyeRendererRay(EyeRendererBase):
         # Binding 6: TLAS nodes for traversal
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, self._scene_baked.tlas_nodes_ssbo)
         # Binding 7: per-instance info: transform, inverse, offsets, flags
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, self._scene_baked.instances_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, self._scene_baked.instances_info_ssbo)
         # Binding 8: TLAS leaf -> instance id lookup
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, self._scene_baked.tlas_indices_ssbo)
 
         # Set Uniforms
-        glUniform1ui(self.raytrace_shader.get_loc('nb_tlas_nodes'), self._scene_baked.nb_TLAS_nodes)
+        glUniform1ui(self.raytrace_shader.get_loc('nb_tlas_nodes'), len(self._scene_baked.cpu_TLAS_nodes))
 
         # TODO: Would be better with one radius per point, based on neighbours density
         point_inst = next((inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)), None)

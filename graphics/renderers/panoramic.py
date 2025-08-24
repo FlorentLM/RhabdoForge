@@ -82,7 +82,7 @@ class TextureViewer:
 
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, texture_id)
-        glUniform1i(self.shader.get_loc("texture"), 0)
+        glUniform1i(self.shader.get_loc("texture_sampler"), 0)
 
         glBindVertexArray(self.vao)
         glDrawArrays(GL_TRIANGLES, 0, 3)

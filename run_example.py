@@ -15,7 +15,7 @@ from graphics.interactive.context import Context
 def main():
 
     # Configuration
-    USE_RAYTRACER = True
+    USE_RAYTRACER = False
     USE_POINT_CLOUD = True
     NB_OMMATIDIA = 119362
     NB_SAMPLES = 16
@@ -67,7 +67,7 @@ def main():
             context.input()
 
             # Rotate dynamic test crate
-            spin_speed = 1.5
+            spin_speed = 0.1
             angle = context.elapsed_time * spin_speed
 
             dynamic_crate.rotate(angle, (0.0, 1.0, 0.0))

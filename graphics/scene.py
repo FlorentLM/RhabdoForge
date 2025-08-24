@@ -127,26 +127,42 @@ class PointsAsset(Asset):
         print(f"Loaded {self.num_points} points for asset '{name}'.")
 
 
+
 class Instance:
     """
-    Logical instance of an Asset in the scene
-    Renderer-agnostic
+    Logical instance of an Asset in the scene. Renderer-agnostic.
+    This class is the single source of truth for an instance's transform.
     """
-
     def __init__(self,
                  asset: Asset,
                  transform: Optional[Union[glm.mat4, ArrayLike]] = None,
                  dynamic: bool = False,
                  **kwargs):
+
+        self.id = id(self)
         self.asset = asset
-
-        if transform is not None:
-            self.transform = glm.mat4(1.0) * glm.vec3(transform)
-        else:
-            self.transform = glm.mat4(1.0)
-
         self.dynamic = dynamic
-        self.properties = kwargs  # like for point_radius
+        self.properties = kwargs
+
+        if transform is None:
+            # Default to an identity matrix if no transform is provided
+            self.transform = glm.mat4(1.0)
+        else:
+            # Use numpy to reliably check the shape
+            transform_np = np.asarray(transform, dtype=VEC_DTYPE)
+
+            if transform_np.shape == (4, 4):
+                # Input is already a 4x4 matrix
+                self.transform = glm.mat4(transform_np)
+            elif transform_np.shape == (3,):
+                # Input is a 3-element vector; interpret as a translation
+                self.transform = glm.translate(glm.mat4(1.0), glm.vec3(transform_np))
+            else:
+                # The shape is not supported
+                raise ValueError(
+                    f"Unsupported shape for transform: {transform_np.shape}. "
+                    "Expected a (4, 4) matrix or a (3,) position vector."
+                )
 
     def translate(self, translation: Union[glm.vec3, ArrayLike]):
         self.transform = glm.translate(self.transform, glm.vec3(translation))
@@ -203,12 +219,12 @@ class Skybox:
         glDepthFunc(GL_LESS) # restore default depth function
 
 
+
+
 class Scene:
     """
-    The logical scene representation
-    Maintains a list of assets and instances
+    The logical scene representation. A simple container for assets and instances.
     """
-
     def __init__(self):
         self.assets: Dict[str, Asset] = {}
         self.instances: List[Instance] = []
