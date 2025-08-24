@@ -18,6 +18,7 @@ def main():
     USE_RAYTRACER = True
     USE_POINT_CLOUD = True
     NB_OMMATIDIA = 119362
+    NB_SAMPLES = 16
     HEADLESS = False
 
     context = Context()
@@ -55,12 +56,12 @@ def main():
 
     # Setup Renderers
     if USE_RAYTRACER:
-        renderer = EyeRendererRay(eye_model=eye_model, scene=scene, nb_samples=2, time_dithering=False)
+        renderer = EyeRendererRay(eye_model=eye_model, scene=scene, nb_samples=NB_SAMPLES, time_dithering=False)
         # The debug renderer allows to see the scene geometry without raytracing
-        debug_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene)
+        debug_renderer = EyeRendererRaster(eye_model=eye_model, nb_samples=NB_SAMPLES, scene=scene)
 
     else:
-        renderer = EyeRendererRaster(eye_model=eye_model, scene=scene)
+        renderer = EyeRendererRaster(eye_model=eye_model, nb_samples=NB_SAMPLES, scene=scene)
         debug_renderer = None
 
 
