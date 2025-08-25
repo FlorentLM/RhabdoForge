@@ -6,7 +6,7 @@ layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 // Input and output
 layout(std430, binding = 0) readonly buffer OmmatidiaInputBuffer { Ommatidium ommatidia_data[]; };
-layout(std430, binding = 4) writeonly buffer RayResultBuffer { vec4 ray_results[]; };
+layout(std430, binding = 10) writeonly buffer RayResultBuffer { vec4 ray_results[]; };
 
 // Uniforms
 uniform float time;

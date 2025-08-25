@@ -3,7 +3,7 @@ import time
 from graphics.scene import Scene, PointsAsset, MeshAsset
 from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
-from geometry.primitives import CUBE_VERTICES
+from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
 
 from graphics.renderers.rasterizer import EyeRendererRaster
 from graphics.renderers.raytracer import EyeRendererRay
@@ -28,8 +28,8 @@ def main():
         scene.add_instance(point_cloud_asset, point_radius=0.15)
 
     # Load the mesh asset data
-    crate_asset = MeshAsset('crate', vertex_data=CUBE_VERTICES, texture_path='textures/wood.jpg')
-    # rock_asset = MeshAsset('rock', vertex_data=CUBE_VERTICES, texture_path='textures/rock.jpg')
+    crate_asset = MeshAsset('crate', vertices=CUBE_VERTICES, indices=CUBE_INDICES, texture_path='textures/wood.jpg')
+    # rock_asset = MeshAsset('rock', vertex_data=CUBE_VERTICES, indices=CUBE_INDICES, texture_path='textures/rock.jpg')
 
     # Add multiple instances of the same asset
     scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))

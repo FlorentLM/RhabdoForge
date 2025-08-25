@@ -4,7 +4,6 @@
 #include "commons.glsl"
 #include "pytinybvh_preamble.glsl"
 
-
 struct Ray {
     vec3 origin;
     vec3 inv_direction; // Store 1.0 / direction
@@ -25,16 +24,18 @@ struct InstanceInfo {
     mat4 transform;
     mat4 inverse_transform;
     uint blas_node_offset;
-    uint primitive_offset;
-    uint prim_index_offset;
+    uint vertex_or_point_offset; // primitive_offset
+    uint index_offset;
     uint material_id;
     uint is_point_cloud;
+    uint prim_index_offset;
+    // padding is ignored by GLSL
 };
-
 
 // Node access (Standard layout)
 
-#if TBVH_LAYOUT_STANDARD
+#if TBVH_LAYOUT_STANDARD || TBVH_LAYOUT_BVH_GPU // BVH_GPU uses the same StdNode layout on the GPU
+
 // Read nodes as raw 32-bit words to be layout-agnostic at the API level
 layout(std430, binding = 5) readonly buffer AllBlasNodesBuffer { uint blas_nodes32[]; };
 layout(std430, binding = 6) readonly buffer TlasNodesBuffer    { uint tlas_nodes32[]; };
@@ -46,9 +47,11 @@ struct StdNode {
     vec4 data2; // .xyz = AABB Max, .w = Primitive count (0 for internal)
 };
 
+// Node index is always relative to the base, which is passed in
+
 // Load a Standard-layout node from the BLAS pool
-StdNode tbvh_load_blas_node(uint base_node_index, uint node_index) {
-    uint w = (base_node_index + node_index) * TBVH_WORDS_PER_NODE;
+StdNode tbvh_load_blas_node(uint base_node_offset, uint node_index) {
+    uint w = (base_node_offset + node_index) * TBVH_WORDS_PER_NODE;
     StdNode n;
     n.data1 = vec4(
         uintBitsToFloat(blas_nodes32[w+0]), uintBitsToFloat(blas_nodes32[w+1]),
@@ -85,13 +88,14 @@ layout(std430, binding = 6) readonly buffer TlasNodesBuffer    { BvhNode tlas_no
 
 #endif
 
-
 // Bindings (to be used by including shaders)
-layout(std430, binding = 1) readonly buffer TriangleBuffer { Triangle triangles[]; };
-layout(std430, binding = 2) readonly buffer MaterialBuffer { Material materials[]; };
-layout(std430, binding = 3) readonly buffer PrimitiveBuffer { Point points[]; };
+layout(std430, binding = 1) readonly buffer VertexBuffer { float v[]; };
+layout(std430, binding = 2) readonly buffer IndexBuffer { uint indices[]; };
+layout(std430, binding = 3) readonly buffer MaterialBuffer { Material materials[]; };
+layout(std430, binding = 4) readonly buffer PointBuffer { Point points[]; };
 
-layout(row_major, std430, binding = 7) readonly buffer InstancesBuffer { InstanceInfo instances[]; }; // row major!!!!
+// BVH bindings start at 5
+layout(row_major, std430, binding = 7) readonly buffer InstancesBuffer { InstanceInfo instances[]; };   // row-major!
 layout(std430, binding = 8) readonly buffer TlasPrimIndexBuffer { uint tlas_prim_indices[]; };
 layout(std430, binding = 9) readonly buffer BlasPrimIndexBuffer { uint blas_prim_indices[]; };
 
@@ -103,10 +107,14 @@ uniform float point_radius;
 // Forward declarations
 
 float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max);
-HitInfo intersect_triangle(inout Ray r, vec3 direction, Triangle tri);
+HitInfo intersect_triangle(inout Ray r, vec3 direction, vec3 v0, vec3 v1, vec3 v2);
 HitInfo intersect_sphere(inout Ray r, vec3 direction, vec3 center, float radius);
 void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit);
 void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, InstanceInfo inst);
+
+// Mini helpers to get vertex data from the buffer
+vec3 getPos(uint i){ uint b = i*5u; return vec3(v[b], v[b+1], v[b+2]); }
+vec2 getUV (uint i){ uint b = i*5u; return vec2(v[b+3], v[b+4]); }
 
 // Traversal implementation
 
@@ -116,7 +124,7 @@ void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
 
     uint stack[64];
     uint stack_ptr = 0;
-    stack[stack_ptr++] = 0u;
+    stack[stack_ptr++] = 0u;    // TLAS traversal always starts at node 0
 
     while (stack_ptr > 0u) {
         uint node_idx = stack[--stack_ptr];
@@ -154,12 +162,9 @@ void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
 
                     if (new_world_t < r_world.t) {
                         r_world.t = new_world_t;
+                        closest_hit = blas_hit; // Copy all data
                         closest_hit.found = true;
                         closest_hit.t = new_world_t;
-                        closest_hit.barycentric_coords = blas_hit.barycentric_coords;
-                        // blas_hit.primitive_idx is the index into the global primitive buffer (triangles or points)
-                        closest_hit.primitive_idx = blas_hit.primitive_idx;
-                        closest_hit.is_point_hit = blas_hit.is_point_hit;
                         closest_hit.instance_id = instance_id;
                     }
                 }
@@ -168,9 +173,9 @@ void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
             uint left_idx = first_idx;
             uint right_idx = first_idx + 1;
             #if TBVH_LAYOUT_STANDARD
-                StdNode leftNode  = tbvh_load_tlas_node(left_idx);
+                StdNode leftNode = tbvh_load_tlas_node(left_idx);
                 StdNode rightNode = tbvh_load_tlas_node(right_idx);
-                float d1 = intersect_aabb(r_world, leftNode.data1.xyz,  leftNode.data2.xyz);
+                float d1 = intersect_aabb(r_world, leftNode.data1.xyz, leftNode.data2.xyz);
                 float d2 = intersect_aabb(r_world, rightNode.data1.xyz, rightNode.data2.xyz);
             #else
                 float d1 = intersect_aabb(r_world, tlas_nodes[left_idx].data1.xyz,  tlas_nodes[left_idx].data2.xyz);
@@ -189,14 +194,14 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
 
     uint stack[64];
     uint stack_ptr = 0;
-    stack[stack_ptr++] = inst.blas_node_offset;
+    stack[stack_ptr++] = 0;
 
     while (stack_ptr > 0u) {
         uint node_idx = stack[--stack_ptr];
          #if TBVH_LAYOUT_STANDARD
-            StdNode node = tbvh_load_blas_node(0u, node_idx);
+            StdNode node = tbvh_load_blas_node(inst.blas_node_offset, node_idx);
         #else
-            BvhNode node = blas_nodes[node_idx];
+            BvhNode node = blas_nodes[inst.blas_node_offset + node_idx];
         #endif
 
         if (intersect_aabb(r_obj, node.data1.xyz, node.data2.xyz) >= r_obj.t) continue;
@@ -206,25 +211,38 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
 
         if (prim_count > 0u) { // BLAS leaf node
             for (uint i = 0; i < prim_count; ++i) {
-                // Calculate the correct primitive index:
-                // first_idx is leaf-local, map leaf -> primitive via BLAS leaf_ids, then add global primitive_offset
-                uint prim_idx = inst.primitive_offset + blas_prim_indices[inst.prim_index_offset + first_idx + i];
+                // Get the primitive index within this BLAS
+                // 'first_idx' for a leaf is the start of prims in the BLAS's prim_indices list
+                uint blas_prim_id = blas_prim_indices[inst.prim_index_offset + first_idx + i];
 
                 if (inst.is_point_cloud == 1u) {
-                    HitInfo p_hit = intersect_sphere(r_obj, dir_obj, points[prim_idx].pos.xyz, point_radius);
+                    uint point_id = inst.vertex_or_point_offset + blas_prim_id;
+                    HitInfo p_hit = intersect_sphere(r_obj, dir_obj, points[point_id].pos.xyz, point_radius);
                     if (p_hit.found) {
                         blas_hit.found = true;
                         blas_hit.is_point_hit = true;
-                        blas_hit.primitive_idx = prim_idx;  // this is the global index
+                        blas_hit.primitive_idx = blas_prim_id;  // Store the BLAS-local primitive ID
                         blas_hit.t = p_hit.t;
                         r_obj.t = p_hit.t;
                     }
                 } else {
-                    HitInfo tri_hit = intersect_triangle(r_obj, dir_obj, triangles[prim_idx]);
+                    // For triangles, blas_prim_id is the triangle index within the asset
+                    // Each triangle uses 3 indices, so we need to multiply by 3
+                    uint base_idx = inst.index_offset + blas_prim_id * 3;
+                    uint i0 = indices[base_idx + 0];
+                    uint i1 = indices[base_idx + 1];
+                    uint i2 = indices[base_idx + 2];
+
+                    uint base_vtx = inst.vertex_or_point_offset;
+                    vec3 v0 = getPos(base_vtx + i0);
+                    vec3 v1 = getPos(base_vtx + i1);
+                    vec3 v2 = getPos(base_vtx + i2);
+
+                    HitInfo tri_hit = intersect_triangle(r_obj, dir_obj, v0, v1, v2);
                     if (tri_hit.found) {
                         blas_hit.found = true;
                         blas_hit.is_point_hit = false;
-                        blas_hit.primitive_idx = prim_idx;  // this is the global index
+                        blas_hit.primitive_idx = blas_prim_id;  // Store the BLAS-local triangle ID
                         blas_hit.barycentric_coords = tri_hit.barycentric_coords;
                         blas_hit.t = tri_hit.t;
                         r_obj.t = tri_hit.t;
@@ -232,20 +250,25 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
                 }
             }
         } else { // BLAS internal node
-            uint left_idx = inst.blas_node_offset + first_idx;
+            // 'first_idx' for an internal node is the BLAS-local index of the left child
+            uint left_idx = first_idx;
             uint right_idx = left_idx + 1;
 
             #if TBVH_LAYOUT_STANDARD
-                StdNode leftNode  = tbvh_load_blas_node(0u, left_idx);
-                StdNode rightNode = tbvh_load_blas_node(0u, right_idx);
+                StdNode leftNode  = tbvh_load_blas_node(inst.blas_node_offset, left_idx);
+                StdNode rightNode = tbvh_load_blas_node(inst.blas_node_offset, right_idx);
                 float d1 = intersect_aabb(r_obj, leftNode.data1.xyz,  leftNode.data2.xyz);
                 float d2 = intersect_aabb(r_obj, rightNode.data1.xyz, rightNode.data2.xyz);
             #else
-                float d1 = intersect_aabb(r_obj, blas_nodes[left_idx].data1.xyz,  blas_nodes[left_idx].data2.xyz);
-                float d2 = intersect_aabb(r_obj, blas_nodes[right_idx].data1.xyz, blas_nodes[right_idx].data2.xyz);
+                float d1 = intersect_aabb(r_obj, blas_nodes[inst.blas_node_offset + left_idx].data1.xyz,  blas_nodes[inst.blas_node_offset + left_idx].data2.xyz);
+                float d2 = intersect_aabb(r_obj, blas_nodes[inst.blas_node_offset + right_idx].data1.xyz, blas_nodes[inst.blas_node_offset + right_idx].data2.xyz);
             #endif
 
-            if (d1 > d2) { float temp_d = d1; d1 = d2; d2 = temp_d; uint temp_i = left_idx; left_idx = right_idx; right_idx = temp_i; }
+            // Push the farther node first, so the closer one is processed next
+            if (d1 > d2) {
+                float temp_d = d1; d1 = d2; d2 = temp_d;
+                uint temp_i = left_idx; left_idx = right_idx; right_idx = temp_i;
+            }
             if (d2 < r_obj.t && stack_ptr < 64) stack[stack_ptr++] = right_idx;
             if (d1 < r_obj.t && stack_ptr < 64) stack[stack_ptr++] = left_idx;
         }
@@ -254,12 +277,12 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
 
 // Intersection implementation
 
-HitInfo intersect_triangle(inout Ray r, vec3 direction, Triangle tri) {
+HitInfo intersect_triangle(inout Ray r, vec3 direction, vec3 v0, vec3 v1, vec3 v2) {
     HitInfo hit;
     hit.found = false;
 
-    vec3 edge1 = tri.v1.xyz - tri.v0.xyz;
-    vec3 edge2 = tri.v2.xyz - tri.v0.xyz;
+    vec3 edge1 = v1 - v0;
+    vec3 edge2 = v2 - v0;
 
     vec3 h = cross(direction, edge2);
     float a = dot(edge1, h);
@@ -269,7 +292,7 @@ HitInfo intersect_triangle(inout Ray r, vec3 direction, Triangle tri) {
     }
 
     float f = 1.0 / a;
-    vec3 s = r.origin - tri.v0.xyz;
+    vec3 s = r.origin - v0;
     float u = f * dot(s, h);
 
     if (u < 0.0 || u > 1.0) {
@@ -355,14 +378,29 @@ vec3 trace(Ray r) {
     if (closest_hit.found) {
         InstanceInfo hit_inst = instances[closest_hit.instance_id];
         if (closest_hit.is_point_hit) {
-            Point hit_point = points[closest_hit.primitive_idx];
+            // For point clouds, primitive_idx is the point index within the asset
+            uint point_id = hit_inst.vertex_or_point_offset + closest_hit.primitive_idx;
+            Point hit_point = points[point_id];
             final_color = hit_point.color.rgb;
         } else {
-            Triangle hit_tri = triangles[closest_hit.primitive_idx];
-            Material hit_mat = materials[hit_tri.material_idx];
-            vec2 hit_uv = hit_tri.uv0 * closest_hit.barycentric_coords.x +
-                          hit_tri.uv1 * closest_hit.barycentric_coords.y +
-                          hit_tri.uv2 * closest_hit.barycentric_coords.z;
+            // For triangles, primitive_idx is the triangle index within the asset
+            uint blas_prim_id = closest_hit.primitive_idx;
+
+            // Calculate the base index in the indices buffer for this triangle
+            uint base_idx = hit_inst.index_offset + blas_prim_id * 3;
+            uint i0 = indices[base_idx + 0];
+            uint i1 = indices[base_idx + 1];
+            uint i2 = indices[base_idx + 2];
+
+            // Get the vertex data using the asset's vertex offset
+            uint base_vtx = hit_inst.vertex_or_point_offset;
+
+            // Interpolate UV coordinates using barycentric coordinates
+            vec2 hit_uv = getUV(base_vtx + i0) * closest_hit.barycentric_coords.x +
+                          getUV(base_vtx + i1) * closest_hit.barycentric_coords.y +
+                          getUV(base_vtx + i2) * closest_hit.barycentric_coords.z;
+
+            Material hit_mat = materials[hit_inst.material_id];
             final_color = texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
         }
     } else {

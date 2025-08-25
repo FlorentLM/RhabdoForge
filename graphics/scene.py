@@ -27,22 +27,20 @@ class Asset(ABC):
 
 class MeshAsset(Asset):
     """
-    Pure data container for a mesh
-    Contains geometry and material properties
+    Pure data container for a mesh. Stores geometry as indexed vertices.
+    Each vertex contains position and UV coordinates.
     """
 
     def __init__(self,
                  name: str,
                  file_path: Optional[Path | str] = None,
-                 vertex_data: Optional[np.ndarray] = None,
+                 vertices: Optional[np.ndarray] = None,
+                 indices: Optional[np.ndarray] = None,
                  texture_path: Path | str = 'textures/wood.jpg'):
         super().__init__(name)
 
-        if file_path is None and vertex_data is None:
-            raise ValueError("MeshAsset requires either 'file_path' or 'vertex_data'.")
-
-        if file_path is not None and vertex_data is not None:
-            raise ValueError("Provide either 'file_path' or 'vertex_data', not both.")
+        if file_path is None and (vertices is None or indices is None):
+            raise ValueError("MeshAsset requires either 'file_path' or both 'vertices' and 'indices'.")
 
         self.texture_path = Path(texture_path)
 
@@ -51,34 +49,48 @@ class MeshAsset(Asset):
             if not path.exists():
                 raise FileNotFoundError(f"Could not find mesh file: {path}")
 
-            print(f"Loading mesh data from {path}...")
             mesh = o3d.io.read_triangle_mesh(path, enable_post_processing=True)
-
-            if not mesh.has_vertex_normals():
-                mesh.compute_vertex_normals()
 
             if not mesh.has_triangle_uvs():
                 raise ValueError(f"Mesh file '{path}' does not contain texture coordinates (UVs).")
 
-            # Get the raw data from the mesh
-            vertices = np.asarray(mesh.vertices, dtype=VEC_DTYPE)
-            uvs = np.asarray(mesh.triangle_uvs, dtype=VEC_DTYPE)
-            triangle_indices = np.asarray(mesh.triangles)
+            # Un-weld the mesh to create a clean indexed buffer for rendering
+            o3d_verts = np.asarray(mesh.vertices, dtype=np.float32)
+            o3d_uvs = np.asarray(mesh.triangle_uvs, dtype=np.float32)
+            o3d_indices = np.asarray(mesh.triangles, dtype=np.uint32)
 
-            positions_by_face = vertices[triangle_indices]
-            uvs_by_face = uvs.reshape(-1, 3, 2)
-            interleaved_data = np.concatenate((positions_by_face, uvs_by_face), axis=2)
+            unique_vert_map = {}
+            vert_list = []
+            new_indices_flat = []
 
-            # Flatten the array to the [v1_pos, v1_uv, v2_pos, v2_uv, ...] structure for the VBO
-            self.vertex_data = interleaved_data.flatten()
+            flat_uvs = o3d_uvs.reshape(-1, 2)
+            flat_indices = o3d_indices.flatten()
+
+            for i in range(len(flat_indices)):
+                pos_idx = flat_indices[i]
+                uv_tuple = tuple(flat_uvs[i])
+                key = (pos_idx, uv_tuple)
+
+                if key not in unique_vert_map:
+                    new_idx = len(vert_list)
+                    unique_vert_map[key] = new_idx
+                    pos = o3d_verts[pos_idx]
+                    vert_list.append(np.concatenate([pos, uv_tuple]))
+                else:
+                    new_idx = unique_vert_map[key]
+
+                new_indices_flat.append(new_idx)
+
+            self.vertices = np.array(vert_list, dtype=VEC_DTYPE)
+            self.indices = np.array(new_indices_flat, dtype=np.uint32).reshape(-1, 3)
 
         else:
-            self.vertex_data = vertex_data
+            self.vertices = vertices.reshape(-1, 5)  # Ensure correct shape
+            self.indices = indices.reshape(-1, 3)
 
     @property
     def num_triangles(self):
-        # Each vertex has 5 float components (pos, uv) and there are 3 vertices per triangle
-        return self.vertex_data.shape[0] // (3*5)
+        return len(self.indices)
 
 
 class PointsAsset(Asset):

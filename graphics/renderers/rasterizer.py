@@ -78,26 +78,38 @@ class RasterMesh:
 
     def __init__(self, asset: MeshAsset, vert_shader_path, frag_shader_path):
         self.source_asset_id = asset.id
-        self.data = asset.vertex_data
-        self.draw_count = len(self.data) // 5
+
+        self.vertices = asset.vertices
+        self.indices = asset.indices
+        self.draw_count = self.indices.size
 
         self.shaders = load_shaders(vert_shader_path, frag_shader_path)
         self.texture = load_texture(asset.texture_path)
 
         self.vao = glGenVertexArrays(1)
         glBindVertexArray(self.vao)
+
+        # Vertex Buffer Object (VBO) for vertex data
         self.vbo = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
-        glBufferData(GL_ARRAY_BUFFER, self.data.nbytes, self.data, GL_STATIC_DRAW)
+        glBufferData(GL_ARRAY_BUFFER, self.vertices.nbytes, self.vertices, GL_STATIC_DRAW)
+
+        # Element Buffer Object (EBO) for index data
+        self.ebo = glGenBuffers(1)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.ebo)
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, self.indices.nbytes, self.indices, GL_STATIC_DRAW)
+
+        # Vertex attribute pointers (stride and offsets are correct for the new 'vertices' array)
+        vertex_size_bytes = self.vertices.itemsize * 5
 
         pos_loc = glGetAttribLocation(self.shaders, "position")
         glEnableVertexAttribArray(pos_loc)
-        glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, 5 * self.data.itemsize, ctypes.c_void_p(0))
+        glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, vertex_size_bytes, ctypes.c_void_p(0))
 
         tex_loc = glGetAttribLocation(self.shaders, "vertTexCoord")
         glEnableVertexAttribArray(tex_loc)
-        glVertexAttribPointer(tex_loc, 2, GL_FLOAT, False, 5 * self.data.itemsize,
-                              ctypes.c_void_p(3 * self.data.itemsize))
+        glVertexAttribPointer(tex_loc, 2, GL_FLOAT, False, vertex_size_bytes,
+                              ctypes.c_void_p(self.vertices.itemsize * 3))
 
         glBindVertexArray(0)
 
