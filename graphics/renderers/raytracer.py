@@ -1,17 +1,15 @@
 import OpenGL
 
-from graphics import utils
-
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 from typing import Tuple, List, Dict, Optional
-from pathlib import Path
 import numpy as np
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from graphics.agent import Agent
+from graphics import utils
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, MeshAsset, PointsAsset
 from graphics.utils import load_texture, VEC_DTYPE, ShaderProgram
@@ -181,9 +179,9 @@ class RaytracingSceneBaker:
             # target_layout = Layout.BVH_GPU
             target_layout = Layout.Standard
 
-            if supports_layout(target_layout):
+            if supports_layout(target_layout) and target_layout != blas.layout:
                 blas.convert_to(target_layout, compact=True)
-            else:
+            elif target_layout != blas.layout:
                 print(f"Warning: Layout {target_layout.name} not supported on this system. Falling back to Standard.")
                 blas.convert_to(Layout.Standard, compact=True)
 
