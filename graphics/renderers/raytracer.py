@@ -1,15 +1,14 @@
-from pathlib import Path
-
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 from typing import Tuple, List, Dict, Optional
+from pathlib import Path
 import numpy as np
-
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype
 
+from graphics.agent import Agent
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, MeshAsset, PointsAsset
 from graphics.utils import load_texture, VEC_DTYPE, ShaderProgram
@@ -607,7 +606,7 @@ class EyeRendererRay(EyeRendererBase):
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
-    def get_ommatidia_data(self, agent, to_cpu=False):
+    def get_ommatidia_data(self, agent: Agent, to_cpu: bool = False):
 
         self._compute_colors(agent)
 
@@ -619,11 +618,11 @@ class EyeRendererRay(EyeRendererBase):
 
         return self.cpu_read_buffer
 
-    def draw(self, view_mode: str, agent, tiled_mode: bool = False):
+    def draw(self, view_mode: str, agent: Agent, tiled_mode: bool = False):
         """ Renders one of the rasterizer's supported views to the screen """
 
         if view_mode == 'compound_eye':
-            super().draw(tiled_mode=tiled_mode)
+            self._draw_voronoi(tiled_mode=tiled_mode)
 
         elif view_mode == 'panoramic':
 

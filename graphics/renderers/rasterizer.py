@@ -1,10 +1,7 @@
-from typing import Tuple
 import OpenGL
-import numpy as np
-
 OpenGL.ERROR_CHECKING = False
-
 from OpenGL.GL import *
+import numpy as np
 from pyglm import glm
 
 from geometry.compound_eyes import CompoundEye
@@ -227,7 +224,7 @@ class EyeRendererRaster(EyeRendererBase):
         # simple 90 degrees view projection matrix for each cube face
         self._proj_mat = Agent(fov=90.0, ratio=1.0).projection
 
-        self._pano_view = PanoramicEye()
+        self._raster_panoramic = PanoramicEye()
 
     @property
     def samples_per_ommatidium(self):
@@ -403,11 +400,10 @@ class EyeRendererRaster(EyeRendererBase):
         """ Renders one of the rasterizer's supported views to the screen """
 
         if view_mode == 'compound_eye':
-            # This calls the draw() method in EyeRendererBase for Voronoi rendering
-            super().draw(tiled_mode=tiled_mode)
+            self._draw_voronoi(tiled_mode=tiled_mode)
 
         elif view_mode == 'panoramic':
-            self._pano_view.draw(self._cubemap_id)
+            self._raster_panoramic.draw(self._cubemap_id)
 
         elif view_mode == 'standard_3d':
             if self._scene_baked.scene.skybox and self._scene_baked.scene.skybox_texture_id is not None:
@@ -422,6 +418,6 @@ class EyeRendererRaster(EyeRendererBase):
 
         self._rasterizer_shader.free()
         self._cubemap_fbo.free()
-        self._pano_view.free()
+        self._raster_panoramic.free()
 
         super().free()

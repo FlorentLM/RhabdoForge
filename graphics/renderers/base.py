@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
 import numpy as np
 import OpenGL
-
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CONE_VERTICES
 from graphics.utils import ShaderProgram
+from graphics.agent import Agent
 
 
 class EyeRendererBase(ABC):
@@ -93,7 +93,12 @@ class EyeRendererBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_ommatidia_data(self, *args, to_cpu=False, **kwargs):
+    def get_ommatidia_data(self, agent: Agent, to_cpu: bool = False):
+        # Each subclass implements its own core rendering logic
+        raise NotImplementedError
+
+    @abstractmethod
+    def draw(self, view_mode: str, agent: Agent, tiled_mode: bool = False):
         # Each subclass implements its own core rendering logic
         raise NotImplementedError
 
@@ -158,7 +163,7 @@ class EyeRendererBase(ABC):
 
         return self._voronoi_vao
 
-    def draw(self, tiled_mode=False):
+    def _draw_voronoi(self, tiled_mode=False):
         """ Draws the Voronoi visualization using the computed colors """
 
         self.voronoi_shader.use()
