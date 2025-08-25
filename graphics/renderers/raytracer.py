@@ -174,7 +174,7 @@ class RaytracingSceneBaker:
 
                 blas = BVH.from_vertices(verts4)
 
-                prim_indices = blas.get_SSBO_bundle(flat_nodes=False)['leaf_ids']
+                prim_indices = blas.get_SSBO_bundle(flatten_nodes=False)['leaf_ids']
 
                 newly_packed_tris = self._pack_triangles(asset, prim_indices)
                 prim_offset = current_tri_offset
@@ -188,7 +188,7 @@ class RaytracingSceneBaker:
 
                 blas = BVH.from_points(asset.points.astype(np.float32), radius=radius)
 
-                prim_indices = blas.get_SSBO_bundle(flat_nodes=False)['leaf_ids']
+                prim_indices = blas.get_SSBO_bundle(flatten_nodes=False)['leaf_ids']
 
                 newly_packed_points = self._pack_points(asset, prim_indices)
                 prim_offset = current_point_offset
@@ -203,7 +203,7 @@ class RaytracingSceneBaker:
                 }
                 self.BLASes.append(blas)
 
-                nodes = blas.get_SSBO_bundle(flat_nodes=False)['nodes']
+                nodes = blas.get_SSBO_bundle(flatten_nodes=False)['nodes']
                 blas_nodes.append(nodes)
                 current_node_offset += len(nodes)
 
@@ -249,7 +249,7 @@ class RaytracingSceneBaker:
 
         self.TLAS = BVH.build_tlas(tlas_build_data, self.BLASes)
 
-        tlas_bundle = self.TLAS.get_SSBO_bundle(flat_nodes=False)
+        tlas_bundle = self.TLAS.get_SSBO_bundle(flatten_nodes=False)
 
         self.cpu_TLAS_nodes = tlas_bundle['nodes'].astype(np.float32)
         self.cpu_TLAS_prim_indices = tlas_bundle['leaf_ids'].astype(np.uint32)
