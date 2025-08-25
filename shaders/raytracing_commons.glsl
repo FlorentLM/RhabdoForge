@@ -2,6 +2,7 @@
 #define RAYTRACING_COMMON_GLSL
 
 #include "commons.glsl"
+#include "pytinybvh_preamble.glsl"
 
 // A struct to hold all information about an instance
 struct InstanceInfo {
