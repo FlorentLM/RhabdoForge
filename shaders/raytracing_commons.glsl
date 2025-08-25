@@ -4,24 +4,96 @@
 #include "commons.glsl"
 #include "pytinybvh_preamble.glsl"
 
+
+struct Ray {
+    vec3 origin;
+    vec3 inv_direction; // Store 1.0 / direction
+    float t;            // Max travel distance
+};
+
+struct HitInfo {
+    bool found;
+    float t; // distance along ray
+    vec3 barycentric_coords; // for triangle hits
+    uint primitive_idx;
+    uint instance_id;        // ID of the instance hit in the TLAS
+    bool is_point_hit;
+};
+
 // A struct to hold all information about an instance
 struct InstanceInfo {
     mat4 transform;
     mat4 inverse_transform;
     uint blas_node_offset;
     uint primitive_offset;
+    uint prim_index_offset;
     uint material_id;
     uint is_point_cloud;
 };
 
-// Bindings (To be used by including shaders)
+
+// Node access (Standard layout)
+
+#if TBVH_LAYOUT_STANDARD
+// Read nodes as raw 32-bit words to be layout-agnostic at the API level
+layout(std430, binding = 5) readonly buffer AllBlasNodesBuffer { uint blas_nodes32[]; };
+layout(std430, binding = 6) readonly buffer TlasNodesBuffer    { uint tlas_nodes32[]; };
+
+const uint TBVH_WORDS_PER_NODE = TBVH_NODE_STRIDE_FLOATS; // 1 float == 1 uint (32-bit)
+
+struct StdNode {
+    vec4 data1; // .xyz = AABB Min, .w = Left/First index (bitcast uint)
+    vec4 data2; // .xyz = AABB Max, .w = Primitive count (0 for internal)
+};
+
+// Load a Standard-layout node from the BLAS pool
+StdNode tbvh_load_blas_node(uint base_node_index, uint node_index) {
+    uint w = (base_node_index + node_index) * TBVH_WORDS_PER_NODE;
+    StdNode n;
+    n.data1 = vec4(
+        uintBitsToFloat(blas_nodes32[w+0]), uintBitsToFloat(blas_nodes32[w+1]),
+        uintBitsToFloat(blas_nodes32[w+2]), uintBitsToFloat(blas_nodes32[w+3]));
+    n.data2 = vec4(
+        uintBitsToFloat(blas_nodes32[w+4]), uintBitsToFloat(blas_nodes32[w+5]),
+        uintBitsToFloat(blas_nodes32[w+6]), uintBitsToFloat(blas_nodes32[w+7]));
+    return n;
+}
+
+// Load a Standard-layout node from the TLAS pool (base = 0)
+StdNode tbvh_load_tlas_node(uint node_index) {
+    uint w = node_index * TBVH_WORDS_PER_NODE;
+    StdNode n;
+    n.data1 = vec4(
+        uintBitsToFloat(tlas_nodes32[w+0]), uintBitsToFloat(tlas_nodes32[w+1]),
+        uintBitsToFloat(tlas_nodes32[w+2]), uintBitsToFloat(tlas_nodes32[w+3]));
+    n.data2 = vec4(
+        uintBitsToFloat(tlas_nodes32[w+4]), uintBitsToFloat(tlas_nodes32[w+5]),
+        uintBitsToFloat(tlas_nodes32[w+6]), uintBitsToFloat(tlas_nodes32[w+7]));
+    return n;
+}
+
+#else
+
+// Fallback for non-Standard layouts
+struct BvhNode {
+    vec4 data1; // .xyz = AABB Min, .w = Left child/First primitive index
+    vec4 data2; // .xyz = AABB Max, .w = Primitive count (0 for internal nodes)
+}; // total size = 32 bytes (2x vec4)
+
+layout(std430, binding = 5) readonly buffer AllBlasNodesBuffer { BvhNode blas_nodes[]; };
+layout(std430, binding = 6) readonly buffer TlasNodesBuffer    { BvhNode tlas_nodes[]; };
+
+#endif
+
+
+// Bindings (to be used by including shaders)
 layout(std430, binding = 1) readonly buffer TriangleBuffer { Triangle triangles[]; };
 layout(std430, binding = 2) readonly buffer MaterialBuffer { Material materials[]; };
 layout(std430, binding = 3) readonly buffer PrimitiveBuffer { Point points[]; };
-layout(std430, binding = 5) readonly buffer AllBlasNodesBuffer { BvhNode blas_nodes[]; };
-layout(std430, binding = 6) readonly buffer TlasNodesBuffer { BvhNode tlas_nodes[]; };
+
 layout(row_major, std430, binding = 7) readonly buffer InstancesBuffer { InstanceInfo instances[]; }; // row major!!!!
 layout(std430, binding = 8) readonly buffer TlasPrimIndexBuffer { uint tlas_prim_indices[]; };
+layout(std430, binding = 9) readonly buffer BlasPrimIndexBuffer { uint blas_prim_indices[]; };
 
 layout(binding = 0) uniform samplerCube skybox;
 layout(binding = 1) uniform sampler2DArray scene_textures;
@@ -33,12 +105,12 @@ uniform float point_radius;
 float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max);
 HitInfo intersect_triangle(inout Ray r, vec3 direction, Triangle tri);
 HitInfo intersect_sphere(inout Ray r, vec3 direction, vec3 center, float radius);
+void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit);
 void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, InstanceInfo inst);
-void find_closest_hit(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit);
 
 // Traversal implementation
 
-void find_closest_hit(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
+void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
     closest_hit.found = false;
     if (nb_tlas_nodes == 0u) return;
 
@@ -48,7 +120,11 @@ void find_closest_hit(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit
 
     while (stack_ptr > 0u) {
         uint node_idx = stack[--stack_ptr];
-        BvhNode node = tlas_nodes[node_idx];
+        #if TBVH_LAYOUT_STANDARD
+            StdNode node = tbvh_load_tlas_node(node_idx);
+        #else
+            BvhNode node = tlas_nodes[node_idx];
+        #endif
 
         if (intersect_aabb(r_world, node.data1.xyz, node.data2.xyz) >= r_world.t) continue;
 
@@ -91,8 +167,15 @@ void find_closest_hit(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit
         } else { // TLAS internal node
             uint left_idx = first_idx;
             uint right_idx = first_idx + 1;
-            float d1 = intersect_aabb(r_world, tlas_nodes[left_idx].data1.xyz, tlas_nodes[left_idx].data2.xyz);
-            float d2 = intersect_aabb(r_world, tlas_nodes[right_idx].data1.xyz, tlas_nodes[right_idx].data2.xyz);
+            #if TBVH_LAYOUT_STANDARD
+                StdNode leftNode  = tbvh_load_tlas_node(left_idx);
+                StdNode rightNode = tbvh_load_tlas_node(right_idx);
+                float d1 = intersect_aabb(r_world, leftNode.data1.xyz,  leftNode.data2.xyz);
+                float d2 = intersect_aabb(r_world, rightNode.data1.xyz, rightNode.data2.xyz);
+            #else
+                float d1 = intersect_aabb(r_world, tlas_nodes[left_idx].data1.xyz,  tlas_nodes[left_idx].data2.xyz);
+                float d2 = intersect_aabb(r_world, tlas_nodes[right_idx].data1.xyz, tlas_nodes[right_idx].data2.xyz);
+            #endif
 
             if (d1 > d2) { float temp_d = d1; d1 = d2; d2 = temp_d; uint temp_i = left_idx; left_idx = right_idx; right_idx = temp_i; }
             if (d2 < r_world.t && stack_ptr < 64) stack[stack_ptr++] = right_idx;
@@ -110,7 +193,11 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
 
     while (stack_ptr > 0u) {
         uint node_idx = stack[--stack_ptr];
-        BvhNode node = blas_nodes[node_idx];
+         #if TBVH_LAYOUT_STANDARD
+            StdNode node = tbvh_load_blas_node(0u, node_idx);
+        #else
+            BvhNode node = blas_nodes[node_idx];
+        #endif
 
         if (intersect_aabb(r_obj, node.data1.xyz, node.data2.xyz) >= r_obj.t) continue;
 
@@ -120,8 +207,8 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
         if (prim_count > 0u) { // BLAS leaf node
             for (uint i = 0; i < prim_count; ++i) {
                 // Calculate the correct primitive index:
-                // first_idx is relative to the BLAS so we need to add the primitive_offset
-                uint prim_idx = inst.primitive_offset + first_idx + i;
+                // first_idx is leaf-local, map leaf -> primitive via BLAS leaf_ids, then add global primitive_offset
+                uint prim_idx = inst.primitive_offset + blas_prim_indices[inst.prim_index_offset + first_idx + i];
 
                 if (inst.is_point_cloud == 1u) {
                     HitInfo p_hit = intersect_sphere(r_obj, dir_obj, points[prim_idx].pos.xyz, point_radius);
@@ -148,8 +235,15 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
             uint left_idx = inst.blas_node_offset + first_idx;
             uint right_idx = left_idx + 1;
 
-            float d1 = intersect_aabb(r_obj, blas_nodes[left_idx].data1.xyz, blas_nodes[left_idx].data2.xyz);
-            float d2 = intersect_aabb(r_obj, blas_nodes[right_idx].data1.xyz, blas_nodes[right_idx].data2.xyz);
+            #if TBVH_LAYOUT_STANDARD
+                StdNode leftNode  = tbvh_load_blas_node(0u, left_idx);
+                StdNode rightNode = tbvh_load_blas_node(0u, right_idx);
+                float d1 = intersect_aabb(r_obj, leftNode.data1.xyz,  leftNode.data2.xyz);
+                float d2 = intersect_aabb(r_obj, rightNode.data1.xyz, rightNode.data2.xyz);
+            #else
+                float d1 = intersect_aabb(r_obj, blas_nodes[left_idx].data1.xyz,  blas_nodes[left_idx].data2.xyz);
+                float d2 = intersect_aabb(r_obj, blas_nodes[right_idx].data1.xyz, blas_nodes[right_idx].data2.xyz);
+            #endif
 
             if (d1 > d2) { float temp_d = d1; d1 = d2; d2 = temp_d; uint temp_i = left_idx; left_idx = right_idx; right_idx = temp_i; }
             if (d2 < r_obj.t && stack_ptr < 64) stack[stack_ptr++] = right_idx;
@@ -255,7 +349,7 @@ vec3 trace(Ray r) {
 
     vec3 direction = 1.0 / r.inv_direction; // Reconstruct direction
     HitInfo closest_hit;
-    find_closest_hit(r, direction, closest_hit);
+    traverse_tlas(r, direction, closest_hit);
 
     vec3 final_color;
     if (closest_hit.found) {

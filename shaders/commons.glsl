@@ -38,27 +38,6 @@ struct Point {
     vec4 color;     // color in rgb, a is padding
 };
 
-// BVH Node structure matching the output of pytinybvh
-struct BvhNode {
-    vec4 data1; // .xyz = AABB Min, .w = Left child/First primitive index
-    vec4 data2; // .xyz = AABB Max, .w = Primitive count (0 for internal nodes)
-}; // total size = 32 bytes (2x vec4)
-
-struct Ray {
-    vec3 origin;
-    vec3 inv_direction; // Store 1.0 / direction
-    float t;            // Max travel distance
-};
-
-struct HitInfo {
-    bool found;
-    float t; // distance along ray
-    vec3 barycentric_coords; // for triangle hits
-    uint primitive_idx;
-    uint instance_id;        // ID of the instance hit in the TLAS
-    bool is_point_hit;
-};
-
 // Simple RNG with temporal dithering
 float rand(vec2 co, float dither){
     return fract(sin(dot(co.xy, vec2(12.9898, 78.233)) + dither) * 43758.5453);
