@@ -52,8 +52,8 @@ class Agent:
     def rotate(self, yaw_delta: float, pitch_delta: float):
         """ Rotates the agent's view """
 
-        self.yaw = -yaw_delta * self.mouse_sensitivity
-        self.pitch = -pitch_delta * self.mouse_sensitivity
+        self.yaw -= yaw_delta * self.mouse_sensitivity
+        self.pitch -= pitch_delta * self.mouse_sensitivity
         self.pitch = np.clip(self.pitch, -89.999, 89.999)
 
     def lookat(self, target_pos: glm.vec3 | ArrayLike):
