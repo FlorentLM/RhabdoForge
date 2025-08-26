@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Dict, List, Optional, Union
-from abc import ABC, abstractmethod
+from abc import ABC
 
 import numpy as np
 from numpy.typing import ArrayLike

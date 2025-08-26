@@ -37,8 +37,8 @@ struct InstanceInfo {
 #if TBVH_LAYOUT_STANDARD || TBVH_LAYOUT_BVH_GPU // BVH_GPU uses the same StdNode layout on the GPU
 
 // Read nodes as raw 32-bit words to be layout-agnostic at the API level
-layout(std430, binding = 5) readonly buffer AllBlasNodesBuffer { uint blas_nodes32[]; };
-layout(std430, binding = 6) readonly buffer TlasNodesBuffer    { uint tlas_nodes32[]; };
+layout(std430, binding = 6) readonly buffer AllBlasNodesBuffer { uint blas_nodes32[]; };
+layout(std430, binding = 7) readonly buffer TlasNodesBuffer    { uint tlas_nodes32[]; };
 
 const uint TBVH_WORDS_PER_NODE = TBVH_NODE_STRIDE_FLOATS; // 1 float == 1 uint (32-bit)
 
@@ -83,21 +83,21 @@ struct BvhNode {
     vec4 data2; // .xyz = AABB Max, .w = Primitive count (0 for internal nodes)
 }; // total size = 32 bytes (2x vec4)
 
-layout(std430, binding = 5) readonly buffer AllBlasNodesBuffer { BvhNode blas_nodes[]; };
-layout(std430, binding = 6) readonly buffer TlasNodesBuffer    { BvhNode tlas_nodes[]; };
+layout(std430, binding = 6) readonly buffer AllBlasNodesBuffer { BvhNode blas_nodes[]; };
+layout(std430, binding = 7) readonly buffer TlasNodesBuffer    { BvhNode tlas_nodes[]; };
 
 #endif
 
 // Bindings (to be used by including shaders)
-layout(std430, binding = 1) readonly buffer VertexBuffer { float v[]; };
-layout(std430, binding = 2) readonly buffer IndexBuffer { uint indices[]; };
-layout(std430, binding = 3) readonly buffer MaterialBuffer { Material materials[]; };
-layout(std430, binding = 4) readonly buffer PointBuffer { Point points[]; };
+layout(std430, binding = 2) readonly buffer VertexBuffer { float v[]; };
+layout(std430, binding = 3) readonly buffer IndexBuffer { uint indices[]; };
+layout(std430, binding = 4) readonly buffer MaterialBuffer { Material materials[]; };
+layout(std430, binding = 5) readonly buffer PointBuffer { Point points[]; };
 
 // BVH bindings start at 5
-layout(row_major, std430, binding = 7) readonly buffer InstancesBuffer { InstanceInfo instances[]; };   // row-major!
-layout(std430, binding = 8) readonly buffer TlasPrimIndexBuffer { uint tlas_prim_indices[]; };
-layout(std430, binding = 9) readonly buffer BlasPrimIndexBuffer { uint blas_prim_indices[]; };
+layout(row_major, std430, binding = 8) readonly buffer InstancesBuffer { InstanceInfo instances[]; };   // row-major!
+layout(std430, binding = 9) readonly buffer TlasPrimIndexBuffer { uint tlas_prim_indices[]; };
+layout(std430, binding = 10) readonly buffer BlasPrimIndexBuffer { uint blas_prim_indices[]; };
 
 layout(binding = 0) uniform samplerCube skybox;
 layout(binding = 1) uniform sampler2DArray scene_textures;

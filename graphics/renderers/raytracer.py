@@ -9,10 +9,9 @@ from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from graphics.agent import Agent
-from graphics import utils
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, MeshAsset, PointsAsset
-from graphics.utils import load_texture, VEC_DTYPE, ShaderProgram
+from graphics.utils import load_texture, VEC_DTYPE, ShaderProgram, write_pytinybvh_preamble
 from graphics.renderers.panoramic import TextureViewer
 
 
@@ -255,7 +254,7 @@ class RaytracingSceneBaker:
         self.cpu_TLAS_prim_indices = t['leaf_ids'].astype(np.uint32)
 
         # Make the GLSL #defines visible to shaders
-        utils.write_pytinybvh_preamble(str(t.get('preamble', '')))
+        write_pytinybvh_preamble(str(t.get('preamble', '')))
 
         # Concatenate all BLAS leaf_ids (used by shader to map leaf -> primitive)
         self.cpu_BLAS_prim_indices = np.concatenate(self._blas_leaf_id_chunks).astype(np.uint32)
@@ -460,7 +459,7 @@ class EyeRendererRay(EyeRendererBase):
         if self._texture_viewer is None:
             self._texture_viewer = TextureViewer()
 
-    def _bind_scene_resources(self, shader: ShaderProgram, start_binding: int):
+    def _bind_scene_resources(self, shader: ShaderProgram):
 
         # Bind Textures
         glActiveTexture(GL_TEXTURE0)
@@ -472,15 +471,16 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1i(shader.get_loc('scene_textures'), 1)
 
         # Bind SSBOs
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, start_binding + 0, self._scene_baked.vertices_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, start_binding + 1, self._scene_baked.indices_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, start_binding + 2, self._scene_baked.materials_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, start_binding + 3, self._scene_baked.points_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, start_binding + 4, self._scene_baked.blas_nodes_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, start_binding + 5, self._scene_baked.tlas_nodes_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, start_binding + 6, self._scene_baked.instances_info_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, start_binding + 7, self._scene_baked.tlas_indices_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, start_binding + 8, self._scene_baked.blas_indices_ssbo)
+        # bindings 0 and 1 are for the ommatidia data and rays outputs
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self._scene_baked.vertices_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self._scene_baked.indices_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, self._scene_baked.materials_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, self._scene_baked.points_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, self._scene_baked.blas_nodes_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, self._scene_baked.tlas_nodes_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, self._scene_baked.instances_info_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, self._scene_baked.tlas_indices_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, self._scene_baked.blas_indices_ssbo)
 
         # Set Uniforms
         glUniform1ui(shader.get_loc('nb_tlas_nodes'), len(self._scene_baked.cpu_TLAS_nodes))
@@ -497,7 +497,7 @@ class EyeRendererRay(EyeRendererBase):
         # Bind the output texture to image unit 0 for writing
         glBindImageTexture(0, self._pano_texture_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
 
-        self._bind_scene_resources(self.pano_raytrace_shader, start_binding=1)
+        self._bind_scene_resources(self.pano_raytrace_shader)
 
         c2w_mat = glm.inverse(agent.view)
         glUniformMatrix4fv(self.pano_raytrace_shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
@@ -520,10 +520,10 @@ class EyeRendererRay(EyeRendererBase):
 
         # Bind input/output buffers for this pass
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, self.ray_results_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.ray_results_ssbo)
 
         # Bind all shared scene data (textures, geometry, BVHs)
-        self._bind_scene_resources(self.raytrace_shader, start_binding=1)
+        self._bind_scene_resources(self.raytrace_shader)
 
         # Set Uniforms
         glUniform1i(self.raytrace_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
@@ -535,7 +535,8 @@ class EyeRendererRay(EyeRendererBase):
 
         # Dispatch compute shader
         # Calculate the number of workgroups needed to process all rays
-        work_groups = (self.total_samples + 255) // 256  # Workgroup size is 256 in the shader
+        workgroup_size = 128  # workgroup size is 128 in the shader
+        work_groups = (self.total_samples + (workgroup_size - 1)) // workgroup_size
         glDispatchCompute(work_groups, 1, 1)
 
         # This barrier is critical: it ensures all writes to the ray_results_ssbo
@@ -562,7 +563,8 @@ class EyeRendererRay(EyeRendererBase):
 
         # Dispatch compute shader
         # Calculate workgroups needed to process all ommatidia
-        work_groups = (self.num_ommatidia + 63) // 64  # Workgroup size is 64 in the shader
+        workgroup_size = 64     # workgroup size is 64 in the shader
+        work_groups = (self.num_ommatidia + (workgroup_size - 1)) // workgroup_size
         glDispatchCompute(work_groups, 1, 1)
 
         # Another critical barrier: ensures the final_colors_ssbo is fully written
