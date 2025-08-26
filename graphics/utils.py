@@ -1,6 +1,9 @@
 from pathlib import Path
+from typing import Any, Union
+
 from PIL import Image
 import numpy as np
+from numpy.typing import ArrayLike
 from pyglm import glm
 from OpenGL.GL import *
 import re
@@ -18,7 +21,48 @@ WORLD_DOWN = -WORLD_UP
 WORLD_BACKWARD = -WORLD_FORWARD
 
 
-# Loader functions
+class DeltaTimeTransformer:
+    """
+    A temporary proxy object for applying framerate-independent transforms
+    It wraps a target object (like an Agent or Instance) and scales all
+    subsequent chained transformation calls by a delta_time value
+    """
+    def __init__(self, target: Any, delta_time: float):
+        self._target = target
+        self._delta_time = delta_time
+
+    def translate(self, translation: Union[glm.vec3, ArrayLike]):
+        scaled_translation = glm.vec3(translation) * self._delta_time
+        self._target.translate(scaled_translation)
+        return self
+
+    def rotate_axis(self, angle_degrees: float, axis: Union[str, glm.vec3, ArrayLike]):
+        scaled_angle = angle_degrees * self._delta_time
+        self._target.rotate_axis(scaled_angle, axis)
+        return self
+
+    def rotate_euler(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0):
+        self._target.rotate_euler(
+            yaw_delta * self._delta_time,
+            pitch_delta * self._delta_time,
+            roll_delta * self._delta_time
+        )
+        return self
+
+    def scale(self, scale_factors: Union[glm.vec3, ArrayLike]):
+        """
+        Applies scaling over time. A scale factor of 1.1 with dt will scale
+        towards 10% larger, not instantly become 1.1x as large
+        """
+        scale_vec = glm.vec3(scale_factors)
+        # Interpolate between no-scale (1, 1, 1) and target scale
+        interpolated_scale = glm.mix(glm.vec3(1.0), scale_vec, self._delta_time)
+        self._target.scale(interpolated_scale)
+        return self
+
+
+
+## Shader compiling functions
 
 def _process_shader_includes_recursive(path: Path, include_stack: set):
     """

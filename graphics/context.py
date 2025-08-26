@@ -58,12 +58,8 @@ class Context:
         self.mouse_y_dir = 1 if invert_mouseY else -1
         self.roll_speed: float = 90.0
 
-    def run_interactive(self,
-                        agent: Agent, scene: Scene, renderer: EyeRendererBase,
-                        window_size=None,
-                        fps_limit=None,
-                        v_sync=None,
-                        invert_mouseY=None):
+    def run_interactive(self, agent: Agent, scene: Scene, renderer: EyeRendererBase,
+                        window_size=None, fps_limit=None, v_sync=None, invert_mouseY=None):
         """ On first call, initialises and shows the window. Then checks if the interactive loop should continue. """
 
         if not self._interactive_initialised:
@@ -155,7 +151,7 @@ class Context:
 
         if glm.length(move_direction) > 0:
             displacement = glm.normalize(move_direction) * self.move_speed * self.delta_time
-            self.agent.move(displacement)
+            self.agent.translate(displacement)
 
         # Get mouse input for yaw and pitch
         current_mouse_pos = glfw.get_cursor_pos(self.window)

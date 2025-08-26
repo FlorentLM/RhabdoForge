@@ -1,3 +1,6 @@
+import OpenGL
+OpenGL.ERROR_CHECKING = False
+
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Sequence
 from abc import ABC
@@ -5,13 +8,12 @@ from abc import ABC
 import numpy as np
 from numpy.typing import ArrayLike
 import open3d as o3d
-import OpenGL
-OpenGL.ERROR_CHECKING = False
+
 from OpenGL.GL import *
 from pyglm import glm
-
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
-from graphics.utils import VEC_DTYPE, load_shaders, load_cubemap
+from graphics.utils import VEC_DTYPE, load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, \
+    DeltaTimeTransformer
 
 
 class Asset(ABC):
@@ -110,6 +112,7 @@ class PointsAsset(Asset):
 
         if file_path is None and points is None:
             raise ValueError("PointsAsset requires either 'file_path' or 'points' data.")
+
         if file_path is not None and points is not None:
             raise ValueError("Provide either 'file_path' or 'points' data, not both.")
 
@@ -127,6 +130,7 @@ class PointsAsset(Asset):
 
             if pcd.has_normals():
                 self.normals = np.asarray(pcd.normals, dtype=VEC_DTYPE)
+
             if pcd.has_colors():
                 self.colors = np.asarray(pcd.colors, dtype=VEC_DTYPE)
 
@@ -137,7 +141,6 @@ class PointsAsset(Asset):
 
         self.num_points = len(self.points)
         print(f"Loaded {self.num_points} points for asset '{name}'.")
-
 
 
 class Instance:
@@ -171,12 +174,71 @@ class Instance:
                     "Expected a (4, 4) matrix or a (3,) position vector."
                 )
 
+    def dt(self, delta_time: float) -> DeltaTimeTransformer:
+        """
+        Enables framerate-independent transformations for a chain of method calls
+
+        Example:
+            # Rotates at 90 degrees per second
+            my_instance.dt(delta_time).rotate_axis(90, 'y')
+        """
+        return DeltaTimeTransformer(self, delta_time)
+
+    @property
+    def position(self):
+        return glm.vec3(self.transform[3])
+
+    @position.setter
+    def position(self, value: Union[glm.vec3, ArrayLike]):
+        self.transform[3] = glm.vec4(glm.vec3(value), 1.0)
+
     def translate(self, translation: Union[glm.vec3, ArrayLike]):
         self.transform = glm.translate(self.transform, glm.vec3(translation))
         return self
 
-    def rotate(self, angle_degrees: float, axis: Union[glm.vec3, ArrayLike]):
-        self.transform = glm.rotate(self.transform, glm.radians(angle_degrees), glm.vec3(axis))
+    def rotate_axis(self, angle_degrees: float, axis: Union[str, glm.vec3, ArrayLike]):
+        """
+        Rotates the instance around a given axis
+        """
+
+        if isinstance(axis, str):
+            axis_str = axis.lower()
+            axis_map = {
+                'x': WORLD_RIGHT,
+                'y': WORLD_UP,
+                'z': WORLD_FORWARD,
+                'right': WORLD_RIGHT,
+                'left': -WORLD_RIGHT,
+                'up': WORLD_UP,
+                'down': -WORLD_UP,
+                'forward': WORLD_FORWARD,
+                'backward': -WORLD_FORWARD,
+                'yaw': WORLD_UP,
+                'pitch': WORLD_RIGHT,
+                'roll': WORLD_FORWARD,
+            }
+            try:
+                rotation_axis = axis_map[axis_str]
+            except KeyError:
+                raise ValueError(f"Unknown axis identifier: '{axis}'. Valid options are: {list(axis_map.keys())}")
+        else:
+            rotation_axis = glm.vec3(axis)
+
+        self.transform = glm.rotate(self.transform, glm.radians(angle_degrees), rotation_axis)
+        return self
+
+    def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0):
+        """
+        Rotates the instance by given Euler angle deltas
+        """
+        if yaw_delta != 0.0:
+            self.transform = glm.rotate(self.transform, glm.radians(yaw_delta), WORLD_UP)
+
+        if pitch_delta != 0.0:
+            self.transform = glm.rotate(self.transform, glm.radians(pitch_delta), WORLD_RIGHT)
+
+        if roll_delta != 0.0:
+            self.transform = glm.rotate(self.transform, glm.radians(roll_delta), glm.vec3(0, 0, -1))
         return self
 
     def scale(self, scale_factors: Union[glm.vec3, ArrayLike]):

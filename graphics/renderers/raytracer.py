@@ -191,7 +191,7 @@ class RaytracingSceneBaker:
             elif isinstance(asset, PointsAsset):
 
                 points = asset.points.astype(np.float32)
-                radius = getattr(asset, "radius", 0.1)
+                radius = getattr(asset, "radius", 0.05)
 
                 self.point_radius_by_asset[asset.id] = radius
 

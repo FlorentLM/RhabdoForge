@@ -25,7 +25,7 @@ def main():
 
     if USE_POINT_CLOUD:
         point_cloud_asset = PointsAsset('canberra', file_path='assets/canberra_filtered.ply')
-        scene.add_instance(point_cloud_asset, point_radius=0.15)
+        scene.add_instance(point_cloud_asset, point_radius=5)
 
     # Load the mesh asset data
     crate_asset = MeshAsset('crate', vertices=CUBE_VERTICES, indices=CUBE_INDICES, texture_path='textures/wood.jpg')
@@ -61,7 +61,7 @@ def main():
             context.input()
 
             # Rotate dynamic test crate
-            dynamic_crate.rotate(0.5, (0.0, 1.0, 0.0))
+            dynamic_crate.dt(context.elapsed_time).rotate_axis(0.5, 'roll').rotate_axis(0.5, 'up')
 
             # Get sensory data from the renderer
             ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=True)
@@ -79,7 +79,7 @@ def main():
         for i in range(max_steps):
 
             # Programmatically control the agent
-            agent.move(agent.forward * 0.05)
+            agent.translate(agent.forward * 0.05)
             agent.rotate(yaw_delta=-0.5, pitch_delta=0)
 
             # Get sensory data from the renderer
