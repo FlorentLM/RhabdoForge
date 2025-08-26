@@ -1,3 +1,4 @@
+import random
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -86,6 +87,9 @@ class EyeRendererBase(ABC):
         self._time_dithering = bool(value)
         print(f"Time dithering {'ENABLED' if self._time_dithering else 'DISABLED'}.")
 
+    def dither(self):
+        self._time_counter = random.randint(0, 1024)
+
     @abstractmethod
     def _compute_colors(self, *args, **kwargs):
         # Each subclass implements its own core rendering logic
@@ -158,6 +162,9 @@ class EyeRendererBase(ABC):
         """
 
         is_sync_mode = getattr(self, 'is_interactive', False) or self._batch_size == 1
+
+        if self._time_dithering:
+            self._time_counter += 1
 
         if is_sync_mode:
             # Synchronous path

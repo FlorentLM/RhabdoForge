@@ -116,6 +116,9 @@ class Context:
             if key == glfw.KEY_H:
                 if self.hud: self.hud.show = not self.hud.show
 
+            if key == glfw.KEY_X:
+                self.renderer.dither()
+
             if key == glfw.KEY_T:
                 if hasattr(self.renderer, 'time_dithering'):
                     self.renderer.time_dithering = not self.renderer.time_dithering

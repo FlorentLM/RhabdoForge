@@ -195,7 +195,7 @@ class RaytracingSceneBaker:
 
                 self.point_radius_by_asset[asset.id] = radius
 
-                blas = BVH.from_points(points, radius=radius)
+                blas = BVH.from_points(points, radius=radius, traversal_cost=0.5, intersection_cost=0.5)
 
                 # Pack point data for the shader
                 packed_points = np.zeros((asset.num_points, 12), dtype=VEC_DTYPE)

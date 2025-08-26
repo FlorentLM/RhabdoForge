@@ -163,13 +163,13 @@ class HUD:
     def _update_controls_text(self):
 
         # The main renderer (not the debug one) determines the "sample" label
-        sample_label = "Rays" if self.ctx.renderer and isinstance(self.ctx.renderer, EyeRendererRay) else "Samples"
+        sample_label = "rays" if self.ctx.renderer and isinstance(self.ctx.renderer, EyeRendererRay) else "samples"
 
         self._controls_text_lines = [
-            'ESC: Quit', 'H: Show/hide HUD', f'+/-: {sample_label}', 'T: Time dithering',
-            'V: Voronoi view', 'P: Panoramic view', 'C: Compound eye view',
-            'R: Reset rotation', 'O: Teleport to origin',
-            'LShift/Space: Down/Up', 'Q/E: Roll', 'Mouse: Yaw & Pitch', 'WASD: Move',
+            'ESC: Quit', 'H: Show/hide HUD', 'R: Reset rotation', 'O: Teleport to origin', 'X: Dither once',
+            f'+/-: Increase/decrease {sample_label}', 'T: Toggle time dithering',
+            'V: Toggle Voronoi view', 'P: Toggle Panoramic view', 'C: Toggle Compound eye view',
+            'LShift/Space: Down/Up', 'Q/E: Roll', 'Mouse: Yaw & Pitch', 'WASD: Move', '------', 'Controls:'
         ]
         shadow_verts, fg_verts = [], []
         margin, line_height = 10, self.font_renderer.font_size
