@@ -61,7 +61,7 @@ def main():
             context.input()
 
             # Rotate dynamic test crate
-            dynamic_crate.dt(context.elapsed_time).rotate_axis(0.5, 'roll').rotate_axis(0.5, 'up')
+            dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
             # Get sensory data from the renderer
             ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=True)

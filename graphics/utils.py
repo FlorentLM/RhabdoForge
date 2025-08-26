@@ -41,8 +41,8 @@ class DeltaTimeTransformer:
         self._target.rotate_axis(scaled_angle, axis)
         return self
 
-    def rotate_euler(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0):
-        self._target.rotate_euler(
+    def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0):
+        self._target.rotate(
             yaw_delta * self._delta_time,
             pitch_delta * self._delta_time,
             roll_delta * self._delta_time

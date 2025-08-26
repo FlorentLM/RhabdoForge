@@ -184,7 +184,7 @@ class HUD:
 
     def _update_text_vertices(self):
 
-        current_time = self.ctx.elapsed_time
+        current_time = self.ctx.current_time
 
         self.frame_times.append(current_time)
 

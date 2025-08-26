@@ -30,8 +30,9 @@ class Context:
         glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
 
         self.window = glfw.create_window(self._window_size[0], self._window_size[1],
-                                         "Interactive mode", None,None)
-
+                                         title="Interactive mode",
+                                         monitor=None,
+                                         share=None)
         if not self.window:
             glfw.terminate()
             raise Exception("GLFW window can't be created")
@@ -51,7 +52,7 @@ class Context:
         self.hud = None
         self.last_mouse_pos = None
         self.last_frame_time = 0
-        self.delta_time = 0
+        self._delta_time = 0
 
         self.move_speed: float = 3.0
         self.mouse_sensitivity: float = 0.25
@@ -93,6 +94,9 @@ class Context:
 
             self.hud = HUD(self)
 
+            # Initialize last_frame_time right before the loop starts to prevent a massive initial delta_time
+            self.last_frame_time = self.current_time
+
             self._interactive_initialised = True
 
         return not glfw.window_should_close(self.window)
@@ -125,8 +129,8 @@ class Context:
         if not self._interactive_initialised:
             return
 
-        current_time = self.elapsed_time
-        self.delta_time = current_time - self.last_frame_time
+        current_time = self.current_time
+        self._delta_time = current_time - self.last_frame_time
         self.last_frame_time = current_time
 
         glfw.poll_events()
@@ -135,37 +139,43 @@ class Context:
             glfw.set_window_should_close(self.window, True)
             return
 
+        # Handle movement
         move_direction = glm.vec3(0.0)
-        roll_input = 0.0
-
         if glfw.get_key(self.window, glfw.KEY_W) == glfw.PRESS: move_direction += self.agent.forward
         if glfw.get_key(self.window, glfw.KEY_S) == glfw.PRESS: move_direction += self.agent.backward
         if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS: move_direction += self.agent.left
         if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS: move_direction += self.agent.right
-        if glfw.get_key(self.window, glfw.KEY_O) == glfw.PRESS: self.agent.position = (0, 0, 0)
-        if glfw.get_key(self.window, glfw.KEY_R) == glfw.PRESS: self.agent.yaw, self.agent.pitch, self.agent.roll = (0, 0, 0)
         if glfw.get_key(self.window, glfw.KEY_SPACE) == glfw.PRESS: move_direction += WORLD_UP
         if glfw.get_key(self.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS: move_direction += WORLD_DOWN
+
+        # Reset position/orientation (instantaneous, so no .dt())
+        if glfw.get_key(self.window, glfw.KEY_O) == glfw.PRESS: self.agent.position = (0, 0, 0)
+        if glfw.get_key(self.window, glfw.KEY_R) == glfw.PRESS: self.agent.yaw, self.agent.pitch, self.agent.roll = (0, 0, 0)
+
+        if glm.length(move_direction) > 0:
+            # Use the .dt() proxy for framerate-independent movement
+            self.agent.dt(self._delta_time).translate(glm.normalize(move_direction) * self.move_speed)
+
+        # Handle rotation
+        roll_input = 0.0
         if glfw.get_key(self.window, glfw.KEY_Q) == glfw.PRESS: roll_input += 1.0
         if glfw.get_key(self.window, glfw.KEY_E) == glfw.PRESS: roll_input -= 1.0
 
-        if glm.length(move_direction) > 0:
-            displacement = glm.normalize(move_direction) * self.move_speed * self.delta_time
-            self.agent.translate(displacement)
-
-        # Get mouse input for yaw and pitch
         current_mouse_pos = glfw.get_cursor_pos(self.window)
-
         if self.last_mouse_pos is None:
             self.last_mouse_pos = current_mouse_pos
 
+        # Calculate deltas per-second
         yaw_delta = (current_mouse_pos[0] - self.last_mouse_pos[0]) * self.mouse_sensitivity * -1
         pitch_delta = (current_mouse_pos[1] - self.last_mouse_pos[1]) * self.mouse_sensitivity * self.mouse_y_dir
-        roll_delta = self.roll_speed * roll_input * self.delta_time
-
         self.last_mouse_pos = current_mouse_pos
 
-        self.agent.rotate(yaw_delta=yaw_delta, pitch_delta=pitch_delta, roll_delta=roll_delta)
+        # Use the .dt() proxy for framerate-independent rotation
+        self.agent.dt(self._delta_time).rotate(
+            yaw_delta=yaw_delta * 100,  # Scale mouse sensitivity to feel right
+            pitch_delta=pitch_delta * 100,
+            roll_delta=roll_input * self.roll_speed
+        )
 
     def draw(self):
 
@@ -186,15 +196,13 @@ class Context:
 
         glfw.swap_buffers(self.window)
 
-        if self._fps_limit:
-            current_time = self.elapsed_time
-            elapsed_time = current_time - self.last_frame_time
+        if self._fps_limit > 0:
+            frame_end_time = self.current_time
+            elapsed_time = frame_end_time - self.last_frame_time
             wait_time = (1.0 / self._fps_limit) - elapsed_time
 
             if wait_time > 0:
                 time.sleep(wait_time)
-
-            self.last_frame_time = self.elapsed_time
 
     def free(self):
         if self.hud:
@@ -202,8 +210,12 @@ class Context:
         glfw.terminate()
 
     @property
-    def elapsed_time(self) -> float:
+    def current_time(self) -> float:
         return glfw.get_time()
+
+    @property
+    def delta_time(self) -> float:
+        return self._delta_time
 
     @property
     def window_size(self) -> tuple:
