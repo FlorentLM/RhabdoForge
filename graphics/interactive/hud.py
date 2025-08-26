@@ -168,7 +168,8 @@ class HUD:
         self._controls_text_lines = [
             'ESC: Quit', 'H: Show/hide HUD', f'+/-: {sample_label}', 'T: Time dithering',
             'V: Voronoi view', 'P: Panoramic view', 'C: Compound eye view',
-            'Mouse: Look', 'LShift/Space: Down/Up', 'WASD: Move',
+            'R: Reset rotation', 'O: Teleport to origin',
+            'LShift/Space: Down/Up', 'Q/E: Roll', 'Mouse: Yaw & Pitch', 'WASD: Move',
         ]
         shadow_verts, fg_verts = [], []
         margin, line_height = 10, self.font_renderer.font_size

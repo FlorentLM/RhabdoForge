@@ -17,7 +17,7 @@ from graphics.interactive.hud import HUD
 
 class Context:
 
-    def __init__(self, window_size: tuple = None, fps_limit: int = None, v_sync: bool = False):
+    def __init__(self, window_size: tuple = None, fps_limit: int = None, v_sync: bool = False, invert_mouseY = False):
 
         self._window_size = window_size if window_size is not None else (1280, 720)
         self._fps_limit = fps_limit if fps_limit is not None else 0
@@ -51,12 +51,19 @@ class Context:
         self.hud = None
         self.last_mouse_pos = None
         self.last_frame_time = 0
+        self.delta_time = 0
+
+        self.move_speed: float = 3.0
+        self.mouse_sensitivity: float = 0.25
+        self.mouse_y_dir = 1 if invert_mouseY else -1
+        self.roll_speed: float = 90.0
 
     def run_interactive(self,
                         agent: Agent, scene: Scene, renderer: EyeRendererBase,
                         window_size=None,
                         fps_limit=None,
-                        v_sync=None):
+                        v_sync=None,
+                        invert_mouseY=None):
         """ On first call, initialises and shows the window. Then checks if the interactive loop should continue. """
 
         if not self._interactive_initialised:
@@ -69,6 +76,9 @@ class Context:
 
             if v_sync is not None:
                 self._v_sync = bool(v_sync)
+
+            if invert_mouseY is not None:
+                self.mouse_y_dir = 1 if invert_mouseY else -1
 
             glfw.swap_interval(int(self._v_sync))
 
@@ -119,6 +129,10 @@ class Context:
         if not self._interactive_initialised:
             return
 
+        current_time = self.elapsed_time
+        self.delta_time = current_time - self.last_frame_time
+        self.last_frame_time = current_time
+
         glfw.poll_events()
 
         if glfw.get_key(self.window, glfw.KEY_ESCAPE) == glfw.PRESS:
@@ -126,28 +140,36 @@ class Context:
             return
 
         move_direction = glm.vec3(0.0)
+        roll_input = 0.0
 
         if glfw.get_key(self.window, glfw.KEY_W) == glfw.PRESS: move_direction += self.agent.forward
         if glfw.get_key(self.window, glfw.KEY_S) == glfw.PRESS: move_direction += self.agent.backward
         if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS: move_direction += self.agent.left
         if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS: move_direction += self.agent.right
+        if glfw.get_key(self.window, glfw.KEY_O) == glfw.PRESS: self.agent.position = (0, 0, 0)
+        if glfw.get_key(self.window, glfw.KEY_R) == glfw.PRESS: self.agent.yaw, self.agent.pitch, self.agent.roll = (0, 0, 0)
         if glfw.get_key(self.window, glfw.KEY_SPACE) == glfw.PRESS: move_direction += WORLD_UP
         if glfw.get_key(self.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS: move_direction += WORLD_DOWN
+        if glfw.get_key(self.window, glfw.KEY_Q) == glfw.PRESS: roll_input += 1.0
+        if glfw.get_key(self.window, glfw.KEY_E) == glfw.PRESS: roll_input -= 1.0
 
-        self.agent.move(move_direction)
+        if glm.length(move_direction) > 0:
+            displacement = glm.normalize(move_direction) * self.move_speed * self.delta_time
+            self.agent.move(displacement)
 
+        # Get mouse input for yaw and pitch
         current_mouse_pos = glfw.get_cursor_pos(self.window)
 
         if self.last_mouse_pos is None:
             self.last_mouse_pos = current_mouse_pos
 
-        mouse_x = current_mouse_pos[0] - self.last_mouse_pos[0]
-        mouse_y = current_mouse_pos[1] - self.last_mouse_pos[1]
+        yaw_delta = (current_mouse_pos[0] - self.last_mouse_pos[0]) * self.mouse_sensitivity * -1
+        pitch_delta = (current_mouse_pos[1] - self.last_mouse_pos[1]) * self.mouse_sensitivity * self.mouse_y_dir
+        roll_delta = self.roll_speed * roll_input * self.delta_time
 
         self.last_mouse_pos = current_mouse_pos
 
-        if mouse_x != 0 or mouse_y != 0:
-            self.agent.rotate(mouse_x, mouse_y)
+        self.agent.rotate(yaw_delta=yaw_delta, pitch_delta=pitch_delta, roll_delta=roll_delta)
 
     def draw(self):
 

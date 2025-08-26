@@ -21,9 +21,7 @@ class Agent:
                  fov: float = 50.0,
                  near: float = 0.1,
                  far: float = 100.0,
-                 ratio: float = 16.0 / 9.0,
-                 move_sensitivity: float = 0.01,
-                 mouse_sensitivity: float = 0.25):
+                 ratio: float = 16.0 / 9.0):
 
         self._position = glm.vec3(position)
         self.tilt = self.pitch = self.vertical_angle = pitch
@@ -35,27 +33,17 @@ class Agent:
         self._near = near
         self._far = far
 
-        self.move_sensitivity = move_sensitivity
-        self.mouse_sensitivity = mouse_sensitivity
-
         self._ident = glm.mat4(1.0)
 
     def move(self, direction: glm.vec3 | ArrayLike):
-        """ Moves the agent in a specified direction vector """
-
-        direction = glm.vec3(direction)
-
-        if glm.length(direction) > 0:
-            displacement = glm.normalize(direction) * self.move_sensitivity
-            self._position += displacement
-
+        """ Moves the agent by a specified displacement vector """
+        self._position += glm.vec3(direction)
         return self
 
-    def rotate(self, yaw_delta: float, pitch_delta: float):
-        """ Rotates the agent's view """
-        self.yaw -= yaw_delta * self.mouse_sensitivity
-        self.pitch -= pitch_delta * self.mouse_sensitivity
-        self.pitch = np.clip(self.pitch, -89.999, 89.999)
+    def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0):
+        self.yaw += yaw_delta
+        self.pitch += pitch_delta
+        self.roll += roll_delta
         return self
 
     def translate(self, translation: glm.vec3 | ArrayLike):
@@ -139,8 +127,12 @@ class Agent:
     def orientation(self):
         """ The agent's orientation matrix (rotates from local to world space) """
         orientation = glm.mat4(1.0)
+        # yaw
         orientation = glm.rotate(orientation, glm.radians(self.yaw), WORLD_UP)
+        # pitch
         orientation = glm.rotate(orientation, glm.radians(self.pitch), WORLD_RIGHT)
+        # Roll
+        orientation = glm.rotate(orientation, glm.radians(self.roll), glm.vec3(0, 0, -1))
         return orientation
 
     @property
