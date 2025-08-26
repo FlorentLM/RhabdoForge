@@ -49,12 +49,19 @@ class Agent:
             displacement = glm.normalize(direction) * self.move_sensitivity
             self._position += displacement
 
+        return self
+
     def rotate(self, yaw_delta: float, pitch_delta: float):
         """ Rotates the agent's view """
-
         self.yaw -= yaw_delta * self.mouse_sensitivity
         self.pitch -= pitch_delta * self.mouse_sensitivity
         self.pitch = np.clip(self.pitch, -89.999, 89.999)
+        return self
+
+    def translate(self, translation: glm.vec3 | ArrayLike):
+        """ Translates the agent by a given vector """
+        self._position += glm.vec3(translation)
+        return self
 
     def lookat(self, target_pos: glm.vec3 | ArrayLike):
         """ Orients the agent to look at a specific target position """
@@ -75,6 +82,8 @@ class Agent:
         # Calculate yaw (left/right look) from the X and Z components
         # (negative Z component for a right-handed coordinate system)
         self.yaw = glm.degrees(glm.atan2(direction.x, -direction.z))
+
+        return self
 
     @property
     def position(self):
