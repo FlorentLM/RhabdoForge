@@ -535,7 +535,7 @@ class EyeRendererRay(EyeRendererBase):
 
         # Dispatch compute shader
         # Calculate the number of workgroups needed to process all rays
-        workgroup_size = 128  # workgroup size is 128 in the shader
+        workgroup_size = 64  # workgroup size is 64 in the shader
         work_groups = (self.total_samples + (workgroup_size - 1)) // workgroup_size
         glDispatchCompute(work_groups, 1, 1)
 
