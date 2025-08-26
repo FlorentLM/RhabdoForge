@@ -29,20 +29,16 @@ def main():
 
     # Load the mesh asset data
     crate_asset = MeshAsset('crate', vertices=CUBE_VERTICES, indices=CUBE_INDICES, texture_path='textures/wood.jpg')
-    # rock_asset = MeshAsset('rock', vertex_data=CUBE_VERTICES, indices=CUBE_INDICES, texture_path='textures/rock.jpg')
 
     # Add multiple instances of the same asset
     scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))
     scene.add_instance(asset=crate_asset, transform=(3.0, 0.0, 0.0))
-    scene.add_instance(asset=crate_asset, transform=(0.0, 2.0, 6.0))
-    scene.add_instance(asset=crate_asset, transform=(0.0, -2.0, 6.0))
 
     # A crate that will move
     dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
 
     # Add a skybox
     scene.add_skybox('textures/bright_day')
-    # scene.add_skybox('textures/black')
 
     # Setup eye model
     eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)

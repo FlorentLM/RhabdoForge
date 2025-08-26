@@ -5,6 +5,7 @@ from OpenGL.GL import *
 
 from typing import Tuple, List, Dict, Optional
 import numpy as np
+from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
@@ -80,14 +81,52 @@ class RaytracingSceneBaker:
             return
 
         self.material_map = {mesh.id: i for i, mesh in enumerate(assets)}
-
         tex_paths = sorted(list({mesh.texture_path for mesh in assets}))
 
         tex_map = {path: i for i, path in enumerate(tex_paths)}
-        tex_ids = [load_texture(path) for path in tex_paths]
+        # Determine the target dimensions from the first texture
+        # All other textures will be resized to match this one
+        try:
+            with Image.open(tex_paths[0]) as first_img:
+                target_w, target_h = first_img.size
+                print(f"Using target texture size: {target_w}x{target_h} (from {tex_paths[0]})")
+        except FileNotFoundError:
+            print(f"Error: Could not open base texture {tex_paths[0]}")
+            return
+
+        tex_ids = []
+
+        for path in tex_paths:
+            try:
+                img = Image.open(path).convert("RGBA")
+
+                # Check if the image needs resizing
+                if img.size != (target_w, target_h):
+                    print(f"Warning: Resizing texture '{path}' from {img.size} to {(target_w, target_h)}.")
+                    img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+
+                # Get raw image data for OpenGL
+                img_data = img.tobytes()
+
+                # Create an OpenGL texture from the (potentially resized) image data
+                tex_id = glGenTextures(1)
+                glBindTexture(GL_TEXTURE_2D, tex_id)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, target_w, target_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, img_data)
+
+                tex_ids.append(tex_id)
+
+            except Exception as e:
+                print(f"Error processing texture {path}: {e}")
+                # Add a placeholder texture ID (0) if loading fails
+                tex_ids.append(0)
 
         if tex_ids:
             self.tex_array = self._create_texture_array(tex_ids)
+            # We can delete the individual 2D textures now that their data is in the array
             glDeleteTextures(len(tex_ids), tex_ids)
 
         mat_data = np.zeros((len(assets), 4), dtype=np.uint32)
