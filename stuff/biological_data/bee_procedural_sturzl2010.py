@@ -29,7 +29,7 @@ def akima_interpolator(x, y, fill_value):
     return wrapper
 
 
-def load_azimuth_data(file_path="experimental/biological_data/azimuth_max.csv", interp='akima'):
+def load_azimuth_data(file_path="stuff/biological_data/azimuth_max.csv", interp='akima'):
     """ Loads and prepares the azimuth boundary data using the robust interpolator """
 
     try:
@@ -190,7 +190,7 @@ def main():
     plt.plot(az_fn_12(elevations), elevations, color='orangered', lw=2, label="Interpolated boundary (1-2)")
     plt.plot(az_fn_34(elevations), elevations, color='limegreen', lw=2, label="Interpolated boundary (3-4)")
 
-    # Plot the original experimental data points
+    # Plot the original stuff data points
     df_12, df_34 = raw_dfs
     plt.plot(df_12['azimuth_max_1_2'], df_12['elevation_1_2'], 'o', color='darkred', markersize=5,
              label="Raw data (1-2)")
