@@ -58,13 +58,13 @@ def main():
     batch_size = BATCH_SIZE if (HEADLESS and USE_ASYNC_BATCHING) else 1
 
     if USE_RAYTRACER:
-        renderer = EyeRendererRay(eye_model=eye_model, scene=scene,
+        eye_renderer = EyeRendererRay(eye_model=eye_model, scene=scene,
                                   nb_samples=NB_SAMPLES,
                                   time_dithering=False,
                                   batch_size=batch_size)
 
     else:
-        renderer = EyeRendererRaster(eye_model=eye_model, scene=scene,
+        eye_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene,
                                      nb_samples=NB_SAMPLES,
                                      time_dithering=False,
                                      batch_size=batch_size)
@@ -76,15 +76,15 @@ def main():
 
     if not HEADLESS:
 
-        while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
+        while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer):
 
             context.input()
 
             # Rotate dynamic test crate
             dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
-            # Get sensory data from the renderer
-            ommatidia_data = renderer.get_ommatidia_data(agent)
+            # Get sensory data from the compound eye renderer
+            ommatidia_data = eye_renderer.get_ommatidia_data(agent)
 
             context.draw()
 
@@ -100,9 +100,11 @@ def main():
 
         for i in range(max_steps):
 
+            # Move the agent or whatever
             agent.translate(agent.forward * 0.05).rotate(yaw_delta=-0.5, pitch_delta=0, roll_delta=0)
 
-            ommatidia_data = renderer.get_ommatidia_data(agent)
+            # Get sensory data from the compound eye renderer
+            ommatidia_data = eye_renderer.get_ommatidia_data(agent)
 
             # If the return value is not None, it's a valid chunk of data (either a single frame or a full batch)
             if ommatidia_data is not None:
@@ -112,7 +114,7 @@ def main():
 
         # After the loop, flush() gets the last partial batch from async mode
         # (this is harmless in sync mode, it will just return an empty array)
-        final_chunk = renderer.flush()
+        final_chunk = eye_renderer.flush()
         if final_chunk.size > 0:
             all_ommatidia_data.append(final_chunk)
 
@@ -129,7 +131,7 @@ def main():
         print(f"Final concatenated dataset shape: {full_dataset.shape}")
 
     # Cleanup
-    renderer.free()
+    eye_renderer.free()
     scene.free()
     context.free()
 
