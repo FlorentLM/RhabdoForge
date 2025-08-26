@@ -17,8 +17,10 @@ def main():
     USE_POINT_CLOUD = True
     NB_OMMATIDIA = 19362
     NB_SAMPLES = 16
-    HEADLESS = False
+    HEADLESS = True
+    CPU_READ = False
 
+    # This needs to be the first thing called
     context = Context()
 
     scene = Scene()
@@ -54,6 +56,9 @@ def main():
         renderer = EyeRendererRaster(eye_model=eye_model, scene=scene, nb_samples=NB_SAMPLES, time_dithering=False)
 
     # Run
+    start_time = time.time()
+    nb_frames = 0
+
     if not HEADLESS:
 
         while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
@@ -64,29 +69,30 @@ def main():
             dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
             # Get sensory data from the renderer
-            ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=True)
+            ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=CPU_READ)
 
             context.draw()
 
+            nb_frames += 1
     else:
         # Run headless experiment loop
 
         max_steps = 10000
 
         print(f"Running headless simulation for {max_steps} steps...")
-        start_time = time.time()
 
         for i in range(max_steps):
 
             # Programmatically control the agent
-            agent.translate(agent.forward * 0.05)
-            agent.rotate(yaw_delta=-0.5, pitch_delta=0)
+            agent.translate(agent.forward * 0.05).rotate(yaw_delta=-0.5, pitch_delta=0)
 
             # Get sensory data from the renderer
-            ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=True)
+            ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=CPU_READ)
 
-        total_time = time.time() - start_time
-        print(f"Finished. {max_steps} frames in {total_time:.2f}s ({max_steps / total_time:.2f} FPS).")
+            nb_frames += 1
+
+    total_time = time.time() - start_time
+    print(f"Ran for {nb_frames} frames in {total_time:.2f}s (avg. {nb_frames / total_time:.2f} fps).")
 
     # Cleanup
     renderer.free()
