@@ -222,11 +222,17 @@ class RasterSceneBaker:
 
 class EyeRendererRaster(EyeRendererBase):
 
-    def __init__(self, eye_model: CompoundEye, scene: Scene, time_dithering: bool = False, nb_samples: int = 256, cubemap_res: int = 512):
-        super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
+    def __init__(self, eye_model: CompoundEye, scene: Scene,
+                 time_dithering: bool = False,
+                 nb_samples: int = 256,
+                 cubemap_res: int = 512,
+                 batch_size: int = 1):
 
         self.scene = scene  # just for convenience
         self._scene_baked = RasterSceneBaker(scene)
+
+        # call super after creating the scene for correct VRAM usage computation
+        super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
 
         self._rasterizer_shader = ShaderProgram(comp_path='shaders/ommatidia_rasterizer.comp')
 
@@ -246,6 +252,19 @@ class EyeRendererRaster(EyeRendererBase):
     def samples_per_ommatidium(self, value):
         self._samples_per_ommatidium = int(min(32768, max(1, value)))
         # no buffers to reallocate
+
+    def estimate_vram_usage(self) -> float:
+        """ Override base method to provide a VRAM estimate for the rasterizer """
+
+        # This is kinda hard to calculate precisely without inspecting every texture and mesh
+        # so we assume a baseline and add the cubemap FBO size
+
+        # Cubemap is RGBA8 (4 bytes) * 6 faces
+        cubemap_mb = (self._cubemap_fbo.resolution ** 2 * 4 * 6) / (1024 * 1024)
+
+        # A rough conservative guess for shaders, VAOs, VBOs etc
+        scene_assets_mb = 50.0
+        return cubemap_mb + scene_assets_mb
 
     def _render_instance(self, instance: RasterInstance, view_matrix, projection_matrix):
         """ Renders a single RasterInstance """
@@ -283,6 +302,7 @@ class EyeRendererRaster(EyeRendererBase):
         glUseProgram(0)
 
     def _render_to_cubemap(self, agent):
+        """ Pass 1: renders to the cubemap """
 
         main_viewport = glGetIntegerv(GL_VIEWPORT)
 
@@ -355,6 +375,7 @@ class EyeRendererRaster(EyeRendererBase):
         glViewport(main_viewport[0], main_viewport[1], main_viewport[2], main_viewport[3])
 
     def _sample_cubemap(self):
+        """ Pass 2: samples the cubemap """
 
         self._rasterizer_shader.use()
 
@@ -362,6 +383,10 @@ class EyeRendererRaster(EyeRendererBase):
         glUniform1i(self._rasterizer_shader.get_loc('nb_ommatidia'), self.num_ommatidia)
         glUniform1i(self._rasterizer_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
         glUniform1f(self._rasterizer_shader.get_loc('time'), float(self._time_counter))
+
+        # Write into the history buffer circularly
+        frame_offset = self._current_frame_index % self._batch_size
+        glUniform1i(self._rasterizer_shader.get_loc('frame_index'), frame_offset)
 
         # Bind input cubemap (texture unit 0)
         glActiveTexture(GL_TEXTURE0)
@@ -397,19 +422,6 @@ class EyeRendererRaster(EyeRendererBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
-
-    def get_ommatidia_data(self, agent, to_cpu=False):
-        """ Generates a cubemap and then computes ommatidia data from it """
-
-        self._compute_colors(agent)
-
-        if self._time_dithering:
-            self._time_counter += 1
-
-        if to_cpu:
-            self._fetch_to_cpu()
-
-        return self.cpu_read_buffer
 
     def draw(self, view_mode: str, agent, tiled_mode: bool = False):
         """ Renders one of the rasterizer's supported views to the screen """

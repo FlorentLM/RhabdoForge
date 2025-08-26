@@ -4,14 +4,15 @@
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 // Input: Result of the raytracing pass
-layout(std430, binding = 0) readonly buffer RayResultBuffer { vec4 ray_results[]; };
+layout(std430, binding = 0) readonly buffer RayResults { vec4 ray_results[]; };
 
 // Output: Final averaged colors
-layout(std430, binding = 1) writeonly buffer FinalColorBuffer { vec4 final_colors[]; };
+layout(std430, binding = 1) writeonly buffer OmmatidiaHistory { vec4 history_data[]; };
 
 //Uniforms queried by name
 uniform int nb_samples;
 uniform int nb_ommatidia;
+uniform int frame_index;
 
 void main() {
     uint ommatidium_idx = gl_GlobalInvocationID.x;
@@ -30,5 +31,7 @@ void main() {
         total_color /= float(nb_samples);
     }
 
-    final_colors[ommatidium_idx] = vec4(total_color, 1.0);
+    // Write the final color to the output SSBO at the correct frame index
+    uint output_index = (frame_index * nb_ommatidia) + ommatidium_idx;
+    history_data[output_index] = vec4(total_color, 1.0);
 }

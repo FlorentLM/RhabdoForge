@@ -1,5 +1,7 @@
 import time
 
+import numpy as np
+
 from graphics.scene import Scene, PointsAsset, MeshAsset
 from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
@@ -17,8 +19,12 @@ def main():
     USE_POINT_CLOUD = True
     NB_OMMATIDIA = 19362
     NB_SAMPLES = 16
-    HEADLESS = True
-    CPU_READ = False
+    HEADLESS = False
+
+    USE_ASYNC_BATCHING = True
+    BATCH_SIZE = 1000
+
+    # -----------------------------------------------
 
     # This needs to be the first thing called
     context = Context()
@@ -49,15 +55,24 @@ def main():
     agent = Agent(position=(0.0, 0.0, 4.0))
 
     # Setup Renderers
+    batch_size = BATCH_SIZE if (HEADLESS and USE_ASYNC_BATCHING) else 1
+
     if USE_RAYTRACER:
-        renderer = EyeRendererRay(eye_model=eye_model, scene=scene, nb_samples=NB_SAMPLES, time_dithering=False)
+        renderer = EyeRendererRay(eye_model=eye_model, scene=scene,
+                                  nb_samples=NB_SAMPLES,
+                                  time_dithering=False,
+                                  batch_size=batch_size)
 
     else:
-        renderer = EyeRendererRaster(eye_model=eye_model, scene=scene, nb_samples=NB_SAMPLES, time_dithering=False)
+        renderer = EyeRendererRaster(eye_model=eye_model, scene=scene,
+                                     nb_samples=NB_SAMPLES,
+                                     time_dithering=False,
+                                     batch_size=batch_size)
 
     # Run
     start_time = time.time()
     nb_frames = 0
+    all_ommatidia_data = []
 
     if not HEADLESS:
 
@@ -69,30 +84,49 @@ def main():
             dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
             # Get sensory data from the renderer
-            ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=CPU_READ)
+            ommatidia_data = renderer.get_ommatidia_data(agent)
 
             context.draw()
 
             nb_frames += 1
+
     else:
-        # Run headless experiment loop
+        # Headless mode
 
         max_steps = 10000
+        all_ommatidia_data = []
 
         print(f"Running headless simulation for {max_steps} steps...")
 
         for i in range(max_steps):
 
-            # Programmatically control the agent
-            agent.translate(agent.forward * 0.05).rotate(yaw_delta=-0.5, pitch_delta=0)
+            agent.translate(agent.forward * 0.05).rotate(yaw_delta=-0.5, pitch_delta=0, roll_delta=0)
 
-            # Get sensory data from the renderer
-            ommatidia_values = renderer.get_ommatidia_data(agent, to_cpu=CPU_READ)
+            ommatidia_data = renderer.get_ommatidia_data(agent)
+
+            # If the return value is not None, it's a valid chunk of data (either a single frame or a full batch)
+            if ommatidia_data is not None:
+                all_ommatidia_data.append(ommatidia_data)
 
             nb_frames += 1
 
+        # After the loop, flush() gets the last partial batch from async mode
+        # (this is harmless in sync mode, it will just return an empty array)
+        final_chunk = renderer.flush()
+        if final_chunk.size > 0:
+            all_ommatidia_data.append(final_chunk)
+
     total_time = time.time() - start_time
+
     print(f"Ran for {nb_frames} frames in {total_time:.2f}s (avg. {nb_frames / total_time:.2f} fps).")
+
+    if all_ommatidia_data:
+
+        # In sync mode, this combines 10,000 arrays of shape (19362, 4)
+        # In async mode, this might combine 10 arrays of shape (1000, 19362, 4)
+
+        full_dataset = np.concatenate(all_ommatidia_data, axis=0)
+        print(f"Final concatenated dataset shape: {full_dataset.shape}")
 
     # Cleanup
     renderer.free()

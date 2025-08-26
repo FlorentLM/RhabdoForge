@@ -4,14 +4,14 @@
 // Number of threads per work group
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-// Input: SSBO from binding point 0 contains an array of these structs
+// Input: SSBO from binding point 0 contains an array of Ommatidia structs
 layout(std430, binding = 0) readonly buffer OmmatidiaInputBlock {
    Ommatidium ommatidia_data[];
 };
 
 // Output: SSBO to write the results to
-layout(std430, binding = 1) writeonly buffer OmmatidiaColorOutput {
-   vec4 ommatidia_colors[];
+layout(std430, binding = 1) writeonly buffer OmmatidiaHistory {
+   vec4 history_data[];
 };
 
 // Input: scene rendered to a cubemap
@@ -21,7 +21,7 @@ layout(binding = 0) uniform samplerCube scene_cubemap;
 uniform int nb_ommatidia;
 uniform int nb_samples;
 uniform float time; // For temporal dithering
-
+uniform int frame_index;  // current frame number
 
 void main()
 {
@@ -67,5 +67,6 @@ void main()
     }
 
     // Write the final color to the output SSBO at the correct index
-    ommatidia_colors[ommatidium_idx] = vec4(total_color, 1.0);
+    uint output_index = (frame_index * nb_ommatidia) + ommatidium_idx;
+    history_data[output_index] = vec4(total_color, 1.0);
 }

@@ -421,12 +421,18 @@ class RaytracingSceneBaker:
 
 
 class EyeRendererRay(EyeRendererBase):
-    def __init__(self, eye_model, scene: Scene, time_dithering: bool = True, nb_samples: int = 256, pano_res: Tuple[int, int] = (1024, 512)):
-        super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples)
+    def __init__(self, eye_model, scene: Scene,
+                 time_dithering: bool = True,
+                 nb_samples: int = 256,
+                 pano_res: Tuple[int, int] = (1024, 512),
+                 batch_size: int = 1):
 
         # Store a reference to the scene manager
         self.scene = scene   # just for convenience
         self._scene_baked = RaytracingSceneBaker(scene)
+
+        # we call super().__init__ *after* baking the scene so we can estimate VRAM
+        super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
 
         print("Compiling ray-tracing and reduction shaders...")
         self.raytrace_shader = ShaderProgram(comp_path='shaders/ommatidia_raytracing.comp')
@@ -470,6 +476,24 @@ class EyeRendererRay(EyeRendererBase):
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ray_results_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, required_buffer_size, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
+    def estimate_vram_usage(self) -> float:
+        """ Override base method to provide a more accurate VRAM estimate for the raytracer """
+        baker = self._scene_baked
+        total_bytes = 0
+        buffers = [
+            baker.cpu_vertices, baker.cpu_indices, baker.cpu_points, baker.cpu_BLASes,
+            baker.cpu_TLAS_nodes, baker.cpu_TLAS_prim_indices, baker.cpu_BLAS_prim_indices,
+            baker.gpu_instances_info
+        ]
+        for buf in buffers:
+            if buf is not None:
+                total_bytes += buf.nbytes
+
+        # Add intermediate ray results buffer
+        total_bytes += getattr(self, 'total_samples', 0) * 16
+
+        return total_bytes / (1024 * 1024)  # Convert to MB
 
     def _initialize_pano_resources(self):
         """ Creates all resources needed for the panoramic view """
@@ -590,8 +614,7 @@ class EyeRendererRay(EyeRendererBase):
         self.raytrace_shader.stop()
 
     def _reduction(self):
-
-        # Pass 2: Reduction
+        """ Pass 2: Reduction """
 
         self.reduction_shader.use()
 
@@ -604,6 +627,10 @@ class EyeRendererRay(EyeRendererBase):
         # Set uniforms
         glUniform1i(self.reduction_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
         glUniform1i(self.reduction_shader.get_loc('nb_ommatidia'), self.num_ommatidia)
+
+        # Write into the history buffer circularly
+        frame_offset = self._current_frame_index % self._batch_size
+        glUniform1i(self.reduction_shader.get_loc('frame_index'), frame_offset)
 
         # Dispatch compute shader
         # Calculate workgroups needed to process all ommatidia
@@ -637,18 +664,6 @@ class EyeRendererRay(EyeRendererBase):
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
-
-    def get_ommatidia_data(self, agent: Agent, to_cpu: bool = False):
-
-        self._compute_colors(agent)
-
-        if self._time_dithering:
-            self._time_counter += 1
-
-        if to_cpu:
-            self._fetch_to_cpu()
-
-        return self.cpu_read_buffer
 
     def draw(self, view_mode: str, agent: Agent, tiled_mode: bool = False):
         """ Renders one of the rasterizer's supported views to the screen """

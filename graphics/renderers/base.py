@@ -1,28 +1,42 @@
 from abc import ABC, abstractmethod
+from typing import Optional
+
 import numpy as np
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
+from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
+
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CONE_VERTICES
 from graphics.utils import ShaderProgram
 from graphics.agent import Agent
 
 
+def query_max_SSBO_size() -> int:
+    max_size = glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)
+    print(f"[INFO] Max possible SSBO size: {max_size / (1024 * 1024):.2f} MB")
+    return max_size
+
+
+def query_available_VRAM() -> int:
+    """ Checks for NVIDIA extension to query available VRAM. Returns 0 if not supported. """
+
+    if b'GL_NVX_gpu_memory_info' in glGetString(GL_EXTENSIONS):
+        # Value is in KB, convert to MB
+        return glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX) // 1024
+    return 0
+
+
 class EyeRendererBase(ABC):
     """
     Abstract base class for an insect eye model, handling visualization and common properties
     """
-    def __init__(self, eye_model: CompoundEye, time_dithering: bool = True, nb_samples: int = 256):
+    def __init__(self, eye_model: CompoundEye, time_dithering: bool = True, nb_samples: int = 256, batch_size: int = 1):
         self.model = eye_model
         self.num_ommatidia = self.model.num_ommatidia
-
         self.ommatidia_input_data = self.model.pack()
-
-        # Default umber of rays to sample per ommatidium
         self._samples_per_ommatidium = nb_samples
-
-        # A counter for time dithering during sampling
         self._time_dithering = time_dithering
         self._time_counter = 0
 
@@ -30,43 +44,28 @@ class EyeRendererBase(ABC):
         self._voronoi_shader = None
         self._voronoi_vao = None
         self._cone_vertex_count = 0
-
-        # A small fixed scale for the receptive field view
         self.receptive_field_scale = 1.0 / (2.0 * np.pi)
-
-        # Dynamic scale for the Voronoi view (needs to fill the quad)
         self.voronoi_scale = self.model.max_gap() * 2.5
 
-        # Query maximum possible size for an SSBO on current GPU
-        self._max_ssbo_size_bytes = glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)
-        print(f"Max SSBO size: {self._max_ssbo_size_bytes / (1024 * 1024):.2f} MB")
+        # Hardware queries
+        self._max_ssbo_size_bytes = query_max_SSBO_size()
 
-        # SSBO for input ommatidia geometry (directions, angles, etc)
+        # Input ommatidia SSBO
         self.input_om_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.input_om_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, self.ommatidia_input_data.nbytes, self.ommatidia_input_data, GL_STATIC_DRAW)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, self.ommatidia_input_data.nbytes, self.ommatidia_input_data,
+                     GL_STATIC_DRAW)
 
-        # Size of the output buffers in bytes (num_ommatidia * 4 floats * 4 bytes/float)
-        buffer_size = self.num_ommatidia * 16
+        # History buffer state
+        self._batch_size = max(1, batch_size)
+        self._current_frame_index = 0
+        self.history_ssbo = None
 
-        # Final computed colors (written by subclass, read by draw())
-        self.final_colors_ssbo = glGenBuffers(1)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.final_colors_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, buffer_size, None, GL_DYNAMIC_DRAW)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        # PBOs for the synchronous path
+        self.sync_pbo = None
+        self.sync_cpu_buffer = None
 
-        # Two PBOs for ping-ponging and doing async reading from the CPU-side
-        self.pbo_ids = glGenBuffers(2)
-        self.pbo_index = 0
-
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, self.pbo_ids[0])
-        glBufferData(GL_PIXEL_PACK_BUFFER, buffer_size, None, GL_STREAM_READ)
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, self.pbo_ids[1])
-        glBufferData(GL_PIXEL_PACK_BUFFER, buffer_size, None, GL_STREAM_READ)
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
-
-        # CPU-side buffer to return the final data
-        self.cpu_read_buffer = np.zeros((self.num_ommatidia, 4), dtype=np.float32)
+        self._allocate_history_buffers(self._batch_size)
 
     @property
     def samples_per_ommatidium(self):
@@ -93,49 +92,131 @@ class EyeRendererBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_ommatidia_data(self, agent: Agent, to_cpu: bool = False):
-        # Each subclass implements its own core rendering logic
-        raise NotImplementedError
-
-    @abstractmethod
     def draw(self, view_mode: str, agent: Agent, tiled_mode: bool = False):
         # Each subclass implements its own core rendering logic
         raise NotImplementedError
 
-    def _fetch_to_cpu(self):
+    def _allocate_history_buffers(self, requested_frames: int):
 
-        # Determine which PBO to read from (current) and which to write to (next)
-        current_pbo_idx = self.pbo_index
-        next_pbo_idx = (self.pbo_index + 1) % 2
+        # Smart VRAM Allocation
+        bytes_per_frame = self.num_ommatidia * 16  # 16 bytes per vec4 (RGBA float)
+        requested_history_size_mb = (bytes_per_frame * requested_frames) / (1024 * 1024)
 
-        # This is a GPU-to-GPU copy, so it is asynchronous (the command returns immediately).
-        # it initiates the copy from the SSBO to the *next* PBO
-        glBindBuffer(GL_COPY_READ_BUFFER, self.final_colors_ssbo)
-        glBindBuffer(GL_COPY_WRITE_BUFFER, self.pbo_ids[next_pbo_idx])
-        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, self.cpu_read_buffer.nbytes)
+        # Estimate other VRAM usage (this is a rough estimate, subclasses can override)
+        other_usage_mb = self.estimate_vram_usage()
+        total_requested_mb = requested_history_size_mb + other_usage_mb
 
-        # Process data from the *current* PBO (it was filled in the previous frame)
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, self.pbo_ids[current_pbo_idx])
+        available_vram_mb = query_available_VRAM()
 
-        # Map the buffer ('GL_MAP_READ_BIT' is very important!)
-        ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, self.cpu_read_buffer.nbytes, GL_MAP_READ_BIT)
+        safe_frames = requested_frames
+        if available_vram_mb > 0:
+            print(
+                f"Available VRAM: {available_vram_mb} MB. Scene VRAM: {other_usage_mb:.2f} MB. History VRAM: {requested_history_size_mb:.2f} MB.")
+            if total_requested_mb > available_vram_mb * 0.9:  # 90 % threshold for safety
+                safe_history_mb = (available_vram_mb * 0.9) - other_usage_mb
+                safe_frames = int(safe_history_mb * 1024 * 1024 / bytes_per_frame)
 
-        if ptr:
-            # Copy the data from the mapped GPU memory to our CPU-side numpy array
-            ctypes.memmove(self.cpu_read_buffer.ctypes.data, ptr, self.cpu_read_buffer.nbytes)
-            # IMPORTANT: Unmap the buffer to return control to the GPU
-            glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
+                if safe_frames < requested_frames:
+                    print(
+                        f"WARNING: Requested {requested_frames} frames ({requested_history_size_mb:.2f} MB) exceeds available VRAM.")
+                    print(f"         Reducing history capacity to {safe_frames} frames.")
         else:
-            # Handle error if mapping fails
-            print("Warning: Failed to map PBO for reading.")
+            print("WARNING: Could not query available VRAM. Assuming enough memory is available.")
 
-        # Unbind all buffers used in the copy and map operations
+        self._batch_size = max(1, safe_frames)
+        total_buffer_size = self.num_ommatidia * 16 * self._batch_size
+
+        # GPU-side history buffer (SSBO)
+        if self.history_ssbo: glDeleteBuffers(1, [self.history_ssbo])
+        self.history_ssbo = glGenBuffers(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.history_ssbo)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, total_buffer_size, None, GL_DYNAMIC_DRAW)
+        self.final_colors_ssbo = self.history_ssbo
+
+        # A single PBO and CPU buffer
+        if self.sync_pbo:
+            glDeleteBuffers(1, [self.sync_pbo])
+
+        self.sync_pbo = glGenBuffers(1)
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, self.sync_pbo)
+        glBufferData(GL_PIXEL_PACK_BUFFER, bytes_per_frame, None, GL_STREAM_READ)
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
-        glBindBuffer(GL_COPY_READ_BUFFER, 0)
-        glBindBuffer(GL_COPY_WRITE_BUFFER, 0)
+        self.sync_cpu_buffer = np.zeros((self.num_ommatidia, 4), dtype=np.float32)
 
-        # Swap PBO index for the next frame
-        self.pbo_index = next_pbo_idx
+    def estimate_vram_usage(self) -> float:
+        """
+        Returns an estimate of VRAM usage in MB, excluding the history buffer
+        Subclasses should override this
+        """
+        return 100.0    # conservative guess
+
+    def get_ommatidia_data(self, agent: Agent) -> Optional[np.ndarray]:
+        """
+        Runs one frame of simulation. Behavior is determined by the `batch_size`
+        - If batch_size = 1: Blocks and returns the current frame's data
+        - If batch_size > 1: Queues the frame on the GPU and returns None
+        """
+
+        is_sync_mode = getattr(self, 'is_interactive', False) or self._batch_size == 1
+
+        if is_sync_mode:
+            # Synchronous path
+
+            self._compute_colors(agent)
+            glFinish()
+
+            bytes_to_read = self.num_ommatidia * 16
+            glBindBuffer(GL_COPY_READ_BUFFER, self.history_ssbo)
+            glBindBuffer(GL_COPY_WRITE_BUFFER, self.sync_pbo)
+            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, bytes_to_read)
+
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, self.sync_pbo)
+            ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
+            ctypes.memmove(self.sync_cpu_buffer.ctypes.data, ptr, bytes_to_read)
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+
+            return self.sync_cpu_buffer
+        else:
+            # Asynchronous path
+
+            # Submit work for the current frame
+            self._compute_colors(agent)
+            self._current_frame_index += 1
+
+            # Check if this frame just completed a batch
+            if self._current_frame_index >= self._batch_size:
+                # The buffer is full: block, download, and return the data
+                print(f"  > GPU batch is full. Flushing {self._batch_size} frames...")
+
+                return self.flush()
+
+            # if the batch is not yet full, return None
+            return None
+
+    def flush(self) -> np.ndarray:
+        """
+        Blocks until all queued frames on the GPU are rendered, downloads the data, and resets the counter.
+        This is used to retrieve a full batch, or the final partial batch at the end of a simulation.
+        """
+        if self._current_frame_index == 0:
+            return np.array([])
+
+        glFinish()  # Block until all rendering commands are complete
+
+        num_frames_to_read = self._current_frame_index
+        bytes_to_read = self.num_ommatidia * 16 * num_frames_to_read
+
+        # For simplicity and robustness, a direct synchronous download is best here
+        # PBOs are most effective when overlapping computation, which isn't happening during a final flush
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.history_ssbo)
+        data_bytes = glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, bytes_to_read)
+        data_np = np.frombuffer(data_bytes, dtype=np.float32)
+
+        # Reset the counter for the next batch
+        self._current_frame_index = 0
+
+        return data_np.reshape(num_frames_to_read, self.num_ommatidia, 4)
 
     @property
     def voronoi_shader(self):
@@ -200,7 +281,7 @@ class EyeRendererBase(ABC):
     def free(self):
         """ Free GPU resources """
 
-        glDeleteBuffers(4, [self.input_om_ssbo, self.final_colors_ssbo, self.pbo_ids[0], self.pbo_ids[1]])
+        glDeleteBuffers(3, [self.input_om_ssbo, self.history_ssbo])
 
         if self._voronoi_shader:
             self._voronoi_shader.free()

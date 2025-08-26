@@ -85,6 +85,10 @@ class Context:
             self.scene = scene
             self.renderer = renderer
 
+            # Tell the renderer it's in an interactive session, so it should prioritize
+            # real-time data over batching, regardless of its configuration
+            setattr(renderer, '_runs_interactive', True)
+
             glfw.set_key_callback(self.window, self.key_callback)
             glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
 
