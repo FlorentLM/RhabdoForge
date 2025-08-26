@@ -261,8 +261,10 @@ class ShaderProgram:
         """ Automatically queries and caches all active uniform locations """
 
         num_uniforms = glGetProgramiv(self.program_id, GL_ACTIVE_UNIFORMS)
+
         for i in range(num_uniforms):
             name, size, type = glGetActiveUniform(self.program_id, i)
+
             # Handle the case where drivers return the name as a numpy array
             if isinstance(name, np.ndarray):
                 # Convert numpy array to bytes, then decode to a string, stripping any null terminators
@@ -270,9 +272,11 @@ class ShaderProgram:
             else:
                 # decode a bytes object to a string
                 name = name.decode('utf-8')
+
             # Handle arrays by removing the '[0]' suffix if present
             if name.endswith('[0]'):
                 name = name[:-3]
+
             self.locations[name] = glGetUniformLocation(self.program_id, name)
 
     def use(self):

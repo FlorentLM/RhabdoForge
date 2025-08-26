@@ -103,6 +103,8 @@ layout(binding = 0) uniform samplerCube skybox;
 layout(binding = 1) uniform sampler2DArray scene_textures;
 uniform uint nb_tlas_nodes;
 uniform float point_radius;
+uniform vec3 background_color;
+uniform bool use_skybox;
 
 // Forward declarations
 
@@ -404,7 +406,11 @@ vec3 trace(Ray r) {
             final_color = texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
         }
     } else {
-        final_color = texture(skybox, direction).rgb;
+        if (use_skybox) {
+            final_color = texture(skybox, direction).rgb;
+        } else {
+            final_color = background_color;
+        }
     }
     return final_color;
 }

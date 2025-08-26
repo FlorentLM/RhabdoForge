@@ -60,7 +60,7 @@ class RaytracingSceneBaker:
             print("Warning: Scene is empty, nothing to bake.")
             return
 
-        self.skybox_texture = self.scene.skybox_texture_id
+        self.skybox_texture = self.scene.skybox.texture_id if self.scene.skybox else 0
 
         self._pack_materials()
 
@@ -462,9 +462,10 @@ class EyeRendererRay(EyeRendererBase):
     def _bind_scene_resources(self, shader: ShaderProgram):
 
         # Bind Textures
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_CUBE_MAP, self._scene_baked.skybox_texture)
-        glUniform1i(shader.get_loc('skybox'), 0)
+        if self._scene_baked.scene.skybox:
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_CUBE_MAP, self._scene_baked.skybox_texture)
+            glUniform1i(shader.get_loc('skybox'), 0)
 
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, self._scene_baked.tex_array)
@@ -484,6 +485,10 @@ class EyeRendererRay(EyeRendererBase):
 
         # Set Uniforms
         glUniform1ui(shader.get_loc('nb_tlas_nodes'), len(self._scene_baked.cpu_TLAS_nodes))
+
+        glUniform1i(shader.get_loc('use_skybox'), int(self.scene.skybox is not None))
+        bg = self.scene.background_color
+        glUniform3f(shader.get_loc('background_color'), bg[0], bg[1], bg[2])
 
         point_inst = next((inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)), None)
         radius = self._scene_baked.point_radius_by_asset.get(point_inst.asset.id, 0.1) if point_inst else 0.1

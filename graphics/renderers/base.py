@@ -167,6 +167,7 @@ class EyeRendererBase(ABC):
         """ Draws the Voronoi visualization using the computed colors """
 
         self.voronoi_shader.use()
+
         glEnable(GL_DEPTH_TEST)
 
         cone_scale = self.voronoi_scale if tiled_mode else self.receptive_field_scale

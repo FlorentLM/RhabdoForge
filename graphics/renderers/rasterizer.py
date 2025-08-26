@@ -265,7 +265,7 @@ class EyeRendererRaster(EyeRendererBase):
 
             glActiveTexture(GL_TEXTURE0)
             glBindTexture(GL_TEXTURE_2D, asset.texture)
-            glDrawArrays(GL_TRIANGLES, 0, asset.draw_count)
+            glDrawElements(GL_TRIANGLES, asset.draw_count, GL_UNSIGNED_INT, None)
 
             glBindTexture(GL_TEXTURE_2D, 0)
 
@@ -319,6 +319,9 @@ class EyeRendererRaster(EyeRendererBase):
 
         renderables = self._scene_baked.get_renderables()
 
+        bg = self.scene.background_color
+        glClearColor(bg[0], bg[1], bg[2], 1.0)
+
         for i in range(6):
             # Attach the correct face of the cubemap texture for rendering
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -335,8 +338,8 @@ class EyeRendererRaster(EyeRendererBase):
             )
 
             # Draw skybox first into the cubemap face
-            if self._scene_baked.scene.skybox and self._scene_baked.scene.skybox_texture_id is not None:
-                self._scene_baked.scene.skybox.draw(self._proj_mat, view, self._scene_baked.scene.skybox_texture_id)
+            if self._scene_baked.scene.skybox is not None:
+                self._scene_baked.scene.skybox.draw(self._proj_mat, view)
 
             for instance in renderables:
                 self._render_instance(instance, view, self._proj_mat)
@@ -418,9 +421,8 @@ class EyeRendererRaster(EyeRendererBase):
             self._raster_panoramic.draw(self._cubemap_id)
 
         elif view_mode == 'standard_3d':
-            if self._scene_baked.scene.skybox and self._scene_baked.scene.skybox_texture_id is not None:
-                self._scene_baked.scene.skybox.draw(agent.projection, agent.view,
-                                                    self._scene_baked.scene.skybox_texture_id)
+            if self._scene_baked.scene.skybox is not None:
+                self._scene_baked.scene.skybox.draw(agent.projection, agent.view)
             renderables = self._scene_baked.get_renderables()
             for instance in renderables:
                 self._render_instance(instance, agent.view, agent.projection)

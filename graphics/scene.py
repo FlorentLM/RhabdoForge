@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Sequence
 from abc import ABC
 
 import numpy as np
@@ -10,7 +10,7 @@ OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 from pyglm import glm
 
-from geometry.primitives import CUBE_VERTICES
+from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
 from graphics.utils import VEC_DTYPE, load_shaders, load_cubemap
 
 
@@ -157,20 +157,15 @@ class Instance:
         self.properties = kwargs
 
         if transform is None:
-            # Default to an identity matrix if no transform is provided
             self.transform = glm.mat4(1.0)
         else:
-            # Use numpy to reliably check the shape
             transform_np = np.asarray(transform, dtype=VEC_DTYPE)
 
             if transform_np.shape == (4, 4):
-                # Input is already a 4x4 matrix
                 self.transform = glm.mat4(transform_np)
             elif transform_np.shape == (3,):
-                # Input is a 3-element vector; interpret as a translation
                 self.transform = glm.translate(glm.mat4(1.0), glm.vec3(transform_np))
             else:
-                # The shape is not supported
                 raise ValueError(
                     f"Unsupported shape for transform: {transform_np.shape}. "
                     "Expected a (4, 4) matrix or a (3,) position vector."
@@ -190,11 +185,13 @@ class Instance:
 
 
 class Skybox:
-    def __init__(self):
+    def __init__(self, texture_path: Path | str = 'textures/bright_day'):
+
+        self.texture_id = load_cubemap(texture_path)
+
         self.program = load_shaders('shaders/skybox.vert', 'shaders/skybox.frag')
 
-        interleaved_2d = CUBE_VERTICES.reshape(-1, 5)
-        skybox_vertices = interleaved_2d[:, :3].copy()
+        skybox_vertices = CUBE_VERTICES.reshape(-1, 5)[:, :3]
 
         self.vao = glGenVertexArrays(1)
         glBindVertexArray(self.vao)
@@ -203,12 +200,16 @@ class Skybox:
         glBindBuffer(GL_ARRAY_BUFFER, vbo)
         glBufferData(GL_ARRAY_BUFFER, skybox_vertices.nbytes, skybox_vertices, GL_STATIC_DRAW)
 
+        ebo = glGenBuffers(1)
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo)
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, CUBE_INDICES.nbytes, CUBE_INDICES, GL_STATIC_DRAW)
+
         glEnableVertexAttribArray(0)
         glVertexAttribPointer(0, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
 
         glBindVertexArray(0)
 
-    def draw(self, projection_matrix, view_matrix, cubemap_tex_id):
+    def draw(self, projection_matrix, view_matrix):
 
         glDepthFunc(GL_LEQUAL)  # changing depth function to LEQUAL is needed so the 1.0 depth passes
         glUseProgram(self.program)
@@ -220,28 +221,26 @@ class Skybox:
         glUniformMatrix4fv(glGetUniformLocation(self.program, "view"), 1, False, glm.value_ptr(view_matrix))
 
         glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_tex_id)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, self.texture_id)
         glUniform1i(glGetUniformLocation(self.program, "skybox"), 0)
 
         glBindVertexArray(self.vao)
-        glDrawArrays(GL_TRIANGLES, 0, 36)  # cube has 36 vertices
+        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, None)
         glBindVertexArray(0)
 
         glEnable(GL_CULL_FACE) # Re-enable culling for the rest of the scene
         glDepthFunc(GL_LESS) # restore default depth function
 
 
-
-
 class Scene:
     """
     The logical scene representation. A simple container for assets and instances.
     """
-    def __init__(self):
+    def __init__(self, background_color: Sequence[float] = (0.0, 0.0, 0.0)):
         self.assets: Dict[str, Asset] = {}
         self.instances: List[Instance] = []
         self.skybox: Optional[Skybox] = None
-        self.skybox_texture_id: Optional[int] = None
+        self.background_color = background_color
 
     def add_instance(self, asset: Union[Asset, str], transform: Optional[Union[glm.mat4, ArrayLike]] = None, **kwargs) -> Instance:
 
@@ -275,10 +274,7 @@ class Scene:
 
     def add_skybox(self, texture_path: str):
         """ Creates and loads a skybox from a directory of textures """
-
-        self.skybox = Skybox()
-        self.skybox_texture_id = load_cubemap(texture_path)
-        print(f"Loaded skybox from {texture_path}")
+        self.skybox = Skybox(texture_path)
 
     @property
     def total_triangles(self) -> int:

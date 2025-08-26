@@ -115,6 +115,7 @@ class Context:
                     self.renderer.samples_per_ommatidium = max(1, self.renderer.samples_per_ommatidium // 2)
 
     def input(self):
+
         if not self._interactive_initialised:
             return
 
@@ -152,6 +153,10 @@ class Context:
 
         if not self._interactive_initialised:
             return
+
+        if self.scene:
+            bg = self.scene.background_color
+            glClearColor(bg[0], bg[1], bg[2], 1.0)
 
         glViewport(0, 0, self._window_size[0], self._window_size[1])
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)

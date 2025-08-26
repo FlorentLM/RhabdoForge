@@ -13,7 +13,6 @@ uniform float time;
 uniform mat4 cam_to_world;
 uniform int nb_samples;
 
-
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
 
