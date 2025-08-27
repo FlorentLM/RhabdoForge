@@ -36,7 +36,7 @@ class EyeRendererBase(ABC):
     def __init__(self, eye_model: CompoundEye, time_dithering: bool = True, nb_samples: int = 256, batch_size: int = 1):
         self.model = eye_model
         self.num_ommatidia = self.model.num_ommatidia
-        self.ommatidia_input_data = self.model.pack()
+        self.ommatidia_input_data = self.model.data
         self._samples_per_ommatidium = nb_samples
         self._time_dithering = time_dithering
         self._time_counter = 0
@@ -55,7 +55,7 @@ class EyeRendererBase(ABC):
         self.input_om_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.input_om_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, self.ommatidia_input_data.nbytes, self.ommatidia_input_data,
-                     GL_STATIC_DRAW)
+                     GL_DYNAMIC_DRAW)
 
         # History buffer state
         self._batch_size = max(1, batch_size)
