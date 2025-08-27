@@ -29,7 +29,7 @@ struct InstanceInfo {
     uint vertex_or_point_offset; // primitive_offset
     uint index_offset;
     uint material_id;
-    uint point_mode;    // 0 = no (i.e. mesh), 1 = points, 2 = points blocks
+    uint is_points;    // 0 = no (i.e. mesh), 1 = points
     uint prim_index_offset;
     float radius_factor;
     uint pad0;
@@ -115,14 +115,6 @@ layout(std430, binding = 5) readonly buffer PointsBuffer { float points_data[]; 
 layout(row_major, std430, binding = 8) readonly buffer InstancesBuffer { InstanceInfo instances[]; };   // row-major!
 layout(std430, binding = 9) readonly buffer TlasPrimIndexBuffer { uint tlas_prim_indices[]; };
 layout(std430, binding = 10) readonly buffer BlasPrimIndexBuffer { uint blas_prim_indices[]; };
-
-// Bindings for blocked points (compile-time guarded)
-#if TBVH_HAS_BLOCKS
-
-layout(std430, binding = 11) readonly buffer PointBlocksFirstBuffer { uint point_blocks_first[]; };
-layout(std430, binding = 12) readonly buffer PointBlocksCountBuffer { uint point_blocks_count[]; };
-
-#endif // TBVH_HAS_BLOCKS
 
 // ------------------------------------- Forward declarations and helpers ----------------------------------------------
 
@@ -257,51 +249,20 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
                 // 'first_idx' for a leaf is the start of prims in the BLAS's prim_indices list
                 uint blas_prim_id = blas_prim_indices[prim_base + i];
 
-                if (inst.point_mode > 0u) { // it's a point cloud (mode 1 or 2)
+                if (inst.is_points == 1u) {
+                     uint point_id = inst.vertex_or_point_offset + blas_prim_id;
+                     vec3 c; float rad;
+                     fast_getPoint(point_id, c, rad);
+                     rad *= inst.radius_factor;
+                     HitInfo p_hit = intersect_sphere(r_obj, dir_obj, c, rad);
 
-                #if TBVH_HAS_BLOCKS
-                     if (inst.point_mode == 2u) { // Blocked point cloud
-                        uint block_id = blas_prim_id;
-                        uint first_point_idx_global = point_blocks_first[block_id];
-                        uint num_points = point_blocks_count[block_id];
-
-                        for (uint k = 0; k < num_points; ++k) {
-                            uint global_point_id = first_point_idx_global + k;
-
-                            // Load only pos and radius for the candidate
-                            vec3 c; float rad;
-                            fast_getPoint(global_point_id, c, rad);
-                            rad *= inst.radius_factor;
-                            
-                            HitInfo p_hit = intersect_sphere(r_obj, dir_obj, c, rad);
-                            
-                            if (p_hit.found) {
-                                blas_hit.found = true;
-                                blas_hit.is_point_hit = true;
-                                // The primitive_idx for shading must be relative to the asset's own point list
-                                blas_hit.primitive_idx = global_point_id - inst.vertex_or_point_offset;
-                                blas_hit.t = p_hit.t;
-                                r_obj.t = p_hit.t;
-                            }
-                        }
-                    }
-                #endif // TBVH_HAS_BLOCKS
-
-                    if (inst.point_mode == 1u) { // Non-blocked point cloud
-                         uint point_id = inst.vertex_or_point_offset + blas_prim_id;
-                         vec3 c; float rad;
-                         fast_getPoint(point_id, c, rad);
-                         rad *= inst.radius_factor;
-                         HitInfo p_hit = intersect_sphere(r_obj, dir_obj, c, rad);
-
-                         if (p_hit.found) {
-                             blas_hit.found = true;
-                             blas_hit.is_point_hit = true;
-                             blas_hit.primitive_idx = blas_prim_id; // This is the local index
-                             blas_hit.t = p_hit.t;
-                             r_obj.t = p_hit.t;
-                         }
-                    }
+                     if (p_hit.found) {
+                         blas_hit.found = true;
+                         blas_hit.is_point_hit = true;
+                         blas_hit.primitive_idx = blas_prim_id; // This is the local index
+                         blas_hit.t = p_hit.t;
+                         r_obj.t = p_hit.t;
+                     }
 
                 } else {
                     // For triangles, blas_prim_id is the triangle index within the asset
@@ -471,7 +432,7 @@ vec3 trace(Ray r) {
     if (closest_hit.found) {
         InstanceInfo hit_inst = instances[closest_hit.instance_id];
         if (closest_hit.is_point_hit) {
-            // For point clouds, primitive_idx is the point index within the asset (both for blocked or non-blocked points)
+            // For point clouds, primitive_idx is the point index within the asset
             uint point_id = hit_inst.vertex_or_point_offset + closest_hit.primitive_idx;
             Point hit_point = getPoint(point_id);
             final_color = hit_point.color.rgb;

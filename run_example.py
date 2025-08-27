@@ -33,6 +33,7 @@ def main():
 
     if USE_POINT_CLOUD:
         point_cloud_asset = PointsAsset('canberra', file_path='assets/canberra_filtered.ply', radii=0.1)
+        # point_cloud_asset = PointsAsset('seville', file_path='assets/seville_filtered.ply', radii=0.01)
         scene.add_instance(point_cloud_asset)
 
     # Load the mesh asset data
