@@ -12,9 +12,8 @@ from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 from graphics.agent import Agent
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, MeshAsset, PointsAsset
-from graphics.utils import load_texture, VEC_DTYPE, ShaderProgram, write_pytinybvh_preamble
+from graphics.utils import VEC_DTYPE, ShaderProgram, write_pytinybvh_preamble
 from graphics.renderers.panoramic import TextureViewer
-
 
 # Custom more detailed dtype for the GPU SSBO
 gpu_instance_dtype = np.dtype([
@@ -24,17 +23,19 @@ gpu_instance_dtype = np.dtype([
     ('vertex_or_point_offset', np.uint32),
     ('index_offset', np.uint32),
     ('material_id', np.uint32),
-    ('is_point_cloud', np.uint32),
+    ('point_mode', np.uint32),  # 0 for non-points (i.e. triangles asset), 1 for points, 2 for points blocks
     ('prim_index_offset', np.uint32),
     ('radius_factor', np.float32),
-    ('padding', np.uint32, 1), # 4 bytes (1 * uint) of padding
-]) # total 160 bytes
+    ('padding', np.uint32, 1),  # 4 bytes (1 * uint) of padding
+])  # total 160 bytes
+
 
 class RaytracingSceneBaker:
     """
     Manages the creation, ownership, and updating of BVH structures
     and GPU buffers from a logical Scene object.
     """
+
     def __init__(self, scene: Scene):
         self.scene = scene
 
@@ -50,6 +51,7 @@ class RaytracingSceneBaker:
         self.triangles_ssbo, self.points_ssbo = 0, 0
         self.tlas_nodes_ssbo, self.blas_nodes_ssbo = 0, 0
         self.instances_info_ssbo, self.tlas_indices_ssbo = 0, 0
+        self.point_blocks_first_ssbo, self.point_blocks_count_ssbo = 0, 0  # Buffers for point blocks
 
         # CPU-side data for building and updating
         self.gpu_instances_info: Optional[np.ndarray] = None
@@ -148,9 +150,12 @@ class RaytracingSceneBaker:
             self.cpu_triangles: packed triangles (if any)
             self.cpu_points: packed points (if any)
             self._blas_leaf_id_chunks: list of uint32 leaf_ids per BLAS (concatenated later in _build_TLAS)
+            self.cpu_point_blocks_first: maps block to first point index
+            self.cpu_point_blocks_count: maps block to point count
         """
 
         all_vertices, all_indices, all_points, all_blas_nodes = [], [], [], []
+        all_point_blocks_first, all_point_blocks_count = [], []
         current_vert_offset, current_idx_offset, current_point_offset, current_node_offset = 0, 0, 0, 0
 
         # collect BLAS leaf_ids so the GPU can do leaf -> primitive mapping
@@ -160,12 +165,11 @@ class RaytracingSceneBaker:
         print(f"Building BLASes for {len(self.scene.assets)} unique assets...")
         for asset in self.scene.assets.values():
 
-            # Skip if we've already built a BLAS for this asset
             if asset.id in self.asset_to_blas_map:
                 continue
 
             blas_id = len(self.BLASes)
-            blas = None
+            bundle = None  # will store the SSBO bundle from the BVH
 
             if isinstance(asset, MeshAsset):
 
@@ -184,6 +188,7 @@ class RaytracingSceneBaker:
                     'id': blas_id,
                     'vert_offset': current_vert_offset,
                     'idx_offset': current_idx_offset,
+                    'point_mode': 0  # Mesh asset, not a point cloud
                 }
                 current_vert_offset += len(asset.vertices)
                 current_idx_offset += len(asset.indices.flatten())
@@ -193,22 +198,73 @@ class RaytracingSceneBaker:
                 points = asset.points.astype(np.float32)
                 radii = asset.radii.astype(np.float32)
 
-                blas = BVH.from_points(points, radius=radii, traversal_cost=0.5, intersection_cost=0.5)
+                # TODO: This should be based on an asset field
+                USE_BLOCKS = False
+
+                if USE_BLOCKS:
+                    block_size = 32
+
+                    blas = BVH.from_points_blocks(
+                        points,
+                        radius=radii,
+                        block_size=block_size,
+                        morton_bits=10,     # Max precision for sorting
+                        traversal_cost=1.0,
+                        intersection_cost=1.0
+                    )
+                    point_mode = 2  # Packed points BVH
+
+                else:
+                    blas = BVH.from_points(
+                        points,
+                        radius=radii,
+                        traversal_cost=1.0,
+                        intersection_cost=1.0
+                    )
+                    point_mode = 1  # Regular points BVH
+
+                # The bundle contains re-ordered points and block info
+                bundle = blas.get_SSBO_bundle(flatten_nodes=False)
+
+                # Use compacted points if they exist (from blocked builder)
+                if 'point_order' in bundle:
+                    point_order = bundle['point_order']
+                    compacted_points = asset.points[point_order]
+                    compacted_radii = asset.radii[point_order]
+                    compacted_normals = asset.normals[point_order]
+                    compacted_colors = asset.colors[point_order]
+
+                else:
+                    compacted_points = asset.points
+                    compacted_radii = asset.radii
+                    compacted_normals = asset.normals
+                    compacted_colors = asset.colors
 
                 # Pack point data for the shader
-                packed_points = np.zeros((asset.num_points, 12), dtype=VEC_DTYPE)
-                packed_points[:, 0:3] = asset.points    # X, Y, Z
-                packed_points[:, 3] = asset.radii       # Radius
-                packed_points[:, 4:7] = asset.normals   # Nx, Ny, Nz
-                packed_points[:, 7:10] = asset.colors   # R, G, B
-                # remaining two floats (10, 11) are for padding
-
+                packed_points = np.zeros((len(compacted_points), 12), dtype=VEC_DTYPE)
+                packed_points[:, 0:3] = compacted_points
+                packed_points[:, 3] = compacted_radii
+                packed_points[:, 4:7] = compacted_normals
+                packed_points[:, 7:10] = compacted_colors
                 all_points.append(packed_points)
+
                 self.asset_to_blas_map[asset.id] = {
                     'id': blas_id,
                     'point_offset': current_point_offset,
+                    'point_mode': point_mode
                 }
-                current_point_offset += len(asset.points)
+
+                # If we used blocks, process the block data
+                if point_mode == 2:
+                    # The indices must be offset to be global
+                    blocks_first = bundle['point_blocks_first'].astype(np.uint32) + current_point_offset
+                    blocks_count = bundle['point_blocks_count'].astype(np.uint32)
+
+                    all_point_blocks_first.append(blocks_first)
+                    all_point_blocks_count.append(blocks_count)
+
+                # Update the global point offset AFTER processing the current asset
+                current_point_offset += len(compacted_points)
 
             else:
                 # Skip unsupported asset types
@@ -220,10 +276,11 @@ class RaytracingSceneBaker:
             if supports_layout(target_layout) and target_layout != blas.layout:
                 blas.convert_to(target_layout, compact=True)
             elif target_layout != blas.layout:
-                print(f"Warning: Layout {target_layout.name} not supported on this system. Falling back to Standard.")
+                print(f"Warning: Layout {target_layout.name} not supported. Falling back to Standard.")
                 blas.convert_to(Layout.Standard, compact=True)
 
-            bundle = blas.get_SSBO_bundle(flatten_nodes=False)
+            if bundle is None:
+                bundle = blas.get_SSBO_bundle(flatten_nodes=False)
 
             nodes = bundle['nodes']
             prim_indices = bundle['leaf_ids'].astype(np.uint32)
@@ -231,7 +288,6 @@ class RaytracingSceneBaker:
             all_blas_nodes.append(nodes)
             self._blas_leaf_id_chunks.append(prim_indices)
 
-            # Update common offsets and store the BLAS
             self.asset_to_blas_map[asset.id].update({
                 'node_offset': current_node_offset,
                 'prim_index_offset': current_blas_leaf_offset
@@ -245,6 +301,10 @@ class RaytracingSceneBaker:
         self.cpu_indices = np.concatenate(all_indices).ravel() if all_indices else None
         self.cpu_points = np.concatenate(all_points).ravel() if all_points else None
         self.cpu_BLASes = np.concatenate(all_blas_nodes).astype(np.float32) if all_blas_nodes else None
+
+        # Concatenate block data into final CPU buffers
+        self.cpu_point_blocks_first = np.concatenate(all_point_blocks_first) if all_point_blocks_first else None
+        self.cpu_point_blocks_count = np.concatenate(all_point_blocks_count) if all_point_blocks_count else None
 
     def _build_TLAS(self):
 
@@ -269,8 +329,8 @@ class RaytracingSceneBaker:
             self.gpu_instances_info[i]['inverse_transform'] = np.asarray(glm.inverse(inst.transform), dtype=np.float32)
             self.gpu_instances_info[i]['blas_node_offset'] = blas_map['node_offset']
             self.gpu_instances_info[i]['prim_index_offset'] = blas_map['prim_index_offset']
-            self.gpu_instances_info[i]['is_point_cloud'] = int(isinstance(inst.asset, PointsAsset))
-            
+            self.gpu_instances_info[i]['point_mode'] = blas_map['point_mode']
+
             if isinstance(inst.asset, MeshAsset):
                 self.gpu_instances_info[i]['vertex_or_point_offset'] = blas_map['vert_offset']
                 self.gpu_instances_info[i]['index_offset'] = blas_map['idx_offset']
@@ -311,12 +371,17 @@ class RaytracingSceneBaker:
         # vertices, indices, points, BLAS nodes, TLAS nodes, instances, TLAS indices, BLAS indices
         (self.vertices_ssbo, self.indices_ssbo, self.points_ssbo, self.blas_nodes_ssbo,
          self.tlas_nodes_ssbo, self.instances_info_ssbo, self.tlas_indices_ssbo,
-         self.blas_indices_ssbo) = glGenBuffers(8)
+         self.blas_indices_ssbo, self.point_blocks_first_ssbo,
+         self.point_blocks_count_ssbo) = glGenBuffers(10)
 
         # Primitive streams
         upload(self.vertices_ssbo, self.cpu_vertices, GL_STATIC_DRAW, np.float32, 5)  # (pos, uv)
         upload(self.indices_ssbo, self.cpu_indices, GL_STATIC_DRAW, np.uint32, 3)
         upload(self.points_ssbo, self.cpu_points, GL_STATIC_DRAW, np.float32, 12)
+
+        # Upload point block data
+        upload(self.point_blocks_first_ssbo, self.cpu_point_blocks_first, GL_STATIC_DRAW, np.uint32, 1)
+        upload(self.point_blocks_count_ssbo, self.cpu_point_blocks_count, GL_STATIC_DRAW, np.uint32, 1)
 
         # Nodes
         upload(self.blas_nodes_ssbo, self.cpu_BLASes, GL_STATIC_DRAW, np.float32, 1)
@@ -347,11 +412,10 @@ class RaytracingSceneBaker:
             instance = dynamic_instances.get(inst_id)
 
             if instance is None:
-                continue  # Should not happen if scene is consistent
+                continue
 
             transform = np.asarray(instance.transform, dtype=np.float32)
 
-            # Update the C++ TLAS object (fast copy)
             self.TLAS.set_instance_transform(tlas_idx, transform)
 
             # Update the CPU-side buffer destined for the GPU
@@ -409,7 +473,8 @@ class RaytracingSceneBaker:
         buffers = [b for b in [
             self.vertices_ssbo, self.indices_ssbo, self.points_ssbo, self.materials_ssbo,
             self.tlas_nodes_ssbo, self.blas_nodes_ssbo, self.instances_info_ssbo,
-            self.tlas_indices_ssbo, self.blas_indices_ssbo
+            self.tlas_indices_ssbo, self.blas_indices_ssbo,
+            self.point_blocks_first_ssbo, self.point_blocks_count_ssbo
         ] if b != 0]
 
         if buffers:
@@ -417,9 +482,6 @@ class RaytracingSceneBaker:
 
         if self.tex_array != 0:
             glDeleteTextures(1, [self.tex_array])
-
-        print("RayTracingSceneManager resources freed.")
-
 
 class EyeRendererRay(EyeRendererBase):
     def __init__(self, eye_model, scene: Scene,
@@ -485,7 +547,8 @@ class EyeRendererRay(EyeRendererBase):
         buffers = [
             baker.cpu_vertices, baker.cpu_indices, baker.cpu_points, baker.cpu_BLASes,
             baker.cpu_TLAS_nodes, baker.cpu_TLAS_prim_indices, baker.cpu_BLAS_prim_indices,
-            baker.gpu_instances_info
+            baker.gpu_instances_info,
+            baker.cpu_point_blocks_first, baker.cpu_point_blocks_count
         ]
         for buf in buffers:
             if buf is not None:
@@ -508,8 +571,6 @@ class EyeRendererRay(EyeRendererBase):
 
             texture_id = glGenTextures(1)
             glBindTexture(GL_TEXTURE_2D, texture_id)
-
-            # Use a high-precision format for the raytracing output
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, self._pano_res[0], self._pano_res[1], 0, GL_RGBA, GL_FLOAT, None)
 
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
@@ -546,6 +607,9 @@ class EyeRendererRay(EyeRendererBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, self._scene_baked.instances_info_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, self._scene_baked.tlas_indices_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, self._scene_baked.blas_indices_ssbo)
+        # Bind point block buffers
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, self._scene_baked.point_blocks_first_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, self._scene_baked.point_blocks_count_ssbo)
 
         # Set Uniforms
         glUniform1ui(shader.get_loc('nb_tlas_nodes'), len(self._scene_baked.cpu_TLAS_nodes))
@@ -654,7 +718,7 @@ class EyeRendererRay(EyeRendererBase):
         self._reduction()
 
         # Unbind all resources
-        for i in range(11):
+        for i in range(13):
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0)
 
         glActiveTexture(GL_TEXTURE0)

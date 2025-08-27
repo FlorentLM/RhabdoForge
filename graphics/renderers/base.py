@@ -115,7 +115,7 @@ class EyeRendererBase(ABC):
         safe_frames = requested_frames
         if available_vram_mb > 0:
             print(
-                f"Available VRAM: {available_vram_mb} MB. Scene VRAM: {other_usage_mb:.2f} MB. History VRAM: {requested_history_size_mb:.2f} MB.")
+                f"Available VRAM: {available_vram_mb} MB. Scene VRAM: {other_usage_mb:.2f} MB. Ommatidia views buffer VRAM: {requested_history_size_mb:.2f} MB.")
             if total_requested_mb > available_vram_mb * 0.9:  # 90 % threshold for safety
                 safe_history_mb = (available_vram_mb * 0.9) - other_usage_mb
                 safe_frames = int(safe_history_mb * 1024 * 1024 / bytes_per_frame)

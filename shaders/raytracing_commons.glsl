@@ -4,15 +4,17 @@
 #include "commons.glsl"
 #include "pytinybvh_preamble.glsl"
 
+// --------------------------------------------------- Structs ---------------------------------------------------------
+
 struct Ray {
     vec3 origin;
-    vec3 inv_direction; // Store 1.0 / direction
-    float t;            // Max travel distance
+    vec3 inv_direction;
+    float t;            // max travel distance
 };
 
 struct HitInfo {
     bool found;
-    float t; // distance along ray
+    float t;            // distance along ray
     vec3 barycentric_coords; // for triangle hits
     uint primitive_idx;
     uint instance_id;        // ID of the instance hit in the TLAS
@@ -27,11 +29,23 @@ struct InstanceInfo {
     uint vertex_or_point_offset; // primitive_offset
     uint index_offset;
     uint material_id;
-    uint is_point_cloud;
+    uint point_mode;    // 0 = no (i.e. mesh), 1 = points, 2 = points blocks
     uint prim_index_offset;
     float radius_factor;
     uint pad0;
 };  // Total size 160 bytes
+
+// -------------------------------------------- Uniforms and textures --------------------------------------------------
+
+layout(binding = 0) uniform samplerCube skybox;
+layout(binding = 1) uniform sampler2DArray scene_textures;
+
+uniform uint nb_tlas_nodes;
+uniform vec3 background_color;
+uniform bool use_skybox;
+
+// ----------------------------------------------- SSBO Bindings -------------------------------------------------------
+// TODO: Add compile-time ifs around indexed geometry if point cloud only (and vice versa)??
 
 
 // Node access (Standard layout)
@@ -52,7 +66,7 @@ struct StdNode {
 // Node index is always relative to the base, which is passed in
 
 // Load a Standard-layout node from the BLAS pool
-StdNode tbvh_load_blas_node(uint base_node_offset, uint node_index) {
+StdNode load_blas_node(uint base_node_offset, uint node_index) {
     uint w = (base_node_offset + node_index) * TBVH_WORDS_PER_NODE;
     StdNode n;
     n.data1 = vec4(
@@ -65,7 +79,7 @@ StdNode tbvh_load_blas_node(uint base_node_offset, uint node_index) {
 }
 
 // Load a Standard-layout node from the TLAS pool (base = 0)
-StdNode tbvh_load_tlas_node(uint node_index) {
+StdNode load_tlas_node(uint node_index) {
     uint w = node_index * TBVH_WORDS_PER_NODE;
     StdNode n;
     n.data1 = vec4(
@@ -88,26 +102,29 @@ struct BvhNode {
 layout(std430, binding = 6) readonly buffer AllBlasNodesBuffer { BvhNode blas_nodes[]; };
 layout(std430, binding = 7) readonly buffer TlasNodesBuffer    { BvhNode tlas_nodes[]; };
 
-#endif
+#endif // TBVH_LAYOUT_STANDARD || TBVH_LAYOUT_BVH_GPU
 
-// Bindings (to be used by including shaders)
+// Bindings
+
 layout(std430, binding = 2) readonly buffer VertexBuffer { float v[]; };
 layout(std430, binding = 3) readonly buffer IndexBuffer { uint indices[]; };
 layout(std430, binding = 4) readonly buffer MaterialBuffer { Material materials[]; };
 layout(std430, binding = 5) readonly buffer PointsBuffer { float points_data[]; };
 
-// BVH bindings start at 5
+// BVH bindings start at 6
 layout(row_major, std430, binding = 8) readonly buffer InstancesBuffer { InstanceInfo instances[]; };   // row-major!
 layout(std430, binding = 9) readonly buffer TlasPrimIndexBuffer { uint tlas_prim_indices[]; };
 layout(std430, binding = 10) readonly buffer BlasPrimIndexBuffer { uint blas_prim_indices[]; };
 
-layout(binding = 0) uniform samplerCube skybox;
-layout(binding = 1) uniform sampler2DArray scene_textures;
-uniform uint nb_tlas_nodes;
-uniform vec3 background_color;
-uniform bool use_skybox;
+// Bindings for blocked points (compile-time guarded)
+#if TBVH_HAS_BLOCKS
 
-// Forward declarations
+layout(std430, binding = 11) readonly buffer PointBlocksFirstBuffer { uint point_blocks_first[]; };
+layout(std430, binding = 12) readonly buffer PointBlocksCountBuffer { uint point_blocks_count[]; };
+
+#endif // TBVH_HAS_BLOCKS
+
+// ------------------------------------- Forward declarations and helpers ----------------------------------------------
 
 float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max);
 HitInfo intersect_triangle(inout Ray r, vec3 direction, vec3 v0, vec3 v1, vec3 v2);
@@ -119,9 +136,9 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
 vec3 getPos(uint i){ uint b = i*5u; return vec3(v[b], v[b+1], v[b+2]); }
 vec2 getUV (uint i){ uint b = i*5u; return vec2(v[b+3], v[b+4]); }
 
-// Mini helper to get point data
+// Mini helper to get all point data
 Point getPoint(uint point_idx) {
-    uint base_offset = point_idx * 12; // 12 floats per point
+    uint base_offset = point_idx * 12u; // 12 floats per point
     Point p;
     p.position = vec3(points_data[base_offset + 0], points_data[base_offset + 1], points_data[base_offset + 2]);
     p.radius = points_data[base_offset + 3];
@@ -130,7 +147,16 @@ Point getPoint(uint point_idx) {
     return p;
 }
 
-// Traversal implementation
+// Mini helper to get only position + radius (avoids fetching normals/colors in the hot loop)
+void fast_getPoint(uint point_idx, out vec3 pos, out float radius) {
+    uint base_offset = point_idx * 12u; // 12 floats per point
+    pos.x = points_data[base_offset + 0u];
+    pos.y = points_data[base_offset + 1u];
+    pos.z = points_data[base_offset + 2u];
+    radius = points_data[base_offset + 3u];
+}
+
+// ------------------------------------------ Traversal implementation -------------------------------------------------
 
 void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
     closest_hit.found = false;
@@ -143,7 +169,7 @@ void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
     while (stack_ptr > 0u) {
         uint node_idx = stack[--stack_ptr];
         #if TBVH_LAYOUT_STANDARD
-            StdNode node = tbvh_load_tlas_node(node_idx);
+            StdNode node = load_tlas_node(node_idx);
         #else
             BvhNode node = tlas_nodes[node_idx];
         #endif
@@ -176,7 +202,7 @@ void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
 
                     if (new_world_t < r_world.t) {
                         r_world.t = new_world_t;
-                        closest_hit = blas_hit; // Copy all data
+                        closest_hit = blas_hit;
                         closest_hit.found = true;
                         closest_hit.t = new_world_t;
                         closest_hit.instance_id = instance_id;
@@ -187,8 +213,8 @@ void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
             uint left_idx = first_idx;
             uint right_idx = first_idx + 1;
             #if TBVH_LAYOUT_STANDARD
-                StdNode leftNode = tbvh_load_tlas_node(left_idx);
-                StdNode rightNode = tbvh_load_tlas_node(right_idx);
+                StdNode leftNode = load_tlas_node(left_idx);
+                StdNode rightNode = load_tlas_node(right_idx);
                 float d1 = intersect_aabb(r_world, leftNode.data1.xyz, leftNode.data2.xyz);
                 float d2 = intersect_aabb(r_world, rightNode.data1.xyz, rightNode.data2.xyz);
             #else
@@ -213,7 +239,7 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
     while (stack_ptr > 0u) {
         uint node_idx = stack[--stack_ptr];
          #if TBVH_LAYOUT_STANDARD
-            StdNode node = tbvh_load_blas_node(inst.blas_node_offset, node_idx);
+            StdNode node = load_blas_node(inst.blas_node_offset, node_idx);
         #else
             BvhNode node = blas_nodes[inst.blas_node_offset + node_idx];
         #endif
@@ -224,23 +250,59 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
         uint first_idx = floatBitsToUint(node.data1.w);
 
         if (prim_count > 0u) { // BLAS leaf node
+            uint prim_base = inst.prim_index_offset + first_idx;
+
             for (uint i = 0; i < prim_count; ++i) {
                 // Get the primitive index within this BLAS
                 // 'first_idx' for a leaf is the start of prims in the BLAS's prim_indices list
-                uint blas_prim_id = blas_prim_indices[inst.prim_index_offset + first_idx + i];
+                uint blas_prim_id = blas_prim_indices[prim_base + i];
 
-                if (inst.is_point_cloud == 1u) {
-                    uint point_id = inst.vertex_or_point_offset + blas_prim_id;
-                    Point current_point = getPoint(point_id);
-                    float radius = current_point.radius * inst.radius_factor;
-                    HitInfo p_hit = intersect_sphere(r_obj, dir_obj, current_point.position.xyz, radius);
-                    if (p_hit.found) {
-                        blas_hit.found = true;
-                        blas_hit.is_point_hit = true;
-                        blas_hit.primitive_idx = blas_prim_id;  // Store the BLAS-local primitive ID
-                        blas_hit.t = p_hit.t;
-                        r_obj.t = p_hit.t;
+                if (inst.point_mode > 0u) { // it's a point cloud (mode 1 or 2)
+
+                #if TBVH_HAS_BLOCKS
+                     if (inst.point_mode == 2u) { // Blocked point cloud
+                        uint block_id = blas_prim_id;
+                        uint first_point_idx_global = point_blocks_first[block_id];
+                        uint num_points = point_blocks_count[block_id];
+
+                        for (uint k = 0; k < num_points; ++k) {
+                            uint global_point_id = first_point_idx_global + k;
+
+                            // Load only pos and radius for the candidate
+                            vec3 c; float rad;
+                            fast_getPoint(global_point_id, c, rad);
+                            rad *= inst.radius_factor;
+                            
+                            HitInfo p_hit = intersect_sphere(r_obj, dir_obj, c, rad);
+                            
+                            if (p_hit.found) {
+                                blas_hit.found = true;
+                                blas_hit.is_point_hit = true;
+                                // The primitive_idx for shading must be relative to the asset's own point list
+                                blas_hit.primitive_idx = global_point_id - inst.vertex_or_point_offset;
+                                blas_hit.t = p_hit.t;
+                                r_obj.t = p_hit.t;
+                            }
+                        }
                     }
+                #endif // TBVH_HAS_BLOCKS
+
+                    if (inst.point_mode == 1u) { // Non-blocked point cloud
+                         uint point_id = inst.vertex_or_point_offset + blas_prim_id;
+                         vec3 c; float rad;
+                         fast_getPoint(point_id, c, rad);
+                         rad *= inst.radius_factor;
+                         HitInfo p_hit = intersect_sphere(r_obj, dir_obj, c, rad);
+
+                         if (p_hit.found) {
+                             blas_hit.found = true;
+                             blas_hit.is_point_hit = true;
+                             blas_hit.primitive_idx = blas_prim_id; // This is the local index
+                             blas_hit.t = p_hit.t;
+                             r_obj.t = p_hit.t;
+                         }
+                    }
+
                 } else {
                     // For triangles, blas_prim_id is the triangle index within the asset
                     // Each triangle uses 3 indices, so we need to multiply by 3
@@ -271,14 +333,18 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
             uint right_idx = left_idx + 1;
 
             #if TBVH_LAYOUT_STANDARD
-                StdNode leftNode  = tbvh_load_blas_node(inst.blas_node_offset, left_idx);
-                StdNode rightNode = tbvh_load_blas_node(inst.blas_node_offset, right_idx);
+            
+                StdNode leftNode  = load_blas_node(inst.blas_node_offset, left_idx);
+                StdNode rightNode = load_blas_node(inst.blas_node_offset, right_idx);
                 float d1 = intersect_aabb(r_obj, leftNode.data1.xyz,  leftNode.data2.xyz);
                 float d2 = intersect_aabb(r_obj, rightNode.data1.xyz, rightNode.data2.xyz);
+            
             #else
+            
                 float d1 = intersect_aabb(r_obj, blas_nodes[inst.blas_node_offset + left_idx].data1.xyz,  blas_nodes[inst.blas_node_offset + left_idx].data2.xyz);
                 float d2 = intersect_aabb(r_obj, blas_nodes[inst.blas_node_offset + right_idx].data1.xyz, blas_nodes[inst.blas_node_offset + right_idx].data2.xyz);
-            #endif
+            
+            #endif // TBVH_LAYOUT_STANDARD
 
             // Push the farther node first, so the closer one is processed next
             if (d1 > d2) {
@@ -291,7 +357,7 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
     }
 }
 
-// Intersection implementation
+// -------------------------------------- Intersection implementation --------------------------------------------------
 
 HitInfo intersect_triangle(inout Ray r, vec3 direction, vec3 v0, vec3 v1, vec3 v2) {
     HitInfo hit;
@@ -329,6 +395,18 @@ HitInfo intersect_triangle(inout Ray r, vec3 direction, vec3 v0, vec3 v1, vec3 v
         hit.barycentric_coords = vec3(1.0 - u - v, u, v);
     }
     return hit;
+}
+
+// Minimal sphere hit (any/closest)
+bool hit_sphere(vec3 O, vec3 D, vec3 C, float r2, float tMax, out float tHit) {
+    vec3  oc = O - C;
+    float b  = dot(oc, D);
+    float c  = dot(oc, oc) - r2;
+    float disc = b*b - c;
+    if (disc <= 0.0) return false;
+    float t = -b - sqrt(disc);
+    if (t <= 0.0 || t >= tMax) return false;
+    tHit = t; return true;
 }
 
 HitInfo intersect_sphere(inout Ray r, vec3 direction, vec3 center, float radius) {
@@ -382,7 +460,6 @@ float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max) {
     return tmin;
 }
 
-
 // General-purpose trace and shade function
 vec3 trace(Ray r) {
 
@@ -394,7 +471,7 @@ vec3 trace(Ray r) {
     if (closest_hit.found) {
         InstanceInfo hit_inst = instances[closest_hit.instance_id];
         if (closest_hit.is_point_hit) {
-            // For point clouds, primitive_idx is the point index within the asset
+            // For point clouds, primitive_idx is the point index within the asset (both for blocked or non-blocked points)
             uint point_id = hit_inst.vertex_or_point_offset + closest_hit.primitive_idx;
             Point hit_point = getPoint(point_id);
             final_color = hit_point.color.rgb;

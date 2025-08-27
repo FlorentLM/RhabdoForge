@@ -438,3 +438,57 @@ def generate_and_save_atlas(font_name=None, font_size=22, output_dir='interactiv
     print(f"Saved fonts atlas for '{font_name}' (size {font_size}).")
 
     pygame.quit()
+
+
+##
+
+import open3d as o3d
+
+def estimate_radii(pointcloud, k_neighbors=2):
+    """
+    Estimates the radius for each point in a point cloud such that
+    spheres centered at these points would "touch" their nearest neighbors.
+
+    Args:
+        pointcloud (np.ndarray or open3d.geometry.PointCloud): The input point cloud
+        k_neighbors (int): The number of nearest neighbors to consider.
+                           If k_neighbors=2, it finds the single closest neighbor
+                           (excluding the point itself).
+
+    Returns:
+        numpy.ndarray: An array of estimated radii for each point.
+    """
+
+    if isinstance(pointcloud, o3d.geometry.PointCloud):
+        pcd_o3d = pointcloud
+        points = np.asarray(pointcloud.points)
+
+    elif isinstance(pointcloud, np.ndarray):
+        points = pointcloud
+        pcd_o3d = o3d.geometry.PointCloud()
+        pcd_o3d.points = o3d.utility.Vector3dVector(pointcloud)
+
+    num_points = points.shape[0]
+    radii = np.zeros(num_points, dtype=np.float32)
+
+    pcd_tree = o3d.geometry.KDTreeFlann(pcd_o3d)
+
+    for i in range(num_points):
+        # Find k_neighbors for the current point
+        # k_neighbors + 1 because the point itself will be included in the search result
+        [k, idx, _] = pcd_tree.search_knn_vector_3d(pcd_o3d.points[i], k_neighbors + 1)
+
+        if k > 1:
+            # The first index (idx[0]) will be the point itself, so we take the second one
+            # If k_neighbors = 1, we need to take idx[1]
+            # If k_neighbors > 1, we might average or take the min of multiple distances
+            # For "spheres touching" the distance to the single closest neighbor is most direct
+
+            closest_neighbor_idx = idx[1]
+            distance = np.linalg.norm(points[i] - points[closest_neighbor_idx])
+            radii[i] = distance / 2.0
+        else:
+            # Handle isolated points or point clouds with less than k_neighbors + 1 points
+            radii[i] = 0.1
+
+    return radii
