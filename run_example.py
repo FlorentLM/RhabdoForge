@@ -32,8 +32,8 @@ def main():
     scene = Scene()
 
     if USE_POINT_CLOUD:
-        point_cloud_asset = PointsAsset('canberra', file_path='assets/canberra_filtered.ply')
-        scene.add_instance(point_cloud_asset, point_radius=5)
+        point_cloud_asset = PointsAsset('canberra', file_path='assets/canberra_filtered.ply', radii=0.1)
+        scene.add_instance(point_cloud_asset)
 
     # Load the mesh asset data
     crate_asset = MeshAsset('crate', vertices=CUBE_VERTICES, indices=CUBE_INDICES, texture_path='textures/wood.jpg')

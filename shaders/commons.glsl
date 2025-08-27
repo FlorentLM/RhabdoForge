@@ -33,9 +33,11 @@ struct Triangle {
 
 // Single point in the point cloud
 struct Point {
-    vec4 pos;       // position in xyz, w is padding
-    vec4 normal;    // normal in xyz, w is padding
-    vec4 color;     // color in rgb, a is padding
+    vec3 position;
+    float radius;
+    vec3 normal;
+    vec3 color;
+    float pad0, pad1;  // two more floats unused
 };
 
 // Simple RNG with temporal dithering

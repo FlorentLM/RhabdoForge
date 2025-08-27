@@ -1,19 +1,18 @@
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 
-from pathlib import Path
 from typing import Dict, List, Optional, Union, Sequence
-from abc import ABC
-
-import numpy as np
 from numpy.typing import ArrayLike
+
+from abc import ABC
+from pathlib import Path
+import numpy as np
 import open3d as o3d
 
 from OpenGL.GL import *
 from pyglm import glm
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
-from graphics.utils import VEC_DTYPE, load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, \
-    DeltaTimeTransformer
+from graphics.utils import VEC_DTYPE, load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
 
 class Asset(ABC):
@@ -104,9 +103,10 @@ class PointsAsset(Asset):
     def __init__(self,
                  name: str,
                  file_path: Optional[Path | str] = None,
-                 points: Optional[np.ndarray] = None,
-                 colors: Optional[np.ndarray] = None,
-                 normals: Optional[np.ndarray] = None
+                 points: Optional[ArrayLike] = None,
+                 colors: Optional[ArrayLike] = None,
+                 normals: Optional[ArrayLike] = None,
+                 radii: Optional[Union[float, ArrayLike]] = None
                  ):
         super().__init__(name)
 
@@ -125,8 +125,8 @@ class PointsAsset(Asset):
             pcd = o3d.io.read_point_cloud(path)
 
             self.points = np.asarray(pcd.points, dtype=VEC_DTYPE)
-            self.normals = np.zeros_like(self.points)
-            self.colors = np.ones_like(self.points)
+            self.normals = np.zeros_like(self.points, dtype=VEC_DTYPE)
+            self.colors = np.ones_like(self.points, dtype=VEC_DTYPE)
 
             if pcd.has_normals():
                 self.normals = np.asarray(pcd.normals, dtype=VEC_DTYPE)
@@ -135,11 +135,28 @@ class PointsAsset(Asset):
                 self.colors = np.asarray(pcd.colors, dtype=VEC_DTYPE)
 
         else:
-            self.points = points
-            self.colors = colors if colors is not None else np.ones_like(points)
-            self.normals = normals if normals is not None else np.zeros_like(points)
+            self.points = np.asarray(points, dtype=VEC_DTYPE)
+            self.colors = np.asarray(colors, dtype=VEC_DTYPE) if colors is not None else np.ones_like(points, dtype=VEC_DTYPE)
+            self.normals = np.asarray(normals, dtype=VEC_DTYPE) if normals is not None else np.zeros_like(points, dtype=VEC_DTYPE)
 
         self.num_points = len(self.points)
+
+        if isinstance(radii, float):
+            self.radii = np.full(self.num_points, radii, dtype=VEC_DTYPE)
+
+        elif isinstance(radii, ArrayLike):
+            radii = np.asarray(radii, dtype=VEC_DTYPE)
+
+            if len(radii) != self.num_points:
+                raise ValueError("If not a scalar, number of radii must match the number of points.")
+
+            self.radii = radii
+
+        else:
+            self.radii = np.full(self.num_points, 0.05, dtype=VEC_DTYPE)
+
+
+
         print(f"Loaded {self.num_points} points for asset '{name}'.")
 
 
@@ -166,8 +183,10 @@ class Instance:
 
             if transform_np.shape == (4, 4):
                 self.transform = glm.mat4(transform_np)
+
             elif transform_np.shape == (3,):
                 self.transform = glm.translate(glm.mat4(1.0), glm.vec3(transform_np))
+
             else:
                 raise ValueError(
                     f"Unsupported shape for transform: {transform_np.shape}. "
@@ -228,9 +247,8 @@ class Instance:
         return self
 
     def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0):
-        """
-        Rotates the instance by given Euler angle deltas
-        """
+        """ Rotates the instance by given Euler angle deltas """
+
         if yaw_delta != 0.0:
             self.transform = glm.rotate(self.transform, glm.radians(yaw_delta), WORLD_UP)
 
@@ -238,7 +256,8 @@ class Instance:
             self.transform = glm.rotate(self.transform, glm.radians(pitch_delta), WORLD_RIGHT)
 
         if roll_delta != 0.0:
-            self.transform = glm.rotate(self.transform, glm.radians(roll_delta), glm.vec3(0, 0, -1))
+            self.transform = glm.rotate(self.transform, glm.radians(roll_delta), WORLD_FORWARD)
+
         return self
 
     def scale(self, scale_factors: Union[glm.vec3, ArrayLike]):

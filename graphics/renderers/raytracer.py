@@ -54,7 +54,6 @@ class RaytracingSceneBaker:
         self.gpu_instances_info: Optional[np.ndarray] = None
         self.material_map: Dict[int, int] = {}
         self.asset_to_blas_map: Dict[int, Dict] = {}
-        self.point_radius_by_asset: Dict[int, float] = {}
 
         print("Baking ray-tracing scene...")
         if not self.scene.instances:
@@ -191,17 +190,22 @@ class RaytracingSceneBaker:
             elif isinstance(asset, PointsAsset):
 
                 points = asset.points.astype(np.float32)
-                radius = getattr(asset, "radius", 0.05)
+                radii = asset.radii.astype(np.float32)
 
-                self.point_radius_by_asset[asset.id] = radius
-
-                blas = BVH.from_points(points, radius=radius, traversal_cost=0.5, intersection_cost=0.5)
+                blas = BVH.from_points(points, radius=radii, traversal_cost=0.5, intersection_cost=0.5)
 
                 # Pack point data for the shader
+                # packed_points = np.zeros((asset.num_points, 12), dtype=VEC_DTYPE)
+                # packed_points[:, 0:3] = asset.points
+                # packed_points[:, 4:7] = asset.normals
+                # packed_points[:, 8:11] = asset.colors
+
                 packed_points = np.zeros((asset.num_points, 12), dtype=VEC_DTYPE)
-                packed_points[:, 0:3] = asset.points
-                packed_points[:, 4:7] = asset.normals
-                packed_points[:, 8:11] = asset.colors
+                packed_points[:, 0:3] = asset.points    # X, Y, Z
+                packed_points[:, 3] = asset.radii       # Radius
+                packed_points[:, 4:7] = asset.normals   # Nx, Ny, Nz
+                packed_points[:, 7:10] = asset.colors   # R, G, B
+                # remaining two floats (10, 11) are for padding
 
                 all_points.append(packed_points)
                 self.asset_to_blas_map[asset.id] = {
@@ -552,10 +556,6 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1i(shader.get_loc('use_skybox'), int(self.scene.skybox is not None))
         bg = self.scene.background_color
         glUniform3f(shader.get_loc('background_color'), bg[0], bg[1], bg[2])
-
-        point_inst = next((inst for inst in self.scene.instances if isinstance(inst.asset, PointsAsset)), None)
-        radius = self._scene_baked.point_radius_by_asset.get(point_inst.asset.id, 0.1) if point_inst else 0.1
-        glUniform1f(shader.get_loc('point_radius'), radius)
 
     def _raytrace_panoramic(self, agent):
         """ Dispatches a compute shader to generate a ray-traced panoramic image """

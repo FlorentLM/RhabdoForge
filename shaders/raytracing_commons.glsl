@@ -92,7 +92,7 @@ layout(std430, binding = 7) readonly buffer TlasNodesBuffer    { BvhNode tlas_no
 layout(std430, binding = 2) readonly buffer VertexBuffer { float v[]; };
 layout(std430, binding = 3) readonly buffer IndexBuffer { uint indices[]; };
 layout(std430, binding = 4) readonly buffer MaterialBuffer { Material materials[]; };
-layout(std430, binding = 5) readonly buffer PointBuffer { Point points[]; };
+layout(std430, binding = 5) readonly buffer PointsBuffer { float points_data[]; };
 
 // BVH bindings start at 5
 layout(row_major, std430, binding = 8) readonly buffer InstancesBuffer { InstanceInfo instances[]; };   // row-major!
@@ -102,7 +102,6 @@ layout(std430, binding = 10) readonly buffer BlasPrimIndexBuffer { uint blas_pri
 layout(binding = 0) uniform samplerCube skybox;
 layout(binding = 1) uniform sampler2DArray scene_textures;
 uniform uint nb_tlas_nodes;
-uniform float point_radius;
 uniform vec3 background_color;
 uniform bool use_skybox;
 
@@ -117,6 +116,17 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
 // Mini helpers to get vertex data from the buffer
 vec3 getPos(uint i){ uint b = i*5u; return vec3(v[b], v[b+1], v[b+2]); }
 vec2 getUV (uint i){ uint b = i*5u; return vec2(v[b+3], v[b+4]); }
+
+// Mini helper to get point data
+Point getPoint(uint point_idx) {
+    uint base_offset = point_idx * 12; // 12 floats per point
+    Point p;
+    p.position = vec3(points_data[base_offset + 0], points_data[base_offset + 1], points_data[base_offset + 2]);
+    p.radius = points_data[base_offset + 3];
+    p.normal = vec3(points_data[base_offset + 4], points_data[base_offset + 5], points_data[base_offset + 6]);
+    p.color = vec3(points_data[base_offset + 7], points_data[base_offset + 8], points_data[base_offset + 9]);
+    return p;
+}
 
 // Traversal implementation
 
@@ -219,7 +229,8 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
 
                 if (inst.is_point_cloud == 1u) {
                     uint point_id = inst.vertex_or_point_offset + blas_prim_id;
-                    HitInfo p_hit = intersect_sphere(r_obj, dir_obj, points[point_id].pos.xyz, point_radius);
+                    Point current_point = getPoint(point_id);
+                    HitInfo p_hit = intersect_sphere(r_obj, dir_obj, current_point.position.xyz, current_point.radius);
                     if (p_hit.found) {
                         blas_hit.found = true;
                         blas_hit.is_point_hit = true;
@@ -382,7 +393,7 @@ vec3 trace(Ray r) {
         if (closest_hit.is_point_hit) {
             // For point clouds, primitive_idx is the point index within the asset
             uint point_id = hit_inst.vertex_or_point_offset + closest_hit.primitive_idx;
-            Point hit_point = points[point_id];
+            Point hit_point = getPoint(point_id);
             final_color = hit_point.color.rgb;
         } else {
             // For triangles, primitive_idx is the triangle index within the asset
