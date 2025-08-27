@@ -8,7 +8,7 @@ from geometry.compound_eyes import CompoundEye
 from graphics.agent import Agent
 from graphics.renderers.panoramic import PanoramicEye
 from graphics.renderers.base import EyeRendererBase
-from graphics.scene import Scene, MeshAsset, PointsAsset, Instance
+from graphics.scene import Scene, MeshAsset, PointsAsset
 from graphics.utils import load_shaders, load_texture, ShaderProgram
 
 
@@ -18,9 +18,9 @@ class CubemapFBO:
 
         # Create FBO and Color cubemap texture
         self.fbo_id = glGenFramebuffers(1)
-        self.color_texture_id = glGenTextures(1)
+        self.texture_id = glGenTextures(1)
 
-        glBindTexture(GL_TEXTURE_CUBE_MAP, self.color_texture_id)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, self.texture_id)
         for i in range(6):
             glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGBA8,
                          self.resolution, self.resolution, 0, GL_RGBA, GL_UNSIGNED_BYTE, None)
@@ -44,7 +44,7 @@ class CubemapFBO:
 
         # Attach just one face initially to make the FBO 'complete'
         # The render loop will correctly attach the other faces as needed
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X, self.color_texture_id, 0)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X, self.texture_id, 0)
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self.depth_buffer_id)
 
         # Check if the FBO is complete
@@ -66,7 +66,7 @@ class CubemapFBO:
 
     def free(self):
         glDeleteFramebuffers(1, [self.fbo_id])
-        glDeleteTextures(1, [self.color_texture_id])
+        glDeleteTextures(1, [self.texture_id])
         glDeleteRenderbuffers(1, [self.depth_buffer_id])
 
 
@@ -231,13 +231,12 @@ class EyeRendererRaster(EyeRendererBase):
         self.scene = scene  # just for convenience
         self._scene_baked = RasterSceneBaker(scene)
 
+        self._cubemap_fbo = CubemapFBO(resolution=cubemap_res)
+
         # call super after creating the scene for correct VRAM usage computation
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
 
         self._rasterizer_shader = ShaderProgram(comp_path='shaders/ommatidia_rasterizer.comp')
-
-        self._cubemap_fbo = CubemapFBO(resolution=cubemap_res)
-        self._cubemap_id = self._cubemap_fbo.color_texture_id
 
         # simple 90 degrees view projection matrix for each cube face
         self._proj_mat = Agent(fov=90.0, ratio=1.0).projection
@@ -346,7 +345,7 @@ class EyeRendererRaster(EyeRendererBase):
             # Attach the correct face of the cubemap texture for rendering
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                    GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
-                                   self._cubemap_fbo.color_texture_id, 0)
+                                   self._cubemap_fbo.texture_id, 0)
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
@@ -367,7 +366,7 @@ class EyeRendererRaster(EyeRendererBase):
         self._cubemap_fbo.unbind()
 
         # Regenerate mipmaps after rendering to the cubemap
-        glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.color_texture_id)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.texture_id)
         glGenerateMipmap(GL_TEXTURE_CUBE_MAP)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 
@@ -390,7 +389,7 @@ class EyeRendererRaster(EyeRendererBase):
 
         # Bind input cubemap (texture unit 0)
         glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_id)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.texture_id)
         glUniform1i(self._rasterizer_shader.get_loc('scene_cubemap'), 0)
 
         # Bind directions SSBO to binding point 0 (for reading)
@@ -430,7 +429,7 @@ class EyeRendererRaster(EyeRendererBase):
             self._draw_voronoi(tiled_mode=tiled_mode)
 
         elif view_mode == 'panoramic':
-            self._raster_panoramic.draw(self._cubemap_id)
+            self._raster_panoramic.draw(self._cubemap_fbo.texture_id)
 
         elif view_mode == 'standard_3d':
             if self._scene_baked.scene.skybox is not None:
