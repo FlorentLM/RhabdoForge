@@ -134,14 +134,14 @@ class RasterPoints:
         self.vao = glGenVertexArrays(1)
         self.vbo = glGenBuffers(1)
 
-        # Interleave positions and colors (x, y, z, r, g, b)
-        packed_data = np.hstack([asset.points, asset.colors]).astype(np.float32)
+        # Interleave positions, colors, and radii (x, y, z, r, g, b, radius)
+        packed_data = np.hstack([asset.points, asset.colors, asset.radii.reshape(-1, 1)]).astype(np.float32)
 
         glBindVertexArray(self.vao)
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
         glBufferData(GL_ARRAY_BUFFER, packed_data.nbytes, packed_data, GL_STATIC_DRAW)
 
-        stride = packed_data.itemsize * 6  # 3 for pos, 3 for color
+        stride = packed_data.itemsize * 7  # 3 for pos, 3 for color, 1 for radius
 
         # Vertex attribute for position
         pos_loc = glGetAttribLocation(self.shaders, "position")
@@ -152,6 +152,11 @@ class RasterPoints:
         color_loc = glGetAttribLocation(self.shaders, "color")
         glEnableVertexAttribArray(color_loc)
         glVertexAttribPointer(color_loc, 3, GL_FLOAT, False, stride, ctypes.c_void_p(packed_data.itemsize * 3))
+
+        # Vertex attribute for radius
+        radius_loc = glGetAttribLocation(self.shaders, "radius")
+        glEnableVertexAttribArray(radius_loc)
+        glVertexAttribPointer(radius_loc, 1, GL_FLOAT, False, stride, ctypes.c_void_p(packed_data.itemsize * 6))
 
         glBindVertexArray(0)
 
@@ -202,7 +207,7 @@ class RasterSceneBaker:
 
                 elif isinstance(asset, PointsAsset):
                     self._raster_asset_cache[asset.id] = RasterPoints(
-                        asset, 'shaders/point.vert', 'shaders/point.frag'
+                        asset, 'shaders/pointclouds.vert', 'shaders/pointclouds.frag'
                     )
 
             # Create a renderable instance with the cached raster asset and the instance's transform
@@ -290,8 +295,7 @@ class EyeRendererRaster(EyeRendererBase):
         elif isinstance(asset, RasterPoints):
             glEnable(GL_PROGRAM_POINT_SIZE)
 
-            # Set a fixed point size for now
-            glUniform1f(glGetUniformLocation(asset.shaders, "point_size"), 2.0)
+            glUniform1f(glGetUniformLocation(asset.shaders, "point_size_factor"), 50.0)
 
             glDrawArrays(GL_POINTS, 0, asset.draw_count)
 

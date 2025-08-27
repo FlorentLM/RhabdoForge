@@ -26,15 +26,15 @@ uniform int frame_index;  // current frame number
 void main()
 {
     // Get the unique ID for this specific shader invocation
-    uint ommatidium_idx = gl_GlobalInvocationID.x;
+    uint om_id = gl_GlobalInvocationID.x;
 
     // Stop if out of bounds
-    if (ommatidium_idx >= nb_ommatidia) {
+    if (om_id >= nb_ommatidia) {
         return;
     }
 
     // Unpack data for this specific ommatidium
-    Ommatidium om = ommatidia_data[ommatidium_idx];
+    Ommatidium om = ommatidia_data[om_id];
 
     vec3 om_dir = normalize(om.direction.xyz);
 
@@ -50,8 +50,8 @@ void main()
     for (int i = 0; i < nb_samples; i++) {
 
         // Generate two random numbers
-        float r1 = rand(vec2(ommatidium_idx, i), time);
-        float r2 = rand(vec2(ommatidium_idx, i) + 0.5, time);
+        float r1 = rand(vec2(om_id, i), time);
+        float r2 = rand(vec2(om_id, i) + 0.5, time);
 
         vec3 sample_dir = sampledir(om, tangent, bitangent, om_dir, r1, r2);
 
@@ -67,6 +67,6 @@ void main()
     }
 
     // Write the final color to the output SSBO at the correct index
-    uint output_index = (frame_index * nb_ommatidia) + ommatidium_idx;
+    uint output_index = (frame_index * nb_ommatidia) + om_id;
     history_data[output_index] = vec4(total_color, 1.0);
 }

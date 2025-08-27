@@ -29,7 +29,7 @@ struct InstanceInfo {
     uint material_id;
     uint is_point_cloud;
     uint prim_index_offset;
-    // padding is ignored by GLSL
+    // padding is ignored
 };
 
 // Node access (Standard layout)
