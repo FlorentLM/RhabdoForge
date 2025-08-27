@@ -295,7 +295,11 @@ class EyeRendererRaster(EyeRendererBase):
         elif isinstance(asset, RasterPoints):
             glEnable(GL_PROGRAM_POINT_SIZE)
 
-            glUniform1f(glGetUniformLocation(asset.shaders, "point_size_factor"), 50.0)
+            # Global multiplier to convert the world-unit radius to an visible pixel size
+            pixel_mult = 25.0
+            radius_scale = instance.properties.get('radius_scale', 1.0) * pixel_mult
+
+            glUniform1f(glGetUniformLocation(asset.shaders, "radius_scale"), radius_scale)
 
             glDrawArrays(GL_POINTS, 0, asset.draw_count)
 

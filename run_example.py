@@ -15,7 +15,7 @@ from graphics.context import Context
 def main():
 
     # Configuration
-    USE_RAYTRACER = True
+    USE_RAYTRACER = False
     USE_POINT_CLOUD = True
     NB_OMMATIDIA = 19362
     NB_SAMPLES = 16

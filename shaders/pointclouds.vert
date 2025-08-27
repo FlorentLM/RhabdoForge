@@ -6,12 +6,12 @@ layout (location = 2) in float radius;
 
 uniform mat4 camera;
 uniform mat4 model;
-uniform float point_size_factor;
+uniform float radius_scale;
 
 out vec3 vertColor;
 
 void main() {
     gl_Position = camera * model * vec4(position, 1.0);
     vertColor = color;
-    gl_PointSize = radius * point_size_factor;
+    gl_PointSize = radius * radius_scale;
 }

@@ -26,7 +26,8 @@ gpu_instance_dtype = np.dtype([
     ('material_id', np.uint32),
     ('is_point_cloud', np.uint32),
     ('prim_index_offset', np.uint32),
-    ('padding', np.uint32, 2), # 8 bytes (2 * uint) of padding
+    ('radius_factor', np.float32),
+    ('padding', np.uint32, 1), # 4 bytes (1 * uint) of padding
 ]) # total 160 bytes
 
 class RaytracingSceneBaker:
@@ -195,11 +196,6 @@ class RaytracingSceneBaker:
                 blas = BVH.from_points(points, radius=radii, traversal_cost=0.5, intersection_cost=0.5)
 
                 # Pack point data for the shader
-                # packed_points = np.zeros((asset.num_points, 12), dtype=VEC_DTYPE)
-                # packed_points[:, 0:3] = asset.points
-                # packed_points[:, 4:7] = asset.normals
-                # packed_points[:, 8:11] = asset.colors
-
                 packed_points = np.zeros((asset.num_points, 12), dtype=VEC_DTYPE)
                 packed_points[:, 0:3] = asset.points    # X, Y, Z
                 packed_points[:, 3] = asset.radii       # Radius
@@ -274,7 +270,7 @@ class RaytracingSceneBaker:
             self.gpu_instances_info[i]['blas_node_offset'] = blas_map['node_offset']
             self.gpu_instances_info[i]['prim_index_offset'] = blas_map['prim_index_offset']
             self.gpu_instances_info[i]['is_point_cloud'] = int(isinstance(inst.asset, PointsAsset))
-
+            
             if isinstance(inst.asset, MeshAsset):
                 self.gpu_instances_info[i]['vertex_or_point_offset'] = blas_map['vert_offset']
                 self.gpu_instances_info[i]['index_offset'] = blas_map['idx_offset']
@@ -283,6 +279,7 @@ class RaytracingSceneBaker:
             elif isinstance(inst.asset, PointsAsset):
                 self.gpu_instances_info[i]['vertex_or_point_offset'] = blas_map['point_offset']
                 self.gpu_instances_info[i]['index_offset'] = 0
+                self.gpu_instances_info[i]['radius_factor'] = inst.properties.get('radius_factor', 1.0)
 
             # Track dynamic instances
             if getattr(inst, "dynamic", False):

@@ -29,8 +29,10 @@ struct InstanceInfo {
     uint material_id;
     uint is_point_cloud;
     uint prim_index_offset;
-    // padding is ignored
-};
+    float radius_factor;
+    uint pad0;
+};  // Total size 160 bytes
+
 
 // Node access (Standard layout)
 
@@ -230,7 +232,8 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
                 if (inst.is_point_cloud == 1u) {
                     uint point_id = inst.vertex_or_point_offset + blas_prim_id;
                     Point current_point = getPoint(point_id);
-                    HitInfo p_hit = intersect_sphere(r_obj, dir_obj, current_point.position.xyz, current_point.radius);
+                    float radius = current_point.radius * inst.radius_factor;
+                    HitInfo p_hit = intersect_sphere(r_obj, dir_obj, current_point.position.xyz, radius);
                     if (p_hit.found) {
                         blas_hit.found = true;
                         blas_hit.is_point_hit = true;
