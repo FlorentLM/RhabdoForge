@@ -93,7 +93,7 @@ def main():
             context.input()
 
             # Rotate dynamic test crate
-            dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
+            # dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
 
             #  -- Example moving ommatidium --

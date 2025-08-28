@@ -667,11 +667,11 @@ class EyeRendererRay(EyeRendererBase):
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
-    def draw(self, view_mode: str, agent: Agent, tiled_mode: bool = False):
+    def draw(self, view_mode: str, agent: Agent):
         """ Renders one of the rasterizer's supported views to the screen """
 
         if view_mode == 'compound_eye':
-            self._draw_voronoi(tiled_mode=tiled_mode)
+            self._draw_voronoi()
 
         elif view_mode == 'panoramic':
 

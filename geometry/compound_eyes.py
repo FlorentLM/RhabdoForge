@@ -231,6 +231,12 @@ class CompoundEye:
         # else: origins are already (0, 0, 0)
         self.data['origin'][:, 3] = 1.0  # w=1 for positions
 
+        if eye_radius == 0 and origins is None:
+            # TODO: This is probably not what we want, also the visualisation should not care about the radius
+            print("No origins or eye_radius provided. Defaulting to origins on a unit sphere for visualization.")
+            # Use the normalized directions as positions on a sphere of radius 1
+            self.data['origin'][:, :3] = self.data['direction'][:, :3]
+
         self.dirty_mask = np.zeros(self.num_ommatidia, dtype=bool)
         self.needs_rebuild = {'direction': False, 'origin': True}
 

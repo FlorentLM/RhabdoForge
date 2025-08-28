@@ -430,11 +430,11 @@ class EyeRendererRaster(EyeRendererBase):
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 
-    def draw(self, view_mode: str, agent, tiled_mode: bool = False):
+    def draw(self, view_mode: str, agent):
         """ Renders one of the rasterizer's supported views to the screen """
 
         if view_mode == 'compound_eye':
-            self._draw_voronoi(tiled_mode=tiled_mode)
+            self._draw_voronoi()
 
         elif view_mode == 'panoramic':
             self._raster_panoramic.draw(self._cubemap_fbo.texture_id)

@@ -48,7 +48,6 @@ class Context:
         self.scene = None
         self.view_modes = None
         self.current_view_idx = 0
-        self.voronoi_view = False
         self.hud = None
         self.last_mouse_pos = None
         self.last_frame_time = 0
@@ -94,7 +93,6 @@ class Context:
 
             self.view_modes = ['compound_eye', 'panoramic']
             self.current_view_idx = 0
-            self.voronoi_view = False
 
             self.hud = HUD(self)
 
@@ -111,7 +109,9 @@ class Context:
 
             if key == glfw.KEY_C: self.current_view_idx = (self.current_view_idx + 1) % len(self.view_modes)
 
-            if key == glfw.KEY_V: self.voronoi_view = not self.voronoi_view
+            if key == glfw.KEY_V: self.renderer.tiled_mode = not self.renderer.tiled_mode
+
+            if key == glfw.KEY_P: self.renderer.projection_mode = 'physical_layout' if self.renderer.projection_mode == 'visual_field' else  'visual_field'
 
             if key == glfw.KEY_H:
                 if self.hud: self.hud.show = not self.hud.show
@@ -196,7 +196,7 @@ class Context:
         glViewport(0, 0, self._window_size[0], self._window_size[1])
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        self.renderer.draw(self.view_mode, self.agent, self.voronoi_view)
+        self.renderer.draw(self.view_mode, self.agent)
 
         if self.hud:
             self.hud.draw()

@@ -1,6 +1,7 @@
 import random
 from abc import ABC, abstractmethod
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, Literal
 
 import numpy as np
 import OpenGL
@@ -45,8 +46,13 @@ class EyeRendererBase(ABC):
         self._voronoi_shader = None
         self._voronoi_vao = None
         self._cone_vertex_count = 0
+
+        self.tiled_mode = False
+        self.projection_mode: Literal['visual_field', 'physical_layout'] = 'visual_field'
+
         self.receptive_field_scale = 1.0 / (2.0 * np.pi)
-        self.voronoi_scale = self.model.max_gap() * 2.5
+        self.tiled_mode_scale = self.model.max_gap() * 2.5
+        self.physical_vis_scale = 1.0
 
         # Hardware queries
         self._max_ssbo_size_bytes = query_max_SSBO_size()
@@ -96,7 +102,7 @@ class EyeRendererBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def draw(self, view_mode: str, agent: Agent, tiled_mode: bool = False):
+    def draw(self, view_mode: str, agent: Agent):
         # Each subclass implements its own core rendering logic
         raise NotImplementedError
 
@@ -286,14 +292,12 @@ class EyeRendererBase(ABC):
 
         return self._voronoi_vao
 
-    def _draw_voronoi(self, tiled_mode=False):
+    def _draw_voronoi(self):
         """ Draws the Voronoi visualization using the computed colors """
 
         self.voronoi_shader.use()
 
         glEnable(GL_DEPTH_TEST)
-
-        cone_scale = self.voronoi_scale if tiled_mode else self.receptive_field_scale
 
         # Get current viewport dimensions to calculate aspect ratio
         viewport = glGetIntegerv(GL_VIEWPORT)
@@ -302,8 +306,13 @@ class EyeRendererBase(ABC):
 
         glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), 1.0)
         # glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), aspect_ratio)
-        glUniform1i(self.voronoi_shader.get_loc('tiled_mode'), tiled_mode)
-        glUniform1f(self.voronoi_shader.get_loc('cone_scale'), cone_scale)
+
+        glUniform1i(self.voronoi_shader.get_loc('tiled_mode'), self.tiled_mode)
+        glUniform1i(self.voronoi_shader.get_loc('projection_mode'), int(self.projection_mode == 'physical_layout'))
+
+        glUniform1f(self.voronoi_shader.get_loc('tiled_mode_scale'), self.tiled_mode_scale)
+        glUniform1f(self.voronoi_shader.get_loc('receptive_field_scale'), self.receptive_field_scale)
+        glUniform1f(self.voronoi_shader.get_loc('physical_vis_scale'), self.physical_vis_scale)
 
         # Binding 0: Ommatidia geometry (directions, origins, etc)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
