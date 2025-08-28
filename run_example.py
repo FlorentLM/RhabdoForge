@@ -1,23 +1,19 @@
-import time
-
 import numpy as np
 
 from graphics.scene import Scene, PointsAsset, MeshAsset
 from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
-
 from graphics.renderers.rasterizer import EyeRendererRaster
 from graphics.renderers.raytracer import EyeRendererRay
 from graphics.context import Context
-
 
 def main():
 
     # Configuration
     USE_RAYTRACER = True
     USE_POINT_CLOUD = True
-    NB_OMMATIDIA = 19362
+    NB_OMMATIDIA = 1962
     NB_SAMPLES = 16
     HEADLESS = False
 
@@ -32,8 +28,7 @@ def main():
     scene = Scene()
 
     if USE_POINT_CLOUD:
-        point_cloud_asset = PointsAsset('canberra', file_path='assets/canberra_filtered.ply', radii=0.1)
-        # point_cloud_asset = PointsAsset('seville', file_path='assets/seville_filtered.ply', radii=0.01)
+        point_cloud_asset = PointsAsset('seville', file_path='assets/seville_filtered.ply', radii=0.01)
         scene.add_instance(point_cloud_asset)
 
     # Load the mesh asset data
@@ -70,8 +65,24 @@ def main():
                                      time_dithering=False,
                                      batch_size=batch_size)
 
+
+    # -- Example moving ommatidium --
+
+    # Let's pick the one most aligned with the agent's forward direction
+    o = eye_model.query_directions(agent.forward, k=1)
+
+    # Copy the original direction. We rotate this vector each frame.
+    original_direction = eye_model.ommatidia[o].direction.copy()
+
+    SCAN_FREQUENCY_HZ = 0.5     # How many full back-and-forth scans per second
+    SCAN_AMPLITUDE_DEG = 15.0   # The maximum angle of the scan from the center, in degrees
+    SCAN_AMPLITUDE_RAD = np.deg2rad(SCAN_AMPLITUDE_DEG)
+
+    # -- End example moving ommatidium --
+
+
     # Run
-    start_time = time.time()
+    start_time = context.current_time
     nb_frames = 0
     all_ommatidia_data = []
 
@@ -83,6 +94,29 @@ def main():
 
             # Rotate dynamic test crate
             dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
+
+
+            #  -- Example moving ommatidium --
+
+            # Calculate the current angle of the scan
+            scan_angle = SCAN_AMPLITUDE_RAD * np.sin(context.current_time * 2.0 * np.pi * SCAN_FREQUENCY_HZ)
+
+            # Create a 3D rotation matrix for this angle around the 'up' axis (will scan horizontally)
+            c, s = np.cos(scan_angle), np.sin(scan_angle)
+            rotation_matrix = np.array([
+                [c, 0, s],
+                [0, 1, 0],
+                [-s, 0, c]
+            ], dtype=np.float32)
+
+            # Apply new direction
+            eye_model.ommatidia[o].direction = rotation_matrix @ original_direction
+
+            # Send the update to the GPU
+            eye_renderer.update()
+
+            # -- End example moving ommatidium --
+
 
             # Get sensory data from the compound eye renderer
             ommatidia_data = eye_renderer.get_ommatidia_data(agent)
@@ -119,7 +153,7 @@ def main():
         if final_chunk.size > 0:
             all_ommatidia_data.append(final_chunk)
 
-    total_time = time.time() - start_time
+    total_time = context.current_time - start_time
 
     print(f"Ran for {nb_frames} frames in {total_time:.2f}s (avg. {nb_frames / total_time:.2f} fps).")
 

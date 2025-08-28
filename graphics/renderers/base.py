@@ -225,6 +225,41 @@ class EyeRendererBase(ABC):
 
         return data_np.reshape(num_frames_to_read, self.num_ommatidia, 4)
 
+    def update(self, force_all=False):
+        """
+        Finds contiguous blocks of changed ommatidia and uploads each block in a single GPU call.
+        """
+
+        dirty_indices = np.where(self.model.dirty_mask)[0]
+        if dirty_indices.size == 0:
+            return
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.input_om_ssbo)
+
+        if force_all:
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.model.data.nbytes, self.model.data)
+
+        else:
+            # Find contiguous blocks of updated indices
+            jumps = np.where(np.diff(dirty_indices) != 1)[0] + 1
+            contiguous_blocks = np.split(dirty_indices, jumps)
+
+            item_size = self.model.data.itemsize  # 48 bytes
+
+            for block in contiguous_blocks:
+                nb_items = block.size
+                if nb_items == 0:
+                    continue
+
+                # indexing like this instead of fancy indexing (using [block] directly) avoids a copy
+                start_index = block[0]
+                data_view = self.model.data[start_index: start_index + nb_items]
+
+                glBufferSubData(GL_SHADER_STORAGE_BUFFER, start_index * item_size, data_view.nbytes, data_view)
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        self.model.dirty_mask.fill(False)
+
     @property
     def voronoi_shader(self):
         if self._voronoi_shader is None:
