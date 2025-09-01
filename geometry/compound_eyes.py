@@ -166,7 +166,7 @@ class CompoundEye:
                  rhabdom_diameter: Optional[Union[float, Tuple]] = None,
                  focal_length: Optional[Union[float, Tuple]] = None,
                  wavelength: float = 500e-9,  # TODO: this is a nice temporary value, but the shaders will compute the 3 channels independently
-                 eye_radius: float = 0.0,
+                 eye_radius: float = 0.01,
                  force_isotropic: bool = False
                  ):
         """
@@ -230,12 +230,6 @@ class CompoundEye:
             self.data['origin'][:, :3] = self.data['direction'][:, :3] * eye_radius
         # else: origins are already (0, 0, 0)
         self.data['origin'][:, 3] = 1.0  # w=1 for positions
-
-        if eye_radius == 0 and origins is None:
-            # TODO: This is probably not what we want, also the visualisation should not care about the radius
-            print("No origins or eye_radius provided. Defaulting to origins on a unit sphere for visualization.")
-            # Use the normalized directions as positions on a sphere of radius 1
-            self.data['origin'][:, :3] = self.data['direction'][:, :3]
 
         self.dirty_mask = np.zeros(self.num_ommatidia, dtype=bool)
         self.needs_rebuild = {'direction': False, 'origin': True}

@@ -21,7 +21,6 @@ uniform bool tiled_mode;
 
 uniform float tiled_mode_scale;         // factor for tiled mode
 uniform float receptive_field_scale;    // factor for visual fields
-uniform float physical_vis_scale;       // factor for physical layout view
 
 // Output: Varying to fragment shader
 layout (location = 0) out vec3 v_color;
@@ -41,8 +40,8 @@ void main() {
         projection_vector = om.direction.xyz;
     } else {
         // Physical layout projection - use origin vectors
-        projection_vector = om.origin.xyz;
-    }
+         projection_vector = normalize(om.origin.xyz);
+        }
 
     // Apply spherical projection to screen space
     float longitude = atan(projection_vector.x, -projection_vector.z);
@@ -54,9 +53,6 @@ void main() {
 
     // Apply scaling for physical layout mode
     vec2 instance_screen_pos = vec2(screen_x, screen_y);
-    if (projection_mode == 1) {
-        instance_screen_pos *= physical_vis_scale;      // TODO: This should just be automatic
-    }
 
     // Scale the cone vertex based on mode
     vec3 scaled_cone_pos = cone_vertex;

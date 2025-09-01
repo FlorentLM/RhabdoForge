@@ -52,7 +52,6 @@ class EyeRendererBase(ABC):
 
         self.receptive_field_scale = 1.0 / (2.0 * np.pi)
         self.tiled_mode_scale = self.model.max_gap() * 2.5
-        self.physical_vis_scale = 1.0
 
         # Hardware queries
         self._max_ssbo_size_bytes = query_max_SSBO_size()
@@ -312,7 +311,6 @@ class EyeRendererBase(ABC):
 
         glUniform1f(self.voronoi_shader.get_loc('tiled_mode_scale'), self.tiled_mode_scale)
         glUniform1f(self.voronoi_shader.get_loc('receptive_field_scale'), self.receptive_field_scale)
-        glUniform1f(self.voronoi_shader.get_loc('physical_vis_scale'), self.physical_vis_scale)
 
         # Binding 0: Ommatidia geometry (directions, origins, etc)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)

@@ -168,7 +168,7 @@ class HUD:
         self._controls_text_lines = [
             'ESC: Quit', 'H: Show/hide HUD', 'R: Reset rotation', 'O: Teleport to origin', 'X: Dither once',
             f'+/-: Increase/decrease {sample_label}', 'T: Toggle time dithering',
-            'V: Toggle Voronoi view', 'P: Toggle Panoramic view', 'C: Toggle Compound eye view',
+            'V: Toggle Voronoi view', 'P: Projection mode (direction / origin)', 'C: Toggle Compound eye view',
             'LShift/Space: Down/Up', 'Q/E: Roll', 'Mouse: Yaw & Pitch', 'WASD: Move', '------', 'Controls:'
         ]
         shadow_verts, fg_verts = [], []

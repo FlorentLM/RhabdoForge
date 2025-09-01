@@ -13,7 +13,7 @@ def main():
     # Configuration
     USE_RAYTRACER = True
     USE_POINT_CLOUD = True
-    NB_OMMATIDIA = 1962
+    NB_OMMATIDIA = 19362
     NB_SAMPLES = 16
     HEADLESS = False
 
