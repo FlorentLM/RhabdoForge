@@ -4,8 +4,7 @@ import numpy as np
 
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
-from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_RIGHT
-
+from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_RIGHT, DeltaTimeTransformer
 
 GPU_OMMATIDIUM_DTYPE = np.dtype([
     ('origin', VEC_DTYPE, 4),               # vec4 (4 * float32, x, y, z coords and w pad)
@@ -17,6 +16,30 @@ GPU_OMMATIDIUM_DTYPE = np.dtype([
 
 DEFAULT_ANGLE = 'deg'
 # DEFAULT_ANGLE = 'rad'
+
+
+# In compound_eyes.py
+
+def rotate_vectors(vectors: np.ndarray, axes: np.ndarray, angles: np.ndarray, degrees: bool = True) -> np.ndarray:
+    """
+    Rotates batches of vectors around corresponding axes using Rodrigues' formula.
+    """
+
+    angles_arr = np.asarray(angles)
+    angles_rad = np.deg2rad(angles_arr) if degrees else angles_arr
+
+    if angles_rad.ndim == 0:
+        cos_a = np.cos(angles_rad)
+        sin_a = np.sin(angles_rad)
+    else:
+        cos_a = np.cos(angles_rad)[:, np.newaxis]
+        sin_a = np.sin(angles_rad)[:, np.newaxis]
+
+    term1 = vectors * cos_a
+    term2 = np.cross(axes, vectors) * sin_a
+    term3 = axes * np.sum(axes * vectors, axis=1, keepdims=True) * (1 - cos_a)
+
+    return term1 + term2 + term3
 
 
 class Ommatidium:
@@ -39,8 +62,8 @@ class Ommatidium:
 
     @origin.setter
     def origin(self, value: Union[float, ArrayLike]):
-        self._data[self._item]['origin'][..., :3] = np.asarray(value, dtype=VEC_DTYPE)
-        self._data[self._item]['origin'][..., 3] = 1.0  # The w component for origin should be 1.0
+        self._data['origin'][self._item, :3] = np.asarray(value, dtype=VEC_DTYPE)
+        self._data['origin'][self._item, 3] = 1.0  # The w component for origins should be 1.0
         self._parent_eye.dirty_mask[self._item] = True
         self._parent_eye.needs_rebuild['origin'] = True
 
@@ -51,17 +74,74 @@ class Ommatidium:
     @direction.setter
     def direction(self, value: Union[float, ArrayLike]):
 
-        # set the new value
-        self._data[self._item]['direction'][..., :3] = value
+        # Prepare value and normalize it
+        new_dirs = np.atleast_2d(value)
+        norms = np.linalg.norm(new_dirs, axis=-1, keepdims=True)
+        normalized_dirs = np.divide(new_dirs, norms, out=new_dirs, where=norms != 0)
 
-        # normalize it in-place
-        vec_view = self._data[self._item]['direction'][..., :3]
-        norms = np.linalg.norm(vec_view, axis=-1, keepdims=True)
-        np.divide(vec_view, norms, out=vec_view, where=norms != 0)
+        self._data['direction'][self._item, :3] = normalized_dirs
+        self._data['direction'][self._item, 3] = 0.0   # The w component for a direction vector should be 0.0
 
-        self._data[self._item]['direction'][..., 3] = 0.0   # The w component for a direction vector should be 0.0
         self._parent_eye.dirty_mask[self._item] = True
         self._parent_eye.needs_rebuild['direction'] = True
+
+    def dt(self, delta_time: float) -> DeltaTimeTransformer:
+        """
+        Enables framerate-independent transformations for a chain of method calls.
+
+        Example:
+            # Rotates the ommatidium/a at 90 degrees per second
+            my_ommatidium_selection.dt(delta_time).rotate(delta_h=90)
+        """
+        return DeltaTimeTransformer(self, delta_time)
+
+    def rotate(self, yaw_delta: Union[float, ArrayLike] = 0.0, pitch_delta: Union[float, ArrayLike] = 0.0, roll_delta : Union[float, ArrayLike] = 0.0, degrees: bool = True):
+        """
+        Rotates the ommatidium's direction in its local tangent space.
+        - 'yaw_delta' rotates horizontally (accepts scalar or array).
+        - 'pitch_delta' rotates vertically (accepts scalar or array).
+        - 'roll_delta' is ignored.
+        """
+        current_dirs = np.atleast_2d(self._data[self._item]['direction'][..., :3])
+
+        dots = np.abs(current_dirs @ WORLD_UP)
+        is_polar = dots > 0.9999
+        reference_ups = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
+
+        local_tangents = np.cross(current_dirs, reference_ups)
+        norms_t = np.linalg.norm(local_tangents, axis=1, keepdims=True)
+        np.divide(local_tangents, norms_t, out=local_tangents, where=norms_t != 0)
+
+        local_bitangents = np.cross(local_tangents, current_dirs)
+        rotated_dirs = current_dirs
+
+        yaw_delta_arr = np.asarray(yaw_delta)
+        pitch_delta_arr = np.asarray(pitch_delta)
+
+        if np.any(yaw_delta_arr != 0.0):
+            rotated_dirs = rotate_vectors(rotated_dirs, local_bitangents, yaw_delta_arr, degrees=degrees)
+
+        if np.any(pitch_delta_arr != 0.0):
+            rotated_dirs = rotate_vectors(rotated_dirs, local_tangents, pitch_delta_arr, degrees=degrees)
+
+        self.direction = rotated_dirs
+        return self
+
+    def translate(self, distance: Union[float, ArrayLike]):
+        """
+        Moves the ommatidium's origin along its own direction vector.
+        """
+
+        current_origins = self._data[self._item]['origin'][..., :3]
+        current_dirs = self._data[self._item]['direction'][..., :3]
+
+        distances_arr = np.asarray(distance, dtype=VEC_DTYPE)
+        if distances_arr.ndim == 1:
+            distances_arr = distances_arr[:, np.newaxis]
+
+        # The setter is used to write the final data back
+        self.origin = current_origins + current_dirs * distances_arr
+        return self
 
     @property
     def acceptance_h(self) -> np.ndarray:
@@ -69,7 +149,7 @@ class Ommatidium:
 
     @acceptance_h.setter
     def acceptance_h(self, value: Union[float, ArrayLike]):
-        self._data[self._item]['acceptance_angles'][..., 0] = value
+        self._data['acceptance_angles'][self._item, 0] = value
         self._parent_eye.dirty_mask[self._item] = True
 
     @property
@@ -78,7 +158,7 @@ class Ommatidium:
 
     @acceptance_v.setter
     def acceptance_v(self, value: Union[float, ArrayLike]):
-        self._data[self._item]['acceptance_angles'][..., 1] = value
+        self._data['acceptance_angles'][self._item, 1] = value
         self._parent_eye.dirty_mask[self._item] = True
 
     @property
@@ -87,7 +167,7 @@ class Ommatidium:
 
     @acceptance_rad.setter
     def acceptance_rad(self, values: Union[float, ArrayLike]):
-        self._data[self._item]['acceptance_angles'][:] = values
+        self._data['acceptance_angles'][self._item] = values
         self._parent_eye.dirty_mask[self._item] = True
 
     @property
@@ -548,6 +628,36 @@ class CompoundEye:
             return best_indices.item()
 
         return best_indices.squeeze()
+
+    def query_directions_angle(self, center_direction: ArrayLike, angle: float, degrees: bool = True) -> np.ndarray:
+        """
+        Finds all ommatidia whose viewing direction is within a given angle of a center direction.
+        """
+
+        self.rebuild_spatial()
+
+        # Normalize the input direction to be safe
+        center_direction = np.asarray(center_direction, dtype=VEC_DTYPE)
+        center_direction /= np.linalg.norm(center_direction)
+
+        # Convert the search angle (cone radius) to a Euclidean distance
+        # (chord length) on the unit sphere
+        angle_rad = np.deg2rad(angle) if degrees else angle
+        radius = 2.0 * np.sin(angle_rad / 2.0)
+
+        indices = self.kdtree_directions.query_ball_point(center_direction, r=radius)
+        return indices
+
+    def query_positions_radius(self, center_position: ArrayLike, radius: float) -> np.ndarray:
+        """
+        Finds all ommatidia whose origin is within a given radius of a center point.
+        """
+        self.rebuild_spatial()
+
+        center_position = np.asarray(center_position, dtype=VEC_DTYPE)
+
+        indices = self.kdtree_positions.query_ball_point(center_position, r=radius)
+        return indices
 
     def __repr__(self):
         summary = [f"<CompoundEye with {self.num_ommatidia} ommatidia>"]

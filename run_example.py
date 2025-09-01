@@ -13,7 +13,7 @@ def main():
     # Configuration
     USE_RAYTRACER = True
     USE_POINT_CLOUD = True
-    NB_OMMATIDIA = 19362
+    NB_OMMATIDIA = 1962
     NB_SAMPLES = 16
     HEADLESS = False
 
@@ -66,19 +66,15 @@ def main():
                                      batch_size=batch_size)
 
 
-    # -- Example moving ommatidium --
+    # -- Example moving ommatidia --
 
     # Let's pick the one most aligned with the agent's forward direction
-    o = eye_model.query_directions(agent.forward, k=1)
+    # o = eye_model.query_directions(agent.forward, k=1)
 
-    # Copy the original direction. We rotate this vector each frame.
-    original_direction = eye_model.ommatidia[o].direction.copy()
+    # or a bunch of them near this direction
+    foveal_indices = eye_model.query_directions_angle(agent.forward, angle=5.0, degrees=True)
 
-    SCAN_FREQUENCY_HZ = 0.5     # How many full back-and-forth scans per second
-    SCAN_AMPLITUDE_DEG = 15.0   # The maximum angle of the scan from the center, in degrees
-    SCAN_AMPLITUDE_RAD = np.deg2rad(SCAN_AMPLITUDE_DEG)
-
-    # -- End example moving ommatidium --
+    # -- End example moving ommatidia --
 
 
     # Run
@@ -93,30 +89,17 @@ def main():
             context.input()
 
             # Rotate dynamic test crate
-            # dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
-
+            dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
             #  -- Example moving ommatidium --
 
-            # Calculate the current angle of the scan
-            scan_angle = SCAN_AMPLITUDE_RAD * np.sin(context.current_time * 2.0 * np.pi * SCAN_FREQUENCY_HZ)
+            # Animate the foveal patch scanning horizontally
+            eye_model.ommatidia[foveal_indices].dt(context.delta_time).rotate(yaw_delta=5.0)
 
-            # Create a 3D rotation matrix for this angle around the 'up' axis (will scan horizontally)
-            c, s = np.cos(scan_angle), np.sin(scan_angle)
-            rotation_matrix = np.array([
-                [c, 0, s],
-                [0, 1, 0],
-                [-s, 0, c]
-            ], dtype=np.float32)
-
-            # Apply new direction
-            eye_model.ommatidia[o].direction = rotation_matrix @ original_direction
-
-            # Send the update to the GPU
+            # Send the updates to the GPU
             eye_renderer.update()
 
-            # -- End example moving ommatidium --
-
+            # -- End example moving ommatidia --
 
             # Get sensory data from the compound eye renderer
             ommatidia_data = eye_renderer.get_ommatidia_data(agent)
@@ -136,7 +119,7 @@ def main():
         for i in range(max_steps):
 
             # Move the agent or whatever
-            agent.translate(agent.forward * 0.05).rotate(yaw_delta=-0.5, pitch_delta=0, roll_delta=0)
+            agent.translate(agent.forward * 0.05).rotate(yaw_delta=-0.5, pitch_delta=0, roll_delta=0, degrees=False)
 
             # Get sensory data from the compound eye renderer
             ommatidia_data = eye_renderer.get_ommatidia_data(agent)

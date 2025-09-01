@@ -211,6 +211,7 @@ class EyeRendererBase(ABC):
         Blocks until all queued frames on the GPU are rendered, downloads the data, and resets the counter.
         This is used to retrieve a full batch, or the final partial batch at the end of a simulation.
         """
+
         if self._current_frame_index == 0:
             return np.array([])
 

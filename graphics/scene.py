@@ -155,8 +155,6 @@ class PointsAsset(Asset):
         else:
             self.radii = np.full(self.num_points, 0.05, dtype=VEC_DTYPE)
 
-
-
         print(f"Loaded {self.num_points} points for asset '{name}'.")
 
 
@@ -215,7 +213,7 @@ class Instance:
         self.transform = glm.translate(self.transform, glm.vec3(translation))
         return self
 
-    def rotate_axis(self, angle_degrees: float, axis: Union[str, glm.vec3, ArrayLike]):
+    def rotate_axis(self, angle: float, axis: Union[str, glm.vec3, ArrayLike], degrees: bool = True):
         """
         Rotates the instance around a given axis
         """
@@ -243,20 +241,21 @@ class Instance:
         else:
             rotation_axis = glm.vec3(axis)
 
-        self.transform = glm.rotate(self.transform, glm.radians(angle_degrees), rotation_axis)
+        angle_rad = glm.radians(angle) if degrees else angle
+        self.transform = glm.rotate(self.transform, angle_rad, rotation_axis)
         return self
 
-    def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0):
+    def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0, degrees: bool = True):
         """ Rotates the instance by given Euler angle deltas """
 
         if yaw_delta != 0.0:
-            self.transform = glm.rotate(self.transform, glm.radians(yaw_delta), WORLD_UP)
+            self.transform = glm.rotate(self.transform, glm.radians(yaw_delta) if degrees else yaw_delta, WORLD_UP)
 
         if pitch_delta != 0.0:
-            self.transform = glm.rotate(self.transform, glm.radians(pitch_delta), WORLD_RIGHT)
+            self.transform = glm.rotate(self.transform, glm.radians(pitch_delta) if degrees else pitch_delta, WORLD_RIGHT)
 
         if roll_delta != 0.0:
-            self.transform = glm.rotate(self.transform, glm.radians(roll_delta), WORLD_FORWARD)
+            self.transform = glm.rotate(self.transform, glm.radians(roll_delta) if degrees else roll_delta, WORLD_FORWARD)
 
         return self
 

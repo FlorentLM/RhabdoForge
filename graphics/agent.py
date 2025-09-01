@@ -21,7 +21,14 @@ class Agent:
                  fov: float = 50.0,
                  near: float = 0.1,
                  far: float = 100.0,
-                 ratio: float = 16.0 / 9.0):
+                 ratio: float = 16.0 / 9.0,
+                 degrees: bool = True):
+
+        if not degrees:
+            yaw = glm.degrees(yaw)
+            pitch = glm.degrees(pitch)
+            roll = glm.degrees(roll)
+            fov = glm.degrees(fov)
 
         self._position = glm.vec3(position)
         self.tilt = self.pitch = self.vertical_angle = pitch
@@ -45,7 +52,7 @@ class Agent:
         """
         return DeltaTimeTransformer(self, delta_time)
 
-    def rotate_axis(self, angle_degrees: float, axis: Union[str, glm.vec3, ArrayLike]):
+    def rotate_axis(self, angle: float, axis: Union[str, glm.vec3, ArrayLike], degrees: bool = True):
         """ Rotates the agent around a given axis """
 
         if isinstance(axis, str):
@@ -72,8 +79,9 @@ class Agent:
                 raise ValueError(f"Unknown axis identifier: '{axis}'. Valid options are: {list(axis_map.keys())}")
         else:
             rotation_axis = glm.vec3(axis)
-
-        new_orientation = glm.rotate(self.orientation, glm.radians(angle_degrees), rotation_axis)
+        
+        angle_rad = glm.radians(angle) if degrees else angle
+        new_orientation = glm.rotate(self.orientation, angle_rad, rotation_axis)
 
         # Decompose the new orientation matrix back into yaw, pitch, and roll
         # The decomposition logic depends on the rotation order (Yaw, Pitch, Roll in our case)
@@ -109,10 +117,10 @@ class Agent:
 
         return self
 
-    def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0):
-        self.yaw += yaw_delta
-        self.pitch += pitch_delta
-        self.roll += roll_delta
+    def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0, degrees: bool = True):
+        self.yaw += yaw_delta if degrees else glm.degrees(yaw_delta)
+        self.pitch += pitch_delta if degrees else glm.degrees(pitch_delta)
+        self.roll += roll_delta if degrees else glm.degrees(roll_delta)
         return self
 
     def translate(self, translation: glm.vec3 | ArrayLike):
@@ -155,8 +163,8 @@ class Agent:
         return self._fov
 
     @fov.setter
-    def fov(self, val):
-        self._fov = np.clip(val, 0.001, 180.0)
+    def fov(self, fov_degrees):
+        self._fov = np.clip(fov_degrees, 0.001, 180.0)
 
     @property
     def near(self):

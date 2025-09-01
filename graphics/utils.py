@@ -36,16 +36,17 @@ class DeltaTimeTransformer:
         self._target.translate(scaled_translation)
         return self
 
-    def rotate_axis(self, angle_degrees: float, axis: Union[str, glm.vec3, ArrayLike]):
-        scaled_angle = angle_degrees * self._delta_time
-        self._target.rotate_axis(scaled_angle, axis)
+    def rotate_axis(self, angle: float, axis: Union[str, glm.vec3, ArrayLike], degrees: bool = True):
+        scaled_angle = angle * self._delta_time
+        self._target.rotate_axis(scaled_angle, axis, degrees=degrees)
         return self
 
-    def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0):
+    def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0, degrees: bool = True):
         self._target.rotate(
             yaw_delta * self._delta_time,
             pitch_delta * self._delta_time,
-            roll_delta * self._delta_time
+            roll_delta * self._delta_time,
+            degrees=degrees
         )
         return self
 

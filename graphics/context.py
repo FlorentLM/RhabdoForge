@@ -54,9 +54,9 @@ class Context:
         self._delta_time = 0
 
         self.move_speed: float = 3.0
-        self.mouse_sensitivity: float = 0.25
+        self.roll_speed: float = 2.0
+        self.mouse_sensitivity: float = 0.5
         self.mouse_y_dir = 1 if invert_mouseY else -1
-        self.roll_speed: float = 90.0
 
     def run_interactive(self, agent: Agent, scene: Scene, renderer: EyeRendererBase,
                         window_size=None, fps_limit=None, v_sync=None, invert_mouseY=None):
@@ -179,9 +179,10 @@ class Context:
 
         # Use the .dt() proxy for framerate-independent rotation
         self.agent.dt(self._delta_time).rotate(
-            yaw_delta=yaw_delta * 100,  # Scale mouse sensitivity to feel right
-            pitch_delta=pitch_delta * 100,
-            roll_delta=roll_input * self.roll_speed
+            yaw_delta=yaw_delta,
+            pitch_delta=pitch_delta,
+            roll_delta=roll_input * self.roll_speed,
+            degrees=False
         )
 
     def draw(self):
