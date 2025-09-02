@@ -29,7 +29,7 @@ def akima_interpolator(x, y, fill_value):
     return wrapper
 
 
-def load_azimuth_data(file_path="stuff/biological_data/azimuth_max.csv", interp='akima'):
+def load_azimuth_data(file_path="stuff/biological_data/sturzl2010_azimuth_max.csv", interp='akima'):
     """ Loads and prepares the azimuth boundary data using the robust interpolator """
 
     try:
@@ -180,50 +180,41 @@ def angles_to_vectors(angles_deg: np.ndarray) -> np.ndarray:
 
 ##
 
+PLOT = True
 
+az_fn_12, az_fn_34, raw_dfs = load_azimuth_data(interp='akima')
 
-def main():
+# This generates the right eye
+ommatidia_right = generate_eye_model(az_fn_12, az_fn_34)
+print(f"Generated {len(ommatidia_right)} unique ommatidia.")
 
-    az_fn_12, az_fn_34, raw_dfs = load_azimuth_data(interp='akima')
-    if az_fn_12 is None: return
+# Create left eye by mirroring the azimuth
+ommatidia_left = ommatidia_right.copy()
+ommatidia_left[:, 0] *= -1
 
-    # This generates the right eye
-    ommatidia_right = generate_eye_model(az_fn_12, az_fn_34)
-    print(f"Generated {len(ommatidia_right)} unique ommatidia.")
+# Convert both sets of angles to 3D direction vectors
+right_eye_dirs = angles_to_vectors(ommatidia_right)
+left_eye_dirs = angles_to_vectors(ommatidia_left)
 
-    # Save to csv
-    output_file = "ommatidia_sturzl_2010.csv"
-    np.savetxt(output_file, ommatidia_right, delimiter=",", header="azimuth,elevation", fmt="%.6f", comments='')
-    print(f"Saved ommatidia data to '{output_file}'")
+# Define plausible origins for the eyes
+eye_radius = 0.0015     # 1.5 mm radius
+eye_separation = 0.001  # 1 mm separation
 
+right_eye_origins = right_eye_dirs * eye_radius + np.array([eye_separation, 0, 0])
+left_eye_origins = left_eye_dirs * eye_radius - np.array([eye_separation, 0, 0])
 
-    # Create left eye by mirroring the azimuth
-    ommatidia_left = ommatidia_right.copy()
-    ommatidia_left[:, 0] *= -1
+both_eyes_origs = np.concatenate((right_eye_origins, left_eye_origins))
+both_eyes_dirs = np.concatenate((right_eye_dirs, left_eye_dirs))
 
-    # Convert both sets of angles to 3D direction vectors
-    right_eye_dirs = angles_to_vectors(ommatidia_right)
-    left_eye_dirs = angles_to_vectors(ommatidia_left)
+# Save as npz
+np.savez_compressed(
+    "bee_eye.npz",
+    directions=both_eyes_origs,
+    origins=both_eyes_dirs
+    # acceptance_angles_rad could be added here
+)
 
-    # Define other parameters:
-    # Let's place the eyes on either side of a central point, slightly apart
-    eye_radius = 0.0015     # 1.5 mm radius
-    eye_separation = 0.001  # 1 mm separation
-
-    right_eye_origins = right_eye_dirs * eye_radius + np.array([eye_separation, 0, 0])
-    left_eye_origins = left_eye_dirs * eye_radius - np.array([eye_separation, 0, 0])
-
-    both_eyes_origs = np.concatenate((right_eye_origins, left_eye_origins))
-    both_eyes_dirs = np.concatenate((right_eye_dirs, left_eye_dirs))
-
-    # Save as npz
-    np.savez_compressed(
-        "bee_eye.npz",
-        directions=both_eyes_origs,
-        origins=both_eyes_dirs
-        # acceptance_angles_rad could be added here
-    )
-
+if PLOT:
     # Plotting
     plt.figure(figsize=(12, 6))
 
@@ -250,7 +241,3 @@ def main():
     plt.legend()
     plt.grid(True)
     plt.show()
-
-
-if __name__ == "__main__":
-    main()

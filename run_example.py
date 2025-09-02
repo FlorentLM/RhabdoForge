@@ -8,6 +8,7 @@ from graphics.renderers.rasterizer import EyeRendererRaster
 from graphics.renderers.raytracer import EyeRendererRay
 from graphics.context import Context
 
+
 def main():
 
     # Configuration
@@ -95,7 +96,7 @@ def main():
             #  -- Example moving ommatidium --
 
             # Animate the foveal patch scanning horizontally
-            eye_model.ommatidia[foveal_indices].dt(context.delta_time).rotate(yaw_delta=5.0)
+            # eye_model.ommatidia[foveal_indices].dt(context.delta_time).rotate(yaw_delta=5.0)
 
             # Send the updates to the GPU
             eye_renderer.update()
