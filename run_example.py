@@ -28,7 +28,7 @@ def main():
     scene = Scene()
 
     if USE_POINT_CLOUD:
-        point_cloud_asset = PointsAsset('seville', file_path='assets/seville_filtered.ply', radii=0.01)
+        point_cloud_asset = PointsAsset('canberra', file_path='assets/canberra_filtered.ply', radii=0.01)
         scene.add_instance(point_cloud_asset)
 
     # Load the mesh asset data
@@ -46,6 +46,7 @@ def main():
 
     # Setup eye model
     eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
+    # eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)
 
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))

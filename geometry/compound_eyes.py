@@ -10,15 +10,13 @@ GPU_OMMATIDIUM_DTYPE = np.dtype([
     ('origin', VEC_DTYPE, 4),               # vec4 (4 * float32, x, y, z coords and w pad)
     ('direction', VEC_DTYPE, 4),            # vec4 (4 * float32, x, y, z coords and w pad)
     ('acceptance_angles', VEC_DTYPE, 2),    # vec2 (2 * float32)
-    ('_padding', VEC_DTYPE, 2)      # 8 bytes (2 * float32) of padding
+    ('_padding', VEC_DTYPE, 2)              # 8 bytes (2 * float32) of padding
 ])  # total 48 bytes
 
 
 DEFAULT_ANGLE = 'deg'
 # DEFAULT_ANGLE = 'rad'
 
-
-# In compound_eyes.py
 
 def rotate_vectors(vectors: np.ndarray, axes: np.ndarray, angles: np.ndarray, degrees: bool = True) -> np.ndarray:
     """
@@ -74,7 +72,6 @@ class Ommatidium:
     @direction.setter
     def direction(self, value: Union[float, ArrayLike]):
 
-        # Prepare value and normalize it
         new_dirs = np.atleast_2d(value)
         norms = np.linalg.norm(new_dirs, axis=-1, keepdims=True)
         normalized_dirs = np.divide(new_dirs, norms, out=new_dirs, where=norms != 0)
@@ -139,7 +136,6 @@ class Ommatidium:
         if distances_arr.ndim == 1:
             distances_arr = distances_arr[:, np.newaxis]
 
-        # The setter is used to write the final data back
         self.origin = current_origins + current_dirs * distances_arr
         return self
 
@@ -423,27 +419,36 @@ class CompoundEye:
     @classmethod
     def from_file(cls, file_path: Union[str, Path], **kwargs):
         """
-        Creates an eye model from a .npy file
-        - (N, 3): Directions only (angles will be estimated)
-        - (N, 4): Directions + circular acceptance angles
-        - (N, 5): Directions + ellipsoid acceptance angles (h != v)
+        Creates an eye model from a .npz archive file.
+
+        The .npz file is expected to contain at least a 'directions' array.
+        It can optionally contain 'origins' and 'acceptance_angles_rad'.
+        Any arguments passed via **kwargs will override the data from the file.
+
+        Args:
+            file_path: Path to the .npz file
+            **kwargs: Additional arguments to pass to the CompoundEye constructor,
+                      which will override file data.
         """
-        # TODO: This needs to be replaced by a proper loader + proper file format
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"Cannot find eye data file: {path}")
 
-        data = np.load(path).astype(VEC_DTYPE)
-        directions = data[:, :3]
-        num_cols = data.shape[1]
+        data = np.load(path)
 
-        acceptance_angles_rad = None
-        if num_cols == 4:  # Directions + 1 circular angle (in radians)
-            acceptance_angles_rad = np.vstack([data[:, 3], data[:, 3]]).T
-        elif num_cols == 5:  # Directions + H and V angles (in radians)
-            acceptance_angles_rad = data[:, 3:5]
+        if 'directions' not in data:
+            raise ValueError(f"Eye data file '{path}' is missing the required 'directions' array.")
 
-        return cls(directions=directions, acceptance_angles_rad=acceptance_angles_rad, **kwargs)
+        constructor_args = {
+            'directions': data['directions'],
+            'origins': data.get('origins'),
+            'acceptance_angles_rad': data.get('acceptance_angles_rad')
+        }
+
+        constructor_args.update(kwargs)
+
+        print(f"Loaded eye model from '{path}'.")
+        return cls(**constructor_args)
 
     def estimate_interommatidial_angles(self, k: int = 8, isotropic: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
