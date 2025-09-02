@@ -10,7 +10,10 @@ GPU_OMMATIDIUM_DTYPE = np.dtype([
     ('origin', VEC_DTYPE, 4),               # vec4 (4 * float32, x, y, z coords and w pad)
     ('direction', VEC_DTYPE, 4),            # vec4 (4 * float32, x, y, z coords and w pad)
     ('acceptance_angles', VEC_DTYPE, 2),    # vec2 (2 * float32)
-    ('_padding', VEC_DTYPE, 2)              # 8 bytes (2 * float32) of padding
+    ('receptor_type', np.uint8, 1),         # 1 byte (1 * uint8), 0 to 255
+    ('sensitivity', VEC_DTYPE, 1),          # 4 bytes (1 * float32) for sensitivity
+    ('custom_id', np.uint16, 1),            # 2 bytes (0-65535) for a custom ID (eye region, or whatever)
+    ('sub_id', np.uint8, 1),                # 1 byte (0-255) for sub ID
 ])  # total 48 bytes
 
 
@@ -49,10 +52,6 @@ class Ommatidium:
         self._data = data_array
         self._item = item
         self._parent_eye = parent_eye
-
-    @property
-    def id(self):
-        return self._item
 
     @property
     def origin(self) -> np.ndarray:
@@ -175,6 +174,42 @@ class Ommatidium:
         self.acceptance_rad = np.deg2rad(np.asarray(values, dtype=VEC_DTYPE))
 
     @property
+    def sensitivity(self) -> np.ndarray:
+        return self._data[self._item]['sensitivity']
+
+    @sensitivity.setter
+    def sensitivity(self, value: Union[float, ArrayLike]):
+        self._data['sensitivity'][self._item] = np.asarray(value, dtype=VEC_DTYPE)
+        self._parent_eye.dirty_mask[self._item] = True
+
+    @property
+    def receptor_type(self) -> np.ndarray:
+        return self._data[self._item]['receptor_type']
+
+    @receptor_type.setter
+    def receptor_type(self, value: Union[int, ArrayLike]):
+        self._data['receptor_type'][self._item] = np.asarray(value, dtype=np.uint8)
+        self._parent_eye.dirty_mask[self._item] = True
+
+    @property
+    def custom_id(self) -> np.ndarray:
+        return self._data[self._item]['custom_id']
+
+    @custom_id.setter
+    def custom_id(self, value: Union[int, ArrayLike]):
+        self._data['custom_id'][self._item] = np.asarray(value, dtype=np.uint16)
+        self._parent_eye.dirty_mask[self._item] = True
+
+    @property
+    def sub_id(self) -> np.ndarray:
+        return self._data[self._item]['sub_id']
+
+    @sub_id.setter
+    def sub_id(self, value: Union[int, ArrayLike]):
+        self._data['sub_id'][self._item] = np.asarray(value, dtype=np.uint8)
+        self._parent_eye.dirty_mask[self._item] = True
+
+    @property
     def azimuth_rad(self) -> np.ndarray:
         return np.arctan2(self._data[self._item]['direction'][..., 0], -self._data[self._item]['direction'][..., 2])
 
@@ -237,6 +272,10 @@ class CompoundEye:
                  origins: Optional[ArrayLike] = None,
                  num_ommatidia: Optional[int] = None,
                  acceptance_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
+                 sensitivities: Optional[Union[ArrayLike, float]] = None,
+                 receptor_types: Optional[Union[ArrayLike, int]] = None,
+                 custom_ids: Optional[Union[ArrayLike, int]] = None,
+                 sub_ids: Optional[Union[ArrayLike, int]] = None,
                  eye_parameter: Optional[Union[float, Tuple]] = None,
                  lens_diameter: Optional[Union[float, Tuple]] = None,
                  rhabdom_diameter: Optional[Union[float, Tuple]] = None,
@@ -251,17 +290,17 @@ class CompoundEye:
         Args:
             directions: An (N, 3) numpy array of ommatidial direction vectors
             origins: An (N, 3) or (3,) array of ommatidial origin positions
-            num_ommatidia: If directions are not provided, this number is used to generate a uniform sphere of directions.
-            acceptance_angles_rad: (Optional) The acceptance angles (Δρ). Can be:
-                - An (N, 2) array for individual H/V angles
-                - A tuple (h, v) for global H/V angles
-                - A float for a global circular angle
-                - None: If not provided, will be estimated using other optical or geometric parameters.
+            num_ommatidia: If directions are not provided, this is used to generate a uniform sphere of directions.
+            acceptance_angles_rad: (Optional) The acceptance angles (Δρ). Can be an (N, 2) array, a tuple (h, v),
+                a float, or None to estimate from other parameters.
+            sensitivities: (Optional) A scalar or (N,) array for ommatidial sensitivity. Defaults to 1.0.
+            receptor_types: (Optional) A scalar or (N,) array of integer receptor types. Defaults to 0.
+            custom_ids: (Optional) A scalar or (N,) array of integer custom IDs. Defaults to 0.
+            sub_ids: (Optional) A scalar or (N,) array of integer sub-IDs. Defaults to 0.
             eye_parameter: (Optional) The eye parameter 'p' value (Δρ / Δφ). Used to estimate acceptance
                 angles if they are not provided directly (defaults to 1.0)
             eye_radius: (Optional) Physical radius of the eye for setting ommatidial origins on a sphere.
-            force_isotropic: (Optional) If True, ensures that the final acceptance angles
-                are circular (Δρ_h = Δρ_v) by averaging any estimated anisotropic values.
+            force_isotropic: (Optional) If True, ensures acceptance angles are circular.
         """
 
         if directions is None and num_ommatidia is None:
@@ -307,6 +346,39 @@ class CompoundEye:
         # else: origins are already (0, 0, 0)
         self.data['origin'][:, 3] = 1.0  # w=1 for positions
 
+        # Set receptor sensitivities
+        if sensitivities is None:
+            self.data['sensitivity'] = 1.0  # Default to 1.0
+        else:
+            self.data['sensitivity'] = self._prepare_param(sensitivities, "sensitivities")
+
+        # Set receptor types
+        if receptor_types is None:
+            self.data['receptor_type'] = 0  # Default to 0
+        else:
+            # Use prepare_param but then cast to uint8
+            prepared_types = self._prepare_param(receptor_types, "receptor_types")
+            if np.any(prepared_types > 255) or np.any(prepared_types < 0):
+                raise ValueError("Receptor types must be in the range [0, 255].")
+            self.data['receptor_type'] = prepared_types.astype(np.uint8)
+
+        # Set custom IDs
+        if custom_ids is None:
+            self.data['custom_id'] = 0  # Default to 0
+        else:
+            prepared_ids = self._prepare_param(custom_ids, "custom_ids")
+            if np.any(prepared_ids > 65535) or np.any(prepared_ids < 0):
+                raise ValueError("Custom IDs must be in the range [0, 65535].")
+            self.data['custom_id'] = prepared_ids.astype(np.uint16)
+
+        if sub_ids is None:
+            self.data['sub_id'] = 0  # Default to 0
+        else:
+            prepared_sub_ids = self._prepare_param(sub_ids, "sub_ids")
+            if np.any(prepared_sub_ids > 255) or np.any(prepared_sub_ids < 0):
+                raise ValueError("Sub-IDs must be in the range [0, 255].")
+            self.data['sub_id'] = prepared_sub_ids.astype(np.uint8)
+
         self.dirty_mask = np.zeros(self.num_ommatidia, dtype=bool)
         self.needs_rebuild = {'direction': False, 'origin': True}
 
@@ -324,6 +396,7 @@ class CompoundEye:
             # Priority 1: Direct acceptance angles are provided
             print("Using provided acceptance angles (Δρ).")
             estimated_angles = acceptance_angles_rad
+
         elif all(p is not None for p in [lens_diameter, rhabdom_diameter, focal_length]):
             # Priority 2: Estimate from optical parameters
             print("Calculating acceptance angles (Δρ) from physical optical parameters.")
@@ -422,7 +495,8 @@ class CompoundEye:
         Creates an eye model from a .npz archive file.
 
         The .npz file is expected to contain at least a 'directions' array.
-        It can optionally contain 'origins' and 'acceptance_angles_rad'.
+        It can optionally contain 'origins', 'acceptance_angles_rad', 'sensitivities', 'receptor_types',
+        'custom_ids', and 'sub_ids'.
         Any arguments passed via **kwargs will override the data from the file.
 
         Args:
@@ -442,7 +516,11 @@ class CompoundEye:
         constructor_args = {
             'directions': data['directions'],
             'origins': data.get('origins'),
-            'acceptance_angles_rad': data.get('acceptance_angles_rad')
+            'acceptance_angles_rad': data.get('acceptance_angles_rad'),
+            'sensitivities': data.get('sensitivities'),
+            'receptor_types': data.get('receptor_types'),
+            'custom_ids': data.get('custom_ids'),
+            'sub_ids': data.get('sub_ids')
         }
 
         constructor_args.update(kwargs)
