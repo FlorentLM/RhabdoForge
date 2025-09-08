@@ -10,7 +10,7 @@ from pyglm import glm
 
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene
-from graphics.agent import Agent
+from graphics.agent import Agent, OrbitCamera
 from graphics.utils import WORLD_UP, WORLD_DOWN, ViewMode
 from graphics.interactive.hud import HUD
 
@@ -48,8 +48,7 @@ class Context:
         self.agent = None
         self.renderer = None
         self.scene = None
-        self.camera = None
-        self.orbit = None
+        self.observer = None
         self.view_mode = None
         self.hud = None
         self.last_mouse_pos = None
@@ -88,14 +87,7 @@ class Context:
             self.renderer = renderer
             renderer.runs_interactive = True
 
-            self.camera = Agent(fov=60.0, ratio=self._window_size[0] / self._window_size[1])  # orbit camera
-            self.orbit = {
-                "distance": 1.5,  # meters behind the insect
-                "azimuth": 0.0,  # radians, around Y (left/right)
-                "elevation": glm.radians(20.0),  # radians, up/down
-                "min_elev": glm.radians(-85.0),
-                "max_elev": glm.radians(85.0)
-            }
+            self.observer = OrbitCamera(target=agent, distance=1.5, ratio=self._window_size[0] / self._window_size[1])
 
             glfw.set_key_callback(self.window, self.key_callback)
             glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
@@ -112,30 +104,16 @@ class Context:
 
         return not glfw.window_should_close(self.window)
 
-    def _update_orbit_camera(self):
-        """ Positions self.camera on a sphere around the insect agent and looks at it """
-        t = self.agent.position
-        d = self.orbit["distance"]
-        az = self.orbit["azimuth"]
-        el = self.orbit["elevation"]
-
-        # Spherical (Y-up): x = d*cos(el)*sin(az), y = d*sin(el), z = d*cos(el)*cos(az)
-        offset = glm.vec3(d * glm.cos(el) * glm.sin(az),
-                          d * glm.sin(el),
-                          d * glm.cos(el) * glm.cos(az))
-        self.camera.position = t + offset
-        self.camera.lookat(t)  # points at the insect center
-
     def scroll_callback(self, window, xoffset, yoffset):
-        # zoom the orbit with mouse wheel: yoffset > 0 => zoom in
-        self.orbit["distance"] = float(max(0.1, self.orbit["distance"] * (0.9 ** yoffset)))
+        zoom_factor = 0.9 ** yoffset  # yoffset > 0 => 0.9 (zoom in), yoffset < 0 => 1.11 (zoom out)
+        self.observer.zoom(zoom_factor)
 
     def key_callback(self, window, key, scancode, action, mods):
 
         if action == glfw.PRESS:
 
             # if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % len(ViewMode)
-            if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % 2
+            if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % 3
 
             if key == glfw.KEY_V: self.renderer.tiled_mode = not self.renderer.tiled_mode
 
@@ -209,19 +187,16 @@ class Context:
         pitch_delta = dy * self.mouse_sensitivity * self.mouse_y_dir
 
         if self.view_mode == ViewMode.third_person:
-            self.orbit["azimuth"] += float(yaw_delta) * self._delta_time
-            self.orbit["elevation"] += float(pitch_delta) * self._delta_time
-            # clamp elevation to avoid flipping
-            self.orbit["elevation"] = float(glm.clamp(self.orbit["elevation"],
-                                                      self.orbit["min_elev"],
-                                                      self.orbit["max_elev"]))
+            self.observer.pan(azimuth_delta=yaw_delta * 0.5,
+                              elevation_delta=pitch_delta * 0.5,
+                              degrees=True)
         else:
             # first-person control of the insect agent
-            self.agent.dt(self._delta_time).rotate(
+            self.agent.rotate(
                 yaw_delta=yaw_delta,
                 pitch_delta=pitch_delta,
                 roll_delta=roll_input * self.roll_speed,
-                degrees=False
+                degrees=True
             )
 
     def draw(self):
@@ -237,9 +212,9 @@ class Context:
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
         if self.view_mode == ViewMode.third_person:
-            self.camera.ratio = self._window_size[0] / self._window_size[1]
-            self._update_orbit_camera()
-            pov = self.camera
+            self.observer.ratio = self._window_size[0] / self._window_size[1]
+            self.observer.update()
+            pov = self.observer
         else:
             pov = self.agent
 

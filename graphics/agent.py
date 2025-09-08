@@ -193,7 +193,7 @@ class Agent:
     pos = position
     far_plane = far
     near_plane = near
-    zoom = field_of_view = fov
+    field_of_view = fov
     aspect_ratio = ratio
 
     @property
@@ -203,14 +203,14 @@ class Agent:
     @property
     def orientation(self):
         """ The agent's orientation matrix (rotates from local to world space) """
-        orientation = glm.mat4(1.0)
-        # yaw
-        orientation = glm.rotate(orientation, glm.radians(self.yaw), WORLD_UP)
-        # pitch
-        orientation = glm.rotate(orientation, glm.radians(self.pitch), WORLD_RIGHT)
-        # Roll
-        orientation = glm.rotate(orientation, glm.radians(self.roll), glm.vec3(0, 0, -1))
-        return orientation
+
+        identity = glm.mat4(1.0)
+
+        yaw = glm.rotate(identity, glm.radians(self.yaw), WORLD_UP)
+        pitch = glm.rotate(identity, glm.radians(self.pitch), WORLD_RIGHT)
+        roll = glm.rotate(identity, glm.radians(self.roll), WORLD_FORWARD)
+
+        return yaw * pitch * roll
 
     @property
     def forward(self):
@@ -253,3 +253,84 @@ class Agent:
     def matrix(self):
         # For column-major matrices (like glm), the order is P * V
         return self.projection * self.view
+
+
+class OrbitCamera:
+    """
+    Wrapper camera that orbits around a target position
+    """
+
+    def __init__(self,
+                 target: Agent,
+                 distance: float = 1.5,
+                 azimuth: float = 0.0,
+                 elevation: float = 20.0,
+                 fov: float = 60.0,
+                 ratio: float = 16.0 / 9.0,
+                 near: float = 0.1,
+                 far: float = 100.0,
+                 degrees: bool = True):
+
+        self.target = target
+        self.distance = distance
+        self.azimuth = azimuth if degrees else glm.degrees(azimuth)
+        self.elevation = elevation if degrees else glm.degrees(elevation)
+
+        # Reasonable limits for camera position
+        self.min_elevation = -89.999
+        self.max_elevation = 89.999
+        self.min_distance = 0.1
+
+        self._observer = Agent(fov=fov, ratio=ratio, near=near, far=far)
+        self.update()
+
+    def pan(self, azimuth_delta: float, elevation_delta: float, degrees: bool = True):
+        """ Pans the camera by changing azimuth and elevation """
+
+        if not degrees:
+            azimuth_delta = glm.degrees(azimuth_delta)
+            elevation_delta = glm.degrees(elevation_delta)
+
+        self.azimuth += azimuth_delta
+        self.elevation = glm.clamp(self.elevation + elevation_delta, self.min_elevation, self.max_elevation)
+        self.update()
+
+    def zoom(self, factor: float):
+        """ Zooms the camera by adjusting its distance to the target """
+        self.distance = max(self.min_distance, self.distance * factor)
+        self.update()
+
+    def update(self):
+        """ Recalculates the observer's position and orientation based on orbit parameters """
+
+        az_rad = glm.radians(self.azimuth)
+        el_rad = glm.radians(self.elevation)
+
+        # Calculate offset from target using spherical coordinates
+        offset = glm.vec3(self.distance * glm.cos(el_rad) * glm.sin(az_rad),
+                          self.distance * glm.sin(el_rad),
+                          self.distance * glm.cos(el_rad) * glm.cos(az_rad))
+
+        self._observer.position = self.target.position + offset
+        self._observer.lookat(self.target.position)
+
+    @property
+    def view(self):
+        # This prevents the camera from rolling on its own as it orbits the target
+        return glm.lookAt(self._observer.position, self.target.position, WORLD_UP)
+
+    @property
+    def projection(self):
+        return self._observer.projection
+
+    @property
+    def position(self):
+        return self._observer.position
+
+    @property
+    def ratio(self):
+        return self._observer.ratio
+
+    @ratio.setter
+    def ratio(self, value):
+        self._observer.ratio = value
