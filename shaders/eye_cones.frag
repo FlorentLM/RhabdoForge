@@ -1,6 +1,6 @@
 #version 430 core
 
-layout(std430, binding = 1) readonly buffer FinalColors {
+layout(std430, binding = 1) readonly buffer ColorDataBlock {
     vec4 final_rgba[];
 };
 
