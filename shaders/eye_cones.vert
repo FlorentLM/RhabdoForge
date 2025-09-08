@@ -15,6 +15,7 @@ layout(std430, binding = 1) readonly buffer ColorDataBlock {
 // Uniforms
 uniform mat4 view;
 uniform mat4 projection;
+uniform mat4 eye_to_world;
 uniform float cone_length = 0.015;
 uniform float radius_scale = 1.0;
 uniform bool is_degrees = false;
@@ -33,13 +34,18 @@ mat3 rmatFromDir(vec3 dir) {
 
 void main() {
     int i = gl_InstanceID;
-    Ommatidium omm = ommatidia_data[i];
+    Ommatidium om = ommatidia_data[i];
 
-    vec3 O = omm.origin.xyz;
-    vec3 D = normalize(omm.direction.xyz);
+    // Read eye-local origin and direction
+    vec3 O_eye = ommatidia_data[i].origin.xyz;
+    vec3 D_eye = ommatidia_data[i].direction.xyz;
+
+    // Transform to world
+    vec3 O = (eye_to_world * vec4(O_eye, 1.0)).xyz;
+    vec3 D = normalize((eye_to_world * vec4(D_eye, 0.0)).xyz);
 
     // Calculate cone base radius from acceptance angle
-    vec2 acc = omm.acceptance_angles;
+    vec2 acc = om.acceptance_angles;
     if (is_degrees) acc = radians(acc);
     float halfAngle = 0.5 * max(acc.x, acc.y);
 

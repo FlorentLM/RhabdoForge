@@ -721,7 +721,7 @@ class EyeRendererRay(EyeRendererBase):
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
-    def draw(self, view_mode: ViewMode, point_of_view: Agent):
+    def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent = None):
         """ Renders one of the rasterizer's supported views to the screen """
 
         if view_mode == ViewMode.compound_eye:
@@ -746,7 +746,7 @@ class EyeRendererRay(EyeRendererBase):
             self._texture_viewer.draw(self._persp_texture_id)
 
         if view_mode == ViewMode.third_person:
-            self._draw_eye_model(point_of_view)
+            self._draw_eye_model(point_of_view, agent)
 
     def free(self):
         """ Frees all GPU resources, including shaders and all buffers """

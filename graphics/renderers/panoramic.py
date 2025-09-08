@@ -79,6 +79,7 @@ class TextureViewer:
 
         self.shader.use()
         glDisable(GL_DEPTH_TEST)
+        glDepthMask(GL_FALSE)
 
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, texture_id)
@@ -89,8 +90,10 @@ class TextureViewer:
 
         glBindVertexArray(0)
         self.shader.stop()
-        glEnable(GL_DEPTH_TEST)
 
+        glDepthMask(GL_TRUE)
+        glEnable(GL_DEPTH_TEST)
+        glClear(GL_DEPTH_BUFFER_BIT)
 
     def free(self):
         if self._shader:

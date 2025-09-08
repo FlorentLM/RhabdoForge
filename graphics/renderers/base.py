@@ -5,6 +5,7 @@ from typing import Optional, Literal
 
 import numpy as np
 import OpenGL
+from pyglm import glm
 
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
@@ -343,31 +344,33 @@ class EyeRendererBase(ABC):
 
         self.voronoi_shader.stop()
 
-    def _draw_eye_model(self, camera):
+    # base.py
+    def _draw_eye_model(self, observer_camera, agent):
 
         self.cones_shader.use()
+
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT)
 
-        glUniformMatrix4fv(self.cones_shader.get_loc('view'), 1, GL_FALSE, np.asarray(camera.view, dtype=np.float32))
-        glUniformMatrix4fv(self.cones_shader.get_loc('projection'), 1, GL_FALSE, np.asarray(camera.projection, dtype=np.float32))
+        glUniformMatrix4fv(self.cones_shader.get_loc('view'), 1, False, glm.value_ptr(observer_camera.view))
+        glUniformMatrix4fv(self.cones_shader.get_loc('projection'), 1, False, glm.value_ptr(observer_camera.projection))
 
-        # Uniforms
-        glUniform1f(self.cones_shader.get_loc("cone_length"), 0.15)
-        glUniform1f(self.cones_shader.get_loc("radius_scale"), 10.0)
+        # agent's camera-to-world for the eye data
+        c2w = glm.inverse(agent.view)
+        glUniformMatrix4fv(self.cones_shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w))
+
+        glUniform1f(self.cones_shader.get_loc("cone_length"), 10.0)
+        glUniform1f(self.cones_shader.get_loc("radius_scale"), 100.0)
         # glUniform1f(self.cones_shader.get_loc("albedo_boost"), 1.0)
-        glUniform1i(self.cones_shader.get_loc("is_degrees"), True)
+        glUniform1i(self.cones_shader.get_loc("is_degrees"), False)
 
-        # Bind SSBOs
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
 
-
-        glDisable(GL_CULL_FACE)  # in case winding flips somewhere
+        glDisable(GL_CULL_FACE)
         glEnable(GL_DEPTH_TEST)
         glDepthMask(GL_TRUE)
 
         glBindVertexArray(self.cones_vao)
-
         glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.num_ommatidia)
         glBindVertexArray(0)
 

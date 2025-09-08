@@ -42,8 +42,7 @@ class Context:
         glfw.swap_interval(int(self._v_sync))
 
         glEnable(GL_DEPTH_TEST)
-
-        glEnable(GL_FRAMEBUFFER_SRGB)
+        glEnable(GL_FRAMEBUFFER_SRGB)   # we want linear (non-gamma corrected)
 
         self.agent = None
         self.renderer = None
@@ -52,13 +51,14 @@ class Context:
         self.view_mode = None
         self.hud = None
         self.last_mouse_pos = None
-        self.last_frame_time = 0
-        self._delta_time = 0
+
+        self.last_frame_time: float = 0.0
+        self._delta_time: float = 0.0
 
         self.move_speed: float = 3.0
         self.roll_speed: float = 2.0
         self.mouse_sensitivity: float = 0.5
-        self.mouse_y_dir = 1 if invert_mouseY else -1
+        self.mouse_y_dir: float = 1.0 if invert_mouseY else -1.0
 
     def run_interactive(self, agent: Agent, scene: Scene, renderer: EyeRendererBase,
                         window_size=None, fps_limit=None, v_sync=None, invert_mouseY=None):
@@ -113,7 +113,7 @@ class Context:
         if action == glfw.PRESS:
 
             # if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % len(ViewMode)
-            if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % 3
+            if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % 2
 
             if key == glfw.KEY_V: self.renderer.tiled_mode = not self.renderer.tiled_mode
 
@@ -205,6 +205,7 @@ class Context:
             return
 
         if self.scene:
+            # convert to linear (non gamma-corrected)
             linear_bg_color = tuple(pow(c, 2.2) for c in self.scene.background_color)
             glClearColor(linear_bg_color[0], linear_bg_color[1], linear_bg_color[2], 1.0)
 
@@ -218,7 +219,7 @@ class Context:
         else:
             pov = self.agent
 
-        self.renderer.draw(self.view_mode, pov)
+        self.renderer.draw(self.view_mode, pov, self.agent)
 
         if self.hud:
             self.hud.draw()
