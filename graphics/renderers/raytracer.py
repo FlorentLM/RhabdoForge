@@ -117,7 +117,7 @@ class RaytracingSceneBaker:
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, target_w, target_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, img_data)
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, target_w, target_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, img_data)
 
                 tex_ids.append(tex_id)
 
@@ -396,7 +396,7 @@ class RaytracingSceneBaker:
         tex_array_id = glGenTextures(1)
 
         glBindTexture(GL_TEXTURE_2D_ARRAY, tex_array_id)
-        glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA8, tex_w, tex_h, layer_count)
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_SRGB8_ALPHA8, tex_w, tex_h, layer_count)
 
         for i, tex_id in enumerate(texture_ids):
             glCopyImageSubData(

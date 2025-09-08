@@ -43,6 +43,8 @@ class Context:
 
         glEnable(GL_DEPTH_TEST)
 
+        glEnable(GL_FRAMEBUFFER_SRGB)
+
         self.agent = None
         self.renderer = None
         self.scene = None
@@ -191,8 +193,8 @@ class Context:
             return
 
         if self.scene:
-            bg = self.scene.background_color
-            glClearColor(bg[0], bg[1], bg[2], 1.0)
+            linear_bg_color = tuple(pow(c, 2.2) for c in self.scene.background_color)
+            glClearColor(linear_bg_color[0], linear_bg_color[1], linear_bg_color[2], 1.0)
 
         glViewport(0, 0, self._window_size[0], self._window_size[1])
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)

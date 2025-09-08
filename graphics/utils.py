@@ -212,7 +212,7 @@ def load_texture(file_path):
 
     glTexImage2D(GL_TEXTURE_2D,
                  0,
-                 GL_RGBA,
+                 GL_SRGB_ALPHA,
                  w,
                  h,
                  0,
@@ -260,7 +260,7 @@ def load_cubemap(folder_path):
             w, h = im.width, im.height
             im_data = im.convert("RGBA").tobytes()
 
-        glTexImage2D(faces_gl[i], 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, im_data)
+        glTexImage2D(faces_gl[i], 0, GL_SRGB8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, im_data)
 
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR)

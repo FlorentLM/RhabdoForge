@@ -435,7 +435,8 @@ vec3 trace(Ray r) {
             // For point clouds, primitive_idx is the point index within the asset
             uint point_id = hit_inst.vertex_or_point_offset + closest_hit.primitive_idx;
             Point hit_point = getPoint(point_id);
-            final_color = hit_point.color.rgb;
+            vec3 linear_point_color = pow(hit_point.color.rgb, vec3(2.2));
+            final_color = linear_point_color;
         } else {
             // For triangles, primitive_idx is the triangle index within the asset
             uint blas_prim_id = closest_hit.primitive_idx;
