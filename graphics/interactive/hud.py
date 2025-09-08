@@ -145,6 +145,8 @@ class HUD:
 
         self.projection_matrix = glm.ortho(0, self.width, 0, self.height, -1.0, 1.0)
 
+        self.view_modes_names = {0: 'Compound eye', 1: 'Panoramic', 2: 'Third person', 3: 'Perspective'}
+
         # FPS tracking logic
         self.frame_times = deque(maxlen=60)  # Store timestamps of last 60 frames
         self.last_fps_update_time = 0
@@ -202,7 +204,7 @@ class HUD:
 
             is_raytracer = isinstance(active_renderer, EyeRendererRay)
 
-            mode_name = "Ray-Tracer" if is_raytracer else "Rasterizer"
+            render_mode = "Ray-Tracer" if is_raytracer else "Rasterizer"
             sample_label = "Rays" if is_raytracer else "Samples"
 
             pos = self.ctx.agent.position
@@ -211,8 +213,9 @@ class HUD:
             num_samples = getattr(active_renderer, 'samples_per_ommatidium', 1)
 
             total_samples = num_om * num_samples
-            self._info_text = (f'FPS: {avg_fps:>4.2f} | Mode: {mode_name} | Ommatidia: {num_om} | '
-                             f'{sample_label}: {num_samples} | XYZ: [ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ]')
+            self._info_text = (f'FPS: {avg_fps:>4.2f} | Mode: {render_mode} | Ommatidia: {num_om} | '
+                             f'{sample_label}: {num_samples} | XYZ: [ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ] | '
+                             f'View mode: {self.view_modes_names[self.ctx.view_mode]}')
 
             margin, line_height = 10, self.font_renderer.font_size * 1.1
             info_sv = self.font_renderer.generate_text_vertices(self._info_text, margin + 1,

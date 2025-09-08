@@ -1,4 +1,5 @@
 import OpenGL
+
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 import numpy as np
@@ -9,7 +10,7 @@ from graphics.agent import Agent
 from graphics.renderers.panoramic import PanoramicEye
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, MeshAsset, PointsAsset
-from graphics.utils import load_shaders, load_texture, ShaderProgram
+from graphics.utils import load_shaders, load_texture, ShaderProgram, ViewMode
 
 
 class CubemapFBO:
@@ -430,21 +431,24 @@ class EyeRendererRaster(EyeRendererBase):
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 
-    def draw(self, view_mode: str, agent):
+    def draw(self, view_mode: ViewMode, point_of_view: Agent):
         """ Renders one of the rasterizer's supported views to the screen """
 
-        if view_mode == 'compound_eye':
+        if view_mode == ViewMode.compound_eye:
             self._draw_voronoi()
 
-        elif view_mode == 'panoramic':
+        elif view_mode == ViewMode.panoramic:
             self._raster_panoramic.draw(self._cubemap_fbo.texture_id)
 
-        elif view_mode == 'standard_3d':
+        elif view_mode == ViewMode.perspective or view_mode == ViewMode.third_person:
+
             if self._scene_baked.scene.skybox is not None:
-                self._scene_baked.scene.skybox.draw(agent.projection, agent.view)
+                self._scene_baked.scene.skybox.draw(point_of_view.projection, point_of_view.view)
+
             renderables = self._scene_baked.get_renderables()
+
             for instance in renderables:
-                self._render_instance(instance, agent.view, agent.projection)
+                self._render_instance(instance, point_of_view.view, point_of_view.projection)
 
     def free(self):
         self._scene_baked.free()

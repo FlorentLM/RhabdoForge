@@ -5,13 +5,14 @@ from typing import Optional, Literal
 
 import numpy as np
 import OpenGL
+
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
 
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CONE_VERTICES
-from graphics.utils import ShaderProgram
+from graphics.utils import ShaderProgram, ViewMode
 from graphics.agent import Agent
 
 
@@ -41,6 +42,8 @@ class EyeRendererBase(ABC):
         self._samples_per_ommatidium = nb_samples
         self._time_dithering = time_dithering
         self._time_counter = 0
+
+        self.runs_interactive = False
 
         # Visualization resources (lazy-loaded)
         self._voronoi_shader = None
@@ -101,7 +104,7 @@ class EyeRendererBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def draw(self, view_mode: str, agent: Agent):
+    def draw(self, view_mode: ViewMode, point_of_view: Agent):
         # Each subclass implements its own core rendering logic
         raise NotImplementedError
 

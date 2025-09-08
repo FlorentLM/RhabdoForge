@@ -12,7 +12,7 @@ from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 from graphics.agent import Agent
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, MeshAsset, PointsAsset
-from graphics.utils import VEC_DTYPE, ShaderProgram, write_pytinybvh_preamble
+from graphics.utils import VEC_DTYPE, ShaderProgram, write_pytinybvh_preamble, ViewMode
 from graphics.renderers.panoramic import TextureViewer
 
 
@@ -445,7 +445,14 @@ class EyeRendererRay(EyeRendererBase):
         print("Compiling ray-tracing and reduction shaders...")
         self.raytrace_shader = ShaderProgram(comp_path='shaders/ommatidia_raytracing.comp')
         self.reduction_shader = ShaderProgram(comp_path='shaders/rays_reduction.comp')
-        self.pano_raytrace_shader = None    # lazily-loaded
+
+        # panoramic view shader
+        self.panoramic_shader = None    # lazily-loaded
+
+        # standard perspective view shader (also lazy-loaded)
+        self._persp_res = None
+        self._persp_texture_id = 0
+        self.perspective_shader = None
 
         self._pano_res = pano_res
         self._pano_texture_id = 0
@@ -508,8 +515,8 @@ class EyeRendererRay(EyeRendererBase):
 
         print("Lazy-loading panoramic ray-tracer resources...")
 
-        if self.pano_raytrace_shader is None:
-            self.pano_raytrace_shader = ShaderProgram(comp_path='shaders/panoramic_raytracing.comp')
+        if self.panoramic_shader is None:
+            self.panoramic_shader = ShaderProgram(comp_path='shaders/panoramic_raytracing.comp')
 
         if self._pano_texture_id == 0:
 
@@ -527,6 +534,29 @@ class EyeRendererRay(EyeRendererBase):
 
         if self._texture_viewer is None:
             self._texture_viewer = TextureViewer()
+
+    def _initialize_persp_resources(self):
+
+        if self.perspective_shader is None:
+            self.perspective_shader = ShaderProgram(comp_path='shaders/perspective_raytracing.comp')
+
+        if self._persp_res is None:
+            viewport = glGetIntegerv(GL_VIEWPORT)
+            self._persp_res = (viewport[2], viewport[3])
+
+        if self._persp_texture_id == 0:
+
+            tex = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, tex)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, self._persp_res[0], self._persp_res[1], 0, GL_RGBA, GL_FLOAT,
+                         None)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            glBindTexture(GL_TEXTURE_2D, 0)
+
+            self._persp_texture_id = tex
 
     def _bind_scene_resources(self, shader: ShaderProgram):
 
@@ -562,15 +592,15 @@ class EyeRendererRay(EyeRendererBase):
     def _raytrace_panoramic(self, agent):
         """ Dispatches a compute shader to generate a ray-traced panoramic image """
 
-        self.pano_raytrace_shader.use()
+        self.panoramic_shader.use()
 
         # Bind the output texture to image unit 0 for writing
         glBindImageTexture(0, self._pano_texture_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
 
-        self._bind_scene_resources(self.pano_raytrace_shader)
+        self._bind_scene_resources(self.panoramic_shader)
 
         c2w_mat = glm.inverse(agent.view)
-        glUniformMatrix4fv(self.pano_raytrace_shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
+        glUniformMatrix4fv(self.panoramic_shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
         # Dispatch compute shader
         work_groups_x = (self._pano_res[0] + 15) // 16
@@ -580,7 +610,31 @@ class EyeRendererRay(EyeRendererBase):
         # Barrier to ensure imageStore operations are complete before the texture is used for drawing
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
 
-        self.pano_raytrace_shader.stop()
+        self.panoramic_shader.stop()
+
+    def _raytrace_perspective(self, agent):
+        self.perspective_shader.use()
+
+        # Output image
+        glBindImageTexture(0, self._persp_texture_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
+
+        # Scene resources (BLAS/TLAS, textures, skybox, uniforms) – reuse existing binder
+        self._bind_scene_resources(self.perspective_shader)
+
+        # Camera transforms
+        c2w = glm.inverse(agent.view)
+        glUniformMatrix4fv(self.perspective_shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w))
+
+        inverse_proj = glm.inverse(agent.projection)
+        glUniformMatrix4fv(self.perspective_shader.get_loc('inv_projection'), 1, False, glm.value_ptr(inverse_proj))
+
+        # Dispatch
+        wg_x = (self._persp_res[0] + 15) // 16
+        wg_y = (self._persp_res[1] + 15) // 16
+        glDispatchCompute(wg_x, wg_y, 1)
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
+
+        self.perspective_shader.stop()
 
     def _raytrace(self, agent):
 
@@ -667,20 +721,29 @@ class EyeRendererRay(EyeRendererBase):
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
-    def draw(self, view_mode: str, agent: Agent):
+    def draw(self, view_mode: ViewMode, point_of_view: Agent):
         """ Renders one of the rasterizer's supported views to the screen """
 
-        if view_mode == 'compound_eye':
+        if view_mode == ViewMode.compound_eye:
             self._draw_voronoi()
 
-        elif view_mode == 'panoramic':
+        elif view_mode == ViewMode.panoramic:
 
-            if self._pano_texture_id == 0 or self.pano_raytrace_shader is None:
+            if self._pano_texture_id == 0 or self.panoramic_shader is None:
                 self._initialize_pano_resources()
 
             self._scene_baked.update()
-            self._raytrace_panoramic(agent)
+            self._raytrace_panoramic(point_of_view)
             self._texture_viewer.draw(self._pano_texture_id)
+
+        elif view_mode == ViewMode.perspective or view_mode == ViewMode.third_person:
+
+            if self._persp_texture_id == 0 or self.perspective_shader is None:
+                self._initialize_persp_resources()
+
+            self._scene_baked.update()
+            self._raytrace_perspective(point_of_view)
+            self._texture_viewer.draw(self._persp_texture_id)
 
     def free(self):
         """ Frees all GPU resources, including shaders and all buffers """
@@ -689,7 +752,7 @@ class EyeRendererRay(EyeRendererBase):
         if self.raytrace_shader: self.raytrace_shader.free()
         if self.reduction_shader: self.reduction_shader.free()
 
-        if self.pano_raytrace_shader: self.pano_raytrace_shader.free()
+        if self.panoramic_shader: self.panoramic_shader.free()
         if self._pano_texture_id != 0: glDeleteTextures(1, [self._pano_texture_id])
         if self._texture_viewer: self._texture_viewer.free()
 

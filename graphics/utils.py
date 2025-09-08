@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Any, Union
-
+from enum import IntEnum
 from PIL import Image
 import numpy as np
 from numpy.typing import ArrayLike
@@ -19,6 +19,13 @@ WORLD_FORWARD = WORLD_Z = glm.vec3(0.0, 0.0, -1.0)
 WORLD_LEFT = -WORLD_RIGHT
 WORLD_DOWN = -WORLD_UP
 WORLD_BACKWARD = -WORLD_FORWARD
+
+
+class ViewMode(IntEnum):
+    compound_eye = 0
+    panoramic = 1
+    third_person = 2
+    perspective = 3
 
 
 class DeltaTimeTransformer:
