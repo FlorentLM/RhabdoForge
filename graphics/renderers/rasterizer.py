@@ -84,7 +84,7 @@ class RasterMesh:
         self.indices = asset.indices
         self.draw_count = self.indices.size
 
-        self.shaders = load_shaders(vert_shader_path, frag_shader_path)
+        self.shaders = ShaderProgram(vert_shader_path, frag_shader_path)
         self.texture = load_texture(asset.texture_path)
 
         self.vao = glGenVertexArrays(1)
@@ -103,11 +103,11 @@ class RasterMesh:
         # Vertex attribute pointers (stride and offsets are correct for the new 'vertices' array)
         vertex_size_bytes = self.vertices.itemsize * 5
 
-        pos_loc = glGetAttribLocation(self.shaders, "position")
+        pos_loc = glGetAttribLocation(self.shaders.program_id, "position")
         glEnableVertexAttribArray(pos_loc)
         glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, vertex_size_bytes, ctypes.c_void_p(0))
 
-        tex_loc = glGetAttribLocation(self.shaders, "vertTexCoord")
+        tex_loc = glGetAttribLocation(self.shaders.program_id, "vertTexCoord")
         glEnableVertexAttribArray(tex_loc)
         glVertexAttribPointer(tex_loc, 2, GL_FLOAT, False, vertex_size_bytes,
                               ctypes.c_void_p(self.vertices.itemsize * 3))
@@ -131,7 +131,7 @@ class RasterPoints:
         self.source_asset_id = asset.id
         self.draw_count = asset.num_points
 
-        self.shaders = load_shaders(vert_shader_path, frag_shader_path)
+        self.shaders = ShaderProgram(vert_shader_path, frag_shader_path)
         self.vao = glGenVertexArrays(1)
         self.vbo = glGenBuffers(1)
 
@@ -145,17 +145,17 @@ class RasterPoints:
         stride = packed_data.itemsize * 7  # 3 for pos, 3 for color, 1 for radius
 
         # Vertex attribute for position
-        pos_loc = glGetAttribLocation(self.shaders, "position")
+        pos_loc = glGetAttribLocation(self.shaders.program_id, "position")
         glEnableVertexAttribArray(pos_loc)
         glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, stride, ctypes.c_void_p(0))
 
         # Vertex attribute for color
-        color_loc = glGetAttribLocation(self.shaders, "color")
+        color_loc = glGetAttribLocation(self.shaders.program_id, "color")
         glEnableVertexAttribArray(color_loc)
         glVertexAttribPointer(color_loc, 3, GL_FLOAT, False, stride, ctypes.c_void_p(packed_data.itemsize * 3))
 
         # Vertex attribute for radius
-        radius_loc = glGetAttribLocation(self.shaders, "radius")
+        radius_loc = glGetAttribLocation(self.shaders.program_id, "radius")
         glEnableVertexAttribArray(radius_loc)
         glVertexAttribPointer(radius_loc, 1, GL_FLOAT, False, stride, ctypes.c_void_p(packed_data.itemsize * 6))
 
@@ -164,7 +164,7 @@ class RasterPoints:
     def free(self):
         glDeleteVertexArrays(1, [self.vao])
         glDeleteBuffers(1, [self.vbo])
-        glDeleteProgram(self.shaders)
+        self.shaders.free()
 
 
 class RasterInstance:
@@ -276,12 +276,12 @@ class EyeRendererRaster(EyeRendererBase):
 
         asset = instance.asset
 
-        glUseProgram(asset.shaders)
+        asset.shaders.use()
         glBindVertexArray(asset.vao)
 
         cam_mat = projection_matrix * view_matrix
-        glUniformMatrix4fv(glGetUniformLocation(asset.shaders, "camera"), 1, False, glm.value_ptr(cam_mat))
-        glUniformMatrix4fv(glGetUniformLocation(asset.shaders, "model"), 1, False, glm.value_ptr(instance.transform))
+        glUniformMatrix4fv(asset.shaders.get_loc("camera"), 1, False, glm.value_ptr(cam_mat))
+        glUniformMatrix4fv(asset.shaders.get_loc("model"), 1, False, glm.value_ptr(instance.transform))
 
         # TODO: unbinding may be skipped when rendering several instances of the same thing
 
@@ -300,14 +300,15 @@ class EyeRendererRaster(EyeRendererBase):
             pixel_mult = 25.0
             radius_scale = instance.properties.get('radius_scale', 1.0) * pixel_mult
 
-            glUniform1f(glGetUniformLocation(asset.shaders, "radius_scale"), radius_scale)
+            glUniform1f(asset.shaders.get_loc("radius_scale"), radius_scale)
 
             glDrawArrays(GL_POINTS, 0, asset.draw_count)
 
             glDisable(GL_PROGRAM_POINT_SIZE)
 
         glBindVertexArray(0)
-        glUseProgram(0)
+
+        asset.shaders.stop()
 
     def _render_to_cubemap(self, agent):
         """ Pass 1: renders to the cubemap """

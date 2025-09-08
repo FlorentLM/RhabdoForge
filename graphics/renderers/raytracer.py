@@ -206,7 +206,7 @@ class RaytracingSceneBaker:
 
                 # Pack point data for the shader
                 nb_points = len(asset.points)
-                
+
                 packed_points = np.zeros((nb_points, 12), dtype=VEC_DTYPE)
                 packed_points[:, 0:3] = asset.points
                 packed_points[:, 3] = asset.radii
@@ -581,7 +581,7 @@ class EyeRendererRay(EyeRendererBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, self._scene_baked.instances_info_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, self._scene_baked.tlas_indices_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, self._scene_baked.blas_indices_ssbo)
-        
+
         # Set Uniforms
         glUniform1ui(shader.get_loc('nb_tlas_nodes'), len(self._scene_baked.cpu_TLAS_nodes))
 
@@ -744,6 +744,9 @@ class EyeRendererRay(EyeRendererBase):
             self._scene_baked.update()
             self._raytrace_perspective(point_of_view)
             self._texture_viewer.draw(self._persp_texture_id)
+
+        if view_mode == ViewMode.third_person:
+            self._draw_eye_model(point_of_view)
 
     def free(self):
         """ Frees all GPU resources, including shaders and all buffers """

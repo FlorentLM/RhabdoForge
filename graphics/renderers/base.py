@@ -45,17 +45,6 @@ class EyeRendererBase(ABC):
 
         self.runs_interactive = False
 
-        # Visualization resources (lazy-loaded)
-        self._voronoi_shader = None
-        self._voronoi_vao = None
-        self._cone_vertex_count = 0
-
-        self.tiled_mode = False
-        self.projection_mode: Literal['visual_field', 'physical_layout'] = 'visual_field'
-
-        self.receptive_field_scale = 1.0 / (2.0 * np.pi)
-        self.tiled_mode_scale = self.model.max_gap() * 2.5
-
         # Hardware queries
         self._max_ssbo_size_bytes = query_max_SSBO_size()
 
@@ -64,6 +53,22 @@ class EyeRendererBase(ABC):
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.input_om_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, self.ommatidia_input_data.nbytes, self.ommatidia_input_data,
                      GL_DYNAMIC_DRAW)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
+        # Visualization resources (lazy-loaded)
+        self._voronoi_shader = None     # first person view
+        self._cones_shader = None       # third person view
+
+        self._cones_vao = None
+        self._cones_vbo = None
+        self._nb_cone_vertices = 0
+
+        self.receptive_field_scale = 1.0 / (2.0 * np.pi)
+
+        # first-person specific stuff
+        self.tiled_mode = False
+        self.projection_mode: Literal['visual_field', 'physical_layout'] = 'visual_field'
+        self.tiled_mode_scale = self.model.max_gap() * 2.5
 
         # History buffer state
         self._batch_size = max(1, batch_size)
@@ -270,30 +275,36 @@ class EyeRendererBase(ABC):
         self.model.dirty_mask.fill(False)
 
     @property
+    def cones_shader(self):
+        if self._cones_shader is None:
+            self._cones_shader = ShaderProgram(vert_path="shaders/eye_cones.vert", frag_path="shaders/eye_cones.frag")
+        return self._cones_shader
+
+    @property
     def voronoi_shader(self):
         if self._voronoi_shader is None:
             self._voronoi_shader = ShaderProgram(vert_path='shaders/voronoi.vert', frag_path='shaders/voronoi.frag')
         return self._voronoi_shader
 
     @property
-    def voronoi_vao(self):
-        if self._voronoi_vao is None:
-            self._cone_vertex_count = len(CONE_VERTICES) // 3
-            vao = glGenVertexArrays(1)
-            glBindVertexArray(vao)
+    def cones_vao(self):
 
-            vbo = glGenBuffers(1)
-            glBindBuffer(GL_ARRAY_BUFFER, vbo)
+        if self._cones_vao is None or self._cones_vbo is None:
+            self._nb_cone_vertices = len(CONE_VERTICES) // 3
+            self._cones_vao = glGenVertexArrays(1)
+            glBindVertexArray(self._cones_vao)
+
+            self._cones_vbo = glGenBuffers(1)
+            glBindBuffer(GL_ARRAY_BUFFER, self._cones_vbo)
             glBufferData(GL_ARRAY_BUFFER, CONE_VERTICES.nbytes, CONE_VERTICES, GL_STATIC_DRAW)
 
-            pos_loc = glGetAttribLocation(self.voronoi_shader.program_id, "cone_vertex")
-            glEnableVertexAttribArray(pos_loc)
-            glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
+            # hardcoded at location 0 so it works for both shaders (first and third person)
+            glEnableVertexAttribArray(0)
+            glVertexAttribPointer(0, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
 
             glBindVertexArray(0)
-            self._voronoi_vao = vao
 
-        return self._voronoi_vao
+        return self._cones_vao
 
     def _draw_voronoi(self):
         """ Draws the Voronoi visualization using the computed colors """
@@ -321,24 +332,61 @@ class EyeRendererBase(ABC):
         # Binding 1: Final computed colors (from subclass computation)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
 
-        glBindVertexArray(self.voronoi_vao)
-        glDrawArraysInstanced(GL_TRIANGLES, 0, self._cone_vertex_count, self.num_ommatidia)
+        glBindVertexArray(self.cones_vao)
+        glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.num_ommatidia)
 
         # Unbind everyone
         glBindVertexArray(0)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
         glDisable(GL_DEPTH_TEST)
+
         self.voronoi_shader.stop()
+
+    def _draw_eye_model(self, camera):
+
+        self.cones_shader.use()
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT)
+
+        glUniformMatrix4fv(self.cones_shader.get_loc('view'), 1, GL_FALSE, np.asarray(camera.view, dtype=np.float32))
+        glUniformMatrix4fv(self.cones_shader.get_loc('projection'), 1, GL_FALSE, np.asarray(camera.projection, dtype=np.float32))
+
+        # Uniforms
+        glUniform1f(self.cones_shader.get_loc("cone_length"), 0.15)
+        glUniform1f(self.cones_shader.get_loc("radius_scale"), 10.0)
+        # glUniform1f(self.cones_shader.get_loc("albedo_boost"), 1.0)
+        glUniform1i(self.cones_shader.get_loc("is_degrees"), True)
+
+        # Bind SSBOs
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
+
+
+        glDisable(GL_CULL_FACE)  # in case winding flips somewhere
+        glEnable(GL_DEPTH_TEST)
+        glDepthMask(GL_TRUE)
+
+        glBindVertexArray(self.cones_vao)
+
+        glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.num_ommatidia)
+        glBindVertexArray(0)
+
+        self.cones_shader.stop()
 
     def free(self):
         """ Free GPU resources """
 
-        glDeleteBuffers(3, [self.input_om_ssbo, self.history_ssbo])
+        glDeleteBuffers(1, [self.input_om_ssbo])
+        if self.history_ssbo:
+            glDeleteBuffers(1, [self.history_ssbo])
 
         if self._voronoi_shader:
             self._voronoi_shader.free()
 
-        if self._voronoi_vao:
-            # TODO: also track the associated VBO handle to delete it here
-            glDeleteVertexArrays(1, [self._voronoi_vao])
+        if self._cones_shader:
+            self._cones_shader.free()
+
+        if self._cones_vao:
+            glDeleteVertexArrays(1, [self._cones_vao])
+        if self._cones_vbo:
+            glDeleteBuffers(1, [self._cones_vbo])
