@@ -113,7 +113,7 @@ class Context:
         if action == glfw.PRESS:
 
             # if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % len(ViewMode)
-            if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % 2
+            if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % 3
 
             if key == glfw.KEY_V: self.renderer.tiled_mode = not self.renderer.tiled_mode
 

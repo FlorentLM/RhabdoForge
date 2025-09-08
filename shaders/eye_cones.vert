@@ -32,39 +32,46 @@ mat3 rmatFromDir(vec3 dir) {
     return mat3(r, u, f);
 }
 
+//void main() {
+//    int i = gl_InstanceID;
+//    Ommatidium om = ommatidia_data[i];
+//
+//    // Read eye-local origin and direction
+//    vec3 O_eye = ommatidia_data[i].origin.xyz;
+//    vec3 D_eye = ommatidia_data[i].direction.xyz;
+//
+//    // Transform to world
+//    vec3 O = (eye_to_world * vec4(O_eye, 1.0)).xyz;
+//    vec3 D = normalize((eye_to_world * vec4(D_eye, 0.0)).xyz);
+//
+//    // Calculate cone base radius from acceptance angle
+//    vec2 acc = om.acceptance_angles;
+//    if (is_degrees) acc = radians(acc);
+//    float halfAngle = 0.5 * max(acc.x, acc.y);
+//
+//    float L = cone_length;
+//    float baseR = L * tan(halfAngle) * radius_scale;
+//
+//    // The cone primitive has its apex at (0, 0, -1) and base at z=0
+//    // We shift it so the apex is at the origin (0, 0, 0) before scaling and rotating
+//    vec3 p = cone_vertex + vec3(0.0, 0.0, 1.0);
+//
+//    // Scale to the correct length and radius
+//    mat3 S = mat3(baseR, 0, 0,
+//                  0, baseR, 0,
+//                  0, 0, L);
+//
+//    // Rotate to align with the ommatidium's direction, then translate to its origin
+//    mat3 R = rmatFromDir(D);
+//    vec3 posWS = R * (S * p) + O;
+//
+//    gl_Position = projection * view * vec4(posWS, 1.0);
+//    v_index = i;
+//}
+
 void main() {
-    int i = gl_InstanceID;
-    Ommatidium om = ommatidia_data[i];
-
-    // Read eye-local origin and direction
-    vec3 O_eye = ommatidia_data[i].origin.xyz;
-    vec3 D_eye = ommatidia_data[i].direction.xyz;
-
-    // Transform to world
-    vec3 O = (eye_to_world * vec4(O_eye, 1.0)).xyz;
-    vec3 D = normalize((eye_to_world * vec4(D_eye, 0.0)).xyz);
-
-    // Calculate cone base radius from acceptance angle
-    vec2 acc = om.acceptance_angles;
-    if (is_degrees) acc = radians(acc);
-    float halfAngle = 0.5 * max(acc.x, acc.y);
-
-    float L = cone_length;
-    float baseR = L * tan(halfAngle) * radius_scale;
-
-    // The cone primitive has its apex at (0, 0, -1) and base at z=0
-    // We shift it so the apex is at the origin (0, 0, 0) before scaling and rotating
-    vec3 p = cone_vertex + vec3(0.0, 0.0, 1.0);
-
-    // Scale to the correct length and radius
-    mat3 S = mat3(baseR, 0, 0,
-                  0, baseR, 0,
-                  0, 0, L);
-
-    // Rotate to align with the ommatidium's direction, then translate to its origin
-    mat3 R = rmatFromDir(D);
-    vec3 posWS = R * (S * p) + O;
-
-    gl_Position = projection * view * vec4(posWS, 1.0);
-    v_index = i;
+    // Test: render all ommatidia as one big cone at origin
+    vec3 test_pos = cone_vertex * 0.1;  // 10 cm cone at origin
+    gl_Position = projection * view * vec4(test_pos, 1.0);
+    v_index = gl_InstanceID;
 }

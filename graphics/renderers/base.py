@@ -110,7 +110,7 @@ class EyeRendererBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def draw(self, view_mode: ViewMode, point_of_view: Agent):
+    def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent):
         # Each subclass implements its own core rendering logic
         raise NotImplementedError
 
@@ -356,12 +356,12 @@ class EyeRendererBase(ABC):
 
         # agent's camera-to-world for the eye data
         c2w = glm.inverse(agent.view)
-        glUniformMatrix4fv(self.cones_shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w))
+        # glUniformMatrix4fv(self.cones_shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w))
 
-        glUniform1f(self.cones_shader.get_loc("cone_length"), 10.0)
-        glUniform1f(self.cones_shader.get_loc("radius_scale"), 100.0)
+        # glUniform1f(self.cones_shader.get_loc("cone_length"), 0.01)
+        # glUniform1f(self.cones_shader.get_loc("radius_scale"), 1.0)
         # glUniform1f(self.cones_shader.get_loc("albedo_boost"), 1.0)
-        glUniform1i(self.cones_shader.get_loc("is_degrees"), False)
+        # glUniform1i(self.cones_shader.get_loc("is_degrees"), False)
 
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)

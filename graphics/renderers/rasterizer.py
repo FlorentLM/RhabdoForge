@@ -117,7 +117,7 @@ class RasterMesh:
     def free(self):
         glDeleteVertexArrays(1, [self.vao])
         glDeleteBuffers(1, [self.vbo])
-        glDeleteProgram(self.shaders)
+        self.shaders.free()
         glDeleteTextures(1, [self.texture])
 
 
@@ -432,7 +432,7 @@ class EyeRendererRaster(EyeRendererBase):
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 
-    def draw(self, view_mode: ViewMode, point_of_view: Agent):
+    def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent):
         """ Renders one of the rasterizer's supported views to the screen """
 
         if view_mode == ViewMode.compound_eye:
