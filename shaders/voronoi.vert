@@ -16,7 +16,7 @@ layout(std430, binding = 1) readonly buffer ColorDataBlock {
 
 // Uniforms
 uniform float aspect_ratio;
-uniform int projection_mode; // 0 = Visual field, 1 = Physical Layout
+uniform int projection_mode; // 0 = Physical Layout, 1 = Acceptance angle
 uniform bool tiled_mode;
 
 uniform float tiled_mode_scale;         // factor for tiled mode
@@ -35,13 +35,13 @@ void main() {
     // Choose the vector to use for projection based on mode
     vec3 projection_vector;
 
-    if (projection_mode == 0) {
-        // Visual field projection - use direction vectors
+    if (projection_mode == 1) {
+        // Acceptance - use direction vectors
         projection_vector = om.direction.xyz;
     } else {
         // Physical layout projection - use origin vectors
          projection_vector = normalize(om.origin.xyz);
-        }
+    }
 
     // Apply spherical projection to screen space
     float longitude = atan(projection_vector.x, -projection_vector.z);

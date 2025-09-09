@@ -146,6 +146,7 @@ class HUD:
         self.projection_matrix = glm.ortho(0, self.width, 0, self.height, -1.0, 1.0)
 
         self.view_modes_names = {0: 'Compound eye', 1: 'Panoramic', 2: 'Third person', 3: 'Perspective'}
+        self.proj_modes_names = {0: 'Layout', 1: 'Acceptance'}
 
         # FPS tracking logic
         self.frame_times = deque(maxlen=60)  # Store timestamps of last 60 frames
@@ -170,7 +171,7 @@ class HUD:
         self._controls_text_lines = [
             'ESC: Quit', 'H: Show/hide HUD', 'R: Reset rotation', 'O: Teleport to origin', 'X: Dither once',
             f'+/-: Increase/decrease {sample_label}', 'T: Toggle time dithering',
-            'V: Toggle Voronoi view', 'P: Projection mode (direction / origin)', 'C: Toggle Compound eye view',
+            'V: Toggle Voronoi view', 'P: Projection mode (acceptance / layout)', 'C: Change view',
             'LShift/Space: Down/Up', 'Q/E: Roll', 'Mouse: Yaw & Pitch', 'WASD: Move', '------', 'Controls:'
         ]
         shadow_verts, fg_verts = [], []
@@ -215,7 +216,7 @@ class HUD:
             total_samples = num_om * num_samples
             self._info_text = (f'FPS: {avg_fps:>4.2f} | Mode: {render_mode} | Ommatidia: {num_om} | '
                              f'{sample_label}: {num_samples} | XYZ: [ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ] | '
-                             f'View mode: {self.view_modes_names[self.ctx.view_mode]}')
+                             f'View mode: {self.view_modes_names[self.ctx.view_mode]} | Projection mode: {self.proj_modes_names[active_renderer.projection_mode]}')
 
             margin, line_height = 10, self.font_renderer.font_size * 1.1
             info_sv = self.font_renderer.generate_text_vertices(self._info_text, margin + 1,

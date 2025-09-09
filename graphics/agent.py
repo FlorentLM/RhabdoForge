@@ -19,7 +19,7 @@ class Agent:
                  pitch: float = 0.0,
                  roll: float = 0.0,
                  fov: float = 50.0,
-                 near: float = 0.1,
+                 near: float = 0.001,
                  far: float = 100.0,
                  ratio: float = 16.0 / 9.0,
                  degrees: bool = True):
@@ -267,7 +267,7 @@ class OrbitCamera:
                  elevation: float = 20.0,
                  fov: float = 60.0,
                  ratio: float = 16.0 / 9.0,
-                 near: float = 0.1,
+                 near: float = 0.001,
                  far: float = 100.0,
                  degrees: bool = True):
 
@@ -279,7 +279,7 @@ class OrbitCamera:
         # Reasonable limits for camera position
         self.min_elevation = -89.999
         self.max_elevation = 89.999
-        self.min_distance = 0.1
+        self.min_distance = 0.01
 
         self._observer = Agent(fov=fov, ratio=ratio, near=near, far=far)
         self.update()

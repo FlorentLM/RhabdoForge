@@ -14,21 +14,20 @@ struct Material {
 };
 
 struct Ommatidium {
-    // Using vec4 for explicit 16-byte alignment
-    vec4 origin;            // offset 0,  size 16. w is unused
-    vec4 direction;         // offset 16, size 16. w is unused
-    vec2 acceptance_angles; // offset 32, size 8
-    // Explicit padding to make total size a multiple of 16 (vec4 alignment)
-    float pad0, pad1;       // offset 40, size 8
-}; // total size = 48 bytes
+    vec4 origin;
+    vec4 direction;
+    vec2 acceptance_angles;
+    vec2 interommatidial_angles;
+    float sensitivity;
+    uint receptor_type;
+    uint sub_id;
+    uint custom_id;
+}; // total size = 64 bytes
 
 struct Triangle {
-    // Using vec4 for explicit 16-byte alignment
     vec4 v0, v1, v2;       // offsets 0, 16 and 32, size 16. w is unused
     vec2 uv0, uv1, uv2;    // offsets 48, 56 and 64, size 8
     uint material_idx;     // offset 72, size 4
-    // Explicit padding to make total size a multiple of 16 (vec4 alignment)
-    float pad0;            // offset 76, size 4
 }; // total size = 80 bytes
 
 // Single point in the point cloud

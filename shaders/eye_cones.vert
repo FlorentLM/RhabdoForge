@@ -11,13 +11,13 @@ layout(std430, binding = 0) readonly buffer OmmatidiaInputBlock {
 uniform mat4 view;
 uniform mat4 projection;
 uniform mat4 eye_to_world;
-uniform float cone_length = 0.015;
-uniform float radius_scale = 1.0;
-uniform bool is_degrees = false;
-uniform float viz_scale = 100.0;
 
-out vec3 dbg_data;
+uniform int projection_mode;  // 0 = Physical Layout, 1 = Acceptance angle
+uniform float cone_length;
+uniform float visualisation_scale;
+
 out flat int v_index;
+flat out int v_mode;
 
 mat3 rmatFromDir(vec3 z) {
     vec3 x = normalize(cross( (abs(z.y) > 0.999) ? vec3(1,0,0) : vec3(0,1,0), z));
@@ -29,29 +29,54 @@ void main() {
     int i = gl_InstanceID;
     Ommatidium om = ommatidia_data[i];
 
-    vec3 O_world = (eye_to_world * vec4(om.origin.xyz * viz_scale, 1.0)).xyz;
+    v_mode = projection_mode;
 
+    vec3 O_world = (eye_to_world * vec4(om.origin.xyz * visualisation_scale, 1.0)).xyz;
     vec3 D_world = normalize((eye_to_world * vec4(om.direction.xyz, 0.0)).xyz);
-    float L = cone_length;
-    vec2 acc = om.acceptance_angles;
 
-    if (is_degrees) acc = radians(acc);
-
-    float halfAngle = 0.5 * max(acc.x, acc.y);
-    float baseR = L * tan(halfAngle) * radius_scale;
-    baseR = max(baseR, 0.001);
-
-    vec3 p_model = cone_vertex + vec3(0.0, 0.0, 1.0);
-
-    mat3 S = mat3(baseR, 0, 0, 0, baseR, 0, 0, 0, L);
     mat3 R = rmatFromDir(D_world);
+    mat3 S;
+    vec3 pos_world;
 
-    vec3 offset = R * S * p_model;
+    if (projection_mode == 1) {
+        // Cones represent the field of view, originating from the ommatidium's origin
+        // they will overlap if p > 1.0
 
-    vec3 pos_world = O_world + offset;
+        // Calculate the horizontal and vertical half-angles independently
+        float half_acceptance_angle_h = 0.5 * om.acceptance_angles.x; // H angle
+        float half_acceptance_angle_v = 0.5 * om.acceptance_angles.y; // V angle
+        float radius_h = cone_length * tan(half_acceptance_angle_h);
+        float radius_v = cone_length * tan(half_acceptance_angle_v);
+
+        // non-uniform scaling matrix to form the elliptical cone base
+        S = mat3(radius_h, 0, 0, 0, radius_v, 0, 0, 0, cone_length);
+
+        vec3 p_model = cone_vertex + vec3(0.0, 0.0, 1.0);
+        vec3 offset = R * S * p_model;
+        pos_world = O_world + offset;
+
+    } else {
+        // Cones are surfels on the eye's surface, sized to tile perfectly
+        // The cone base is at the ommatidium's origin, and it points inwards
+
+        float eye_radius_world = length(om.origin.xyz) * visualisation_scale;
+        if (eye_radius_world < 0.001) eye_radius_world = 0.01 * visualisation_scale;
+
+        float half_inter_angle_h = 0.5 * om.interommatidial_angles.x; // H angle
+        float half_inter_angle_v = 0.5 * om.interommatidial_angles.y; // V angle
+        float radius_h = eye_radius_world * sin(half_inter_angle_h);
+        float radius_v = eye_radius_world * sin(half_inter_angle_v);
+
+        float surfel_thickness = 0.0001;
+        S = mat3(radius_h, 0, 0, 0, radius_v, 0, 0, 0, surfel_thickness);
+
+        // The canonical cone's base is at z=0 and it extends to z=-1.
+        // Placing it at O_world puts its base on the surface, pointing inwards.
+        vec3 offset = R * S * cone_vertex;
+
+        pos_world = O_world + offset;
+    }
 
     gl_Position = projection * view * vec4(pos_world, 1.0);
-
-    dbg_data = pos_world;
     v_index = i;
 }

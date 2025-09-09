@@ -11,7 +11,7 @@ from pyglm import glm
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene
 from graphics.agent import Agent, OrbitCamera
-from graphics.utils import WORLD_UP, WORLD_DOWN, ViewMode
+from graphics.utils import WORLD_UP, WORLD_DOWN, ViewMode, ProjectionMode
 from graphics.interactive.hud import HUD
 
 
@@ -117,7 +117,7 @@ class Context:
 
             if key == glfw.KEY_V: self.renderer.tiled_mode = not self.renderer.tiled_mode
 
-            if key == glfw.KEY_P: self.renderer.projection_mode = 'physical_layout' if self.renderer.projection_mode == 'visual_field' else  'visual_field'
+            if key == glfw.KEY_P: self.renderer.projection_mode = ProjectionMode.Physical if self.renderer.projection_mode == ProjectionMode.Acceptance else ProjectionMode.Acceptance
 
             if key == glfw.KEY_H:
                 if self.hud: self.hud.show = not self.hud.show

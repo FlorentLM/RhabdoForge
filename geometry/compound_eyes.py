@@ -6,15 +6,17 @@ from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_RIGHT, DeltaTimeTransformer
 
+
 GPU_OMMATIDIUM_DTYPE = np.dtype([
-    ('origin', VEC_DTYPE, 4),               # vec4 (4 * float32, x, y, z coords and w pad)
-    ('direction', VEC_DTYPE, 4),            # vec4 (4 * float32, x, y, z coords and w pad)
-    ('acceptance_angles', VEC_DTYPE, 2),    # vec2 (2 * float32)
-    ('receptor_type', np.uint8, 1),         # 1 byte (1 * uint8), 0 to 255
-    ('sensitivity', VEC_DTYPE, 1),          # 4 bytes (1 * float32) for sensitivity
-    ('custom_id', np.uint16, 1),            # 2 bytes (0-65535) for a custom ID (eye region, or whatever)
-    ('sub_id', np.uint8, 1),                # 1 byte (0-255) for sub ID
-])  # total 48 bytes
+    ('origin', VEC_DTYPE, 4),                   # 16 bytes (4 * float32, x, y, z coords and w pad)
+    ('direction', VEC_DTYPE, 4),                # 16 bytes (4 * float32, x, y, z coords and w pad)
+    ('acceptance_angles', VEC_DTYPE, 2),        # 8 bytes (2 * float32, h and v)
+    ('interommatidial_angles', VEC_DTYPE, 2),   # 8 bytes (2 * float32, h and v)
+    ('receptor_type', np.uint8, 1),             # 1 byte (1 * uint8), 0 to 255
+    ('sensitivity', VEC_DTYPE, 1),              # 4 bytes (1 * float32) for sensitivity
+    ('custom_id', np.uint16, 1),                # 2 bytes (0-65535) for a custom ID (eye region, or whatever)
+    ('padding', np.uint8, 9)                    # 9 bytes of padding
+])  # total 64 bytes
 
 
 DEFAULT_ANGLE = 'deg'
@@ -201,15 +203,6 @@ class Ommatidium:
         self._parent_eye.dirty_mask[self._item] = True
 
     @property
-    def sub_id(self) -> np.ndarray:
-        return self._data[self._item]['sub_id']
-
-    @sub_id.setter
-    def sub_id(self, value: Union[int, ArrayLike]):
-        self._data['sub_id'][self._item] = np.asarray(value, dtype=np.uint8)
-        self._parent_eye.dirty_mask[self._item] = True
-
-    @property
     def azimuth_rad(self) -> np.ndarray:
         return np.arctan2(self._data[self._item]['direction'][..., 0], -self._data[self._item]['direction'][..., 2])
 
@@ -272,10 +265,10 @@ class CompoundEye:
                  origins: Optional[ArrayLike] = None,
                  num_ommatidia: Optional[int] = None,
                  acceptance_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
+                 interommatidial_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
                  sensitivities: Optional[Union[ArrayLike, float]] = None,
                  receptor_types: Optional[Union[ArrayLike, int]] = None,
                  custom_ids: Optional[Union[ArrayLike, int]] = None,
-                 sub_ids: Optional[Union[ArrayLike, int]] = None,
                  eye_parameter: Optional[Union[float, Tuple]] = None,
                  lens_diameter: Optional[Union[float, Tuple]] = None,
                  rhabdom_diameter: Optional[Union[float, Tuple]] = None,
@@ -293,10 +286,11 @@ class CompoundEye:
             num_ommatidia: If directions are not provided, this is used to generate a uniform sphere of directions.
             acceptance_angles_rad: (Optional) The acceptance angles (Δρ). Can be an (N, 2) array, a tuple (h, v),
                 a float, or None to estimate from other parameters.
+            interommatidial_angles_rad: (Optional) The interommatidial angles (Δφ). Can be an (N, 2) array, a tuple (h, v),
+                a float, or None to estimate from other parameters.
             sensitivities: (Optional) A scalar or (N,) array for ommatidial sensitivity. Defaults to 1.0.
             receptor_types: (Optional) A scalar or (N,) array of integer receptor types. Defaults to 0.
             custom_ids: (Optional) A scalar or (N,) array of integer custom IDs. Defaults to 0.
-            sub_ids: (Optional) A scalar or (N,) array of integer sub-IDs. Defaults to 0.
             eye_parameter: (Optional) The eye parameter 'p' value (Δρ / Δφ). Used to estimate acceptance
                 angles if they are not provided directly (defaults to 1.0)
             eye_radius: (Optional) Physical radius of the eye for setting ommatidial origins on a sphere.
@@ -371,14 +365,6 @@ class CompoundEye:
                 raise ValueError("Custom IDs must be in the range [0, 65535].")
             self.data['custom_id'] = prepared_ids.astype(np.uint16)
 
-        if sub_ids is None:
-            self.data['sub_id'] = 0  # Default to 0
-        else:
-            prepared_sub_ids = self._prepare_param(sub_ids, "sub_ids")
-            if np.any(prepared_sub_ids > 255) or np.any(prepared_sub_ids < 0):
-                raise ValueError("Sub-IDs must be in the range [0, 255].")
-            self.data['sub_id'] = prepared_sub_ids.astype(np.uint8)
-
         self.dirty_mask = np.zeros(self.num_ommatidia, dtype=bool)
         self.needs_rebuild = {'direction': False, 'origin': True}
 
@@ -388,10 +374,28 @@ class CompoundEye:
         self.kdtree_positions = KDTree(self.data['origin'][:, :3])
 
         # Interommatidial angles (Δφ)
-        self.interommatidial_angle_h_rad, self.interommatidial_angle_v_rad = self.estimate_interommatidial_angles(isotropic=force_isotropic)
+        if interommatidial_angles_rad is not None:
+            # Priority 1: use the ground-truth angles if provided
+            print("Using provided interommatidial angles (Δφ).")
+
+            angles_arr = np.asarray(interommatidial_angles_rad, dtype=VEC_DTYPE)
+            if angles_arr.shape == (self.num_ommatidia,):
+                angles_broadcast = angles_arr[:, np.newaxis]
+            else:
+                angles_broadcast = np.broadcast_to(angles_arr, (self.num_ommatidia, 2))
+
+            self.interommatidial_angle_h_rad = angles_broadcast[:, 0]
+            self.interommatidial_angle_v_rad = angles_broadcast[:, 1]
+        else:
+            # Priority 2: if no angles provided, estimate from geometry
+            print("Estimating interommatidial angles (Δφ) from ommatidia origins.")
+            self.interommatidial_angle_h_rad, self.interommatidial_angle_v_rad = self.estimate_interommatidial_angles(
+                isotropic=force_isotropic)
+
+        self.data['interommatidial_angles'][:, 0] = self.interommatidial_angle_h_rad
+        self.data['interommatidial_angles'][:, 1] = self.interommatidial_angle_v_rad
 
         # Acceptance angles (Δρ)
-
         if acceptance_angles_rad is not None:
             # Priority 1: Direct acceptance angles are provided
             print("Using provided acceptance angles (Δρ).")
@@ -495,8 +499,8 @@ class CompoundEye:
         Creates an eye model from a .npz archive file.
 
         The .npz file is expected to contain at least a 'directions' array.
-        It can optionally contain 'origins', 'acceptance_angles_rad', 'sensitivities', 'receptor_types',
-        'custom_ids', and 'sub_ids'.
+        It can optionally contain 'origins', 'acceptance_angles_rad', 'interommatidial_angles_rad',
+        'sensitivities', 'receptor_types' and 'custom_ids'.
         Any arguments passed via **kwargs will override the data from the file.
 
         Args:
@@ -517,10 +521,10 @@ class CompoundEye:
             'directions': data['directions'],
             'origins': data.get('origins'),
             'acceptance_angles_rad': data.get('acceptance_angles_rad'),
+            'interommatidial_angles_rad': data.get('interommatidial_angles_rad'),
             'sensitivities': data.get('sensitivities'),
             'receptor_types': data.get('receptor_types'),
             'custom_ids': data.get('custom_ids'),
-            'sub_ids': data.get('sub_ids')
         }
 
         constructor_args.update(kwargs)
@@ -531,66 +535,81 @@ class CompoundEye:
     def estimate_interommatidial_angles(self, k: int = 8, isotropic: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
         Estimates the horizontal and vertical interommatidial angles (Δφ) for each ommatidium
-        from the local geometry of its neighbours
+        based on the physical positions of their origins on the eye's surface.
 
-        Args:
-            k: The number of nearest neighbors to consider
-            isotropic: If True, calculates a single representative angle by averaging the
-                       raw geometry of all k neighbors, ignoring H/V distinctions
-                       If False (default), estimates horizontal and vertical angles independently
+        # TODO: This will produce garbage if the eye is concave or super flat... but that's likely not an issue
 
-        Returns:
-            A tuple of two numpy arrays: (delta_phi_h, delta_phi_v) in radians
         """
 
         if self.num_ommatidia <= k:
             zeros = np.zeros(self.num_ommatidia, dtype=VEC_DTYPE)
             return zeros, zeros
 
-        all_dirs = self.data['direction'][:, :3]
-        distances, indices = self.kdtree_directions.query(all_dirs, k=k + 1)
+        all_origins = self.data['origin'][:, :3]
 
+        # Estimate the eye's center of curvature by averaging the origins
+        # (robust for any spherical or near-spherical eye)
+        eye_center = np.mean(all_origins, axis=0)
+
+        # Calculate the true physical direction vectors from the center to each origin
+        phys_dirs = all_origins - eye_center
+        phys_dirs /= np.linalg.norm(phys_dirs, axis=1, keepdims=True)
+
+        # Build the KD-Tree using these physically-derived directions
+        phys_kdtree = KDTree(phys_dirs)
+
+        # Query for k+1 neighbors because the point itself is the first neighbor
+        distances, indices = phys_kdtree.query(phys_dirs, k=k + 1)
+
+        # Ignore the first neighbor (the point itself)
         neighbor_indices = indices[:, 1:]
+        neighbor_distances = distances[:, 1:]
+
         if neighbor_indices.size == 0:
             zeros = np.zeros(self.num_ommatidia, dtype=VEC_DTYPE)
             return zeros, zeros
 
+        # angular separation is angle = 2 * asin(distance / 2)
+        angular_separations = 2.0 * np.arcsin(np.clip(neighbor_distances / 2.0, -1.0, 1.0))
+
         if isotropic:
-            neighbor_distances = distances[:, 1:]
-            avg_euclidean_dist = np.mean(neighbor_distances, axis=1)
-            term = 1.0 - (avg_euclidean_dist ** 2) / 2.0
-            delta_phi = np.arccos(np.clip(term, -1.0, 1.0))
+            # For isotropic, just average the angular separation to all neighbors
+            delta_phi = np.mean(angular_separations, axis=1)
             return delta_phi, delta_phi
         else:
-            # Check for ommatidia at the poles
-            dot_products = np.abs(np.dot(all_dirs, WORLD_UP))
+            # For anisotropic, we must differentiate between horizontal and vertical neighbors
+
+            # Define local coordinate systems using the physical direction vectors
+            dot_products = np.abs(np.dot(phys_dirs, WORLD_UP))
             is_polar = dot_products > 0.9999
             ref_up_vectors = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
-
-            # Gram-Schmidt to find local tangent 'up' vector (local_y)
-            local_y_axes = ref_up_vectors - all_dirs * np.sum(all_dirs * ref_up_vectors, axis=1, keepdims=True)
+            local_y_axes = ref_up_vectors - phys_dirs * np.sum(phys_dirs * ref_up_vectors, axis=1, keepdims=True)
             local_y_axes /= np.linalg.norm(local_y_axes, axis=1, keepdims=True)
-            local_x_axes = np.cross(local_y_axes, all_dirs)
+            local_x_axes = np.cross(local_y_axes, phys_dirs)
 
-            # Project neighbour vectors onto the local tangent plane
-            neighbour_dirs = all_dirs[neighbor_indices]
-            neighbour_vectors = neighbour_dirs - all_dirs[:, np.newaxis, :]
+            # Get the physical direction vectors of the neighboring ommatidia
+            neighbour_phys_dirs = phys_dirs[neighbor_indices]
 
-            sep_h = np.sum(neighbour_vectors * local_x_axes[:, np.newaxis, :], axis=2)
-            sep_v = np.sum(neighbour_vectors * local_y_axes[:, np.newaxis, :], axis=2)
-            abs_sep_h, abs_sep_v = np.abs(sep_h), np.abs(sep_v)
+            # Project neighbor vectors onto the local tangent plane to determine their direction
+            delta_vectors = neighbour_phys_dirs - phys_dirs[:, np.newaxis, :]
+            proj_x = np.sum(delta_vectors * local_x_axes[:, np.newaxis, :], axis=2)
+            proj_y = np.sum(delta_vectors * local_y_axes[:, np.newaxis, :], axis=2)
 
-            # Horizontal neighbours = the 2 neighbours with smallest vertical separation
-            h_neighbour_indices = np.argsort(abs_sep_v, axis=1)[:, :2]
-            # Vertical neighbours = the 2 neighbours with smallest horizontal separation
-            v_neighbour_indices = np.argsort(abs_sep_h, axis=1)[:, :2]
+            # Determine the angle of each neighbor in the tangent plane (from -pi to pi)
+            neighbor_angles = np.arctan2(proj_y, proj_x)
 
-            # Use angular distances of these neighbours for final estimate
-            horizontal_angles = np.take_along_axis(abs_sep_h, h_neighbour_indices, axis=1)
-            vertical_angles = np.take_along_axis(abs_sep_v, v_neighbour_indices, axis=1)
+            # Find the two neighbors closest to the horizontal axis (angles near 0 and pi)
+            # and the two closest to the vertical axis (angles near +/- pi/2)
+            h_indices = np.argsort(np.abs(np.sin(neighbor_angles)), axis=1)[:, :2]
+            v_indices = np.argsort(np.abs(np.cos(neighbor_angles)), axis=1)[:, :2]
 
-            delta_phi_h = np.mean(horizontal_angles, axis=1)
-            delta_phi_v = np.mean(vertical_angles, axis=1)
+            # The final estimate is the average of the two best-matching neighbors
+
+            h_angles = np.take_along_axis(angular_separations, h_indices, axis=1)
+            v_angles = np.take_along_axis(angular_separations, v_indices, axis=1)
+
+            delta_phi_h = np.mean(h_angles, axis=1)
+            delta_phi_v = np.mean(v_angles, axis=1)
 
             return delta_phi_h, delta_phi_v
 

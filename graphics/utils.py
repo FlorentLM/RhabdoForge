@@ -28,6 +28,11 @@ class ViewMode(IntEnum):
     perspective = 3
 
 
+class ProjectionMode(IntEnum):
+    Physical = 0
+    Acceptance = 1
+
+
 class DeltaTimeTransformer:
     """
     A temporary proxy object for applying framerate-independent transforms

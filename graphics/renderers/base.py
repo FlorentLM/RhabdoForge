@@ -1,6 +1,7 @@
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Optional, Literal
 
 import numpy as np
@@ -13,7 +14,7 @@ from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILAB
 
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CONE_VERTICES
-from graphics.utils import ShaderProgram, ViewMode
+from graphics.utils import ShaderProgram, ViewMode, ProjectionMode
 from graphics.agent import Agent
 
 
@@ -36,6 +37,7 @@ class EyeRendererBase(ABC):
     """
     Abstract base class for an insect eye model, handling visualization and common properties
     """
+
     def __init__(self, eye_model: CompoundEye, time_dithering: bool = True, nb_samples: int = 256, batch_size: int = 1):
         self.model = eye_model
         self.num_ommatidia = self.model.num_ommatidia
@@ -68,7 +70,7 @@ class EyeRendererBase(ABC):
 
         # first-person specific stuff
         self.tiled_mode = False
-        self.projection_mode: Literal['visual_field', 'physical_layout'] = 'visual_field'
+        self.projection_mode: ProjectionMode = ProjectionMode.Physical
         self.tiled_mode_scale = self.model.max_gap() * 2.5
 
         # History buffer state
@@ -323,7 +325,7 @@ class EyeRendererBase(ABC):
         # glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), aspect_ratio)
 
         glUniform1i(self.voronoi_shader.get_loc('tiled_mode'), self.tiled_mode)
-        glUniform1i(self.voronoi_shader.get_loc('projection_mode'), int(self.projection_mode == 'physical_layout'))
+        glUniform1i(self.voronoi_shader.get_loc('projection_mode'), self.projection_mode)
 
         glUniform1f(self.voronoi_shader.get_loc('tiled_mode_scale'), self.tiled_mode_scale)
         glUniform1f(self.voronoi_shader.get_loc('receptive_field_scale'), self.receptive_field_scale)
@@ -348,6 +350,10 @@ class EyeRendererBase(ABC):
 
         self.cones_shader.use()
 
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDisable(GL_CULL_FACE)
+
         # TODO: Why is this conversion to numpy necessary??
         view_matrix_np = np.array(observer_camera.view, dtype=np.float32)
         projection_matrix_np = np.array(observer_camera.projection, dtype=np.float32)
@@ -359,10 +365,19 @@ class EyeRendererBase(ABC):
         glUniformMatrix4fv(self.cones_shader.get_loc('projection'), 1, True, projection_matrix_np)
         glUniformMatrix4fv(self.cones_shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
-        glUniform1f(self.cones_shader.get_loc("cone_length"), 0.015)
-        glUniform1f(self.cones_shader.get_loc("radius_scale"), 30.0)
-        glUniform1f(self.cones_shader.get_loc("viz_scale"), 50.0)
-        glUniform1i(self.cones_shader.get_loc("is_degrees"), False)
+        # Compute nice-looking cone length for acceptance angles
+        avg_radius = np.mean(np.linalg.norm(self.model.data['origin'][:, :3], axis=1))
+        if avg_radius < 1e-6:
+            avg_radius = 0.01
+
+        cone_length_factor = 10.0
+        cone_length = avg_radius * cone_length_factor
+
+        visualisation_scale = 50.0
+
+        glUniform1i(self.cones_shader.get_loc('projection_mode'), self.projection_mode)
+        glUniform1f(self.cones_shader.get_loc("cone_length"), cone_length)
+        glUniform1f(self.cones_shader.get_loc("visualisation_scale"), visualisation_scale)
 
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
@@ -374,6 +389,10 @@ class EyeRendererBase(ABC):
         glBindVertexArray(0)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
+
+        # Restore state
+        glEnable(GL_CULL_FACE)
+        glDisable(GL_BLEND)
         glDisable(GL_DEPTH_TEST)
 
         self.cones_shader.stop()

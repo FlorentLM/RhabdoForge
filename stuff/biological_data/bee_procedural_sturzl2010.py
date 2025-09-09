@@ -5,8 +5,6 @@ import matplotlib.pyplot as plt
 import time
 
 
-# Loaders
-
 def akima_interpolator(x, y, fill_value):
     """
     Creates an Akima interpolator that returns a specific fill_value for queries outside the original range
@@ -58,8 +56,6 @@ def load_azimuth_data(file_path="stuff/biological_data/sturzl2010_azimuth_max.cs
     return azimuth_max_fn_12, azimuth_max_fn_34, (df_12, df_34)
 
 
-# Helpers
-
 IOA_H_MIN = 2.4
 IOA_H_MID = 3.7
 IOA_H_MAX = 4.6
@@ -101,8 +97,6 @@ def get_ioa_v(e):
     return IOA_V_MIN + (IOA_V_MAX - IOA_V_MIN) * (abs(e) / 90)
 
 
-# Core ommatidia generation logic
-
 def _generate_zone(zone, az_fn_12, az_fn_34):
     """ Generates ommatidia for a specific zone """
 
@@ -132,12 +126,17 @@ def _generate_zone(zone, az_fn_12, az_fn_34):
 
         # Generate a single row for this zone
         while is_in_bounds(a, e):
-            zone_ommatidia.append((a, e))
+            # Calculate the IOA for the current position
+            ioa_h = get_ioa_h_scalar(a, e)
+            ioa_v = get_ioa_v(e)
+            # Store azimuth, elevation, and the corresponding IOAs
+            zone_ommatidia.append((a, e, ioa_h, ioa_v))
+
             delta_a = ioa_h_to_azimuth_delta(get_ioa_h_scalar(a, e), e)
             if delta_a < 1e-6: break  # Prevent infinite loop
             a += delta_a * sign_a
 
-        # Move to the next elevation using the CORRECT step size
+        # Move to the next elevation
         e += sign_e * get_ioa_v(e) / 2.0
         is_odd_row = not is_odd_row
 
@@ -185,16 +184,23 @@ PLOT = True
 az_fn_12, az_fn_34, raw_dfs = load_azimuth_data(interp='akima')
 
 # This generates the right eye
-ommatidia_right = generate_eye_model(az_fn_12, az_fn_34)
-print(f"Generated {len(ommatidia_right)} unique ommatidia.")
+ommatidia_right_data = generate_eye_model(az_fn_12, az_fn_34)
+
+# Split the generated data into angles and IOAs
+ommatidia_right_angles = ommatidia_right_data[:, :2]
+ommatidia_right_ioas_deg = ommatidia_right_data[:, 2:]
+
+print(f"Generated {len(ommatidia_right_angles)} unique ommatidia.")
 
 # Create left eye by mirroring the azimuth
-ommatidia_left = ommatidia_right.copy()
-ommatidia_left[:, 0] *= -1
+ommatidia_left_angles = ommatidia_right_angles.copy()
+ommatidia_left_angles[:, 0] *= -1
+# The IOA profile is symmetrical
+ommatidia_left_ioas_deg = ommatidia_right_ioas_deg.copy()
 
 # Convert both sets of angles to 3D direction vectors
-right_eye_dirs = angles_to_vectors(ommatidia_right)
-left_eye_dirs = angles_to_vectors(ommatidia_left)
+right_eye_dirs = angles_to_vectors(ommatidia_right_angles)
+left_eye_dirs = angles_to_vectors(ommatidia_left_angles)
 
 # Define plausible origins for the eyes
 eye_radius = 0.0015     # 1.5 mm radius
@@ -203,15 +209,19 @@ eye_separation = 0.001  # 1 mm separation
 right_eye_origins = right_eye_dirs * eye_radius + np.array([eye_separation, 0, 0])
 left_eye_origins = left_eye_dirs * eye_radius - np.array([eye_separation, 0, 0])
 
+# Concatenate data for both eyes
 both_eyes_origs = np.concatenate((right_eye_origins, left_eye_origins))
 both_eyes_dirs = np.concatenate((right_eye_dirs, left_eye_dirs))
+both_eyes_ioas_deg = np.concatenate((ommatidia_right_ioas_deg, ommatidia_left_ioas_deg))
+
+both_eyes_ioas_rad = np.deg2rad(both_eyes_ioas_deg)
 
 # Save as npz
 np.savez_compressed(
     "bee_eye.npz",
     directions=both_eyes_dirs,
-    origins=both_eyes_origs
-    # acceptance_angles_rad could be added here
+    origins=both_eyes_origs,
+    interommatidial_angles_rad=both_eyes_ioas_rad
 )
 
 if PLOT:
@@ -219,7 +229,7 @@ if PLOT:
     plt.figure(figsize=(12, 6))
 
     # Plot generated ommatidia
-    plt.scatter(ommatidia_right[:, 0], ommatidia_right[:, 1], color='darkblue', alpha=0.4, s=2)
+    plt.scatter(ommatidia_right_angles[:, 0], ommatidia_right_angles[:, 1], color='darkblue', alpha=0.4, s=2)
 
     # Plot interpolated boundaries
     elevations = np.linspace(-90, 90, 500)
@@ -237,7 +247,7 @@ if PLOT:
     plt.ylim(-90, 90)
     plt.xlabel("Azimuth α (degrees)")
     plt.ylabel("Elevation ε (degrees)")
-    plt.title(f"Viewing Directions of {len(ommatidia_right)} Procedurally Generated Bee Ommatidia (Stürzl et al. 2010 model)")
+    plt.title(f"Viewing Directions of {len(ommatidia_right_angles)} Procedurally Generated Bee Ommatidia (Stürzl et al. 2010 model)")
     plt.legend()
     plt.grid(True)
     plt.show()
