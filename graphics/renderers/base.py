@@ -280,7 +280,7 @@ class EyeRendererBase(ABC):
     @property
     def cones_shader(self):
         if self._cones_shader is None:
-            self._cones_shader = ShaderProgram(vert_path="shaders/eye_cones.vert", frag_path="shaders/eye_cones.frag")
+            self._cones_shader = ShaderProgram(vert_path="shaders/eye_model.vert", frag_path="shaders/eye_model.frag")
         return self._cones_shader
 
     @property
