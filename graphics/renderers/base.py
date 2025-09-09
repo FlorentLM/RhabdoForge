@@ -344,35 +344,37 @@ class EyeRendererBase(ABC):
 
         self.voronoi_shader.stop()
 
-    # base.py
     def _draw_eye_model(self, observer_camera, agent):
 
         self.cones_shader.use()
 
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT)
+        # TODO: Why is this conversion to numpy necessary??
+        view_matrix_np = np.array(observer_camera.view, dtype=np.float32)
+        projection_matrix_np = np.array(observer_camera.projection, dtype=np.float32)
 
-        glUniformMatrix4fv(self.cones_shader.get_loc('view'), 1, False, glm.value_ptr(observer_camera.view))
-        glUniformMatrix4fv(self.cones_shader.get_loc('projection'), 1, False, glm.value_ptr(observer_camera.projection))
+        # This one works fine
+        c2w_mat = glm.inverse(agent.view)
 
-        # agent's camera-to-world for the eye data
-        c2w = glm.inverse(agent.view)
-        # glUniformMatrix4fv(self.cones_shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w))
+        glUniformMatrix4fv(self.cones_shader.get_loc('view'), 1, True, view_matrix_np)
+        glUniformMatrix4fv(self.cones_shader.get_loc('projection'), 1, True, projection_matrix_np)
+        glUniformMatrix4fv(self.cones_shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
-        # glUniform1f(self.cones_shader.get_loc("cone_length"), 0.01)
-        # glUniform1f(self.cones_shader.get_loc("radius_scale"), 1.0)
-        # glUniform1f(self.cones_shader.get_loc("albedo_boost"), 1.0)
-        # glUniform1i(self.cones_shader.get_loc("is_degrees"), False)
+        glUniform1f(self.cones_shader.get_loc("cone_length"), 0.015)
+        glUniform1f(self.cones_shader.get_loc("radius_scale"), 30.0)
+        glUniform1f(self.cones_shader.get_loc("viz_scale"), 50.0)
+        glUniform1i(self.cones_shader.get_loc("is_degrees"), False)
 
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
 
-        glDisable(GL_CULL_FACE)
-        glEnable(GL_DEPTH_TEST)
-        glDepthMask(GL_TRUE)
-
         glBindVertexArray(self.cones_vao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.num_ommatidia)
+
+        # Unbind everyone
         glBindVertexArray(0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
+        glDisable(GL_DEPTH_TEST)
 
         self.cones_shader.stop()
 

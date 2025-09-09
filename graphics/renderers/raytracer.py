@@ -748,6 +748,7 @@ class EyeRendererRay(EyeRendererBase):
         if view_mode == ViewMode.third_person:
             self._draw_eye_model(point_of_view, agent)
 
+
     def free(self):
         """ Frees all GPU resources, including shaders and all buffers """
 

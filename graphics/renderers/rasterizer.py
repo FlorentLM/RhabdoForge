@@ -451,6 +451,9 @@ class EyeRendererRaster(EyeRendererBase):
             for instance in renderables:
                 self._render_instance(instance, point_of_view.view, point_of_view.projection)
 
+        if view_mode == ViewMode.third_person:
+            self._draw_eye_model(point_of_view, agent)
+
     def free(self):
         self._scene_baked.free()
 

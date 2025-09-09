@@ -209,8 +209,8 @@ both_eyes_dirs = np.concatenate((right_eye_dirs, left_eye_dirs))
 # Save as npz
 np.savez_compressed(
     "bee_eye.npz",
-    directions=both_eyes_origs,
-    origins=both_eyes_dirs
+    directions=both_eyes_dirs,
+    origins=both_eyes_origs
     # acceptance_angles_rad could be added here
 )
 

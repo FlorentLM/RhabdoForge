@@ -12,6 +12,5 @@ uniform float albedo_boost = 1.0;
 
 void main() {
     vec4 c = final_rgba[v_index];
-//    FragColor = vec4(clamp(c.rgb * albedo_boost, 0.0, 1.0), 1.0);
-    FragColor = vec4(1.0, 0.0, 0.0, 1.0);   // DEBUG red
+    FragColor = vec4(clamp(c.rgb * albedo_boost, 0.0, 1.0), 1.0);
 }
