@@ -56,7 +56,7 @@ class Context:
         self._delta_time: float = 0.0
 
         self.move_speed: float = 3.0
-        self.roll_speed: float = 2.0
+        self.keyboard_turn_speed: float = 1.0
         self.mouse_sensitivity: float = 0.5
         self.mouse_y_dir: float = 1.0 if invert_mouseY else -1.0
 
@@ -152,52 +152,70 @@ class Context:
             glfw.set_window_should_close(self.window, True)
             return
 
-        # Handle movement
+        # Movement
         move_direction = glm.vec3(0.0)
         if glfw.get_key(self.window, glfw.KEY_W) == glfw.PRESS: move_direction += self.agent.forward
         if glfw.get_key(self.window, glfw.KEY_S) == glfw.PRESS: move_direction += self.agent.backward
-        if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS: move_direction += self.agent.left
-        if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS: move_direction += self.agent.right
         if glfw.get_key(self.window, glfw.KEY_SPACE) == glfw.PRESS: move_direction += WORLD_UP
-        if glfw.get_key(self.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS: move_direction += WORLD_DOWN
+        if glfw.get_key(self.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS: move_direction += WORLD_DOWN
 
-        # Reset position/orientation (instantaneous, so no .dt())
-        if glfw.get_key(self.window, glfw.KEY_O) == glfw.PRESS: self.agent.position = (0, 0, 0)
-        if glfw.get_key(self.window, glfw.KEY_R) == glfw.PRESS: self.agent.yaw, self.agent.pitch, self.agent.roll = (0, 0, 0)
-
-        if glm.length(move_direction) > 0:
-            # Use the .dt() proxy for framerate-independent movement
-            self.agent.dt(self._delta_time).translate(glm.normalize(move_direction) * self.move_speed)
-
-        # Handle rotation
+        # Rotation inputs
         roll_input = 0.0
         if glfw.get_key(self.window, glfw.KEY_Q) == glfw.PRESS: roll_input += 1.0
         if glfw.get_key(self.window, glfw.KEY_E) == glfw.PRESS: roll_input -= 1.0
 
+        yaw_input = 0.0
+        strafe_mode = glfw.get_key(self.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS
+
+        if self.view_mode == ViewMode.third_person and not strafe_mode:
+            # in 3rd person, A/D turns the agent
+            if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS: yaw_input += 1.0
+            if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS: yaw_input -= 1.0
+        else:
+            # in 1st person or when holding Shift, A/D strafes
+            if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS: move_direction += self.agent.left
+            if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS: move_direction += self.agent.right
+
+        # Apply translation
+        if glm.length(move_direction) > 0:
+            self.agent.dt(self._delta_time).translate(glm.normalize(move_direction) * self.move_speed)
+
+        # Mouse rotation
         current_mouse_pos = glfw.get_cursor_pos(self.window)
-        if self.last_mouse_pos is None:
-            self.last_mouse_pos = current_mouse_pos
+        if self.last_mouse_pos is None: self.last_mouse_pos = current_mouse_pos
 
         dx = (current_mouse_pos[0] - self.last_mouse_pos[0])
         dy = (current_mouse_pos[1] - self.last_mouse_pos[1])
         self.last_mouse_pos = current_mouse_pos
 
-        # per-second sensitivity
-        yaw_delta = dx * self.mouse_sensitivity * -1
-        pitch_delta = dy * self.mouse_sensitivity * self.mouse_y_dir
+        mouse_yaw_delta = dx * self.mouse_sensitivity * -1
+        mouse_pitch_delta = dy * self.mouse_sensitivity * self.mouse_y_dir
 
+        # Apply rotation
         if self.view_mode == ViewMode.third_person:
-            self.observer.pan(azimuth_delta=yaw_delta * 0.5,
-                              elevation_delta=pitch_delta * 0.5,
+            # Mouse pans the camera
+            self.observer.pan(azimuth_delta=mouse_yaw_delta * 0.5,
+                              elevation_delta=mouse_pitch_delta * 0.5,
                               degrees=True)
-        else:
-            # first-person control of the insect agent
+
+            # Keyboard rotates the agent
             self.agent.rotate(
-                yaw_delta=yaw_delta,
-                pitch_delta=pitch_delta,
-                roll_delta=roll_input * self.roll_speed,
+                yaw_delta=yaw_input * self.keyboard_turn_speed,
+                roll_delta=roll_input * self.keyboard_turn_speed,
                 degrees=True
             )
+        else:
+            # First-person: Mouse controls yaw/pitch, keyboard controls roll
+            self.agent.rotate(
+                yaw_delta=mouse_yaw_delta,
+                pitch_delta=mouse_pitch_delta,
+                roll_delta=roll_input * self.keyboard_turn_speed,
+                degrees=True
+            )
+
+        # Resets
+        if glfw.get_key(self.window, glfw.KEY_O) == glfw.PRESS: self.agent.position = (0.0, 0.0, 0.0)
+        if glfw.get_key(self.window, glfw.KEY_R) == glfw.PRESS: self.agent.yaw, self.agent.pitch, self.agent.roll = (0.0, 0.0, 0.0)
 
     def draw(self):
 

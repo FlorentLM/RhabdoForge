@@ -12,8 +12,8 @@ from graphics.context import Context
 def main():
 
     # Configuration
-    USE_RAYTRACER = False
-    USE_POINT_CLOUD = False
+    USE_RAYTRACER = True
+    USE_POINT_CLOUD = True
     NB_OMMATIDIA = 1962
     NB_SAMPLES = 16
     HEADLESS = False
@@ -40,14 +40,14 @@ def main():
     scene.add_instance(asset=crate_asset, transform=(3.0, 0.0, 0.0))
 
     # A crate that will move
-    # dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
+    dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
 
     # Add a skybox
-    # scene.add_skybox('textures/bright_day')
+    scene.add_skybox('textures/bright_day')
 
     # Setup eye model
-    eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
-    # eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)
+    # eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
+    eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)
 
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))
@@ -91,7 +91,7 @@ def main():
             context.input()
 
             # Rotate dynamic test crate
-            # dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
+            dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
             #  -- Example moving ommatidium --
 

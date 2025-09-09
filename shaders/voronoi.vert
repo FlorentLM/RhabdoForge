@@ -58,8 +58,7 @@ void main() {
     vec3 scaled_cone_pos = cone_vertex;
 
     if (tiled_mode) {
-        // Voronoi mode - large cones to cover screen
-        scaled_cone_pos.xy *= tiled_mode_scale;
+        scaled_cone_pos.xy *= om.interommatidial_angles * receptive_field_scale * 2.5;
     } else {
         // Receptive field mode - scale by acceptance angles
         scaled_cone_pos.xy *= acceptance_angles * receptive_field_scale;

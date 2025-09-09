@@ -172,7 +172,7 @@ class HUD:
             'ESC: Quit', 'H: Show/hide HUD', 'R: Reset rotation', 'O: Teleport to origin', 'X: Dither once',
             f'+/-: Increase/decrease {sample_label}', 'T: Toggle time dithering',
             'V: Toggle Voronoi view', 'P: Projection mode (acceptance / layout)', 'C: Change view',
-            'LShift/Space: Down/Up', 'Q/E: Roll', 'Mouse: Yaw & Pitch', 'WASD: Move', '------', 'Controls:'
+            'Ctrl/Space: Down/Up', 'Q/E: Roll', 'Mouse: Yaw & Pitch', 'WASD: Move', '------', 'Controls:'
         ]
         shadow_verts, fg_verts = [], []
         margin, line_height = 10, self.font_renderer.font_size

@@ -71,7 +71,6 @@ class EyeRendererBase(ABC):
         # first-person specific stuff
         self.tiled_mode = False
         self.projection_mode: ProjectionMode = ProjectionMode.Physical
-        self.tiled_mode_scale = self.model.max_gap() * 2.5
 
         # History buffer state
         self._batch_size = max(1, batch_size)
@@ -327,7 +326,6 @@ class EyeRendererBase(ABC):
         glUniform1i(self.voronoi_shader.get_loc('tiled_mode'), self.tiled_mode)
         glUniform1i(self.voronoi_shader.get_loc('projection_mode'), self.projection_mode)
 
-        glUniform1f(self.voronoi_shader.get_loc('tiled_mode_scale'), self.tiled_mode_scale)
         glUniform1f(self.voronoi_shader.get_loc('receptive_field_scale'), self.receptive_field_scale)
 
         # Binding 0: Ommatidia geometry (directions, origins, etc)
@@ -373,7 +371,7 @@ class EyeRendererBase(ABC):
         cone_length_factor = 10.0
         cone_length = avg_radius * cone_length_factor
 
-        visualisation_scale = 50.0
+        visualisation_scale = 10.0
 
         glUniform1i(self.cones_shader.get_loc('projection_mode'), self.projection_mode)
         glUniform1f(self.cones_shader.get_loc("cone_length"), cone_length)
