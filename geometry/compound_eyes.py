@@ -10,8 +10,10 @@ from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_RIGHT, DeltaTimeTransforme
 GPU_OMMATIDIUM_DTYPE = np.dtype([
     ('origin', VEC_DTYPE, 4),                   # 16 bytes (4 * float32, x, y, z coords and w pad)
     ('direction', VEC_DTYPE, 4),                # 16 bytes (4 * float32, x, y, z coords and w pad)
-    ('acceptance_angles', VEC_DTYPE, 2),        # 8 bytes (2 * float32, h and v)
-    ('interommatidial_angles', VEC_DTYPE, 2),   # 8 bytes (2 * float32, h and v)
+    ('acceptance_angles', VEC_DTYPE, 2),        # 8 bytes (2 * float32, minor and major)
+    ('interommatidial_angles', VEC_DTYPE, 2),   # 8 bytes (2 * float32, minor and major)
+    # TODO: Needs orientation for minor/major ellipse axes
+    # TODO: Needs the number of immediate neighbours
     ('receptor_type', np.uint8, 1),             # 1 byte (1 * uint8), 0 to 255
     ('sensitivity', VEC_DTYPE, 1),              # 4 bytes (1 * float32) for sensitivity
     ('custom_id', np.uint16, 1),                # 2 bytes (0-65535) for a custom ID (eye region, or whatever)
@@ -141,20 +143,20 @@ class Ommatidium:
         return self
 
     @property
-    def acceptance_h(self) -> np.ndarray:
+    def acceptance_major(self) -> np.ndarray:
         return self._data[self._item]['acceptance_angles'][..., 0]
 
-    @acceptance_h.setter
-    def acceptance_h(self, value: Union[float, ArrayLike]):
+    @acceptance_major.setter
+    def acceptance_major(self, value: Union[float, ArrayLike]):
         self._data['acceptance_angles'][self._item, 0] = value
         self._parent_eye.dirty_mask[self._item] = True
 
     @property
-    def acceptance_v(self) -> np.ndarray:
+    def acceptance_minor(self) -> np.ndarray:
         return self._data[self._item]['acceptance_angles'][..., 1]
 
-    @acceptance_v.setter
-    def acceptance_v(self, value: Union[float, ArrayLike]):
+    @acceptance_minor.setter
+    def acceptance_minor(self, value: Union[float, ArrayLike]):
         self._data['acceptance_angles'][self._item, 1] = value
         self._parent_eye.dirty_mask[self._item] = True
 
@@ -221,7 +223,9 @@ class Ommatidium:
     # And some more aliases
     lon = longitude = azimuth = azimuth_rad if DEFAULT_ANGLE == 'rad' else azimuth_deg
     lat = latitude = elevation = elevation_rad if DEFAULT_ANGLE == 'rad' else elevation_deg
-    acceptance = acceptance_rad if DEFAULT_ANGLE == 'rad' else acceptance_deg
+    rho = acceptance = acceptance_rad if DEFAULT_ANGLE == 'rad' else acceptance_deg
+    rho_minor = acceptance_minor
+    rho_major = acceptance_major
 
     def __len__(self):
         return 1 if self._data[self._item].ndim == 0 else self._data[self._item].shape[0]
@@ -284,9 +288,9 @@ class CompoundEye:
             directions: An (N, 3) numpy array of ommatidial direction vectors
             origins: An (N, 3) or (3,) array of ommatidial origin positions
             num_ommatidia: If directions are not provided, this is used to generate a uniform sphere of directions.
-            acceptance_angles_rad: (Optional) The acceptance angles (Δρ). Can be an (N, 2) array, a tuple (h, v),
+            acceptance_angles_rad: (Optional) The acceptance angles (Δρ), minor and major axes. Can be an (N, 2) array, a tuple (h, v),
                 a float, or None to estimate from other parameters.
-            interommatidial_angles_rad: (Optional) The interommatidial angles (Δφ). Can be an (N, 2) array, a tuple (h, v),
+            interommatidial_angles_rad: (Optional) The interommatidial angles (Δφ), minor and major axes. Can be an (N, 2) array, a tuple (h, v),
                 a float, or None to estimate from other parameters.
             sensitivities: (Optional) A scalar or (N,) array for ommatidial sensitivity. Defaults to 1.0.
             receptor_types: (Optional) A scalar or (N,) array of integer receptor types. Defaults to 0.
@@ -384,16 +388,16 @@ class CompoundEye:
             else:
                 angles_broadcast = np.broadcast_to(angles_arr, (self.num_ommatidia, 2))
 
-            self.interommatidial_angle_h_rad = angles_broadcast[:, 0]
-            self.interommatidial_angle_v_rad = angles_broadcast[:, 1]
+            self.ioa_minor_rad = angles_broadcast[:, 0]
+            self.ioa_major_rad = angles_broadcast[:, 1]
         else:
             # Priority 2: if no angles provided, estimate from geometry
             print("Estimating interommatidial angles (Δφ) from ommatidia origins.")
-            self.interommatidial_angle_h_rad, self.interommatidial_angle_v_rad = self.estimate_interommatidial_angles(
+            self.ioa_minor_rad, self.ioa_major_rad = self.estimate_interommatidial_angles(
                 isotropic=force_isotropic)
 
-        self.data['interommatidial_angles'][:, 0] = self.interommatidial_angle_h_rad
-        self.data['interommatidial_angles'][:, 1] = self.interommatidial_angle_v_rad
+        self.data['interommatidial_angles'][:, 0] = self.ioa_minor_rad
+        self.data['interommatidial_angles'][:, 1] = self.ioa_major_rad
 
         # Acceptance angles (Δρ)
         if acceptance_angles_rad is not None:
@@ -404,25 +408,25 @@ class CompoundEye:
         elif all(p is not None for p in [lens_diameter, rhabdom_diameter, focal_length]):
             # Priority 2: Estimate from optical parameters
             print("Calculating acceptance angles (Δρ) from physical optical parameters.")
-            Dh, Dv = self._unpack(lens_diameter, "lens_diameter")
-            dh, dv = self._unpack(rhabdom_diameter, "rhabdom_diameter")
-            fh, fv = self._unpack(focal_length, "focal_length")
+            D_minor, D_major = self._unpack(lens_diameter, "lens_diameter")
+            d_minor, d_major = self._unpack(rhabdom_diameter, "rhabdom_diameter")
+            f_minor, f_major = self._unpack(focal_length, "focal_length")
 
-            delta_phi_optics_h = wavelength / Dh
-            delta_phi_receptor_h = dh / fh
-            angles_h_rad = np.sqrt(delta_phi_optics_h ** 2 + delta_phi_receptor_h ** 2)
+            delta_phi_optics_minor = wavelength / D_minor
+            delta_phi_receptor_minor = d_minor / f_minor
+            angles_minor_rad = np.sqrt(delta_phi_optics_minor ** 2 + delta_phi_receptor_minor ** 2)
 
-            delta_phi_optics_v = wavelength / Dv
-            delta_phi_receptor_v = dv / fv
-            angles_v_rad = np.sqrt(delta_phi_optics_v ** 2 + delta_phi_receptor_v ** 2)
-            estimated_angles = np.vstack([angles_h_rad, angles_v_rad]).T
+            delta_phi_optics_major = wavelength / D_major
+            delta_phi_receptor_major = d_major / f_major
+            angles_major_rad = np.sqrt(delta_phi_optics_major ** 2 + delta_phi_receptor_major ** 2)
+            estimated_angles = np.vstack([angles_minor_rad, angles_major_rad]).T
         else:
             # Priority 3: Estimate from geometry using eye parameter 'p'
             p = eye_parameter if eye_parameter is not None else 1.0
             print(f"Estimating acceptance angles (Δρ) from interommatidial angles (Δφ) with eye parameter p={p}.")
             p_h, p_v = (p, p) if isinstance(p, (int, float)) else p
-            delta_rho_h = p_h * self.interommatidial_angle_h_rad
-            delta_rho_v = p_v * self.interommatidial_angle_v_rad
+            delta_rho_h = p_h * self.ioa_minor_rad
+            delta_rho_v = p_v * self.ioa_major_rad
             estimated_angles = np.vstack([delta_rho_h, delta_rho_v]).T
 
         # Apply isotropic constraint if requested
@@ -438,12 +442,12 @@ class CompoundEye:
 
         # Now that Δρ and Δφ are known, calculate the resulting eye parameter p
         with np.errstate(divide='ignore', invalid='ignore'):
-            self.eye_parameter_h = self.data['acceptance_angles'][:, 0] / self.interommatidial_angle_h_rad
-            self.eye_parameter_v = self.data['acceptance_angles'][:, 1] / self.interommatidial_angle_v_rad
+            self.eye_parameter_minor = self.data['acceptance_angles'][:, 0] / self.ioa_minor_rad
+            self.eye_parameter_major = self.data['acceptance_angles'][:, 1] / self.ioa_major_rad
 
         # and clean non-finite values
-        np.nan_to_num(self.eye_parameter_h, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-        np.nan_to_num(self.eye_parameter_v, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        np.nan_to_num(self.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        np.nan_to_num(self.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _prepare_param(self, param, name="param"):
         """
@@ -489,9 +493,9 @@ class CompoundEye:
     @property
     def interommatidial_angles_rad(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Returns the estimated (horizontal, vertical) interommatidial angles (Δφ) in radians.
+        Returns the estimated (minor, major) interommatidial angles (Δφ) in radians.
         """
-        return self.interommatidial_angle_h_rad, self.interommatidial_angle_v_rad
+        return self.ioa_minor_rad, self.ioa_major_rad
 
     @classmethod
     def from_file(cls, file_path: Union[str, Path], **kwargs):
@@ -534,10 +538,10 @@ class CompoundEye:
 
     def estimate_interommatidial_angles(self, k: int = 8, isotropic: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Estimates the horizontal and vertical interommatidial angles (Δφ) for each ommatidium
+        Estimates the minor and major interommatidial angles (Δφ) for each ommatidium
         based on the physical positions of their origins on the eye's surface.
 
-        # TODO: This will produce garbage if the eye is concave or super flat... but that's likely not an issue
+        # TODO: This should be rewritten to generare minor/major with orientation
 
         """
 
@@ -561,23 +565,23 @@ class CompoundEye:
         # Query for k+1 neighbors because the point itself is the first neighbor
         distances, indices = phys_kdtree.query(phys_dirs, k=k + 1)
 
-        # Ignore the first neighbor (the point itself)
-        neighbor_indices = indices[:, 1:]
-        neighbor_distances = distances[:, 1:]
+        # Ignore the first neighbour (the point itself)
+        neighbour_indices = indices[:, 1:]
+        neighbour_distances = distances[:, 1:]
 
-        if neighbor_indices.size == 0:
+        if neighbour_indices.size == 0:
             zeros = np.zeros(self.num_ommatidia, dtype=VEC_DTYPE)
             return zeros, zeros
 
         # angular separation is angle = 2 * asin(distance / 2)
-        angular_separations = 2.0 * np.arcsin(np.clip(neighbor_distances / 2.0, -1.0, 1.0))
+        angular_separations = 2.0 * np.arcsin(np.clip(neighbour_distances / 2.0, -1.0, 1.0))
 
         if isotropic:
             # For isotropic, just average the angular separation to all neighbors
             delta_phi = np.mean(angular_separations, axis=1)
             return delta_phi, delta_phi
         else:
-            # For anisotropic, we must differentiate between horizontal and vertical neighbors
+            # For anisotropic, we must differentiate between minor and major axes neighbors
 
             # Define local coordinate systems using the physical direction vectors
             dot_products = np.abs(np.dot(phys_dirs, WORLD_UP))
@@ -587,21 +591,21 @@ class CompoundEye:
             local_y_axes /= np.linalg.norm(local_y_axes, axis=1, keepdims=True)
             local_x_axes = np.cross(local_y_axes, phys_dirs)
 
-            # Get the physical direction vectors of the neighboring ommatidia
-            neighbour_phys_dirs = phys_dirs[neighbor_indices]
+            # Get the physical direction vectors of the neighbouring ommatidia
+            neighbour_phys_dirs = phys_dirs[neighbour_indices]
 
-            # Project neighbor vectors onto the local tangent plane to determine their direction
+            # Project neighbour vectors onto the local tangent plane to determine their direction
             delta_vectors = neighbour_phys_dirs - phys_dirs[:, np.newaxis, :]
             proj_x = np.sum(delta_vectors * local_x_axes[:, np.newaxis, :], axis=2)
             proj_y = np.sum(delta_vectors * local_y_axes[:, np.newaxis, :], axis=2)
 
-            # Determine the angle of each neighbor in the tangent plane (from -pi to pi)
-            neighbor_angles = np.arctan2(proj_y, proj_x)
+            # Determine the angle of each neighbour in the tangent plane (from -pi to pi)
+            neighbour_angles = np.arctan2(proj_y, proj_x)
 
-            # Find the two neighbors closest to the horizontal axis (angles near 0 and pi)
+            # Find the two neighbours closest to the horizontal axis (angles near 0 and pi)
             # and the two closest to the vertical axis (angles near +/- pi/2)
-            h_indices = np.argsort(np.abs(np.sin(neighbor_angles)), axis=1)[:, :2]
-            v_indices = np.argsort(np.abs(np.cos(neighbor_angles)), axis=1)[:, :2]
+            h_indices = np.argsort(np.abs(np.sin(neighbour_angles)), axis=1)[:, :2]
+            v_indices = np.argsort(np.abs(np.cos(neighbour_angles)), axis=1)[:, :2]
 
             # The final estimate is the average of the two best-matching neighbors
 
@@ -621,6 +625,7 @@ class CompoundEye:
         if self.needs_rebuild['direction']:
             self.kdtree_directions = KDTree(self.data['direction'][:, :3])
             self.needs_rebuild['direction'] = False
+
         if self.needs_rebuild['origin']:
             self.kdtree_positions = KDTree(self.data['origin'][:, :3])
             self.needs_rebuild['origin'] = False
@@ -764,14 +769,16 @@ class CompoundEye:
     def __repr__(self):
         summary = [f"<CompoundEye with {self.num_ommatidia} ommatidia>"]
 
+        # TODO: Add orientation?
+
         # Interommatidial Angles (Δφ)
-        d_phi_h_deg = np.rad2deg(self.interommatidial_angle_h_rad)
-        d_phi_v_deg = np.rad2deg(self.interommatidial_angle_v_rad)
+        d_phi_minor_deg = np.rad2deg(self.ioa_minor_rad)
+        d_phi_major_deg = np.rad2deg(self.ioa_major_rad)
         summary.append("  Interommatidial Angles (Δφ):")
         summary.append(
-            f"    Horizontal: {np.mean(d_phi_h_deg):.3f}° (mean), {np.min(d_phi_h_deg):.3f}° (min), {np.max(d_phi_h_deg):.3f}° (max)")
+            f"    Minor: {np.mean(d_phi_minor_deg):.3f}° (mean), {np.min(d_phi_minor_deg):.3f}° (min), {np.max(d_phi_minor_deg):.3f}° (max)")
         summary.append(
-            f"    Vertical:   {np.mean(d_phi_v_deg):.3f}° (mean), {np.min(d_phi_v_deg):.3f}° (min), {np.max(d_phi_v_deg):.3f}° (max)")
+            f"    Major:   {np.mean(d_phi_major_deg):.3f}° (mean), {np.min(d_phi_major_deg):.3f}° (min), {np.max(d_phi_major_deg):.3f}° (max)")
 
         # Acceptance Angles (Δρ)
         angles_deg = np.rad2deg(self.data['acceptance_angles'])
@@ -779,13 +786,13 @@ class CompoundEye:
         mins = np.min(angles_deg, axis=0)
         maxs = np.max(angles_deg, axis=0)
         summary.append("  Acceptance Angles (Δρ):")
-        summary.append(f"    Horizontal: {means[0]:.3f}° (mean), {mins[0]:.3f}° (min), {maxs[0]:.3f}° (max)")
-        summary.append(f"    Vertical:   {means[1]:.3f}° (mean), {mins[1]:.3f}° (min), {maxs[1]:.3f}° (max)")
+        summary.append(f"    Minor: {means[0]:.3f}° (mean), {mins[0]:.3f}° (min), {maxs[0]:.3f}° (max)")
+        summary.append(f"    Major:   {means[1]:.3f}° (mean), {mins[1]:.3f}° (min), {maxs[1]:.3f}° (max)")
 
         # Eye Parameter (p)
         summary.append("  Eye Parameter (p = Δρ/Δφ):")
-        summary.append(f"    Horizontal: {np.mean(self.eye_parameter_h):.2f} (mean)")
-        summary.append(f"    Vertical:   {np.mean(self.eye_parameter_v):.2f} (mean)")
+        summary.append(f"    Minor: {np.mean(self.eye_parameter_minor):.2f} (mean)")
+        summary.append(f"    Major:   {np.mean(self.eye_parameter_major):.2f} (mean)")
 
         return "\n".join(summary)
 
