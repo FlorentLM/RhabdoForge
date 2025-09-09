@@ -52,26 +52,33 @@ ommatidia_positions = np.genfromtxt('stuff/biological_data/buchner1971_xy.csv', 
 
 h_long, h_lat = stereographic_to_spherical(ommatidia_positions[:, 0], ommatidia_positions[:, 1])
 
-# Transformation matrix to go from Heisenberg's coordinate system to standard
-m_forward = get_rotation_matrix(-np.pi / 2, (1, 0, 0))
-scale_matrix = np.diag([1, 1, -1])
-m_forward = m_forward @ scale_matrix
-m_reverse = np.linalg.inv(m_forward)
+# In Buchner 1971:
+# +X = Posterior (Back)
+# +Y = Dorsal (Up)
+# +Z = Outward along the left eye's optical axis (Left)
 
-# Transform to cartesian vectors, apply rotation, then back to spherical to get final angles
+# Source X (Back) -> Target Z (Back)
+# Source Y (Up)   -> Target Y (Up)
+# Source Z (Left) -> Target -X (Left)
+transform_matrix = np.array([
+    [ 0, 0, -1],
+    [ 0, 1,  0],
+    [ 1, 0,  0]
+])
+
 heisenberg_coords = spherical_to_cartesian(h_long, h_lat)
-left_eye_dirs = heisenberg_coords @ m_reverse.T
+left_eye_dirs = heisenberg_coords @ transform_matrix.T
 
-# Create the right eye by mirroring the X-coordinate
+# Create the right eye by mirroring on X
 right_eye_dirs = left_eye_dirs.copy()
-right_eye_dirs[:, 1] *= -1
-print("Created right eye by mirroring the left eye.")
+right_eye_dirs[:, 0] *= -1
+print("Created right eye by mirroring the left eye across the YZ plane.")
 
 # Define plausible origins for the eyes
 eye_radius = 0.00035        # 0.35 mm radius
 eye_separation = 0.0003     # 0.3 mm separation
 
-# The original data is for the left eye
+# Separate the eyes along the X-axis
 left_eye_origins = left_eye_dirs * eye_radius - np.array([eye_separation / 2, 0, 0])
 right_eye_origins = right_eye_dirs * eye_radius + np.array([eye_separation / 2, 0, 0])
 

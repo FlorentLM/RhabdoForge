@@ -47,7 +47,7 @@ def main():
 
     # Setup eye model
     # eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)
-    eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)
+    eye_model = CompoundEye.from_file('drosophila_eye.npz', eye_parameter=1.1)
 
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))

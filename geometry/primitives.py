@@ -88,4 +88,4 @@ def create_cone_data(radius=1.0, height=1.0, segments=16):
     return np.array(triangle_strip, dtype=VEC_DTYPE).flatten()
 
 
-CONE_VERTICES = create_cone_data(radius=1.0, height=1.0, segments=32)
+CONE_VERTICES = create_cone_data(radius=1.0, height=1.0, segments=12)

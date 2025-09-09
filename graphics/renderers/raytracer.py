@@ -737,6 +737,7 @@ class EyeRendererRay(EyeRendererBase):
             self._texture_viewer.draw(self._pano_texture_id)
 
         elif view_mode == ViewMode.perspective or view_mode == ViewMode.third_person:
+        # elif view_mode == ViewMode.perspective:
 
             if self._persp_texture_id == 0 or self.perspective_shader is None:
                 self._initialize_persp_resources()
