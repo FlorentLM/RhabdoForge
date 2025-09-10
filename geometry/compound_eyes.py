@@ -91,11 +91,7 @@ class Ommatidium:
 
     def dt(self, delta_time: float) -> DeltaTimeTransformer:
         """
-        Enables framerate-independent transformations for a chain of method calls.
-
-        Example:
-            # Rotates the ommatidium/a at 90 degrees per second
-            my_ommatidium_selection.dt(delta_time).rotate(delta_h=90)
+        Enables framerate-independent transformations for a chain of method calls
         """
         return DeltaTimeTransformer(self, delta_time)
 
@@ -325,9 +321,9 @@ class CompoundEye:
             directions: An (N, 3) numpy array of ommatidial direction vectors
             origins: An (N, 3) or (3,) array of ommatidial origin positions
             num_ommatidia: If directions are not provided, this is used to generate a uniform sphere of directions.
-            acceptance_angles_rad: (Optional) The acceptance angles (Δρ), minor and major axes. Can be an (N, 2) array, a tuple (h, v),
+            acceptance_angles_rad: (Optional) The acceptance angles (Δρ), minor and major axes. Can be an (N, 2) array, a tuple (minor, major),
                 a float, or None to estimate from other parameters.
-            interommatidial_angles_rad: (Optional) The interommatidial angles (Δφ), minor and major axes. Can be an (N, 2) array, a tuple (h, v),
+            interommatidial_angles_rad: (Optional) The interommatidial angles (Δφ), minor and major axes. Can be an (N, 2) array, a tuple (minor, major),
                 a float, or None to estimate from other parameters.
             sensitivities: (Optional) A scalar or (N,) array for ommatidial sensitivity. Defaults to 1.0.
             receptor_types: (Optional) A scalar or (N,) array of integer receptor types. Defaults to 0.
@@ -458,10 +454,10 @@ class CompoundEye:
             # Priority 3: Estimate from geometry using eye parameter 'p'
             p = eye_parameter if eye_parameter is not None else 1.0
             print(f"Estimating acceptance angles (Δρ) from interommatidial angles (Δφ) with eye parameter p={p}.")
-            p_h, p_v = (p, p) if isinstance(p, (int, float)) else p
-            delta_rho_h = p_h * self.ioa_minor_rad
-            delta_rho_v = p_v * self.ioa_major_rad
-            estimated_angles = np.vstack([delta_rho_h, delta_rho_v]).T
+            p_minor, p_major = (p, p) if isinstance(p, (int, float)) else p
+            delta_rho_minor = p_minor * self.ioa_minor_rad
+            delta_rho_major = p_major * self.ioa_major_rad
+            estimated_angles = np.vstack([delta_rho_minor, delta_rho_major]).T
 
         # Apply isotropic constraint if requested
         if force_isotropic and estimated_angles is not None:
@@ -500,16 +496,16 @@ class CompoundEye:
 
     def _unpack(self, param, name="param"):
         """
-        Unpacks a parameter into horizontal and vertical components.
+        Unpacks a parameter into minor and major components
         """
         if isinstance(param, (list, tuple)):
-            return self._prepare_param(param[0], f"{name}_h"), self._prepare_param(param[1], f"{name}_v")
+            return self._prepare_param(param[0], f"{name}_minor"), self._prepare_param(param[1], f"{name}_major")
         p_scalar = self._prepare_param(param, name)
         return p_scalar, p_scalar
 
     def _set_acceptance_angles(self, angles_rad: Union[np.ndarray, Tuple, float, None]):
         """
-        Helper to assign acceptance angles to all ommatidia.
+        Helper to assign acceptance angles to all ommatidia
         """
         if angles_rad is None:
             print("Warning: No acceptance angles were provided or could be estimated.")
@@ -641,18 +637,18 @@ class CompoundEye:
 
             # Find the two neighbours closest to the horizontal axis (angles near 0 and pi)
             # and the two closest to the vertical axis (angles near +/- pi/2)
-            h_indices = np.argsort(np.abs(np.sin(neighbour_angles)), axis=1)[:, :2]
-            v_indices = np.argsort(np.abs(np.cos(neighbour_angles)), axis=1)[:, :2]
+            minor_indices = np.argsort(np.abs(np.sin(neighbour_angles)), axis=1)[:, :2]
+            major_indices = np.argsort(np.abs(np.cos(neighbour_angles)), axis=1)[:, :2]
 
             # The final estimate is the average of the two best-matching neighbors
 
-            h_angles = np.take_along_axis(angular_separations, h_indices, axis=1)
-            v_angles = np.take_along_axis(angular_separations, v_indices, axis=1)
+            minor_angles = np.take_along_axis(angular_separations, minor_indices, axis=1)
+            major_angles = np.take_along_axis(angular_separations, major_indices, axis=1)
 
-            delta_phi_h = np.mean(h_angles, axis=1)
-            delta_phi_v = np.mean(v_angles, axis=1)
+            delta_phi_minor = np.mean(minor_angles, axis=1)
+            delta_phi_major = np.mean(major_angles, axis=1)
 
-            return delta_phi_h, delta_phi_v
+            return delta_phi_minor, delta_phi_major
 
     def rebuild_spatial(self):
         """
