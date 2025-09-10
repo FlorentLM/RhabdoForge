@@ -20,12 +20,15 @@ struct Ommatidium {
     vec2 interommatidial_angles;  // .x = minor axis, .y = major axis
     float tilt;
     float sensitivity;
-    uint packed_data;   // bits 0-3 = receptor type, bits 4-7 = mumber of neighbours, bits 8-23 = custom ID, rest is padding
+    uint packed_data;   // bits 0-2 = eye ID, bits 3-6 = receptor type, bits 7-10 = mumber of neighbours, bits 11-26 = custom ID, rest is padding
     uint padding;
 };
 
-
 // Helper functions for clean unpacking
+uint unpack_eye_id(Ommatidium om) {
+    return om.packed_data & 7u;
+}
+
 uint unpack_receptor_type(Ommatidium om) {
     return om.packed_data & 0x0Fu;
 }

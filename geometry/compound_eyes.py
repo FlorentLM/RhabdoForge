@@ -19,10 +19,11 @@ GPU_OMMATIDIUM_DTYPE = np.dtype([
 ])  # total = 64 bytes
 
 # packed_data layout:
-# - bits 0-3: receptor type (0-15)
-# - bits 4-7: number of neighbours (0-15)
-# - bits 8-23: custom ID (0-65535)
-# - bits 24-31: padding
+# - bits 0-2: eye ID (0-7)
+# - bits 3-6: receptor type (0-15)
+# - bits 7-10: number of immediate neighbours (0-15)
+# - bits 11-26: custom ID (0-65535)
+# - bits 27-31: padding
 
 
 DEFAULT_ANGLE = 'deg'
@@ -143,6 +144,23 @@ class Ommatidium:
         return self
 
     @property
+    def eye_id(self) -> np.ndarray:
+        """ Unpacks eye ID from bits 0-2 """
+        return self._data[self._item]['packed_data'] & 0x07
+
+    @eye_id.setter
+    def eye_id(self, value: Union[int, ArrayLike]):
+        """ Packs eye ID into bits 0-2 """
+        value_arr = np.asarray(value, dtype=np.uint32)
+
+        current_data = self._data['packed_data'][self._item]
+        cleared_data = current_data & ~0x07
+        new_data = cleared_data | (value_arr & 0x07)
+
+        self._data['packed_data'][self._item] = new_data
+        self._parent_eye.dirty_mask[self._item] = True
+
+    @property
     def acceptance_major(self) -> np.ndarray:
         return self._data[self._item]['acceptance_angles'][..., 0]
 
@@ -188,51 +206,51 @@ class Ommatidium:
 
     @property
     def receptor_type(self) -> np.ndarray:
-        """ Unpacks receptor type from bits 0-3 """
-        return self._data[self._item]['packed_data'] & 0x0F
+        """ Unpacks receptor type from bits 3-6 """
+        return (self._data[self._item]['packed_data'] >> 3) & 0x0F
 
     @receptor_type.setter
     def receptor_type(self, value: Union[int, ArrayLike]):
-        """ Packs receptor type into bits 0-3 """
+        """ Packs receptor type into bits 3-6 """
         value_arr = np.asarray(value, dtype=np.uint32)
 
         current_data = self._data['packed_data'][self._item]
-        cleared_data = current_data & ~0x0F  # ~0x0F is ...11110000
-        new_data = cleared_data | (value_arr & 0x0F)
+        cleared_data = current_data & ~(0x0F << 3)
+        new_data = cleared_data | ((value_arr & 0x0F) << 3)
 
         self._data['packed_data'][self._item] = new_data
         self._parent_eye.dirty_mask[self._item] = True
 
     @property
     def neighbours_count(self) -> np.ndarray:
-        """ Unpacks number of neighbours from bits 4-7 """
-        return (self._data[self._item]['packed_data'] >> 4) & 0x0F
+        """ Unpacks number of neighbours from bits 7-10 """
+        return (self._data[self._item]['packed_data'] >> 7) & 0x0F
 
     @neighbours_count.setter
     def neighbours_count(self, value: Union[int, ArrayLike]):
-        """ Packs number of neighbours into bits 4-7 """
+        """ Packs number of neighbours into bits 7-10 """
         value_arr = np.asarray(value, dtype=np.uint32)
 
         current_data = self._data['packed_data'][self._item]
-        cleared_data = current_data & ~(0x0F << 4)
-        new_data = cleared_data | ((value_arr & 0x0F) << 4)
+        cleared_data = current_data & ~(0x0F << 7)
+        new_data = cleared_data | ((value_arr & 0x0F) << 7)
 
         self._data['packed_data'][self._item] = new_data
         self._parent_eye.dirty_mask[self._item] = True
 
     @property
     def custom_id(self) -> np.ndarray:
-        """ Unpacks custom ID from bits 8-23 """
-        return (self._data[self._item]['packed_data'] >> 8) & 0xFFFF
+        """ Unpacks custom ID from bits 11-26 """
+        return (self._data[self._item]['packed_data'] >> 11) & 0xFFFF
 
     @custom_id.setter
     def custom_id(self, value: Union[int, ArrayLike]):
-        """ Packs custom ID into bits 8-23 """
+        """ Packs custom ID into bits 11-26 """
         value_arr = np.asarray(value, dtype=np.uint32)
 
         current_data = self._data['packed_data'][self._item]
-        cleared_data = current_data & ~(0xFFFF << 8)
-        new_data = cleared_data | ((value_arr & 0xFFFF) << 8)
+        cleared_data = current_data & ~(0xFFFF << 11)
+        new_data = cleared_data | ((value_arr & 0xFFFF) << 11)
 
         self._data['packed_data'][self._item] = new_data
         self._parent_eye.dirty_mask[self._item] = True
@@ -305,6 +323,7 @@ class CompoundEye:
                  interommatidial_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
                  sensitivities: Optional[Union[ArrayLike, float]] = None,
                  receptor_types: Optional[Union[ArrayLike, int]] = None,
+                 eye_id: Optional[Union[int, ArrayLike]] = None,
                  custom_ids: Optional[Union[ArrayLike, int]] = None,
                  eye_parameter: Optional[Union[float, Tuple]] = None,
                  lens_diameter: Optional[Union[float, Tuple]] = None,
@@ -327,6 +346,7 @@ class CompoundEye:
                 a float, or None to estimate from other parameters.
             sensitivities: (Optional) A scalar or (N,) array for ommatidial sensitivity. Defaults to 1.0.
             receptor_types: (Optional) A scalar or (N,) array of integer receptor types. Defaults to 0.
+            eye_id: (Optional) A scalar or (N,) encoding which eye the ommatidium (or ommatidia) belongs to. 0 to 7.
             custom_ids: (Optional) A scalar or (N,) array of integer custom IDs. Defaults to 0.
             eye_parameter: (Optional) The eye parameter 'p' value (Δρ / Δφ). Used to estimate acceptance
                 angles if they are not provided directly (defaults to 1.0)
@@ -383,6 +403,13 @@ class CompoundEye:
         self.ommatidia.sensitivity = sensitivities if sensitivities is not None else 1.0
 
         # Prepare data for packing
+        id_arr = np.zeros(self.num_ommatidia, dtype=np.uint32)
+        if eye_id is not None:
+            prepared_ids = self._prepare_param(eye_id, "eye_id")
+            if np.any(prepared_ids > 7) or np.any(prepared_ids < 0):
+                raise ValueError("Eye ID must be in the range [0, 7].")
+            id_arr = prepared_ids.astype(np.uint32)
+
         types_arr = np.zeros(self.num_ommatidia, dtype=np.uint32)
         if receptor_types is not None:
             prepared_types = self._prepare_param(receptor_types, "receptor_types")
@@ -390,14 +417,14 @@ class CompoundEye:
                 print("Warning: Receptor types should be in [0, 15]. Clamping values.")
             types_arr = prepared_types.astype(np.uint32)
 
-        ids_arr = np.zeros(self.num_ommatidia, dtype=np.uint32)
+        custom_ids_arr = np.zeros(self.num_ommatidia, dtype=np.uint32)
         if custom_ids is not None:
-            prepared_ids = self._prepare_param(custom_ids, "custom_ids")
-            if np.any(prepared_ids > 65535) or np.any(prepared_ids < 0):
+            prepared_custom_ids = self._prepare_param(custom_ids, "custom_ids")
+            if np.any(prepared_custom_ids > 65535) or np.any(prepared_custom_ids < 0):
                 raise ValueError("Custom IDs must be in the range [0, 65535].")
-            ids_arr = prepared_ids.astype(np.uint32)
+            custom_ids_arr = prepared_custom_ids.astype(np.uint32)
 
-        packed_data = (types_arr & 0x0F) | ((ids_arr & 0xFFFF) << 8)
+        packed_data = (id_arr & 0x07) | ((types_arr & 0x0F) << 3) | ((custom_ids_arr & 0xFFFF) << 11)
         self.data['packed_data'] = packed_data
 
         self.dirty_mask = np.zeros(self.num_ommatidia, dtype=bool)

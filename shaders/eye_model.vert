@@ -16,8 +16,9 @@ uniform int projection_mode;  // 0 = Physical Layout, 1 = Acceptance angle
 uniform float cone_length;
 uniform float visualisation_scale;
 
-out flat int v_index;
-flat out int v_mode;
+out flat uint v_index;
+flat out uint v_mode;
+flat out uint v_eye_id;
 
 mat3 rmatFromDir(vec3 z) {
     vec3 x = normalize(cross( (abs(z.y) > 0.999) ? vec3(1,0,0) : vec3(0,1,0), z));
@@ -30,6 +31,8 @@ void main() {
     Ommatidium om = ommatidia_data[i];
 
     v_mode = projection_mode;
+
+    v_eye_id = unpack_eye_id(om);
 
     vec3 O_world = (eye_to_world * vec4(om.origin.xyz * visualisation_scale, 1.0)).xyz;
     vec3 D_world = normalize((eye_to_world * vec4(om.direction.xyz, 0.0)).xyz);
