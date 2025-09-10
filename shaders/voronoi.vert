@@ -16,55 +16,57 @@ layout(std430, binding = 1) readonly buffer ColorDataBlock {
 
 // Uniforms
 uniform float aspect_ratio;
-uniform int projection_mode; // 0 = Physical Layout, 1 = Acceptance angle
+uniform int projection_mode; // 0 = Physical, 1 = Acceptance
 uniform bool tiled_mode;
 
-uniform float tiled_mode_scale;         // factor for tiled mode
-uniform float receptive_field_scale;    // factor for visual fields
+uniform float tiled_mode_scale;
+uniform float receptive_field_scale;
 
 // Output: Varying to fragment shader
 layout (location = 0) out vec3 v_color;
 
 void main() {
-    // Get the data for the specific instance (ommatidium) we are drawing
+    // Get the data for this instance
     int instance_id = gl_InstanceID;
     Ommatidium om = ommatidia_data[instance_id];
-    vec2 acceptance_angles = om.acceptance_angles;
+
+    float tilt_angle = om.tilt;
     vec3 instance_color = ommatidia_colors[instance_id].rgb;
 
-    // Choose the vector to use for projection based on mode
-    vec3 projection_vector;
+    // Determine projection vector based on mode
+    vec3 projection_vector = (projection_mode == 1)
+        ? om.direction.xyz
+        : normalize(om.origin.xyz);
 
-    if (projection_mode == 1) {
-        // Acceptance - use direction vectors
-        projection_vector = om.direction.xyz;
-    } else {
-        // Physical layout projection - use origin vectors
-         projection_vector = normalize(om.origin.xyz);
-    }
-
-    // Apply spherical projection to screen space
+    // Apply spherical projection to get screen position
     float longitude = atan(projection_vector.x, -projection_vector.z);
     float latitude = asin(projection_vector.y);
+    vec2 instance_screen_pos = vec2(longitude / PI, latitude / HPI);
 
-    // Map longitude/latitude to screen space [-1, 1]
-    float screen_x = longitude / PI;
-    float screen_y = latitude / HPI;
-
-    // Apply scaling for physical layout mode
-    vec2 instance_screen_pos = vec2(screen_x, screen_y);
-
-    // Scale the cone vertex based on mode
-    vec3 scaled_cone_pos = cone_vertex;
-
+    // ellipse shape is determined by acceptance angles or interommatidial angles depending on the mode
+    vec2 base_ellipse_shape;
     if (tiled_mode) {
-        scaled_cone_pos.xy *= om.interommatidial_angles * receptive_field_scale * 2.5;
+        base_ellipse_shape = cone_vertex.xy * om.interommatidial_angles;
     } else {
-        // Receptive field mode - scale by acceptance angles
-        scaled_cone_pos.xy *= acceptance_angles * receptive_field_scale;
+        base_ellipse_shape = cone_vertex.xy * om.acceptance_angles;
     }
 
-    // Position the cone at the ommatidium's screen position
+    // Orient the ellipse
+    float s = sin(tilt_angle);
+    float c = cos(tilt_angle);
+    mat2 rotation_matrix = mat2(c, -s, s, c);
+    vec2 rotated_ellipse_xy = rotation_matrix * base_ellipse_shape;
+
+    // Screen-space scaling
+    vec3 scaled_cone_pos;
+    if (tiled_mode) {
+        scaled_cone_pos.xy = rotated_ellipse_xy * receptive_field_scale * 2.5;
+    } else {
+        scaled_cone_pos.xy = rotated_ellipse_xy * receptive_field_scale;
+    }
+    scaled_cone_pos.z = cone_vertex.z;
+
+    // Position the rotated and scaled cone
     vec3 final_pos = scaled_cone_pos + vec3(instance_screen_pos, 0.0);
 
     // Apply aspect ratio correction

@@ -16,13 +16,13 @@ GPU_OMMATIDIUM_DTYPE = np.dtype([
     ('sensitivity', np.float32),                #  4 bytes (1 * float32): receptor sensitivity
     ('packed_data', np.uint32),                 #  4 bytes (1 * uint32): Packed additional data, see below
     ('padding', np.uint32)                      #  4 bytes padding
-])  # total 64 bytes
+])  # total = 64 bytes
 
 # packed_data layout:
-# - Bits 0-3:   Receptor type (0-15)
-# - Bits 4-7:   Number of neighbours (0-15)
-# - Bits 8-23:  Custom ID (0-65535)
-# - Bits 24-31: Padding
+# - bits 0-3: receptor type (0-15)
+# - bits 4-7: number of neighbours (0-15)
+# - bits 8-23: custom ID (0-65535)
+# - bits 24-31: padding
 
 
 DEFAULT_ANGLE = 'deg'
@@ -356,6 +356,8 @@ class CompoundEye:
         self.num_ommatidia = nb_effective_dirs
         self.data = np.zeros(self.num_ommatidia, dtype=GPU_OMMATIDIUM_DTYPE)
 
+        self.ommatidia = OmmatidiaCollection(self.data, self)
+
         norms = np.linalg.norm(directions, axis=1, keepdims=True)
         self.data['direction'][:, :3] = directions / norms
         self.data['direction'][:, 3] = 0.0  # w=0 for directions
@@ -378,10 +380,7 @@ class CompoundEye:
         self.data['origin'][:, 3] = 1.0  # w=1 for positions
 
         # Set receptor sensitivities
-        if sensitivities is None:
-            self.data['sensitivity'] = 1.0  # Default to 1.0
-        else:
-            self.data['sensitivity'] = self._prepare_param(sensitivities, "sensitivities")
+        self.ommatidia.sensitivity = sensitivities if sensitivities is not None else 1.0
 
         # Prepare data for packing
         types_arr = np.zeros(self.num_ommatidia, dtype=np.uint32)
@@ -407,24 +406,36 @@ class CompoundEye:
         self.kdtree_directions = KDTree(self.data['direction'][:, :3])
         self.kdtree_positions = KDTree(self.data['origin'][:, :3])
 
-        # Interommatidial angles (Δφ)
-        if interommatidial_angles_rad is not None:
-            # Priority 1: use the ground-truth angles if provided
-            print("Using provided interommatidial angles (Δφ).")
+        # Interommatidial angles (Δφ), tilt, and neighbours count
 
+        # Always compute lattice properties from the geometric layout (origins)
+        print("Estimating lattice properties (tilt, neighbours, IOA) from ommatidia origins...")
+        est_minor_rad, est_major_rad, tilts, counts = self._compute_lattice_properties()
+
+        # Always set the tilt and neighbour count from the geometric analysis
+        self.data['tilt'] = tilts
+        self.ommatidia.neighbours_count = counts
+
+        if interommatidial_angles_rad is not None:
+            # Priority 1: User provides ground-truth angles. Override the estimates.
+            print("Using provided interommatidial angles.")
             angles_arr = np.asarray(interommatidial_angles_rad, dtype=np.float32)
+
+            # Broadcast the user's data to the correct shape
             if angles_arr.shape == (self.num_ommatidia,):
                 angles_broadcast = angles_arr[:, np.newaxis]
             else:
                 angles_broadcast = np.broadcast_to(angles_arr, (self.num_ommatidia, 2))
 
-            self.ioa_minor_rad = angles_broadcast[:, 0]
-            self.ioa_major_rad = angles_broadcast[:, 1]
+            # Ensure minor is the smaller value
+            self.ioa_minor_rad = np.minimum(angles_broadcast[:, 0], angles_broadcast[:, 1])
+            self.ioa_major_rad = np.maximum(angles_broadcast[:, 0], angles_broadcast[:, 1])
+
         else:
-            # Priority 2: if no angles provided, estimate from geometry
-            print("Estimating interommatidial angles (Δφ) from ommatidia origins.")
-            self.ioa_minor_rad, self.ioa_major_rad = self.estimate_interommatidial_angles(
-                isotropic=force_isotropic)
+            # Priority 2: No angles provided, use estimated ones
+            print("Using estimated interommatidial angles.")
+            self.ioa_minor_rad = est_minor_rad
+            self.ioa_major_rad = est_major_rad
 
         self.data['interommatidial_angles'][:, 0] = self.ioa_minor_rad
         self.data['interommatidial_angles'][:, 1] = self.ioa_major_rad
@@ -479,12 +490,9 @@ class CompoundEye:
         np.nan_to_num(self.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         np.nan_to_num(self.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # And create the interface
-        self.ommatidia = OmmatidiaCollection(self.data, self)
-
     def _prepare_param(self, param, name="param"):
         """
-        Ensures parameter is a numpy array of the correct shape.
+        Ensures parameter is a numpy array of the correct shape
         """
         arr = np.asarray(param, dtype=np.float32)
         if arr.ndim == 0:
@@ -569,6 +577,110 @@ class CompoundEye:
         print(f"Loaded eye model from '{path}'.")
         return cls(**constructor_args)
 
+    def _compute_lattice_properties(self, k: int = 8, neighbour_dist_factor: float = 1.5) -> Tuple[
+        np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Estimates local lattice properties for each ommatidium using its nearest neighbours.
+        This includes interommatidial angles (minor and major axes), the lattice tilt angle,
+        and the number of immediate neighbours.
+
+        Args:
+            k (int): Number of neighbours to consider for the analysis.
+            neighbour_dist_factor (float): A factor to determine immediate neighbours. A neighbour is
+                considered "immediate" if its angular separation is less than or equal to
+                (neighbour_dist_factor * angular_separation_to_the_closest_neighbour).
+                A value of 1.5 is generally robust for hexagonal-like lattices.
+
+        Returns:
+            A tuple of numpy arrays: (ioa_minor_rad, ioa_major_rad, tilts_rad, neighbour_counts)
+        """
+        if self.num_ommatidia <= k:
+            zeros = np.zeros(self.num_ommatidia, dtype=np.float32)
+            return zeros, zeros, zeros, np.zeros(self.num_ommatidia, dtype=np.uint32)
+
+        # Calculate physical direction vectors from a common center
+        all_origins = self.data['origin'][:, :3]
+        eye_center = np.mean(all_origins, axis=0)
+        phys_dirs = all_origins - eye_center
+        phys_dirs /= np.linalg.norm(phys_dirs, axis=1, keepdims=True)
+
+        # Query for k+1 neighbours (point itself is the first)
+        phys_kdtree = KDTree(phys_dirs)
+        distances, indices = phys_kdtree.query(phys_dirs, k=k + 1)
+        neighbour_indices = indices[:, 1:]
+        neighbour_distances = distances[:, 1:]
+
+        if neighbour_indices.size == 0:
+            zeros = np.zeros(self.num_ommatidia, dtype=np.float32)
+            return zeros, zeros, zeros, np.zeros(self.num_ommatidia, dtype=np.uint32)
+
+        # Convert Euclidean distance on unit sphere to angular separation
+        angular_separations = 2.0 * np.arcsin(np.clip(neighbour_distances / 2.0, -1.0, 1.0))
+
+        # Count immediate neighbours
+        dist_to_closest = angular_separations[:, 0]
+        is_immediate_neighbour = angular_separations <= dist_to_closest[:, np.newaxis] * neighbour_dist_factor
+        neighbour_counts = np.sum(is_immediate_neighbour, axis=1)
+
+        # Determine tilt and minor/major IOA
+        # Define local coordinate systems (tangent planes) for each ommatidium
+        dot_products = np.abs(np.dot(phys_dirs, WORLD_UP))
+        is_polar = dot_products > 0.9999
+        ref_up_vectors = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
+        local_y_axes = ref_up_vectors - phys_dirs * np.sum(phys_dirs * ref_up_vectors, axis=1, keepdims=True)
+        local_y_axes /= np.linalg.norm(local_y_axes, axis=1, keepdims=True)
+        local_x_axes = np.cross(local_y_axes, phys_dirs)
+
+        # Project neighbour vectors onto the local tangent planes
+        neighbour_phys_dirs = phys_dirs[neighbour_indices]
+        delta_vectors = neighbour_phys_dirs - phys_dirs[:, np.newaxis, :]
+        proj_x = np.sum(delta_vectors * local_x_axes[:, np.newaxis, :], axis=2)
+        proj_y = np.sum(delta_vectors * local_y_axes[:, np.newaxis, :], axis=2)
+
+        tilts_rad = np.zeros(self.num_ommatidia, dtype=np.float32)
+        ioa_major_arr = np.zeros(self.num_ommatidia, dtype=np.float32)
+        ioa_minor_arr = np.zeros(self.num_ommatidia, dtype=np.float32)
+
+        for i in range(self.num_ommatidia):
+            # Use only immediate neighbours for PCA
+            immediate_mask = is_immediate_neighbour[i]
+            points = np.vstack([proj_x[i, immediate_mask], proj_y[i, immediate_mask]]).T
+
+            if points.shape[0] < 2:  # Not enough neighbours for PCA
+                # Fallback to a simple average if PCA is not possible
+                avg_angle = np.mean(angular_separations[i, immediate_mask]) if np.any(immediate_mask) else 0.0
+                ioa_major_arr[i], ioa_minor_arr[i], tilts_rad[i] = avg_angle, avg_angle, 0.0
+                continue
+
+            # Compute covariance and find the principal axis
+            cov_matrix = np.cov(points, rowvar=False)
+            eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
+            primary_axis_vector = eigenvectors[:, np.argmax(eigenvalues)]
+
+            # The tilt is the angle of this principal axis
+            tilts_rad[i] = np.arctan2(primary_axis_vector[1], primary_axis_vector[0])
+
+            # Rotate projected points to align with the new principal axes
+            cos_tilt, sin_tilt = np.cos(-tilts_rad[i]), np.sin(-tilts_rad[i])
+            aligned_proj_x = proj_x[i, immediate_mask] * cos_tilt - proj_y[i, immediate_mask] * sin_tilt
+            aligned_proj_y = proj_x[i, immediate_mask] * sin_tilt + proj_y[i, immediate_mask] * cos_tilt
+            neighbour_angles_aligned = np.arctan2(aligned_proj_y, aligned_proj_x)
+
+            # Find neighbours closest to the new major (aligned x) and minor (aligned y) axes
+            masked_angular_seps = angular_separations[i, immediate_mask]
+            major_indices = np.argsort(np.abs(np.sin(neighbour_angles_aligned)))[:2]
+            minor_indices = np.argsort(np.abs(np.cos(neighbour_angles_aligned)))[:2]
+
+            # Average the angles of the two best-matching neighbours for each axis
+            ioa_major_arr[i] = np.mean(masked_angular_seps[major_indices])
+            ioa_minor_arr[i] = np.mean(masked_angular_seps[minor_indices])
+
+        # Ensure minor is always the smaller value for consistency
+        final_ioa_minor = np.minimum(ioa_minor_arr, ioa_major_arr)
+        final_ioa_major = np.maximum(ioa_minor_arr, ioa_major_arr)
+
+        return final_ioa_minor, final_ioa_major, tilts_rad, neighbour_counts.astype(np.uint32)
+    
     def estimate_interommatidial_angles(self, k: int = 8, isotropic: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
         Estimates the minor and major interommatidial angles (Δφ) for each ommatidium
@@ -595,7 +707,7 @@ class CompoundEye:
         # Build the KD-Tree using these physically-derived directions
         phys_kdtree = KDTree(phys_dirs)
 
-        # Query for k+1 neighbors because the point itself is the first neighbor
+        # Query for k+1 neighbours because the point itself is the first neighbour
         distances, indices = phys_kdtree.query(phys_dirs, k=k + 1)
 
         # Ignore the first neighbour (the point itself)
@@ -610,11 +722,11 @@ class CompoundEye:
         angular_separations = 2.0 * np.arcsin(np.clip(neighbour_distances / 2.0, -1.0, 1.0))
 
         if isotropic:
-            # For isotropic, just average the angular separation to all neighbors
+            # For isotropic, just average the angular separation to all neighbours
             delta_phi = np.mean(angular_separations, axis=1)
             return delta_phi, delta_phi
         else:
-            # For anisotropic, we must differentiate between minor and major axes neighbors
+            # For anisotropic, we must differentiate between minor and major axes neighbours
 
             # Define local coordinate systems using the physical direction vectors
             dot_products = np.abs(np.dot(phys_dirs, WORLD_UP))
@@ -640,7 +752,7 @@ class CompoundEye:
             minor_indices = np.argsort(np.abs(np.sin(neighbour_angles)), axis=1)[:, :2]
             major_indices = np.argsort(np.abs(np.cos(neighbour_angles)), axis=1)[:, :2]
 
-            # The final estimate is the average of the two best-matching neighbors
+            # The final estimate is the average of the two best-matching neighbours
 
             minor_angles = np.take_along_axis(angular_separations, minor_indices, axis=1)
             major_angles = np.take_along_axis(angular_separations, major_indices, axis=1)
@@ -666,7 +778,7 @@ class CompoundEye:
     def max_gap(self):
         """
         Finds the maximum angular distance between any ommatidium and its
-        single nearest neighbor, which represents the largest "gap" in the eye.
+        single nearest neighbour, which represents the largest "gap" in the eye.
         """
 
         if self.num_ommatidia == 1:

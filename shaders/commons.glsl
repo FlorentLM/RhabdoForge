@@ -16,12 +16,14 @@ struct Material {
 struct Ommatidium {
     vec4 origin;
     vec4 direction;
-    vec2 acceptance_angles;
-    vec2 interommatidial_angles;
+    vec2 acceptance_angles;       // .x = minor axis, .y = major axis
+    vec2 interommatidial_angles;  // .x = minor axis, .y = major axis
     float tilt;
     float sensitivity;
-    uint packed_data;
+    uint packed_data;   // bits 0-3 = receptor type, bits 4-7 = mumber of neighbours, bits 8-23 = custom ID, rest is padding
+    uint padding;
 };
+
 
 // Helper functions for clean unpacking
 uint unpack_receptor_type(Ommatidium om) {
@@ -69,29 +71,34 @@ vec3 sampledir(
     in float u1,
     in float u2
 ) {
-
     // Azimuthal angle phi (uniform)
     float phi = TWOPI * u2;
 
-    // Importance sample the polar angle theta for each axis (H and V)
+    // Importance sample the polar angle theta for each axis (minor and major)
     // using the inverse CDF of the Gaussian distribution
-    // The random variable here is the angle itself, scaled by the acceptance angle
-    float angle_h = om.acceptance_angles.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);
-    float angle_v = om.acceptance_angles.y * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    float angle_minor = om.acceptance_angles.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    float angle_major = om.acceptance_angles.y * sqrt(-log(u1) / GAUSS_CONSTANT_K);
 
     // Using the same random number u1 for both maintains correlation and correctly
     // forms an elliptical distribution from a circular one
 
-    // Convert these angles on the tangent plane to a 3D direction in the ommatidium's local coordinate system
+    // Convert these angles on the tangent plane to a 2D point on an axis-aligned ellipse
     vec2 point_on_ellipse;
-    point_on_ellipse.x = tan(angle_h) * cos(phi);
-    point_on_ellipse.y = tan(angle_v) * sin(phi);
+    point_on_ellipse.x = tan(angle_minor) * cos(phi);
+    point_on_ellipse.y = tan(angle_major) * sin(phi);
 
-    // Project from tangent plane to unit sphere
-    vec3 sample_local = normalize(vec3(point_on_ellipse, 1.0));
+    // Rotate this 2D point by the ommatidium's elliptic tilt
+    float s = sin(om.tilt);
+    float c = cos(om.tilt);
+    mat2 rotation_matrix = mat2(c, -s, s, c);
+    vec2 tilted_point = rotation_matrix * point_on_ellipse;
+
+    // Project from tangent plane to unit sphere using the now-tilted point
+    vec3 sample_local = normalize(vec3(tilted_point, 1.0));
 
     // Transform from local to world coordinates and return
     return normalize(mat3(tangent, bitangent, forward) * sample_local);
 }
+
 
 #endif // COMMONS_GLSL

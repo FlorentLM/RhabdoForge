@@ -318,8 +318,8 @@ class EyeRendererBase(ABC):
         # avoid division by zero if window is not yet setup
         aspect_ratio = viewport[2] / viewport[3] if viewport[3] > 0 else 1.0
 
-        glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), 1.0)
-        # glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), aspect_ratio)
+        # glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), 1.0)
+        glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), aspect_ratio)
 
         glUniform1i(self.voronoi_shader.get_loc('tiled_mode'), self.tiled_mode)
         glUniform1i(self.voronoi_shader.get_loc('projection_mode'), self.projection_mode)
