@@ -4,21 +4,25 @@ import numpy as np
 
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
-from graphics.utils import VEC_DTYPE, WORLD_UP, WORLD_RIGHT, DeltaTimeTransformer
+from graphics.utils import WORLD_UP, WORLD_RIGHT, DeltaTimeTransformer
 
 
 GPU_OMMATIDIUM_DTYPE = np.dtype([
-    ('origin', VEC_DTYPE, 4),                   # 16 bytes (4 * float32, x, y, z coords and w pad)
-    ('direction', VEC_DTYPE, 4),                # 16 bytes (4 * float32, x, y, z coords and w pad)
-    ('acceptance_angles', VEC_DTYPE, 2),        # 8 bytes (2 * float32, minor and major)
-    ('interommatidial_angles', VEC_DTYPE, 2),   # 8 bytes (2 * float32, minor and major)
-    # TODO: Needs orientation for minor/major ellipse axes
-    # TODO: Needs the number of immediate neighbours
-    ('receptor_type', np.uint8, 1),             # 1 byte (1 * uint8), 0 to 255
-    ('sensitivity', VEC_DTYPE, 1),              # 4 bytes (1 * float32) for sensitivity
-    ('custom_id', np.uint16, 1),                # 2 bytes (0-65535) for a custom ID (eye region, or whatever)
-    ('padding', np.uint8, 9)                    # 9 bytes of padding
+    ('origin', np.float32, 4),                  # 16 bytes (4 * float32): x, y, z coords and w for homogeneous
+    ('direction', np.float32, 4),               # 16 bytes (4 * float32): x, y, z coords and w for homogeneous
+    ('acceptance_angles', np.float32, 2),       #  8 bytes (2 * float32): minor and major axes
+    ('interommatidial_angles', np.float32, 2),  #  8 bytes (2 * float32): minor and major axes
+    ('tilt', np.float32),                       #  4 bytes (1 * float32): ellipse tilt
+    ('sensitivity', np.float32),                #  4 bytes (1 * float32): receptor sensitivity
+    ('packed_data', np.uint32),                 #  4 bytes (1 * uint32): Packed additional data, see below
+    ('padding', np.uint32)                      #  4 bytes padding
 ])  # total 64 bytes
+
+# packed_data layout:
+# - Bits 0-3:   Receptor type (0-15)
+# - Bits 4-7:   Number of neighbours (0-15)
+# - Bits 8-23:  Custom ID (0-65535)
+# - Bits 24-31: Padding
 
 
 DEFAULT_ANGLE = 'deg'
@@ -63,7 +67,7 @@ class Ommatidium:
 
     @origin.setter
     def origin(self, value: Union[float, ArrayLike]):
-        self._data['origin'][self._item, :3] = np.asarray(value, dtype=VEC_DTYPE)
+        self._data['origin'][self._item, :3] = np.asarray(value, dtype=np.float32)
         self._data['origin'][self._item, 3] = 1.0  # The w component for origins should be 1.0
         self._parent_eye.dirty_mask[self._item] = True
         self._parent_eye.needs_rebuild['origin'] = True
@@ -135,7 +139,7 @@ class Ommatidium:
         current_origins = self._data[self._item]['origin'][..., :3]
         current_dirs = self._data[self._item]['direction'][..., :3]
 
-        distances_arr = np.asarray(distance, dtype=VEC_DTYPE)
+        distances_arr = np.asarray(distance, dtype=np.float32)
         if distances_arr.ndim == 1:
             distances_arr = distances_arr[:, np.newaxis]
 
@@ -175,7 +179,7 @@ class Ommatidium:
 
     @acceptance_deg.setter
     def acceptance_deg(self, values: Union[float, ArrayLike]):
-        self.acceptance_rad = np.deg2rad(np.asarray(values, dtype=VEC_DTYPE))
+        self.acceptance_rad = np.deg2rad(np.asarray(values, dtype=np.float32))
 
     @property
     def sensitivity(self) -> np.ndarray:
@@ -183,25 +187,58 @@ class Ommatidium:
 
     @sensitivity.setter
     def sensitivity(self, value: Union[float, ArrayLike]):
-        self._data['sensitivity'][self._item] = np.asarray(value, dtype=VEC_DTYPE)
+        self._data['sensitivity'][self._item] = np.asarray(value, dtype=np.float32)
         self._parent_eye.dirty_mask[self._item] = True
 
     @property
     def receptor_type(self) -> np.ndarray:
-        return self._data[self._item]['receptor_type']
+        """ Unpacks receptor type from bits 0-3 """
+        return self._data[self._item]['packed_data'] & 0x0F
 
     @receptor_type.setter
     def receptor_type(self, value: Union[int, ArrayLike]):
-        self._data['receptor_type'][self._item] = np.asarray(value, dtype=np.uint8)
+        """ Packs receptor type into bits 0-3 """
+        value_arr = np.asarray(value, dtype=np.uint32)
+
+        current_data = self._data['packed_data'][self._item]
+        cleared_data = current_data & ~0x0F  # ~0x0F is ...11110000
+        new_data = cleared_data | (value_arr & 0x0F)
+
+        self._data['packed_data'][self._item] = new_data
+        self._parent_eye.dirty_mask[self._item] = True
+
+    @property
+    def neighbours_count(self) -> np.ndarray:
+        """ Unpacks number of neighbours from bits 4-7 """
+        return (self._data[self._item]['packed_data'] >> 4) & 0x0F
+
+    @neighbours_count.setter
+    def neighbours_count(self, value: Union[int, ArrayLike]):
+        """ Packs number of neighbours into bits 4-7 """
+        value_arr = np.asarray(value, dtype=np.uint32)
+
+        current_data = self._data['packed_data'][self._item]
+        cleared_data = current_data & ~(0x0F << 4)
+        new_data = cleared_data | ((value_arr & 0x0F) << 4)
+
+        self._data['packed_data'][self._item] = new_data
         self._parent_eye.dirty_mask[self._item] = True
 
     @property
     def custom_id(self) -> np.ndarray:
-        return self._data[self._item]['custom_id']
+        """ Unpacks custom ID from bits 8-23 """
+        return (self._data[self._item]['packed_data'] >> 8) & 0xFFFF
 
     @custom_id.setter
     def custom_id(self, value: Union[int, ArrayLike]):
-        self._data['custom_id'][self._item] = np.asarray(value, dtype=np.uint16)
+        """ Packs custom ID into bits 8-23 """
+        value_arr = np.asarray(value, dtype=np.uint32)
+
+        current_data = self._data['packed_data'][self._item]
+        cleared_data = current_data & ~(0xFFFF << 8)
+        new_data = cleared_data | ((value_arr & 0xFFFF) << 8)
+
+        self._data['packed_data'][self._item] = new_data
         self._parent_eye.dirty_mask[self._item] = True
 
     @property
@@ -308,7 +345,7 @@ class CompoundEye:
         if directions is not None:
             # Priority 1: Direct directions are provided
             print("Using provided direction vectors.")
-            directions = np.asarray(directions, dtype=VEC_DTYPE)
+            directions = np.asarray(directions, dtype=np.float32)
             nb_effective_dirs = len(directions)
 
         else:
@@ -329,7 +366,7 @@ class CompoundEye:
 
         # Ommatidia origins
         if origins is not None:
-            origins_arr = np.asarray(origins, dtype=VEC_DTYPE)
+            origins_arr = np.asarray(origins, dtype=np.float32)
             if origins_arr.ndim == 1 and origins_arr.shape[0] == 3:
                 print(f"Using a single origin {origins_arr} for all {self.num_ommatidia} ommatidia.")
                 self.data['origin'][:, :3] = origins_arr  # Broadcast single origin
@@ -350,29 +387,26 @@ class CompoundEye:
         else:
             self.data['sensitivity'] = self._prepare_param(sensitivities, "sensitivities")
 
-        # Set receptor types
-        if receptor_types is None:
-            self.data['receptor_type'] = 0  # Default to 0
-        else:
-            # Use prepare_param but then cast to uint8
+        # Prepare data for packing
+        types_arr = np.zeros(self.num_ommatidia, dtype=np.uint32)
+        if receptor_types is not None:
             prepared_types = self._prepare_param(receptor_types, "receptor_types")
-            if np.any(prepared_types > 255) or np.any(prepared_types < 0):
-                raise ValueError("Receptor types must be in the range [0, 255].")
-            self.data['receptor_type'] = prepared_types.astype(np.uint8)
+            if np.any(prepared_types > 15) or np.any(prepared_types < 0):
+                print("Warning: Receptor types should be in [0, 15]. Clamping values.")
+            types_arr = prepared_types.astype(np.uint32)
 
-        # Set custom IDs
-        if custom_ids is None:
-            self.data['custom_id'] = 0  # Default to 0
-        else:
+        ids_arr = np.zeros(self.num_ommatidia, dtype=np.uint32)
+        if custom_ids is not None:
             prepared_ids = self._prepare_param(custom_ids, "custom_ids")
             if np.any(prepared_ids > 65535) or np.any(prepared_ids < 0):
                 raise ValueError("Custom IDs must be in the range [0, 65535].")
-            self.data['custom_id'] = prepared_ids.astype(np.uint16)
+            ids_arr = prepared_ids.astype(np.uint32)
+
+        packed_data = (types_arr & 0x0F) | ((ids_arr & 0xFFFF) << 8)
+        self.data['packed_data'] = packed_data
 
         self.dirty_mask = np.zeros(self.num_ommatidia, dtype=bool)
         self.needs_rebuild = {'direction': False, 'origin': True}
-
-        self.ommatidia = OmmatidiaCollection(self.data, self)
 
         self.kdtree_directions = KDTree(self.data['direction'][:, :3])
         self.kdtree_positions = KDTree(self.data['origin'][:, :3])
@@ -382,7 +416,7 @@ class CompoundEye:
             # Priority 1: use the ground-truth angles if provided
             print("Using provided interommatidial angles (Δφ).")
 
-            angles_arr = np.asarray(interommatidial_angles_rad, dtype=VEC_DTYPE)
+            angles_arr = np.asarray(interommatidial_angles_rad, dtype=np.float32)
             if angles_arr.shape == (self.num_ommatidia,):
                 angles_broadcast = angles_arr[:, np.newaxis]
             else:
@@ -445,15 +479,18 @@ class CompoundEye:
             self.eye_parameter_minor = self.data['acceptance_angles'][:, 0] / self.ioa_minor_rad
             self.eye_parameter_major = self.data['acceptance_angles'][:, 1] / self.ioa_major_rad
 
-        # and clean non-finite values
+        # clean non-finite values
         np.nan_to_num(self.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         np.nan_to_num(self.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # And create the interface
+        self.ommatidia = OmmatidiaCollection(self.data, self)
 
     def _prepare_param(self, param, name="param"):
         """
         Ensures parameter is a numpy array of the correct shape.
         """
-        arr = np.asarray(param, dtype=VEC_DTYPE)
+        arr = np.asarray(param, dtype=np.float32)
         if arr.ndim == 0:
             return np.full(self.num_ommatidia, arr.item())
         if arr.ndim == 1 and len(arr) == self.num_ommatidia:
@@ -478,7 +515,7 @@ class CompoundEye:
             print("Warning: No acceptance angles were provided or could be estimated.")
             return
 
-        angles_arr = np.asarray(angles_rad, dtype=VEC_DTYPE)
+        angles_arr = np.asarray(angles_rad, dtype=np.float32)
 
         # This logic handles scalar, (2,), (N,), and (N,2) cases via broadcasting
         if angles_arr.shape == (self.num_ommatidia,):
@@ -546,7 +583,7 @@ class CompoundEye:
         """
 
         if self.num_ommatidia <= k:
-            zeros = np.zeros(self.num_ommatidia, dtype=VEC_DTYPE)
+            zeros = np.zeros(self.num_ommatidia, dtype=np.float32)
             return zeros, zeros
 
         all_origins = self.data['origin'][:, :3]
@@ -570,7 +607,7 @@ class CompoundEye:
         neighbour_distances = distances[:, 1:]
 
         if neighbour_indices.size == 0:
-            zeros = np.zeros(self.num_ommatidia, dtype=VEC_DTYPE)
+            zeros = np.zeros(self.num_ommatidia, dtype=np.float32)
             return zeros, zeros
 
         # angular separation is angle = 2 * asin(distance / 2)
@@ -661,7 +698,7 @@ class CompoundEye:
 
         self.rebuild_spatial()
 
-        query_dirs = np.asarray(directions, dtype=VEC_DTYPE)
+        query_dirs = np.asarray(directions, dtype=np.float32)
         is_single_query = query_dirs.ndim == 1
         query_dirs_2d = np.atleast_2d(query_dirs)
 
@@ -692,7 +729,7 @@ class CompoundEye:
 
         self.rebuild_spatial()
 
-        query_pos = np.asarray(positions, dtype=VEC_DTYPE)
+        query_pos = np.asarray(positions, dtype=np.float32)
         is_single_query = query_pos.ndim == 1
         query_pos_2d = np.atleast_2d(query_pos)
 
@@ -711,7 +748,7 @@ class CompoundEye:
 
         self.rebuild_spatial()
 
-        query_targets = np.asarray(targets, dtype=VEC_DTYPE)
+        query_targets = np.asarray(targets, dtype=np.float32)
         is_single_query = query_targets.ndim == 1
         query_targets_2d = np.atleast_2d(query_targets)
 
@@ -744,7 +781,7 @@ class CompoundEye:
         self.rebuild_spatial()
 
         # Normalize the input direction to be safe
-        center_direction = np.asarray(center_direction, dtype=VEC_DTYPE)
+        center_direction = np.asarray(center_direction, dtype=np.float32)
         center_direction /= np.linalg.norm(center_direction)
 
         # Convert the search angle (cone radius) to a Euclidean distance
@@ -761,7 +798,7 @@ class CompoundEye:
         """
         self.rebuild_spatial()
 
-        center_position = np.asarray(center_position, dtype=VEC_DTYPE)
+        center_position = np.asarray(center_position, dtype=np.float32)
 
         indices = self.kdtree_positions.query_ball_point(center_position, r=radius)
         return indices
@@ -885,4 +922,4 @@ def subdivide_icosahedron(n_subdiv: int) -> np.ndarray:
     all_new_verts /= np.linalg.norm(all_new_verts, axis=1)[:, np.newaxis]
     _, iunique = np.unique(np.round(all_new_verts, 6), axis=0, return_index=True)
 
-    return all_new_verts[iunique].astype(VEC_DTYPE)
+    return all_new_verts[iunique].astype(np.float32)

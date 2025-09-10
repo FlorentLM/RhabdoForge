@@ -12,7 +12,7 @@ from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 from graphics.agent import Agent
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, MeshAsset, PointsAsset
-from graphics.utils import VEC_DTYPE, ShaderProgram, write_pytinybvh_preamble, ViewMode
+from graphics.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
 from graphics.renderers.panoramic import TextureViewer
 
 
@@ -207,7 +207,7 @@ class RaytracingSceneBaker:
                 # Pack point data for the shader
                 nb_points = len(asset.points)
 
-                packed_points = np.zeros((nb_points, 12), dtype=VEC_DTYPE)
+                packed_points = np.zeros((nb_points, 12), dtype=np.float32)
                 packed_points[:, 0:3] = asset.points
                 packed_points[:, 3] = asset.radii
                 packed_points[:, 4:7] = asset.normals

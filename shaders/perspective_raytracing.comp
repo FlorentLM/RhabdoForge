@@ -7,7 +7,7 @@ layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 // Output
 layout(binding = 0, rgba32f) uniform writeonly image2D output_image;
 
-// Uniforms (add inv_projection)
+// Uniforms
 uniform mat4 cam_to_world;     // view-space -> world-space
 uniform mat4 inv_projection;   // clip-space -> view-space
 
@@ -18,15 +18,15 @@ void main() {
     // Guard for oversized dispatch
     if (pixel_coords.x >= dims.x || pixel_coords.y >= dims.y) return;
 
-    // Pixel center → Normalized Device Coordinates in [-1, 1]
+    // Pixel center -> Normalized Device Coordinates in [-1, 1]
     vec2 uv = (vec2(pixel_coords) + vec2(0.5)) / vec2(dims);
     vec2 ndc = uv * 2.0 - 1.0;
 
     vec4 p_near_view = inv_projection * vec4(ndc, -1.0, 1.0); p_near_view /= p_near_view.w;
-    vec4 p_far_view  = inv_projection * vec4(ndc,  1.0, 1.0); p_far_view  /= p_far_view.w;
+    vec4 p_far_view = inv_projection * vec4(ndc, 1.0, 1.0); p_far_view  /= p_far_view.w;
 
-    vec3 origin = (cam_to_world * vec4(0,0,0,1)).xyz;
-    vec3 p_far  = (cam_to_world * vec4(p_far_view.xyz, 1.0)).xyz;
+    vec3 origin = (cam_to_world * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    vec3 p_far = (cam_to_world * vec4(p_far_view.xyz, 1.0)).xyz;
     vec3 direction = normalize(p_far - origin);
 
     Ray r;

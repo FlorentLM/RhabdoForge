@@ -1,8 +1,6 @@
 import random
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from enum import IntEnum
-from typing import Optional, Literal
+from typing import Optional
 
 import numpy as np
 import OpenGL

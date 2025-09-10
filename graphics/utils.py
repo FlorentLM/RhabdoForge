@@ -8,9 +8,6 @@ from pyglm import glm
 from OpenGL.GL import *
 import re
 
-# Precision
-VEC_DTYPE = np.float32
-
 # World unit vectors
 WORLD_RIGHT = WORLD_X = glm.vec3(1.0, 0.0, 0.0)
 WORLD_UP = WORLD_Y = glm.vec3(0.0, 1.0, 0.0)

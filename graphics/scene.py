@@ -12,7 +12,7 @@ import open3d as o3d
 from OpenGL.GL import *
 from pyglm import glm
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
-from graphics.utils import VEC_DTYPE, load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
+from graphics.utils import load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
 
 class Asset(ABC):
@@ -82,7 +82,7 @@ class MeshAsset(Asset):
 
                 new_indices_flat.append(new_idx)
 
-            self.vertices = np.array(vert_list, dtype=VEC_DTYPE)
+            self.vertices = np.array(vert_list, dtype=np.float32)
             self.indices = np.array(new_indices_flat, dtype=np.uint32).reshape(-1, 3)
 
         else:
@@ -124,28 +124,28 @@ class PointsAsset(Asset):
             print(f"Loading point cloud data from {path}...")
             pcd = o3d.io.read_point_cloud(path)
 
-            self.points = np.asarray(pcd.points, dtype=VEC_DTYPE)
-            self.normals = np.zeros_like(self.points, dtype=VEC_DTYPE)
-            self.colors = np.ones_like(self.points, dtype=VEC_DTYPE)
+            self.points = np.asarray(pcd.points, dtype=np.float32)
+            self.normals = np.zeros_like(self.points, dtype=np.float32)
+            self.colors = np.ones_like(self.points, dtype=np.float32)
 
             if pcd.has_normals():
-                self.normals = np.asarray(pcd.normals, dtype=VEC_DTYPE)
+                self.normals = np.asarray(pcd.normals, dtype=np.float32)
 
             if pcd.has_colors():
-                self.colors = np.asarray(pcd.colors, dtype=VEC_DTYPE)
+                self.colors = np.asarray(pcd.colors, dtype=np.float32)
 
         else:
-            self.points = np.asarray(points, dtype=VEC_DTYPE)
-            self.colors = np.asarray(colors, dtype=VEC_DTYPE) if colors is not None else np.ones_like(points, dtype=VEC_DTYPE)
-            self.normals = np.asarray(normals, dtype=VEC_DTYPE) if normals is not None else np.zeros_like(points, dtype=VEC_DTYPE)
+            self.points = np.asarray(points, dtype=np.float32)
+            self.colors = np.asarray(colors, dtype=np.float32) if colors is not None else np.ones_like(points, dtype=np.float32)
+            self.normals = np.asarray(normals, dtype=np.float32) if normals is not None else np.zeros_like(points, dtype=np.float32)
 
         self.num_points = len(self.points)
 
         if isinstance(radii, float):
-            self.radii = np.full(self.num_points, radii, dtype=VEC_DTYPE)
+            self.radii = np.full(self.num_points, radii, dtype=np.float32)
 
         elif isinstance(radii, ArrayLike):
-            radii = np.asarray(radii, dtype=VEC_DTYPE)
+            radii = np.asarray(radii, dtype=np.float32)
 
             if len(radii) != self.num_points:
                 raise ValueError("If not a scalar, number of radii must match the number of points.")
@@ -153,7 +153,7 @@ class PointsAsset(Asset):
             self.radii = radii
 
         else:
-            self.radii = np.full(self.num_points, 0.05, dtype=VEC_DTYPE)
+            self.radii = np.full(self.num_points, 0.05, dtype=np.float32)
 
         print(f"Loaded {self.num_points} points for asset '{name}'.")
 
@@ -177,7 +177,7 @@ class Instance:
         if transform is None:
             self.transform = glm.mat4(1.0)
         else:
-            transform_np = np.asarray(transform, dtype=VEC_DTYPE)
+            transform_np = np.asarray(transform, dtype=np.float32)
 
             if transform_np.shape == (4, 4):
                 self.transform = glm.mat4(transform_np)

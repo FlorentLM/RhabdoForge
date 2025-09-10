@@ -18,11 +18,23 @@ struct Ommatidium {
     vec4 direction;
     vec2 acceptance_angles;
     vec2 interommatidial_angles;
+    float tilt;
     float sensitivity;
-    uint receptor_type;
-    uint sub_id;
-    uint custom_id;
-}; // total size = 64 bytes
+    uint packed_data;
+};
+
+// Helper functions for clean unpacking
+uint unpack_receptor_type(Ommatidium om) {
+    return om.packed_data & 0x0Fu;
+}
+
+uint unpack_neighbours_count(Ommatidium om) {
+    return (om.packed_data >> 4) & 0x0Fu;
+}
+
+uint unpack_custom_id(Ommatidium om) {
+    return (om.packed_data >> 8) & 0xFFFFu;
+}
 
 struct Triangle {
     vec4 v0, v1, v2;       // offsets 0, 16 and 32, size 16. w is unused

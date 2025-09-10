@@ -10,7 +10,7 @@ from graphics.agent import Agent
 from graphics.renderers.panoramic import PanoramicEye
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, MeshAsset, PointsAsset
-from graphics.utils import load_shaders, load_texture, ShaderProgram, ViewMode
+from graphics.utils import load_texture, ShaderProgram, ViewMode
 
 
 class CubemapFBO:
