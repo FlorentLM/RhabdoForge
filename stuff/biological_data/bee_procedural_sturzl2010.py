@@ -190,13 +190,20 @@ ommatidia_right_data = generate_eye_model(az_fn_12, az_fn_34)
 ommatidia_right_angles = ommatidia_right_data[:, :2]
 ommatidia_right_ioas_deg = ommatidia_right_data[:, 2:]
 
-print(f"Generated {len(ommatidia_right_angles)} unique ommatidia.")
+num_ommatidia = len(ommatidia_right_angles)
+
+print(f"Generated {num_ommatidia} unique ommatidia.")
 
 # Create left eye by mirroring the azimuth
 ommatidia_left_angles = ommatidia_right_angles.copy()
 ommatidia_left_angles[:, 0] *= -1
 # The IOA profile is symmetrical
 ommatidia_left_ioas_deg = ommatidia_right_ioas_deg.copy()
+
+# Generate eye_id for each eye (left = 0, right = 1)
+
+right_eye_ids = np.ones(num_ommatidia, dtype=int)
+left_eye_ids = np.zeros(num_ommatidia, dtype=int)
 
 # Convert both sets of angles to 3D direction vectors
 right_eye_dirs = angles_to_vectors(ommatidia_right_angles)
@@ -213,7 +220,7 @@ left_eye_origins = left_eye_dirs * eye_radius - np.array([eye_separation, 0, 0])
 both_eyes_origs = np.concatenate((right_eye_origins, left_eye_origins))
 both_eyes_dirs = np.concatenate((right_eye_dirs, left_eye_dirs))
 both_eyes_ioas_deg = np.concatenate((ommatidia_right_ioas_deg, ommatidia_left_ioas_deg))
-
+both_eyes_ids = np.concatenate((right_eye_ids, left_eye_ids))
 both_eyes_ioas_rad = np.deg2rad(both_eyes_ioas_deg)
 
 # Save as npz
@@ -221,7 +228,8 @@ np.savez_compressed(
     "bee_eye.npz",
     directions=both_eyes_dirs,
     origins=both_eyes_origs,
-    interommatidial_angles_rad=both_eyes_ioas_rad
+    interommatidial_angles_rad=both_eyes_ioas_rad,
+    eye_id=both_eyes_ids
 )
 
 if PLOT:

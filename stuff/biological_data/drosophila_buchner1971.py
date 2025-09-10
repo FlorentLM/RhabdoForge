@@ -72,7 +72,13 @@ left_eye_dirs = heisenberg_coords @ transform_matrix.T
 # Create the right eye by mirroring on X
 right_eye_dirs = left_eye_dirs.copy()
 right_eye_dirs[:, 0] *= -1
-print("Created right eye by mirroring the left eye across the YZ plane.")
+
+num_ommatidia = len(left_eye_dirs)
+print(f"Generated {left_eye_dirs} unique ommatidia.")
+
+# Generate eye_id for each eye (left = 0, right = 1)
+left_eye_ids = np.zeros(num_ommatidia, dtype=int)
+right_eye_ids = np.ones(num_ommatidia, dtype=int)
 
 # Define plausible origins for the eyes
 eye_radius = 0.00035        # 0.35 mm radius
@@ -84,13 +90,14 @@ right_eye_origins = right_eye_dirs * eye_radius + np.array([eye_separation / 2, 
 
 both_eyes_origs = np.concatenate((right_eye_origins, left_eye_origins))
 both_eyes_dirs = np.concatenate((right_eye_dirs, left_eye_dirs))
+both_eyes_ids = np.concatenate((right_eye_ids, left_eye_ids))
 
 # Save as npz
 np.savez_compressed(
     "drosophila_eye.npz",
     directions=both_eyes_dirs,
-    origins=both_eyes_origs
-    # acceptance_angles_rad could be added here
+    origins=both_eyes_origs,
+    eye_id=both_eyes_ids
 )
 
 if PLOT:

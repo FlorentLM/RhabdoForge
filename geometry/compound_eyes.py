@@ -572,7 +572,7 @@ class CompoundEye:
 
         The .npz file is expected to contain at least a 'directions' array.
         It can optionally contain 'origins', 'acceptance_angles_rad', 'interommatidial_angles_rad',
-        'sensitivities', 'receptor_types' and 'custom_ids'.
+        'sensitivities', 'receptor_types', 'eye_id', and 'custom_ids'.
         Any arguments passed via **kwargs will override the data from the file.
 
         Args:
@@ -596,6 +596,7 @@ class CompoundEye:
             'interommatidial_angles_rad': data.get('interommatidial_angles_rad'),
             'sensitivities': data.get('sensitivities'),
             'receptor_types': data.get('receptor_types'),
+            'eye_id': data.get('eye_id'),
             'custom_ids': data.get('custom_ids'),
         }
 
