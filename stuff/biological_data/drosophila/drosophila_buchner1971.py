@@ -104,20 +104,16 @@ if PLOT:
     import matplotlib.pyplot as plt
     from PIL import Image
 
-    IMAGE_FILENAME = 'stuff/biological_data/drosophila_buchner1971.bmp'
-
-    image = Image.open(IMAGE_FILENAME)
+    image = Image.open('stuff/biological_data/drosophila_buchner1971.png')
     image_array = np.array(image)
-
-    # These values are straight from Andrew Straw's trace_buchner_1971.py code
     aspect_ratio = image.size[0] / image.size[1]
-    center = (0.7247, 0.5023)
-    im_scale = (2 / 0.4268, 2 / 0.4248)
+    center = (0.6975, 0.5)
+    im_scale = 1 / 0.22
 
-    im_extent = (im_scale[0] * (aspect_ratio - center[0]),
-                 im_scale[0] * (0 - center[0]),
-                 im_scale[1] * (0 - center[1]),
-                 im_scale[1] * (1 - center[1]))
+    im_extent = (im_scale * (aspect_ratio - center[0]),
+                 im_scale * (0 - center[0]),
+                 im_scale * (0 - center[1]),
+                 im_scale * (1 - center[1]))
 
     # Plotting
     fig, ax = plt.subplots(figsize=(12, 10))
