@@ -1,4 +1,48 @@
 import numpy as np
+from svg.path import parse_path
+import xml.etree.ElementTree as ET
+import re
+
+
+def parse_drosophila_svg(svg_file: str) -> dict:
+
+    tree = ET.parse(svg_file)
+    root = tree.getroot()
+    ns = {'svg': 'http://www.w3.org/2000/svg'}
+    data = {'ommatidia': [], 'stars': [], 'axes': {}, 'boundary': {}}
+
+    for circle in root.findall('svg:circle', ns):
+        if circle.get('id') != 'boundary':
+            data['ommatidia'].append((float(circle.get('cx')), float(circle.get('cy'))))
+
+    boundary_circle = root.find(".//*[@id='boundary']", ns)
+    if boundary_circle is not None:
+        data['boundary'] = {
+            'cx': float(boundary_circle.get('cx')),
+            'cy': float(boundary_circle.get('cy')),
+            'r': float(boundary_circle.get('r'))
+        }
+    else:
+        raise ValueError("Boundary circle with id='boundary' not found in SVG.")
+
+    for i in range(1, 6):
+        star_path_element = root.find(f".//*[@id='star-{i}']", ns)
+        if star_path_element is not None:
+            path_d = star_path_element.get('d')
+            cleaned_path = re.sub(r"[A-Za-z,]", " ", path_d)
+            coords = [float(c) for c in cleaned_path.split()]
+            points = np.array(coords).reshape(-1, 2)
+            data['stars'].append(tuple(np.mean(points, axis=0)))
+
+    for axis_id in ['axis-x', 'axis-y', 'axis-v']:
+        axis_path_element = root.find(f".//*[@id='{axis_id}']", ns)
+        if axis_path_element is not None:
+            # Store the raw path object for later sampling
+            data['axes'][axis_id] = parse_path(axis_path_element.get('d'))
+
+    print(f"Parsed SVG: Found {len(data['ommatidia'])} ommatidia")
+    return data
+
 
 def get_rotation_matrix(angle_rad, axis):
     """
@@ -48,18 +92,21 @@ PLOT = True
 
 print("Generating Drosophila Eye Model (from Buchner 1971 data)")
 
-ommatidia_positions = np.genfromtxt('stuff/biological_data/buchner1971_xy.csv', delimiter=',')[1:, :]
+svg_data = parse_drosophila_svg('stuff/biological_data/drosophila/drosophila_buchner1971_redigitized.svg')
+
+bc = svg_data['boundary']
+
+def to_stereo(coords_px):
+    coords_px = np.atleast_2d(coords_px)
+    x_stereo = -(coords_px[:, 0] - bc['cx']) / bc['r']
+    y_stereo = -(coords_px[:, 1] - bc['cy']) / bc['r']
+    return np.stack([x_stereo, y_stereo], axis=-1)
+
+ommatidia_positions = to_stereo(svg_data['ommatidia'])
 
 h_long, h_lat = stereographic_to_spherical(ommatidia_positions[:, 0], ommatidia_positions[:, 1])
 
-# In Buchner 1971:
-# +X = Posterior (Back)
-# +Y = Dorsal (Up)
-# +Z = Outward along the left eye's optical axis (Left)
-
-# Source X (Back) -> Target Z (Back)
-# Source Y (Up)   -> Target Y (Up)
-# Source Z (Left) -> Target -X (Left)
+# TODO: Use data from svg to orient the eyes correctly
 transform_matrix = np.array([
     [ 0, 0, -1],
     [ 0, 1,  0],
@@ -104,11 +151,11 @@ if PLOT:
     import matplotlib.pyplot as plt
     from PIL import Image
 
-    image = Image.open('stuff/biological_data/drosophila_buchner1971.png')
+    image = Image.open('stuff/biological_data/drosophila/drosophila_buchner1971.png')
     image_array = np.array(image)
     aspect_ratio = image.size[0] / image.size[1]
     center = (0.6975, 0.5)
-    im_scale = 1 / 0.22
+    im_scale = 1 / 0.44
 
     im_extent = (im_scale * (aspect_ratio - center[0]),
                  im_scale * (0 - center[0]),
