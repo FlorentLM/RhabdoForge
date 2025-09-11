@@ -155,7 +155,7 @@ if PLOT:
     image_array = np.array(image)
     aspect_ratio = image.size[0] / image.size[1]
     center = (0.6975, 0.5)
-    im_scale = 1 / 0.44
+    im_scale = 2.275
 
     im_extent = (im_scale * (aspect_ratio - center[0]),
                  im_scale * (0 - center[0]),
@@ -163,11 +163,11 @@ if PLOT:
                  im_scale * (1 - center[1]))
 
     # Plotting
-    fig, ax = plt.subplots(figsize=(12, 10))
+    fig, ax = plt.subplots(figsize=(18, 15))
 
     ax.imshow(image, origin='upper', extent=im_extent, aspect='equal', cmap='gray')
 
-    ax.scatter(ommatidia_positions[:, 0], ommatidia_positions[:, 1], s=40, alpha=0.8, facecolors='none', edgecolors='red',
+    ax.scatter(ommatidia_positions[:, 0], ommatidia_positions[:, 1], s=50, alpha=0.8, facecolors='none', edgecolors='red',
                label='Digitized')
 
     ax.set_title("Verification of Digitized Drosophila Eye Data", fontsize=16)
