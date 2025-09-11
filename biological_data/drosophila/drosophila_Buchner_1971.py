@@ -63,7 +63,7 @@ def spherical_to_cartesian(longitude, latitude):
 # TODO: Fix orientation in this
 
 
-svg_data = parse_drosophila_svg('stuff/biological_data/drosophila/drosophila_Buchner_1971_redigitized.svg')
+svg_data = parse_drosophila_svg('biological_data/drosophila/drosophila_Buchner_1971_redigitized.svg')
 bc = svg_data['boundary']
 
 def px_to_stereo(coords_px):
