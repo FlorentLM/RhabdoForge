@@ -1,5 +1,18 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+
+show_all_lines = False
+
+background_image = 'biological_data/drosophila/drosophila_Heisenberg_and_Wolf_1984.png'
+overlay_image = 'biological_data/drosophila/overlay.png'
+
+crop_pixels_top = 92
+crop_pixels_bottom = 92
+crop_pixels_left = 91
+crop_pixels_right = 88
+
+# -----------------------------------------------------------------------------
 
 
 def spherical_to_opengl(lon_deg, lat_deg):
@@ -58,11 +71,11 @@ def generate_small_circle(plane_normal, angular_offset_deg, num_points=400):
 # ORIGIN AND AXIS DIRECTIONS
 # -----------------------------------------------------------------------------
 grid_origin_lon = -68.144360022
-grid_origin_lat = -1.1835184140000052
+grid_origin_lat = -1.1835184140
 
 stereo_center_lon = -90.0
 
-num_lines_per_axis = 21
+num_lines_per_axis = 31
 
 angle_x = np.radians(-23)
 angle_y = np.radians(31.6)
@@ -91,13 +104,29 @@ N_y = np.cross(p_origin_3d, y_axis_3d);
 N_y /= np.linalg.norm(N_y)
 
 # Generate grid
-all_grid_curves = []
-grid_offsets_deg = np.linspace(-80, 80, num_lines_per_axis)
-for offset in grid_offsets_deg:
+all_grid_curves_stereo = []
+grid_offsets_deg_full = np.linspace(-80, 80, num_lines_per_axis)
+
+# Determine the offsets for the stereographic plot based on the user's choice
+if show_all_lines:
+    grid_offsets_deg_stereo = grid_offsets_deg_full
+else:
+    grid_offsets_deg_stereo = [0.0]  # Only the lines at the origin (great circles)
+
+# Generate curves for the first plot
+for offset in grid_offsets_deg_stereo:
     for normal, color in zip([N_x, N_y, N_v], ['red', 'green', 'blue']):
         curve_3d = generate_small_circle(normal, offset)
         lon, lat = opengl_to_spherical(curve_3d[0], curve_3d[1], curve_3d[2])
-        all_grid_curves.append({'lon': lon, 'lat': lat, 'color': color})
+        all_grid_curves_stereo.append({'lon': lon, 'lat': lat, 'color': color})
+
+# Generate the full set of curves for the second plot
+all_grid_curves_cartesian = []
+for offset in grid_offsets_deg_full:
+    for normal, color in zip([N_x, N_y, N_v], ['red', 'green', 'blue']):
+        curve_3d = generate_small_circle(normal, offset)
+        lon, lat = opengl_to_spherical(curve_3d[0], curve_3d[1], curve_3d[2])
+        all_grid_curves_cartesian.append({'lon': lon, 'lat': lat, 'color': color})
 
 
 # Plotting
@@ -112,10 +141,12 @@ for lat in np.arange(-80, 81, 10):
     lons = np.linspace(-180, 0, 200)
     x, y = equatorial_stereographic_projection(lons, lat, stereo_center_lon)
     ax1.plot(x, y, color='black', linewidth=1)
+
 for lon in np.arange(-180, 1, 10):
     lats = np.linspace(-90, 90, 200)
     x, y = equatorial_stereographic_projection(lon, lats, stereo_center_lon)
     ax1.plot(x, y, color='black', linewidth=1)
+
 boundary_lons = np.concatenate([np.full(100, 0), np.full(100, -180)])
 boundary_lats = np.concatenate([np.linspace(-90, 90, 100), np.linspace(90, -90, 100)])
 bx, by = equatorial_stereographic_projection(boundary_lons, boundary_lats, stereo_center_lon)
@@ -123,21 +154,19 @@ ax1.plot(bx, by, color='black', linewidth=1.5)
 
 # Text labels
 for lat in np.arange(-80, 81, 20):
-    lx, ly = equatorial_stereographic_projection(-185, lat, stereo_center_lon)  # Position outside left edge
+    lx, ly = equatorial_stereographic_projection(185, lat, stereo_center_lon)
     ax1.text(lx + 0.05, ly, f'{lat}', ha='left', va='center', fontsize=12)
+
 for lon in [-180, -170, 0]:
     lx, ly = equatorial_stereographic_projection(lon, 0, stereo_center_lon)
     vertical_offset = -0.05 if lon == -170 else 0.05
     ax1.text(lx, ly + vertical_offset, f'{lon}', ha='center', va='center', fontsize=12)
 
-# Plot colored grid lines with clipping
-for curve in all_grid_curves:
+# Plot colored grid lines (either full or single) with clipping
+for curve in all_grid_curves_stereo:
     lon_clipped, lat_clipped = curve['lon'].copy(), curve['lat'].copy()
-
-    # Invalidate points outside the visible hemisphere so they aren't plotted
     lon_clipped[(lon_clipped < -180) | (lon_clipped > 0)] = np.nan
     lat_clipped[np.isnan(lon_clipped)] = np.nan
-
     proj_x, proj_y = equatorial_stereographic_projection(lon_clipped, lat_clipped, stereo_center_lon)
     ax1.plot(proj_x, proj_y, color=curve['color'], lw=0.8, alpha=0.9)
 
@@ -149,14 +178,36 @@ ax1.axis('off')
 # Subplot 2: Cartesian projection
 ax2.set_title("Cartesian (Equirectangular) Projection", fontsize=16)
 
-for curve in all_grid_curves:
+# Display the background image
+try:
+    img = mpimg.imread(background_image)
+    height, width, _ = img.shape
+    img_cropped = img[crop_pixels_top:height - crop_pixels_bottom, crop_pixels_left:width - crop_pixels_right, :]
+    ax2.imshow(img_cropped, extent=[-180, 180, -90, 90], aspect='auto', zorder=0)
+except FileNotFoundError:
+    print(f"Warning: Background image not found at '{background_image}'. Plotting without it.")
+
+# Plot the colored grid lines
+for curve in all_grid_curves_cartesian:
     lon_clipped, lat_clipped = curve['lon'].copy(), curve['lat'].copy()
     lon_clipped[(lon_clipped < -180) | (lon_clipped > 0)] = np.nan
     lat_clipped[np.isnan(lon_clipped)] = np.nan
+    ax2.plot(lon_clipped, lat_clipped, color=curve['color'], lw=0.8, alpha=0.9, zorder=2)
 
-    ax2.plot(lon_clipped, lat_clipped, color=curve['color'], lw=0.8, alpha=0.9)
+# Display the overlay image
+if overlay_image:
+    try:
+        overlay_img = mpimg.imread(overlay_image)
+        height, width, _ = overlay_img.shape
+        overlay_img_cropped = overlay_img[crop_pixels_top:height - crop_pixels_bottom, crop_pixels_left:width - crop_pixels_right, :]
 
-    ax2.scatter(grid_origin_lon, grid_origin_lat, color='k')
+        ax2.imshow(overlay_img, extent=[-180, 180, -90, 90], aspect='auto',
+                   alpha=1.0, zorder=3)
+    except FileNotFoundError:
+        print(f"Warning: Overlay image not found at '{overlay_image}'. Skipping overlay.")
+
+# Plot markers on top of everything
+ax2.scatter(grid_origin_lon, grid_origin_lat, color='k', zorder=5)
 
 ax2.set_xlim(-180, 180)
 ax2.set_ylim(-90, 90)
@@ -169,5 +220,4 @@ ax2.set_yticks(np.arange(-90, 91, 15))
 ax2.grid(True, linestyle='--', alpha=0.6)
 ax2.set_aspect('equal', adjustable='box')
 
-plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 plt.show()
