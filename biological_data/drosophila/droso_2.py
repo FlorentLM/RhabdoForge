@@ -6,7 +6,6 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from svg.path import parse_path
 from sklearn.decomposition import PCA
-from sklearn.neighbors import NearestNeighbors
 
 
 def get_path_centroid(path):
@@ -89,23 +88,42 @@ def spherical_to_opengl(lon_deg, lat_deg):
     return np.array([x, y, z])
 
 
-def generate_great_circle_points(normal, num_points=200):
-    """ Generates points for a great circle on the unit sphere defined by its normal """
-    normal = normal / np.linalg.norm(normal)
-    # Find two orthogonal vectors in the plane of the great circle
+def generate_small_circle_points(points_on_sphere, num_points=200):
+    """
+    Fits a plane to the given points and generates the points for the
+    resulting small circle of intersection with the unit sphere.
+    """
+
+    # Fit a plane to the data using PCA. This plane does NOT have to pass through the origin.
+    pca = PCA(n_components=3)
+    pca.fit(points_on_sphere)
+    normal = pca.components_[2]
+    point_on_plane = pca.mean_
+
+    # Ensure the normal points towards the origin for consistency
+    if np.dot(normal, point_on_plane) > 0:
+        normal *= -1
+
+    dist_from_origin = np.dot(normal, point_on_plane)
+    circle_center = dist_from_origin * normal
+
+    circle_radius = np.sqrt(1 - dist_from_origin ** 2)
+
+    # Create an orthonormal basis for the plane
     v1 = np.cross(normal, [0, 0, 1])
     if np.linalg.norm(v1) < 1e-6:
         v1 = np.cross(normal, [0, 1, 0])
-    v1 = v1 / np.linalg.norm(v1)
+    v1 /= np.linalg.norm(v1)
     v2 = np.cross(normal, v1)
-    # Generate points
+
+    # Generate points around the circle
     t = np.linspace(0, 2 * np.pi, num_points)
-    points = np.outer(np.cos(t), v1) + np.outer(np.sin(t), v2)
-    return points
+    circle_points = circle_center + circle_radius * (np.outer(np.cos(t), v1) + np.outer(np.sin(t), v2))
+    return circle_points
 
 
 def rotate_vector(vector, axis, angle):
-    """ Rotates a vector around an axis by a given angle (in radians) """
+    """ Rotates a vector around an axis by a given angle (in radians). """
     axis = axis / np.linalg.norm(axis)
     return (vector * np.cos(angle) +
             np.cross(axis, vector) * np.sin(angle) +
@@ -116,22 +134,18 @@ def rotate_vector(vector, axis, angle):
 
 PLOT_BOTH_EYES = False
 NUDGE_OMMATIDIA = False
-REGULARIZE_AXIS_ANGLES = False
+REGULARIZE_AXIS_ANGLES = True
 
 svg_file = Path('biological_data/drosophila/drosophila_Buchner_1971_redigitized.svg')
 eye_data_2d = parse_drosophila_svg(svg_file)
 
-
 def transform_points_2d_to_3d(points_2d, boundary):
     translated = points_2d - np.array([boundary['cx'], boundary['cy']])
-
-    translated[:, 0] *= -1  # flip X for correct anterior-posterior orientation
-    translated[:, 1] *= -1  # also flip Y because SVG Y is downwards
-
+    translated[:, 0] *= -1
+    translated[:, 1] *= -1
     scaled = translated * (2.0 / boundary['r'])
     lon, lat = inverse_equatorial_stereographic(scaled[:, 0], scaled[:, 1], -90.0)
     return spherical_to_opengl(lon, lat).T
-
 
 boundary = eye_data_2d['boundary']
 ommatidia_3d = transform_points_2d_to_3d(np.array(eye_data_2d['ommatidia']), boundary)
@@ -144,11 +158,9 @@ for axis_id, path_data in eye_data_2d['axes'].items():
         axis_points_2d = sample_path(path_data, 200)
         axes_3d[axis_id] = transform_points_2d_to_3d(axis_points_2d, boundary)
 
-# Data regularisation
 print("\nRegularising eye model based on reference stars...")
 curve_coeffs = np.polyfit(stars_3d[:, 1], stars_3d[:, 0], 2)
 deviation_curve = np.poly1d(curve_coeffs)
-
 
 def regularise_points_3d(points_3d, curve_func):
     corrected = points_3d.copy()
@@ -157,7 +169,6 @@ def regularise_points_3d(points_3d, curve_func):
     norms = np.linalg.norm(corrected, axis=1, keepdims=True)
     norms[norms == 0] = 1
     return corrected / norms
-
 
 ommatidia_final = regularise_points_3d(ommatidia_3d, deviation_curve)
 stars_final = regularise_points_3d(stars_3d, deviation_curve)
@@ -169,87 +180,57 @@ for axis_id, points_3d in axes_3d.items():
 
 print("Regularization complete.")
 
-print("\nFitting ideal great circles to lattice axes using PCA...")
-axis_normals = {}
+print("\nFitting ideal small circles to lattice axes...")
+
+# Fit initial planes to get original normals and tilts
+initial_planes = {}
 for axis_id, points in axes_final.items():
     pca = PCA(n_components=3)
     pca.fit(points)
-    axis_normals[axis_id] = pca.components_[2]
+    initial_planes[axis_id] = {'n': pca.components_[2], 'mean': pca.mean_}
 
-# Define the ideal lattice tangents and normals
 C = lattice_centre_final.flatten()
 C_norm = C / np.linalg.norm(C)
 
-# Get the normal for the reference axis (X)
-n_x = axis_normals['axis-x']
-# Calculate the tangent vector for the X-axis at the center point
-t_x = np.cross(n_x, C_norm)
-t_x /= np.linalg.norm(t_x)
+final_planes = {}
 
 if REGULARIZE_AXIS_ANGLES:
-    print("Enforcing 60/120-degree separation between axes...")
-    t_ortho = np.cross(C_norm, t_x)  # A vector orthogonal to t_x at C
-    t_y = rotate_vector(t_x, C_norm, np.deg2rad(60))
-    t_v = rotate_vector(t_x, C_norm, np.deg2rad(120))
-    n_y = np.cross(t_y, C_norm)
-    n_v = np.cross(t_v, C_norm)
+    print("Enforcing 60/120-degree separation between axes in the tangent plane...")
+    # Get reference tangent from Axis X
+    n_x, p_mean_x = initial_planes['axis-x']['n'], initial_planes['axis-x']['mean']
+    t_x = np.cross(n_x, C_norm)
+    t_x /= np.linalg.norm(t_x)
+    final_planes['axis-x'] = {'n': n_x, 'p': p_mean_x}
+
+    # Create ideal tangents for Y and V by rotating in the tangent plane
+    t_y_ideal = rotate_vector(t_x, C_norm, np.deg2rad(60))
+    t_v_ideal = rotate_vector(t_x, C_norm, np.deg2rad(120))
+
+    # Reconstruct the planes for Y and V
+    for axis_id, t_ideal in [('axis-y', t_y_ideal), ('axis-v', t_v_ideal)]:
+        # Preserve the original plane's tilt by preserving its distance from the origin
+        n_orig, p_mean_orig = initial_planes[axis_id]['n'], initial_planes[axis_id]['mean']
+        dist_preserved = np.dot(n_orig, p_mean_orig)
+
+        # The new normal must be perpendicular to the ideal tangent
+        # We solve for the new normal `n_ideal = a*C + b*ortho_vec`
+        a = dist_preserved
+        b_sq = 1 - a ** 2
+        b = np.sqrt(b_sq) if b_sq > 0 else 0
+
+        ortho_vec = np.cross(t_ideal, C_norm)
+        ortho_vec /= np.linalg.norm(ortho_vec)
+
+        n_ideal = a * C_norm + b * ortho_vec
+        final_planes[axis_id] = {'n': n_ideal, 'p': C}  # the new plane must pass through C
 else:
-    n_y = axis_normals['axis-y']
-    n_v = axis_normals['axis-v']
-    t_y = np.cross(n_y, C_norm)
-    t_v = np.cross(n_v, C_norm)
+    for axis_id, plane_data in initial_planes.items():
+        final_planes[axis_id] = {'n': plane_data['n'], 'p': plane_data['mean']}
 
-# Store the final ideal normals and tangents
-ideal_axes = {
-    'axis-x': {'n': n_x, 't': t_x},
-    'axis-y': {'n': n_y, 't': t_y},
-    'axis-v': {'n': n_v, 't': t_v},
-}
-
-# Nudge ommatidia based on a generated hexagonal grid
-ommatidia_nudged = ommatidia_final.copy()
-if NUDGE_OMMATIDIA:
-    print("\nNudging ommatidia to nearest ideal lattice grid line...")
-
-    # Estimate inter-ommatidial spacing (delta-phi)
-    # Use a subset of points near the lattice center # TODO: Might want to allow variable density across the eye
-    center_distances = np.linalg.norm(ommatidia_final - C, axis=1)
-    central_ommatidia = ommatidia_final[center_distances < 0.5]
-    nn = NearestNeighbors(n_neighbors=2).fit(central_ommatidia)
-    distances, _ = nn.kneighbors(central_ommatidia)
-    angular_distances = 2 * np.arcsin(distances[:, 1] / 2)
-    delta_phi = np.mean(angular_distances)
-
-    print(f"Estimated inter-ommatidial angle (Δφ): {np.rad2deg(delta_phi):.2f} degrees")
-
-    # Generate all grid line normals
-    all_grid_normals = []
-
-    # Define how many grid lines to generate on each side of the central axis
-    grid_extent = int(np.pi / (2 * delta_phi))
-
-    for axis_id, data in ideal_axes.items():
-        # The rotation axis is the tangent of a perpendicular axis
-        if axis_id == 'axis-x': rot_axis = ideal_axes['axis-y']['t']
-        if axis_id == 'axis-y': rot_axis = ideal_axes['axis-x']['t']
-        if axis_id == 'axis-v': rot_axis = ideal_axes['axis-x']['t']  # could be more robust
-
-        for i in range(-grid_extent, grid_extent + 1):
-            angle = i * delta_phi
-            rotated_normal = rotate_vector(data['n'], rot_axis, angle)
-            all_grid_normals.append(rotated_normal)
-    all_grid_normals = np.array(all_grid_normals)
-
-    # For each ommatidium, find the closest grid line and project onto it
-    for i, p_om in enumerate(ommatidia_final):
-        distances = np.abs(np.dot(all_grid_normals, p_om))
-        closest_grid_idx = np.argmin(distances)
-        n_closest = all_grid_normals[closest_grid_idx]
-        p_proj = p_om - np.dot(p_om, n_closest) * n_closest
-        p_nudged = p_proj / np.linalg.norm(p_proj)
-        ommatidia_nudged[i] = p_nudged
-
-    print("Ommatidia nudging complete.")
+# Fitting ideal circles to lattice axes
+ideal_axes_points = {}
+for axis_id, points in axes_final.items():
+    ideal_axes_points[axis_id] = generate_small_circle_points(points)
 
 # Plotting
 fig = plt.figure(figsize=(12, 12))
@@ -263,41 +244,36 @@ for axis_id, points in axes_final.items():
     ax.plot(points[:, 0], points[:, 1], points[:, 2], color=axis_colors[axis_id], linewidth=2.5,
             label=f'Axis {axis_id[-1].upper()}')
 
-# Plot the ideal great circles for the central axes as dotted lines
-for axis_id, data in ideal_axes.items():
-    points = generate_great_circle_points(data['n'])
+# Plot the ideal circles as dotted lines
+for axis_id, points in ideal_axes_points.items():
     ax.plot(points[:, 0], points[:, 1], points[:, 2], color=axis_colors[axis_id],
             linestyle='--', linewidth=1.5, label=f'Ideal Axis {axis_id[-1].upper()}')
 
-if NUDGE_OMMATIDIA:
-    ax.scatter(ommatidia_nudged[:, 0], ommatidia_nudged[:, 1], ommatidia_nudged[:, 2],
-               c='green', s=15, alpha=0.5, label='Nudged Ommatidia')
-    for p_orig, p_nudge in zip(ommatidia_final, ommatidia_nudged):
-        ax.plot([p_orig[0], p_nudge[0]], [p_orig[1], p_nudge[1]], [p_orig[2], p_nudge[2]],
-                color='black', linewidth=0.3)
+# if NUDGE_OMMATIDIA:
+#
+#     ax.scatter(ommatidia_nudged[:, 0], ommatidia_nudged[:, 1], ommatidia_nudged[:, 2],
+#                c='green', s=15, alpha=0.5, label='Nudged Ommatidia')
+#     for p_orig, p_nudge in zip(ommatidia_final, ommatidia_nudged):
+#         ax.plot([p_orig[0], p_nudge[0]], [p_orig[1], p_nudge[1]], [p_orig[2], p_nudge[2]],
+#                 color='black', linewidth=0.3)
 
 ax.scatter(stars_final[:, 0], stars_final[:, 1], stars_final[:, 2], c='red', s=150, marker='*',
            label='Forward direction', depthshade=False)
-ax.scatter(C[0], C[1], C[2], c='black', s=20, marker='X', label='Lattice origin', depthshade=False)
+ax.scatter(lattice_centre_final[:, 0], lattice_centre_final[:, 1], lattice_centre_final[:, 2], c='black', s=20,
+           marker='X', label='Lattice origin', depthshade=False)
 
 if PLOT_BOTH_EYES:
-    # Create the right eye by reflecting the final left eye
     ommatidia_right = ommatidia_final.copy()
     ommatidia_right[:, 0] *= -1
-
-    # Plot the right eye ommatidia
     ax.scatter(ommatidia_right[:, 0], ommatidia_right[:, 1], ommatidia_right[:, 2], c='#555555',
                s=10, alpha=0.6)
 
-# OpenGL axes gizmo for clarity
 ax.quiver(0, 0, 0, 0.5, 0, 0, color='r', label='Right (+X)')
 ax.quiver(0, 0, 0, 0, 0.5, 0, color='g', label='Up (+Y)')
 ax.quiver(0, 0, 0, 0, 0, -0.5, color='b', label='Forward (-Z)')
 
-ax.set_title("Drosophila Eye from Buchner 1971", fontsize=16)
-
+ax.set_title("Drosophila Eye from Buchner 1971 (Small Circle Fit)", fontsize=16)
 ax.set_box_aspect([1, 1, 1])
-
 ax.set_xlim([-1, 1])
 ax.set_ylim([-1, 1])
 ax.set_zlim([-1, 1])
