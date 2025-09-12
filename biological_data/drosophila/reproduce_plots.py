@@ -132,8 +132,11 @@ else:
     grid_y_offsets_plot_1 = grid_y_offsets
     grid_v_offsets_plot_1 = grid_v_offsets
 
+
+axis_colors = ['#ff60b3', '#00FF9B', '#FFC400']
+
 # Generate curves for the first plot
-for normal, color, offsets in zip([N_x, N_y, N_v], ['red', 'green', 'blue'], [grid_x_offsets_plot_1, grid_y_offsets_plot_1, grid_v_offsets_plot_1]):
+for normal, color, offsets in zip([N_x, N_y, N_v], axis_colors, [grid_x_offsets_plot_1, grid_y_offsets_plot_1, grid_v_offsets_plot_1]):
     for offset in offsets:
         curve_3d = generate_small_circle(normal, offset)
         lon, lat = opengl_to_spherical(curve_3d[0], curve_3d[1], curve_3d[2])
@@ -141,7 +144,7 @@ for normal, color, offsets in zip([N_x, N_y, N_v], ['red', 'green', 'blue'], [gr
 
 # Generate the full set of curves for the second plot
 all_grid_curves_cartesian = []
-for normal, color, offsets in zip([N_x, N_y, N_v], ['red', 'green', 'blue'], [grid_x_offsets, grid_y_offsets, grid_v_offsets]):
+for normal, color, offsets in zip([N_x, N_y, N_v], axis_colors, [grid_x_offsets, grid_y_offsets, grid_v_offsets]):
     for offset in offsets:
         curve_3d = generate_small_circle(normal, offset)
         lon, lat = opengl_to_spherical(curve_3d[0], curve_3d[1], curve_3d[2])
