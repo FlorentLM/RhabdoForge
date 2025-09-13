@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from svg.path import parse_path, Line, Close
 from sklearn.decomposition import PCA
+from scipy.optimize import minimize
 
 
 def get_path_centroid(path):
@@ -51,7 +52,7 @@ def parse_drosophila_svg(svg_file: Union[Path, str]) -> dict:
     hemisphere_circle = root.find(".//*[@id='hemisphere']", ns)
     if hemisphere_circle is not None:
         data['hemisphere'] = {'cx': float(hemisphere_circle.get('cx')), 'cy': float(hemisphere_circle.get('cy')),
-                            'r': float(hemisphere_circle.get('r'))}
+                              'r': float(hemisphere_circle.get('r'))}
     else:
         raise ValueError("Hemisphere circle with id='hemisphere' not found in SVG.")
 
@@ -115,6 +116,7 @@ def small_circle_points(points_on_sphere, nb_points=200):
     normal = pca.components_[2]
     point_on_plane = pca.mean_
 
+    # Ensure normal points towards the origin for consistency
     if np.dot(normal, point_on_plane) > 0:
         normal *= -1
 
@@ -186,17 +188,25 @@ def clip_lines(lines, data_points, padding_factor=1.05):
 
 ## Controls
 
-PLOT_BOTH_EYES = False
-PARALLELIZE_GRID_LINES = False
-PARALLELIZATION_MODE = 'main_axis'  # 'main_axis' or 'average'
+REGULARIZE_WITH_MARKERS = True
+REGULARIZE_COPLANAR_GRID = True
+DATA_DRIVEN_SMOOTHING = False
 REGULARIZE_GRID_ANGLES = False
+
+PLOT_GRID_PLANES_NORMALS = False
+CLIP_GRID = True
+PLOT_BOTH_EYES = False
+
+EM_ITERATIONS = 4               # Number of Expectation-Maximization loops
+POLY_DEGREE_ANGLE = 4           # The "stiffness" of the angle smoothing
+POLY_DEGREE_DIST = 4            # The "stiffness" of the distance smoothing
 
 
 ## Initial projection
 
 svg_file = Path('biological_data/drosophila/drosophila_Buchner_1971_redigitized.svg')
-
 eye_data_2d = parse_drosophila_svg(svg_file)
+
 
 def unproject(points_2d, hemisphere_boundary):
     translated = points_2d - np.array([hemisphere_boundary['cx'], hemisphere_boundary['cy']])
@@ -205,6 +215,7 @@ def unproject(points_2d, hemisphere_boundary):
     scaled = translated * (2.0 / hemisphere_boundary['r'])
     lon, lat = inverse_equatorial_stereographic(scaled[:, 0], scaled[:, 1], -90.0)
     return spherical_to_opengl(lon, lat).T
+
 
 hemisphere_boundary = eye_data_2d['hemisphere']
 
@@ -215,7 +226,6 @@ axes_3d = {ax_id: unproject(sample_path(path, 50), hemisphere_boundary)
            for ax_id, path in eye_data_2d['axes'].items() if path}
 
 print("\nSampling the grid lines (this takes a while...)")
-
 grid_lines_3d = {}
 for grid_id, paths_2d in eye_data_2d['grid_lines'].items():
     grid_lines_3d[grid_id] = []
@@ -224,96 +234,212 @@ for grid_id, paths_2d in eye_data_2d['grid_lines'].items():
         projected_points = unproject(sampled_points, hemisphere_boundary)
         grid_lines_3d[grid_id].append(projected_points)
 
-## Regularization of eye orientation (based on forward-facing markers in Buchner 1971)
+## Regularization of eye orientation
 
-print("\nRegularising eye model based on reference stars...")
+if REGULARIZE_WITH_MARKERS:
+    print("\nRegularising eye model based on reference stars...")
+    curve_coeffs = np.polyfit(stars_3d[:, 1], stars_3d[:, 0], 2)
+    deviation_curve = np.poly1d(curve_coeffs)
 
-curve_coeffs = np.polyfit(stars_3d[:, 1], stars_3d[:, 0], 2)
-deviation_curve = np.poly1d(curve_coeffs)
+    def regularise_points_3d(points_3d, curve_func):
+        corrected = points_3d.copy()
+        shifts = curve_func(corrected[:, 1])
+        corrected[:, 0] -= shifts
+        norms = np.linalg.norm(corrected, axis=1, keepdims=True)
+        norms[norms == 0] = 1
+        return corrected / norms
 
-def regularise_points_3d(points_3d, curve_func):
-    corrected = points_3d.copy()
-    shifts = curve_func(corrected[:, 1])
-    corrected[:, 0] -= shifts
-    norms = np.linalg.norm(corrected, axis=1, keepdims=True)
-    norms[norms == 0] = 1
-    return corrected / norms
+    ommatidia_final = regularise_points_3d(ommatidia_3d, deviation_curve)
+    stars_final = regularise_points_3d(stars_3d, deviation_curve)
+    lattice_centre_final = regularise_points_3d(lattice_centre_3d, deviation_curve)
+    axes_final = {id: regularise_points_3d(pts, deviation_curve) for id, pts in axes_3d.items()}
+    grid_lines_final = {grid_id: [regularise_points_3d(pts, deviation_curve) for pts in points_list]
+                        for grid_id, points_list in grid_lines_3d.items()}
+    print("Regularization complete.")
 
-ommatidia_final = regularise_points_3d(ommatidia_3d, deviation_curve)
-stars_final = regularise_points_3d(stars_3d, deviation_curve)
-lattice_centre_final = regularise_points_3d(lattice_centre_3d, deviation_curve)
-axes_final = {id: regularise_points_3d(pts, deviation_curve) for id, pts in axes_3d.items()}
-grid_lines_final = {grid_id: [regularise_points_3d(pts, deviation_curve) for pts in points_list]
-                    for grid_id, points_list in grid_lines_3d.items()}
+else:
+    ommatidia_final = ommatidia_3d
+    stars_final = stars_3d
+    lattice_centre_final = lattice_centre_3d
+    axes_final = axes_3d
+    grid_lines_final = grid_lines_3d
 
-print("Regularization complete.")
-
-## Fitting main axes and biological grid lines from manual traces
+## Fitting main axes and biological grid lines
 
 print("\nFitting circles to main axes and manually traced grid lines...")
-
 main_axes_data = {}
 for axis_id, points in axes_final.items():
     main_axis_points, normal, mean = small_circle_points(points)
     main_axes_data[axis_id] = {'points': main_axis_points, 'normal': normal, 'mean': mean}
 
 biological_grid_lines = {}
-
 for grid_id, lines_3d in grid_lines_final.items():
     axis_id = grid_id.replace('grid-', 'axis-')
     biological_grid_lines[axis_id] = []
-
     for line_points_3d in lines_3d:
         circle_points, normal, mean = small_circle_points(line_points_3d)
         if circle_points.size > 0:
-            biological_grid_lines[axis_id].append({'points': circle_points, 'normal': normal, 'mean': mean})
-
+            biological_grid_lines[axis_id].append(
+                {'points': circle_points, 'normal': normal, 'mean': mean, 'original_data': line_points_3d})
 print("Grid fitting complete.")
 
+## (Optional) Regularize grid lines to have co-planar normals
 
-## (Optional) Parallelize grid lines
-
-if PARALLELIZE_GRID_LINES:
-    print(f"\nParallelizing grid lines using '{PARALLELIZATION_MODE}' method...")
-
+if REGULARIZE_COPLANAR_GRID:
+    print("\nRegularizing grid lines to have co-planar normals based on main axes...")
     for axis_id, lines in biological_grid_lines.items():
-        if not lines: continue
+        if not lines or axis_id not in main_axes_data:
+            continue
 
-        target_normal = None
-        if PARALLELIZATION_MODE == 'average':
-            all_normals = np.array([line['normal'] for line in lines])
-            reference_normal = all_normals[0]
-            for i in range(1, len(all_normals)):
-                if np.dot(all_normals[i], reference_normal) < 0:
-                    all_normals[i] *= -1
-            avg_normal = np.mean(all_normals, axis=0)
-            target_normal = avg_normal / np.linalg.norm(avg_normal)
+        main_axis_normal = main_axes_data[axis_id]['normal']
+        common_axis = np.cross(main_axis_normal, lattice_centre_final.flatten())
+        common_axis /= np.linalg.norm(common_axis)
 
-        else:  # 'main_axis' mode
-            target_normal = main_axes_data[axis_id]['normal']
+        for line in lines:
+            n_old = line['normal']
+            if np.dot(n_old, main_axis_normal) < 0:
+                n_old *= -1
 
-        if target_normal is not None:
-            for line in lines:
-                line['points'] = small_circle_from_normal(target_normal, line['mean'])
-                line['normal'] = target_normal
+            n_new = n_old - np.dot(n_old, common_axis) * common_axis
+            n_new /= np.linalg.norm(n_new)
 
-    print("Parallelization complete.")
+            line['normal'] = n_new
+            line['points'] = small_circle_from_normal(n_new, line['mean'])
+    print("Co-planar regularization complete.")
 
-## (Optional) Final 60-degree regularization of the entire eye
+## (Optional) Smoothing and regularization
+
+# if DATA_DRIVEN_SMOOTHING:
+#     print("\nStarting data-driven grid regularization...")
+#     for axis_id, lines in biological_grid_lines.items():
+#         if not lines or axis_id not in main_axes_data or len(lines) <= max(POLY_DEGREE_ANGLE, POLY_DEGREE_DIST):
+#             print(f"Skipping smoothing for {axis_id} due to insufficient lines.")
+#             continue
+#
+#         print(f"  Processing {axis_id}...")
+#         main_axis_normal = main_axes_data[axis_id]['normal']
+#         common_axis = np.cross(main_axis_normal, lattice_centre_final.flatten())
+#         common_axis /= np.linalg.norm(common_axis)
+#
+#         # Sort lines based on the projection of their original data centroid onto the main axis
+#         centroids = [np.mean(line['original_data'], axis=0) for line in lines]
+#         sort_keys = [np.dot(c, main_axis_normal) for c in centroids]
+#         sorted_lines = [line for _, line in sorted(zip(sort_keys, lines))]
+#
+#         current_lines = sorted_lines
+#
+#         # Expectation-Maximization optimisation
+#         for i in range(EM_ITERATIONS):
+#             print(f"    EM Iteration {i + 1}/{EM_ITERATIONS}...")
+#
+#             # E-STEP: Assign ommatidia to their closest current grid line
+#             num_lines = len(current_lines)
+#             line_normals = np.array([line['normal'] for line in current_lines])
+#             line_dists = np.array([np.dot(line['normal'], line['mean']) for line in current_lines])
+#
+#             # Calculate distance of each ommatidium to each line's plane
+#             # dist(p, plane) = |dot(p, n) - d|
+#             ommatidia_dots = np.dot(ommatidia_final, line_normals.T)
+#             distances_to_planes = np.abs(ommatidia_dots - line_dists)
+#
+#             # Assign each ommatidium to the index of the closest line
+#             assignments = np.argmin(distances_to_planes, axis=1)
+#
+#             # Group ommatidia by their assigned line index
+#             ommatidia_by_line = [ommatidia_final[assignments == j] for j in range(num_lines)]
+#
+#             # M-STEP: Find the best smooth grid that fits the assigned ommatidia
+#             # We define an objective function to minimize. The function's input is a
+#             # set of polynomial coefficients that describe the grid's geometry.
+#             # It returns a "cost": the total squared distance from the generated
+#             # smooth grid to the assigned ommatidia points.
+#
+#             def objective_function(params):
+#                 angle_coeffs = params[:POLY_DEGREE_ANGLE + 1]
+#                 dist_coeffs = params[POLY_DEGREE_ANGLE + 1:]
+#                 smooth_angle_func = np.poly1d(angle_coeffs)
+#                 smooth_dist_func = np.poly1d(dist_coeffs)
+#
+#                 sequence_indices = np.arange(num_lines)
+#                 smooth_angles = smooth_angle_func(sequence_indices)
+#                 smooth_dists = smooth_dist_func(sequence_indices)
+#
+#                 total_error = 0
+#                 for j in range(num_lines):
+#                     assigned_points = ommatidia_by_line[j]
+#                     if assigned_points.shape[0] == 0:
+#                         continue  # No points assigned to this line
+#
+#                     # Reconstruct the normal and distance for this smooth line
+#                     n_smooth = rotate_vector(main_axis_normal, common_axis, smooth_angles[j])
+#                     d_smooth = smooth_dists[j]
+#
+#                     # Calculate and sum the squared distances for this line's points
+#                     error = np.sum((np.dot(assigned_points, n_smooth) - d_smooth) ** 2)
+#                     total_error += error
+#
+#                 return total_error
+#
+#             # Run the optimization
+#             # Get the current parameters to use as an initial guess for the optimizer
+#             angles_for_sorting = []
+#             for line in current_lines:
+#                 n_proj = line['normal'] - np.dot(line['normal'], common_axis) * common_axis
+#                 n_proj /= np.linalg.norm(n_proj)
+#                 dot_prod = np.dot(main_axis_normal, n_proj)
+#                 cross_prod = np.dot(common_axis, np.cross(main_axis_normal, n_proj))
+#                 angles_for_sorting.append(np.arctan2(cross_prod, dot_prod))
+#
+#             original_angles = np.array(angles_for_sorting)
+#             original_distances = np.array([np.dot(line['normal'], line['mean']) for line in current_lines])
+#
+#             # Initial guess for the optimizer from a simple polyfit
+#             p0_angle = np.polyfit(np.arange(num_lines), original_angles, POLY_DEGREE_ANGLE)
+#             p0_dist = np.polyfit(np.arange(num_lines), original_distances, POLY_DEGREE_DIST)
+#             p0 = np.concatenate([p0_angle, p0_dist])
+#
+#             result = minimize(objective_function, p0, method='Nelder-Mead')
+#             best_params = result.x
+#
+#             # Replace the original biological grid lines with the optimized ones
+#             best_angle_coeffs = best_params[:POLY_DEGREE_ANGLE + 1]
+#             best_dist_coeffs = best_params[POLY_DEGREE_ANGLE + 1:]
+#             final_angle_func = np.poly1d(best_angle_coeffs)
+#             final_dist_func = np.poly1d(best_dist_coeffs)
+#
+#             sequence_indices = np.arange(num_lines)
+#             final_angles = final_angle_func(sequence_indices)
+#             final_distances_raw = final_dist_func(sequence_indices)
+#
+#             # Clamp distances to a safe range just inside the sphere's boundary
+#             final_distances = np.clip(final_distances_raw, -0.999, 0.999)
+#
+#             new_lines = []
+#             for j in range(num_lines):
+#                 new_angle = final_angles[j]
+#                 new_dist = final_distances[j]
+#                 new_normal = rotate_vector(main_axis_normal, common_axis, new_angle)
+#                 new_mean = new_dist * new_normal
+#                 new_points = small_circle_from_normal(new_normal, new_mean)
+#                 new_lines.append({'normal': new_normal, 'mean': new_mean, 'points': new_points,
+#                                   'original_data': current_lines[j]['original_data']})
+#             current_lines = new_lines
+#
+#             biological_grid_lines[axis_id] = current_lines
+#
+#     print("Data-driven regularization complete.")
+
+
+## (Optional) Final 60-degree regularization
 
 if REGULARIZE_GRID_ANGLES:
     print("\nEnforcing 60/120-degree separation via rigid rotation of the entire grid...")
     C = lattice_centre_final.flatten()
     C_norm = C / np.linalg.norm(C)
 
-    def get_axis_normal(axis_id):
-        if PARALLELIZE_GRID_LINES and biological_grid_lines[axis_id]:
-            return biological_grid_lines[axis_id][0]['normal']
-        return main_axes_data[axis_id]['normal']
-
-    n_x = get_axis_normal('axis-x')
-    n_y = get_axis_normal('axis-y')
-    n_v = get_axis_normal('axis-v')
+    n_x = main_axes_data['axis-x']['normal']
+    n_y = main_axes_data['axis-y']['normal']
+    n_v = main_axes_data['axis-v']['normal']
 
     t_x = np.cross(n_x, C_norm)
     t_x /= np.linalg.norm(t_x)
@@ -344,10 +470,12 @@ if REGULARIZE_GRID_ANGLES:
     ommatidia_final = apply_rigid_rotation(ommatidia_final)
     stars_final = apply_rigid_rotation(stars_final)
     lattice_centre_final = apply_rigid_rotation(lattice_centre_final)
+
     for axis_id in biological_grid_lines:
         for line in biological_grid_lines[axis_id]: line['points'] = apply_rigid_rotation(line['points'])
     for axis_id in main_axes_data: main_axes_data[axis_id]['points'] = apply_rigid_rotation(
         main_axes_data[axis_id]['points'])
+
     print("Rigid rotation applied.")
 
 ## Plotting
@@ -362,17 +490,20 @@ axis_colors = {'axis-x': '#ff60b3', 'axis-y': '#00FF9B', 'axis-v': '#FFC400'}
 
 for axis_id, circles in biological_grid_lines.items():
     lines_to_plot = [c['points'] for c in circles]
-    # lines_to_plot = clip_lines(lines_to_plot, ommatidia_final)
+    if CLIP_GRID:
+        lines_to_plot = clip_lines(lines_to_plot, ommatidia_final)
     for line_points in lines_to_plot:
-        ax.plot(line_points[:, 0], line_points[:, 1], line_points[:, 2], color=axis_colors[axis_id], linewidth=0.7,
-                alpha=0.8)
+        if line_points.size > 0:
+            ax.plot(line_points[:, 0], line_points[:, 1], line_points[:, 2], color=axis_colors[axis_id], linewidth=0.7,
+                    alpha=0.8)
 
 main_axes_to_plot = [d['points'] for d in main_axes_data.values()]
-# main_axes_to_plot = clip_lines(main_axes_to_plot, ommatidia_final)
+if CLIP_GRID:
+    main_axes_to_plot = clip_lines(main_axes_to_plot, ommatidia_final)
 main_axes_clipped_dict = dict(zip(main_axes_data.keys(), main_axes_to_plot))
 for axis_id, points in main_axes_clipped_dict.items():
     if points.size > 0:
-        ax.plot(points[:, 0], points[:, 1], points[:, 2], color=axis_colors[axis_id], linewidth=2.5,
+        ax.plot(points[:, 0], points[:, 1], points[:, 2], color=axis_colors[axis_id], linewidth=2.0,
                 label=f'Axis {axis_id[-1].upper()}')
 
 ax.scatter(stars_final[:, 0], stars_final[:, 1], stars_final[:, 2], c='red', s=150, marker='*',
@@ -385,6 +516,25 @@ if PLOT_BOTH_EYES:
     ommatidia_right[:, 0] *= -1
     ax.scatter(ommatidia_right[:, 0], ommatidia_right[:, 1], ommatidia_right[:, 2], c='#555555', s=10, alpha=0.2)
 
+if PLOT_GRID_PLANES_NORMALS:
+    print("\nPlotting normal vectors for verification...")
+    u = np.linspace(0, 2 * np.pi, 100)
+    v = np.linspace(0, np.pi, 100)
+    x = 0.5 * np.outer(np.cos(u), np.sin(v))
+    y = 0.5 * np.outer(np.sin(u), np.sin(v))
+    z = 0.5 * np.outer(np.ones(np.size(u)), np.cos(v))
+    ax.plot_surface(x, y, z, color='grey', alpha=0.1, zorder=-100)
+
+    for axis_id, circles in biological_grid_lines.items():
+        normals = np.array([c['normal'] for c in circles])
+        ax.quiver(
+            np.zeros(len(normals)), np.zeros(len(normals)), np.zeros(len(normals)),
+            normals[:, 0], normals[:, 1], normals[:, 2],
+            color=axis_colors[axis_id],
+            length=0.8,
+            label=f'{axis_id[-1].upper()} Normals' if axis_id else ''
+        )
+
 ax.quiver(0, 0, 0, 0.5, 0, 0, color='r', label='Right (+X)')
 ax.quiver(0, 0, 0, 0, 0.5, 0, color='g', label='Up (+Y)')
 ax.quiver(0, 0, 0, 0, 0, -0.5, color='b', label='Forward (-Z)')
@@ -392,12 +542,13 @@ ax.quiver(0, 0, 0, 0, 0, -0.5, color='b', label='Forward (-Z)')
 ax.set_title("Drosophila Eye from Buchner, 1971", fontsize=16)
 
 ax.set_box_aspect([1, 1, 1])
-
 ax.set_xlim([-1, 1])
 ax.set_ylim([-1, 1])
 ax.set_zlim([-1, 1])
-
 ax.view_init(elev=50, azim=25, roll=110)
 
-ax.legend()
+handles, labels = ax.get_legend_handles_labels()
+unique_labels = dict(zip(labels, handles))
+ax.legend(unique_labels.values(), unique_labels.keys())
+
 plt.show()
