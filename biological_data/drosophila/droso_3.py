@@ -4,10 +4,8 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from svg.path import parse_path
+from svg.path import parse_path, Line, Close
 from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
-from scipy.signal import find_peaks
 
 
 def get_path_centroid(path):
@@ -18,25 +16,36 @@ def get_path_centroid(path):
     return np.mean(np.array([(p.real, p.imag) for p in points]), axis=0)
 
 
-def sample_path(path, num_points=100):
-    """ Generates a set of evenly spaced points along an SVG path """
+def sample_path(path, pts_per_segment=20):
+    """
+    Generates points along an SVG path by sampling its constituent segments
+    """
     points = []
-    for i in range(num_points):
-        pos = i / (num_points - 1)
-        point = path.point(pos)
-        points.append((point.real, point.imag))
+
+    for segment in path:
+        # it is only needed to sample curves (Arc, CubicBezier, QuadraticBezier), for straight lines the endpoints are enough
+        if isinstance(segment, (Line, Close)):
+            points.append((segment.end.real, segment.end.imag))
+        else:
+            for i in range(pts_per_segment):
+                pos = i / (pts_per_segment - 1)
+                p = segment.point(pos)
+                points.append((p.real, p.imag))
+    if path:
+        points.insert(0, (path[0].start.real, path[0].start.imag))
     return np.array(points)
 
 
 def parse_drosophila_svg(svg_file: Union[Path, str]) -> dict:
     """ Parses the digitized SVG file """
+
     tree = ET.parse(svg_file)
     root = tree.getroot()
     ns = {'svg': 'http://www.w3.org/2000/svg'}
-    data = {'ommatidia': [], 'stars': [], 'axes': {}, 'hemisphere': {}}
+    data = {'ommatidia': [], 'stars': [], 'axes': {}, 'hemisphere': {}, 'grid_lines': {}}
 
     for circle in root.findall('svg:circle', ns):
-        if circle.get('id') != ['hemisphere']:
+        if circle.get('id') != 'hemisphere':
             data['ommatidia'].append((float(circle.get('cx')), float(circle.get('cy'))))
 
     hemisphere_circle = root.find(".//*[@id='hemisphere']", ns)
@@ -66,8 +75,16 @@ def parse_drosophila_svg(svg_file: Union[Path, str]) -> dict:
         if axis_path_element is not None:
             data['axes'][axis_id] = parse_path(axis_path_element.get('d'))
 
+    for grid_id in ['grid-x', 'grid-y', 'grid-v']:
+        data['grid_lines'][grid_id] = []
+        for path_element in root.findall(f".//svg:g[@id='{grid_id}']/svg:path", ns):
+            path_d = path_element.get('d')
+            if path_d:
+                data['grid_lines'][grid_id].append(parse_path(path_d))
+
     print(
-        f"Parsed SVG: Found {len(data['ommatidia'])} ommatidia, {len(data['stars'])} stars, and {len(data['axes'])} axes.")
+        f"Parsed SVG: Found {len(data['ommatidia'])} ommatidia, {len(data['stars'])} stars, "
+        f"{len(data['axes'])} main axes, and {sum(len(v) for v in data['grid_lines'].values())} grid lines.")
     return data
 
 
@@ -89,7 +106,7 @@ def spherical_to_opengl(lon_deg, lat_deg):
     return np.array([x, y, z])
 
 
-def generate_small_circle_points(points_on_sphere, num_points=200):
+def small_circle_points(points_on_sphere, nb_points=200):
     if len(points_on_sphere) < 3:
         return np.array([]), None, None
 
@@ -115,72 +132,28 @@ def generate_small_circle_points(points_on_sphere, num_points=200):
     v1 /= np.linalg.norm(v1)
     v2 = np.cross(normal, v1)
 
-    t = np.linspace(0, 2 * np.pi, num_points)
+    t = np.linspace(0, 2 * np.pi, nb_points)
     circle_points = circle_center + circle_radius * (np.outer(np.cos(t), v1) + np.outer(np.sin(t), v2))
     return circle_points, normal, point_on_plane
 
 
-def create_small_circle_from_normal(normal, point_on_plane, num_points=200):
+def small_circle_from_normal(normal, point_on_plane, nb_points=200):
     dist_from_origin = np.dot(normal, point_on_plane)
-    if abs(dist_from_origin) >= 1.0: return np.array([])
+
+    if abs(dist_from_origin) >= 1.0:
+        return np.array([])
+
     circle_center = dist_from_origin * normal
     circle_radius = np.sqrt(1 - dist_from_origin ** 2)
     v1 = np.cross(normal, [0, 0, 1])
-    if np.linalg.norm(v1) < 1e-6: v1 = np.cross(normal, [0, 1, 0])
+
+    if np.linalg.norm(v1) < 1e-6:
+        v1 = np.cross(normal, [0, 1, 0])
+
     v1 /= np.linalg.norm(v1)
     v2 = np.cross(normal, v1)
-    t = np.linspace(0, 2 * np.pi, num_points)
+    t = np.linspace(0, 2 * np.pi, nb_points)
     return circle_center + circle_radius * (np.outer(np.cos(t), v1) + np.outer(np.sin(t), v2))
-
-
-def fit_quasi_parallel_grid_lines(ommatidia, main_axis_plane_normal, n_lines=15):
-    # Step 1: Initial Clustering (as before)
-    dists = np.dot(ommatidia, main_axis_plane_normal).reshape(-1, 1)
-    kmeans = KMeans(n_clusters=n_lines, random_state=0, n_init='auto').fit(dists)
-    initial_labels = kmeans.labels_
-
-    # Step 2: First Fit to get approximate planes
-    initial_planes = []
-    for i in range(n_lines):
-        cluster_ommatidia = ommatidia[initial_labels == i]
-        if len(cluster_ommatidia) > 3:
-            _, normal, mean = generate_small_circle_points(cluster_ommatidia)
-            if normal is not None:
-                initial_planes.append({'normal': normal, 'mean': mean})
-        else:
-            initial_planes.append(None)  # Keep list length consistent
-
-    # Step 3: Re-assignment
-    # Filter out any empty initial clusters that didn't produce a plane
-    valid_planes = [p for p in initial_planes if p is not None]
-    if not valid_planes: return []
-
-    plane_normals = np.array([p['normal'] for p in valid_planes])
-    plane_means = np.array([p['mean'] for p in valid_planes])
-
-    # Calculate vector from each plane mean to each ommatidium
-    diff_vectors = ommatidia - plane_means[:, np.newaxis, :] # Shape: (n_planes, n_ommatidia, 3)
-
-    # Calculate perpendicular distance from each ommatidium to each plane's normal
-    # The einsum string is changed here from 'ij,kj->ik' to 'kij,kj->ki'
-    distances_to_planes = np.abs(np.einsum('kij,kj->ki', diff_vectors, plane_normals))
-
-    # Find the index of the closest plane for each ommatidium
-    # The output of einsum is (n_planes, n_ommatidia), so we find the minimum along axis 0
-    refined_labels = np.argmin(distances_to_planes, axis=0)
-
-    # Step 4: Final Fit
-    fitted_circles = []
-    # Note: We iterate up to the number of *valid planes* found
-    for i in range(len(valid_planes)):
-        # Use the new, refined clusters
-        cluster_ommatidia = ommatidia[refined_labels == i]
-        if len(cluster_ommatidia) > 3:
-            circle_points, normal, point_on_plane = generate_small_circle_points(cluster_ommatidia)
-            if circle_points.size > 0:
-                fitted_circles.append({'points': circle_points, 'normal': normal, 'mean': point_on_plane})
-
-    return fitted_circles
 
 
 def rotate_vector(vector, axis, angle):
@@ -190,8 +163,10 @@ def rotate_vector(vector, axis, angle):
             axis * np.dot(axis, vector) * (1 - np.cos(angle)))
 
 
-def clip_lines_to_data_hemisphere(lines, data_points, padding_factor=1.05):
-    if not lines: return []
+def clip_lines(lines, data_points, padding_factor=1.05):
+    if not lines:
+        return []
+
     center_vec = np.mean(data_points, axis=0)
     center_vec /= np.linalg.norm(center_vec)
     dot_products = np.clip(np.dot(data_points, center_vec), -1.0, 1.0)
@@ -205,65 +180,49 @@ def clip_lines_to_data_hemisphere(lines, data_points, padding_factor=1.05):
         clipped_line = line_points.copy()
         clipped_line[outside_mask] = np.nan
         clipped_lines.append(clipped_line)
+
     return clipped_lines
-
-
-def debug_plot_histogram(dists, n_bins, peaks, hist, axis_id):
-    """ A helper function to visualize the histogram and detected peaks for debugging """
-    bin_centers = np.linspace(np.min(dists), np.max(dists), n_bins)
-    plt.figure(figsize=(10, 4))
-    plt.title(f"Histogram of Projected Ommatidia for {axis_id}")
-    plt.bar(bin_centers, hist, width=(bin_centers[1] - bin_centers[0]) * 0.9, label='Ommatidia Count')
-    plt.plot(bin_centers[peaks], hist[peaks], "x", color='r', markersize=10, label='Detected Peaks (Rows)')
-    plt.xlabel("Distance along Axis Normal")
-    plt.ylabel("Number of Ommatidia")
-    plt.legend()
-    plt.show()
-
-
-def determine_n_lines(ommatidia, plane_normal, axis_id, n_bins=100, debug_plot=False):
-    """ Automatically determines the number of ommatidia rows along a given axis normal """
-    dists = np.dot(ommatidia, plane_normal)
-    hist, bin_edges = np.histogram(dists, bins=n_bins)
-    peaks, _ = find_peaks(hist, height=4, distance=3)
-
-    if debug_plot:
-        debug_plot_histogram(dists, n_bins, peaks, hist, axis_id)
-
-    n_lines = len(peaks)
-    print(f"    - Found {n_lines} lines for {axis_id}.")
-    return n_lines if 5 < n_lines < 30 else 17
 
 
 ## Controls
 
 PLOT_BOTH_EYES = False
-N_GRID_LINES_PER_AXIS = {'axis-x': 'auto', 'axis-y': 'auto', 'axis-v': 'auto'}
 PARALLELIZE_GRID_LINES = False
 PARALLELIZATION_MODE = 'main_axis'  # 'main_axis' or 'average'
 REGULARIZE_GRID_ANGLES = False
-DEBUG_AUTO_LINE_DETECTION = False
 
-## Data Loading and Initial Projection
+
+## Initial projection
 
 svg_file = Path('biological_data/drosophila/drosophila_Buchner_1971_redigitized.svg')
 
 eye_data_2d = parse_drosophila_svg(svg_file)
 
-def transform_points_2d_to_3d(points_2d, hemisphere):
-    translated = points_2d - np.array([hemisphere['cx'], hemisphere['cy']])
+def unproject(points_2d, hemisphere_boundary):
+    translated = points_2d - np.array([hemisphere_boundary['cx'], hemisphere_boundary['cy']])
     translated[:, 0] *= -1
     translated[:, 1] *= -1
-    scaled = translated * (2.0 / hemisphere['r'])
+    scaled = translated * (2.0 / hemisphere_boundary['r'])
     lon, lat = inverse_equatorial_stereographic(scaled[:, 0], scaled[:, 1], -90.0)
     return spherical_to_opengl(lon, lat).T
 
-hemisphere = eye_data_2d['hemisphere']
-ommatidia_3d = transform_points_2d_to_3d(np.array(eye_data_2d['ommatidia']), hemisphere)
-stars_3d = transform_points_2d_to_3d(np.array(eye_data_2d['stars']), hemisphere)
-lattice_centre_3d = transform_points_2d_to_3d(np.array([eye_data_2d['lattice-origin']]), hemisphere)
-axes_3d = {id: transform_points_2d_to_3d(sample_path(path, 200), hemisphere) for id, path in eye_data_2d['axes'].items()
-           if path}
+hemisphere_boundary = eye_data_2d['hemisphere']
+
+ommatidia_3d = unproject(np.array(eye_data_2d['ommatidia']), hemisphere_boundary)
+stars_3d = unproject(np.array(eye_data_2d['stars']), hemisphere_boundary)
+lattice_centre_3d = unproject(np.array([eye_data_2d['lattice-origin']]), hemisphere_boundary)
+axes_3d = {ax_id: unproject(sample_path(path, 50), hemisphere_boundary)
+           for ax_id, path in eye_data_2d['axes'].items() if path}
+
+print("\nSampling the grid lines (this takes a while...)")
+
+grid_lines_3d = {}
+for grid_id, paths_2d in eye_data_2d['grid_lines'].items():
+    grid_lines_3d[grid_id] = []
+    for p in paths_2d:
+        sampled_points = sample_path(p, 200)
+        projected_points = unproject(sampled_points, hemisphere_boundary)
+        grid_lines_3d[grid_id].append(projected_points)
 
 ## Regularization of eye orientation (based on forward-facing markers in Buchner 1971)
 
@@ -284,27 +243,33 @@ ommatidia_final = regularise_points_3d(ommatidia_3d, deviation_curve)
 stars_final = regularise_points_3d(stars_3d, deviation_curve)
 lattice_centre_final = regularise_points_3d(lattice_centre_3d, deviation_curve)
 axes_final = {id: regularise_points_3d(pts, deviation_curve) for id, pts in axes_3d.items()}
+grid_lines_final = {grid_id: [regularise_points_3d(pts, deviation_curve) for pts in points_list]
+                    for grid_id, points_list in grid_lines_3d.items()}
 
 print("Regularization complete.")
 
-## Fitting initial main axes and biological grid lines
+## Fitting main axes and biological grid lines from manual traces
 
-print("\nFitting initial main axes and grid lines...")
+print("\nFitting circles to main axes and manually traced grid lines...")
 
 main_axes_data = {}
-biological_grid_lines = {}
-
 for axis_id, points in axes_final.items():
-    main_axis_points, normal, mean = generate_small_circle_points(points)
+    main_axis_points, normal, mean = small_circle_points(points)
     main_axes_data[axis_id] = {'points': main_axis_points, 'normal': normal, 'mean': mean}
 
-    n_lines = N_GRID_LINES_PER_AXIS.get(axis_id)
-    if n_lines == 'auto':
-        n_lines = determine_n_lines(ommatidia_final, normal, axis_id, debug_plot=DEBUG_AUTO_LINE_DETECTION)
+biological_grid_lines = {}
 
-    biological_grid_lines[axis_id] = fit_quasi_parallel_grid_lines(ommatidia_final, normal, n_lines=n_lines)
+for grid_id, lines_3d in grid_lines_final.items():
+    axis_id = grid_id.replace('grid-', 'axis-')
+    biological_grid_lines[axis_id] = []
 
-print("Initial grid fitting complete.")
+    for line_points_3d in lines_3d:
+        circle_points, normal, mean = small_circle_points(line_points_3d)
+        if circle_points.size > 0:
+            biological_grid_lines[axis_id].append({'points': circle_points, 'normal': normal, 'mean': mean})
+
+print("Grid fitting complete.")
+
 
 ## (Optional) Parallelize grid lines
 
@@ -329,7 +294,7 @@ if PARALLELIZE_GRID_LINES:
 
         if target_normal is not None:
             for line in lines:
-                line['points'] = create_small_circle_from_normal(target_normal, line['mean'])
+                line['points'] = small_circle_from_normal(target_normal, line['mean'])
                 line['normal'] = target_normal
 
     print("Parallelization complete.")
@@ -365,7 +330,6 @@ if REGULARIZE_GRID_ANGLES:
         ortho_vec /= np.linalg.norm(ortho_vec)
         final_plane_normals[axis_id] = a * C_norm + b * ortho_vec
 
-    # rotation: find rotation from old Y/V to new Y/V and average
     rot_axis_y = np.cross(n_y, final_plane_normals['axis-y'])
     rot_angle_y = np.arcsin(np.linalg.norm(rot_axis_y))
     rot_axis_v = np.cross(n_v, final_plane_normals['axis-v'])
@@ -398,13 +362,13 @@ axis_colors = {'axis-x': '#ff60b3', 'axis-y': '#00FF9B', 'axis-v': '#FFC400'}
 
 for axis_id, circles in biological_grid_lines.items():
     lines_to_plot = [c['points'] for c in circles]
-    lines_to_plot = clip_lines_to_data_hemisphere(lines_to_plot, ommatidia_final)
+    # lines_to_plot = clip_lines(lines_to_plot, ommatidia_final)
     for line_points in lines_to_plot:
         ax.plot(line_points[:, 0], line_points[:, 1], line_points[:, 2], color=axis_colors[axis_id], linewidth=0.7,
                 alpha=0.8)
 
 main_axes_to_plot = [d['points'] for d in main_axes_data.values()]
-main_axes_to_plot = clip_lines_to_data_hemisphere(main_axes_to_plot, ommatidia_final)
+# main_axes_to_plot = clip_lines(main_axes_to_plot, ommatidia_final)
 main_axes_clipped_dict = dict(zip(main_axes_data.keys(), main_axes_to_plot))
 for axis_id, points in main_axes_clipped_dict.items():
     if points.size > 0:
