@@ -35,7 +35,7 @@ void main() {
     else {
         // Base color from the simulation buffer
         vec3 base_rgb = final_rgba[v_index].rgb * albedo_boost;
-//
+
 //        // Lighting parameters
 //        float ambient = 0.35; // ambient light intensity (lower = darker shadows)
 //        vec3 light_dir = normalize(light_dir);

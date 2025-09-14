@@ -90,7 +90,8 @@ class Context:
             self.observer = OrbitCamera(target=agent, distance=1.5, ratio=self._window_size[0] / self._window_size[1])
 
             glfw.set_key_callback(self.window, self.key_callback)
-            glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+            # glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+            glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_HIDDEN)
             glfw.set_scroll_callback(self.window, self.scroll_callback)
 
             self.view_mode = ViewMode.compound_eye
@@ -182,7 +183,8 @@ class Context:
 
         # Mouse rotation
         current_mouse_pos = glfw.get_cursor_pos(self.window)
-        if self.last_mouse_pos is None: self.last_mouse_pos = current_mouse_pos
+        if self.last_mouse_pos is None:
+            self.last_mouse_pos = current_mouse_pos
 
         dx = (current_mouse_pos[0] - self.last_mouse_pos[0])
         dy = (current_mouse_pos[1] - self.last_mouse_pos[1])

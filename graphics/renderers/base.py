@@ -11,7 +11,7 @@ from OpenGL.GL import *
 from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
 
 from geometry.compound_eyes import CompoundEye
-from geometry.primitives import CONE_VERTICES, HEMISPHERE_VERTICES
+from geometry.primitives import CONE_VERTICES, SPHERE_VERTICES
 from graphics.utils import ShaderProgram, ViewMode, ProjectionMode
 from graphics.agent import Agent
 
@@ -315,13 +315,13 @@ class EyeRendererBase(ABC):
     @property
     def hemispheres_vao(self):
         if self._hemispheres_vao is None:
-            self._nb_hemisphere_vertices = len(HEMISPHERE_VERTICES) // 3
+            self._nb_hemisphere_vertices = len(SPHERE_VERTICES) // 3
             self._hemispheres_vao = glGenVertexArrays(1)
             glBindVertexArray(self._hemispheres_vao)
 
             self._hemispheres_vbo = glGenBuffers(1)
             glBindBuffer(GL_ARRAY_BUFFER, self._hemispheres_vbo)
-            glBufferData(GL_ARRAY_BUFFER, HEMISPHERE_VERTICES.nbytes, HEMISPHERE_VERTICES, GL_STATIC_DRAW)
+            glBufferData(GL_ARRAY_BUFFER, SPHERE_VERTICES.nbytes, SPHERE_VERTICES, GL_STATIC_DRAW)
 
             glEnableVertexAttribArray(0)
             glVertexAttribPointer(0, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
@@ -369,8 +369,8 @@ class EyeRendererBase(ABC):
         self.eye_model_shader.use()
 
         glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glDisable(GL_CULL_FACE)
+        # glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        # glDisable(GL_CULL_FACE)
 
         # TODO: Why is this conversion to numpy necessary??
         view_matrix_np = np.array(observer_camera.view, dtype=np.float32)
@@ -386,7 +386,7 @@ class EyeRendererBase(ABC):
         # Testing something with light
 
         # sun-like light source high up (+Y), and slightly to the right (+X) and back (+Z)
-        light_dir = glm.normalize(glm.vec3(0.5, 1.0, 0.4))
+        # light_dir = glm.normalize(glm.vec3(0.5, 1.0, 0.4))
         # glUniform3fv(self.eye_model_shader.get_loc('light_dir'), 1, glm.value_ptr(light_dir))
 
         # Compute nice-looking cone length for acceptance angles
