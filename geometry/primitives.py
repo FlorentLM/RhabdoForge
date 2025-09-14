@@ -87,3 +87,42 @@ def create_cone_data(radius=1.0, height=1.0, segments=16):
 
 
 CONE_VERTICES = create_cone_data(radius=1.0, height=1.0, segments=12)
+
+
+def create_hemisphere_vertices(stacks=8, sectors=16):
+    """
+    Generates vertices for a unit hemisphere mesh made of triangles.
+    The hemisphere is oriented with its base on the XY plane and capping along the positive Z axis.
+    """
+    vertices = []
+
+    # Generate vertices
+    for i in range(stacks + 1):
+        stack_angle = np.pi / 2.0 * (i / stacks)
+        z = np.sin(stack_angle)
+        radius = np.cos(stack_angle)
+
+        for j in range(sectors + 1):
+            sector_angle = 2 * np.pi * (j / sectors)
+            x = radius * np.cos(sector_angle)
+            y = radius * np.sin(sector_angle)
+            vertices.append([x, y, z])
+
+    triangle_indices = []
+    for i in range(stacks):
+        for j in range(sectors):
+            # Define the four vertices of a quad
+            v1 = i * (sectors + 1) + j
+            v2 = v1 + 1
+            v3 = (i + 1) * (sectors + 1) + j
+            v4 = v3 + 1
+
+            # First triangle of the quad
+            triangle_indices.extend([vertices[v1], vertices[v3], vertices[v2]])
+            # Second triangle of the quad
+            triangle_indices.extend([vertices[v2], vertices[v3], vertices[v4]])
+
+    return np.array(triangle_indices, dtype=np.float32).flatten()
+
+
+HEMISPHERE_VERTICES = create_hemisphere_vertices()

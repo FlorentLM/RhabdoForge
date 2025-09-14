@@ -47,8 +47,8 @@ def main():
 
     # Setup eye model
     # eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)   # Uniform spherical eye
-    eye_model = CompoundEye.from_file('drosophila_eye.npz', eye_parameter=1.0)    # Manually mapped drosophila eye
-    # eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)   # Procedurally-generated bee eye
+    # eye_model = CompoundEye.from_file('drosophila_eye.npz', eye_parameter=1.5)    # Manually mapped drosophila eye
+    eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)   # Procedurally-generated bee eye
 
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))
