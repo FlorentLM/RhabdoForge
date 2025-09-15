@@ -9,7 +9,7 @@ from geometry.compound_eyes import CompoundEye
 from graphics.agent import Agent
 from graphics.renderers.panoramic import PanoramicEye
 from graphics.renderers.base import EyeRendererBase
-from graphics.scene import Scene, MeshAsset, PointsAsset
+from graphics.scene import Scene, Asset, AssetType
 from graphics.utils import load_texture, ShaderProgram, ViewMode
 
 
@@ -77,7 +77,7 @@ class RasterMesh:
     Holds OpenGL resources
     """
 
-    def __init__(self, asset: MeshAsset, vert_shader_path, frag_shader_path):
+    def __init__(self, asset: Asset, vert_shader_path, frag_shader_path):
         self.source_asset_id = asset.id
 
         self.vertices = asset.vertices
@@ -127,7 +127,7 @@ class RasterPoints:
     Holds OpenGL resources
     """
 
-    def __init__(self, asset: PointsAsset, vert_shader_path: str, frag_shader_path: str):
+    def __init__(self, asset: Asset, vert_shader_path: str, frag_shader_path: str):
         self.source_asset_id = asset.id
         self.draw_count = asset.num_points
 
@@ -177,52 +177,53 @@ class RasterInstance:
 
 class RasterSceneBaker:
     """
-    Creates and caches OpenGL vertex arrays (VAOs) for each unique asset
+    Creates and caches OpenGL vertex arrays (VAOs) for each unique asset in the scene.
+    This baking process happens once upon initialization.
     """
 
     def __init__(self, scene: Scene):
         self.scene = scene
         self._raster_asset_cache = {}
+        self._bake_all_assets()
 
-    def get_renderables(self):
+    def _bake_all_assets(self):
         """
-        Provides a list of all instances in a format ready for the rasterizer.
-        Creates and caches OpenGL resources on the fly.
+        Iterates through all unique assets in the scene, creates the corresponding
+        OpenGL resources (RasterMesh/RasterPoints), and caches them.
         """
-        renderables = []
-
-        for instance in self.scene.instances:
-            asset = instance.asset
-
-            # Skip any unknown assets
-            if not isinstance(asset, (MeshAsset, PointsAsset)):
+        print("Baking rasterizer assets...")
+        for asset in self.scene.assets.values():
+            if asset.id in self._raster_asset_cache:
                 continue
 
-            # Create the raster wrapper if it doesn't exist yet
-            if asset.id not in self._raster_asset_cache:
+            if asset.asset_type == AssetType.Mesh:
+                self._raster_asset_cache[asset.id] = RasterMesh(
+                    asset, 'shaders/mesh.vert', 'shaders/mesh.frag'
+                )
+            elif asset.asset_type == AssetType.Points:
+                self._raster_asset_cache[asset.id] = RasterPoints(
+                    asset, 'shaders/pointclouds.vert', 'shaders/pointclouds.frag'
+                )
+        print("Rasterizer asset baking complete.")
 
-                if isinstance(asset, MeshAsset):
-                    self._raster_asset_cache[asset.id] = RasterMesh(
-                        asset, 'shaders/mesh.vert', 'shaders/mesh.frag'
-                    )
-
-                elif isinstance(asset, PointsAsset):
-                    self._raster_asset_cache[asset.id] = RasterPoints(
-                        asset, 'shaders/pointclouds.vert', 'shaders/pointclouds.frag'
-                    )
-
-            # Create a renderable instance with the cached raster asset and the instance's transform
-            raster_asset = self._raster_asset_cache[asset.id]
-            renderables.append(RasterInstance(raster_asset, instance.transform, instance.properties))
-
+    def get_renderables(self) -> list[RasterInstance]:
+        """
+        Provides a list of all instances in a format ready for the rasterizer.
+        This uses the pre-baked asset cache.
+        """
+        renderables = []
+        for instance in self.scene.instances:
+            # Look up the already-baked asset from the cache
+            baked_asset = self._raster_asset_cache.get(instance.asset.id)
+            if baked_asset:
+                renderables.append(RasterInstance(baked_asset, instance.transform, instance.properties))
         return renderables
 
     def free(self):
         """ Frees all cached OpenGL resources """
-
+        print("Freeing baked rasterizer assets...")
         for raster_asset in self._raster_asset_cache.values():
             raster_asset.free()
-
         self._raster_asset_cache.clear()
 
 

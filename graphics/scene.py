@@ -1,10 +1,11 @@
 import OpenGL
+
 OpenGL.ERROR_CHECKING = False
 
 from typing import Dict, List, Optional, Union, Sequence
 from numpy.typing import ArrayLike
+from enum import Enum, auto
 
-from abc import ABC
 from pathlib import Path
 import numpy as np
 import open3d as o3d
@@ -15,147 +16,197 @@ from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
 from graphics.utils import load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
 
-class Asset(ABC):
-    """
-    Abstract base class for a renderable asset
-    Contains the raw data (vertices, points, etc)
-    """
-
-    def __init__(self, name: str):
-        self.id = id(self)
-        self.name = name
+class AssetType(Enum):
+    """ Distinguishes between different types of geometry assets """
+    Mesh = auto()
+    Points = auto()
 
 
-class MeshAsset(Asset):
+class Asset:
     """
-    Pure data container for a mesh. Stores geometry as indexed vertices.
-    Each vertex contains position and UV coordinates.
+    A container for a renderable asset which can be either a mesh or a point cloud.
+
+    To create a Mesh:
+    - From file: Asset(name="my_mesh", file_path="path/to/mesh.obj", texture_path="path/to/tex.jpg")
+    - From data: Asset(name="my_mesh", vertices=verts_array, indices=indices_array)
+
+    To create a Point Cloud:
+    - From file: Asset(name="my_pcd", file_path="path/to/points.ply", radii=0.01)
+    - From data: Asset(name="my_pcd", points=points_array, colors=colors_array, radii=0.01)
     """
 
     def __init__(self,
                  name: str,
-                 file_path: Optional[Path | str] = None,
+                 file_path: Optional[Union[Path, str]] = None,
+
+                 # Mesh-specific data
                  vertices: Optional[np.ndarray] = None,
                  indices: Optional[np.ndarray] = None,
-                 texture_path: Path | str = 'textures/wood.jpg'):
-        super().__init__(name)
+                 texture_path: Union[Path, str] = 'textures/wood.jpg',
 
-        if file_path is None and (vertices is None or indices is None):
-            raise ValueError("MeshAsset requires either 'file_path' or both 'vertices' and 'indices'.")
-
-        self.texture_path = Path(texture_path)
-
-        if file_path is not None:
-            path = Path(file_path)
-            if not path.exists():
-                raise FileNotFoundError(f"Could not find mesh file: {path}")
-
-            mesh = o3d.io.read_triangle_mesh(path, enable_post_processing=True)
-
-            if not mesh.has_triangle_uvs():
-                raise ValueError(f"Mesh file '{path}' does not contain texture coordinates (UVs).")
-
-            # Un-weld the mesh to create a clean indexed buffer for rendering
-            o3d_verts = np.asarray(mesh.vertices, dtype=np.float32)
-            o3d_uvs = np.asarray(mesh.triangle_uvs, dtype=np.float32)
-            o3d_indices = np.asarray(mesh.triangles, dtype=np.uint32)
-
-            unique_vert_map = {}
-            vert_list = []
-            new_indices_flat = []
-
-            flat_uvs = o3d_uvs.reshape(-1, 2)
-            flat_indices = o3d_indices.flatten()
-
-            for i in range(len(flat_indices)):
-                pos_idx = flat_indices[i]
-                uv_tuple = tuple(flat_uvs[i])
-                key = (pos_idx, uv_tuple)
-
-                if key not in unique_vert_map:
-                    new_idx = len(vert_list)
-                    unique_vert_map[key] = new_idx
-                    pos = o3d_verts[pos_idx]
-                    vert_list.append(np.concatenate([pos, uv_tuple]))
-                else:
-                    new_idx = unique_vert_map[key]
-
-                new_indices_flat.append(new_idx)
-
-            self.vertices = np.array(vert_list, dtype=np.float32)
-            self.indices = np.array(new_indices_flat, dtype=np.uint32).reshape(-1, 3)
-
-        else:
-            self.vertices = vertices.reshape(-1, 5)  # Ensure correct shape
-            self.indices = indices.reshape(-1, 3)
-
-    @property
-    def num_triangles(self):
-        return len(self.indices)
-
-
-class PointsAsset(Asset):
-    """
-    Pure data container for a point cloud
-    Contains geometry and material properties
-    """
-
-    def __init__(self,
-                 name: str,
-                 file_path: Optional[Path | str] = None,
+                 # Point cloud-specific data
                  points: Optional[ArrayLike] = None,
                  colors: Optional[ArrayLike] = None,
                  normals: Optional[ArrayLike] = None,
                  radii: Optional[Union[float, ArrayLike]] = None
                  ):
-        super().__init__(name)
+        self.id = id(self)
+        self.name = name
+        self.asset_type: Optional[AssetType] = None
 
-        if file_path is None and points is None:
-            raise ValueError("PointsAsset requires either 'file_path' or 'points' data.")
-
-        if file_path is not None and points is not None:
-            raise ValueError("Provide either 'file_path' or 'points' data, not both.")
-
+        # Determine asset type and load data
         if file_path is not None:
-            path = Path(file_path)
-            if not path.exists():
-                raise FileNotFoundError(f"Could not find point cloud file: {path}")
+            self._load_from_file(Path(file_path), texture_path=texture_path, radii=radii)
 
-            print(f"Loading point cloud data from {path}...")
-            pcd = o3d.io.read_point_cloud(path)
+        elif vertices is not None and indices is not None:
+            self._create_mesh_from_data(vertices, indices, texture_path)
 
-            self.points = np.asarray(pcd.points, dtype=np.float32)
-            self.normals = np.zeros_like(self.points, dtype=np.float32)
-            self.colors = np.ones_like(self.points, dtype=np.float32)
-
-            if pcd.has_normals():
-                self.normals = np.asarray(pcd.normals, dtype=np.float32)
-
-            if pcd.has_colors():
-                self.colors = np.asarray(pcd.colors, dtype=np.float32)
+        elif points is not None:
+            self._create_points_from_data(points, colors, normals, radii)
 
         else:
-            self.points = np.asarray(points, dtype=np.float32)
-            self.colors = np.asarray(colors, dtype=np.float32) if colors is not None else np.ones_like(points, dtype=np.float32)
-            self.normals = np.asarray(normals, dtype=np.float32) if normals is not None else np.zeros_like(points, dtype=np.float32)
+            raise ValueError(
+                "Insufficient data to create an Asset. Provide either 'file_path', "
+                "('vertices' and 'indices' for a mesh), or 'points' for a point cloud."
+            )
 
+    def _load_from_file(self, path: Path, texture_path: str, radii: Optional[Union[float, ArrayLike]]):
+        """
+        Loads an asset from a file, determining whether it's a mesh or a point cloud based on its contents
+        """
+        if not path.exists():
+            raise FileNotFoundError(f"Could not find asset file: {path}")
+
+        print(f"Attempting to load asset from {path}...")
+
+        # First, try to load the file as a TriangleMesh
+        mesh = o3d.io.read_triangle_mesh(path, enable_post_processing=True)
+
+        # **IMPROVEMENT**: Decide type based on content, not file extension.
+        if mesh and mesh.has_triangles():
+            print(f"File '{path}' contains triangles. Loading as a Mesh asset.")
+            self._process_mesh_data(mesh, texture_path)
+
+        elif mesh and mesh.has_vertices():
+            print(f"File '{path}' has vertices but no triangles. Loading as a Points asset.")
+
+            # Extract point data from the mesh structure
+            points = np.asarray(mesh.vertices, dtype=np.float32)
+            colors = np.asarray(mesh.vertex_colors, dtype=np.float32) if mesh.has_vertex_colors() else None
+            normals = np.asarray(mesh.vertex_normals, dtype=np.float32) if mesh.has_vertex_normals() else None
+            self._create_points_from_data(points, colors, normals, radii)
+            print(f"Loaded points Asset '{self.name}' with {self.num_points} points from {path}.")
+
+        else:
+            # Fallback for formats that read_triangle_mesh might fail on
+            print(f"Could not read triangles from '{path}'. Attempting to load as a Point Cloud.")
+            try:
+                pcd = o3d.io.read_point_cloud(path)
+                if pcd and pcd.has_points():
+                    self._process_points_data(pcd, radii)
+                    print(f"Loaded points Asset '{self.name}' with {self.num_points} points from {path}.")
+
+                else:
+                    raise IOError(f"File '{path}' could not be loaded as a mesh or a point cloud.")
+
+            except Exception as e:
+                raise IOError(f"Failed to load file '{path}'. Could not interpret as mesh or point cloud. Error: {e}")
+
+    def _process_mesh_data(self, mesh: o3d.geometry.TriangleMesh, texture_path: str):
+        """ Processes geometry from an already-loaded Open3D mesh object """
+
+        # Handle meshes without texture coordinates
+        if not mesh.has_triangle_uvs():
+            print(f"Warning: Mesh for asset '{self.name}' does not contain texture coordinates (UVs).")
+            # Create placeholder UVs (texture mapping for this asset will be incorrect)
+
+            num_triangles = len(mesh.triangles)
+            mesh.triangle_uvs = o3d.utility.Vector2dVector(np.zeros((num_triangles * 3, 2), dtype=np.float64))
+
+            if mesh.has_vertex_colors():
+                print("Info: This mesh has vertex colors, which could be used with a custom shader.")
+
+        o3d_verts = np.asarray(mesh.vertices, dtype=np.float32)
+        o3d_uvs = np.asarray(mesh.triangle_uvs, dtype=np.float32)
+        o3d_indices = np.asarray(mesh.triangles, dtype=np.uint32)
+
+        unique_vert_map, vert_list, new_indices_flat = {}, [], []
+        flat_uvs, flat_indices = o3d_uvs.reshape(-1, 2), o3d_indices.flatten()
+
+        for i in range(len(flat_indices)):
+            pos_idx, uv_tuple = flat_indices[i], tuple(flat_uvs[i])
+            key = (pos_idx, uv_tuple)
+            if key not in unique_vert_map:
+                new_idx = len(vert_list)
+                unique_vert_map[key] = new_idx
+                pos = o3d_verts[pos_idx]
+                vert_list.append(np.concatenate([pos, uv_tuple]))
+            else:
+                new_idx = unique_vert_map[key]
+            new_indices_flat.append(new_idx)
+
+        self.vertices = np.array(vert_list, dtype=np.float32)
+        self.indices = np.array(new_indices_flat, dtype=np.uint32).reshape(-1, 3)
+        self.texture_path = Path(texture_path)
+        self.asset_type = AssetType.Mesh
+
+        print(
+            f"Finalized mesh Asset '{self.name}' with {len(self.vertices)} vertices and {len(self.indices)} triangles.")
+
+    def _create_mesh_from_data(self, vertices: np.ndarray, indices: np.ndarray, texture_path: Union[Path, str]):
+        """ Creates a mesh asset from numpy arrays """
+
+        self.vertices = vertices.reshape(-1, 5)
+        self.indices = indices.reshape(-1, 3)
+        self.texture_path = Path(texture_path)
+        self.asset_type = AssetType.Mesh
+
+        print(f"Created mesh Asset '{self.name}' from data.")
+
+    def _process_points_data(self, pcd: o3d.geometry.PointCloud, radii: Optional[Union[float, ArrayLike]]):
+        """ Processes geometry from an already-loaded Open3D point cloud object """
+
+        if not pcd.has_points():
+            raise ValueError("Point cloud object contains no points.")
+
+        points = np.asarray(pcd.points, dtype=np.float32)
+        colors = np.asarray(pcd.colors, dtype=np.float32) if pcd.has_colors() else None
+        normals = np.asarray(pcd.normals, dtype=np.float32) if pcd.has_normals() else None
+
+        self._create_points_from_data(points, colors, normals, radii=radii)
+
+    def _create_points_from_data(self, points: ArrayLike, colors: Optional[ArrayLike],
+                                 normals: Optional[ArrayLike], radii: Optional[Union[float, ArrayLike]]):
+        """ Creates a point cloud asset from numpy arrays """
+        self.points = np.asarray(points, dtype=np.float32)
         self.num_points = len(self.points)
 
-        if isinstance(radii, float):
+        self.colors = np.asarray(colors, dtype=np.float32) if colors is not None else np.ones_like(self.points,
+                                                                                                   dtype=np.float32)
+        self.normals = np.asarray(normals, dtype=np.float32) if normals is not None else np.zeros_like(self.points,
+                                                                                                       dtype=np.float32)
+
+        if isinstance(radii, (float, int)):
             self.radii = np.full(self.num_points, radii, dtype=np.float32)
-
-        elif isinstance(radii, ArrayLike):
-            radii = np.asarray(radii, dtype=np.float32)
-
-            if len(radii) != self.num_points:
-                raise ValueError("If not a scalar, number of radii must match the number of points.")
-
-            self.radii = radii
-
+        elif radii is not None:
+            self.radii = np.asarray(radii, dtype=np.float32)
+            if len(self.radii) != self.num_points:
+                raise ValueError("Number of radii must match the number of points.")
         else:
+            # Fallback to a default only if radii is explicitly None
             self.radii = np.full(self.num_points, 0.05, dtype=np.float32)
 
-        print(f"Loaded {self.num_points} points for asset '{name}'.")
+        self.asset_type = AssetType.Points
+
+        print(f"Created points Asset '{self.name}' with {self.num_points} points from data.")
+
+    @property
+    def nb_triangles(self):
+        if self.asset_type == AssetType.Mesh:
+            return len(self.indices)
+        return 0
+
+    # TODO: more properties
 
 
 class Instance:
@@ -328,7 +379,7 @@ class Scene:
             asset_obj = asset
 
             if asset_obj.name not in self.assets:
-                print(f"New {type(asset_obj).__name__} asset '{asset_obj.name}' registered with the scene.")
+                print(f"New {asset_obj.asset_type.name} asset '{asset_obj.name}' registered with the scene.")
                 self.assets[asset_obj.name] = asset_obj
 
             elif self.assets[asset_obj.name].id != asset_obj.id:
@@ -360,15 +411,15 @@ class Scene:
     def total_triangles(self) -> int:
         count = 0
         for instance in self.instances:
-            if isinstance(instance.asset, MeshAsset):
-                count += instance.asset.num_triangles
+            if instance.asset.asset_type == AssetType.Mesh:
+                count += instance.asset.nb_triangles
         return count
 
     @property
     def total_points(self) -> int:
         count = 0
         for instance in self.instances:
-            if isinstance(instance.asset, PointsAsset):
+            if instance.asset.asset_type == AssetType.Points:
                 count += instance.asset.num_points
         return count
 

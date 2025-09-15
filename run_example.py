@@ -1,6 +1,6 @@
 import numpy as np
 
-from graphics.scene import Scene, PointsAsset, MeshAsset
+from graphics.scene import Scene, Asset
 from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
@@ -10,7 +10,6 @@ from graphics.context import Context
 
 
 def main():
-
     # Configuration
     USE_RAYTRACER = True
     USE_POINT_CLOUD = True
@@ -29,11 +28,12 @@ def main():
     scene = Scene()
 
     if USE_POINT_CLOUD:
-        point_cloud_asset = PointsAsset('seville', file_path='assets/seville_filtered.ply', radii=0.01)
+        # Create a point cloud asset from a file
+        point_cloud_asset = Asset(name='seville', file_path='assets/seville_filtered.ply', radii=0.01)
         scene.add_instance(point_cloud_asset)
 
-    # Load the mesh asset data
-    crate_asset = MeshAsset('crate', vertices=CUBE_VERTICES, indices=CUBE_INDICES, texture_path='textures/wood.jpg')
+    # Create a mesh asset from raw vertex and index data
+    crate_asset = Asset(name='crate', vertices=CUBE_VERTICES, indices=CUBE_INDICES, texture_path='textures/wood.jpg')
 
     # Add multiple instances of the same asset
     scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))
@@ -48,7 +48,7 @@ def main():
     # Setup eye model
     # eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)   # Uniform spherical eye
     # eye_model = CompoundEye.from_file('drosophila_eye.npz', eye_parameter=1.5)    # Manually mapped drosophila eye
-    eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)   # Procedurally-generated bee eye
+    eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)  # Procedurally-generated bee eye
 
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))
@@ -58,16 +58,15 @@ def main():
 
     if USE_RAYTRACER:
         eye_renderer = EyeRendererRay(eye_model=eye_model, scene=scene,
-                                  nb_samples=NB_SAMPLES,
-                                  time_dithering=False,
-                                  batch_size=batch_size)
+                                      nb_samples=NB_SAMPLES,
+                                      time_dithering=False,
+                                      batch_size=batch_size)
 
     else:
         eye_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene,
-                                     nb_samples=NB_SAMPLES,
-                                     time_dithering=False,
-                                     batch_size=batch_size)
-
+                                         nb_samples=NB_SAMPLES,
+                                         time_dithering=False,
+                                         batch_size=batch_size)
 
     # -- Example moving ommatidia --
 
@@ -79,7 +78,6 @@ def main():
 
     # -- End example moving ommatidia --
 
-
     # Run
     start_time = context.current_time
     nb_frames = 0
@@ -88,7 +86,6 @@ def main():
     if not HEADLESS:
 
         while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer):
-
             context.input()
 
             # Rotate dynamic test crate
@@ -144,7 +141,6 @@ def main():
     print(f"Ran for {nb_frames} frames in {total_time:.2f}s (avg. {nb_frames / total_time:.2f} fps).")
 
     if all_ommatidia_data:
-
         # In sync mode, this combines 10,000 arrays of shape (19362, 4)
         # In async mode, this might combine 10 arrays of shape (1000, 19362, 4)
 
@@ -155,6 +151,7 @@ def main():
     eye_renderer.free()
     scene.free()
     context.free()
+
 
 if __name__ == "__main__":
     main()

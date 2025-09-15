@@ -11,7 +11,7 @@ from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from graphics.agent import Agent
 from graphics.renderers.base import EyeRendererBase
-from graphics.scene import Scene, MeshAsset, PointsAsset
+from graphics.scene import Scene, Asset, AssetType
 from graphics.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
 from graphics.renderers.panoramic import TextureViewer
 
@@ -76,7 +76,7 @@ class RaytracingSceneBaker:
 
     def _pack_materials(self):
 
-        assets = [inst.asset for inst in self.scene.instances if isinstance(inst.asset, MeshAsset)]
+        assets = [inst.asset for inst in self.scene.instances if inst.asset.asset_type == AssetType.Mesh]
         assets = list(dict.fromkeys(assets))
 
         if not assets:
@@ -168,7 +168,7 @@ class RaytracingSceneBaker:
             blas_id = len(self.BLASes)
             bundle = None  # will store the SSBO bundle from the BVH
 
-            if isinstance(asset, MeshAsset):
+            if asset.asset_type == AssetType.Mesh:
 
                 positions = asset.vertices[:, :3].astype(np.float32)
                 verts4 = np.pad(positions, ((0, 0), (0, 1)), 'constant', constant_values=0)
@@ -190,7 +190,7 @@ class RaytracingSceneBaker:
                 current_vert_offset += len(asset.vertices)
                 current_idx_offset += len(asset.indices.flatten())
 
-            elif isinstance(asset, PointsAsset):
+            elif asset.asset_type == AssetType.Points:
 
                 points = asset.points.astype(np.float32)
                 radii = asset.radii.astype(np.float32)
@@ -281,12 +281,12 @@ class RaytracingSceneBaker:
             self.gpu_instances_info[i]['blas_node_offset'] = blas_map['node_offset']
             self.gpu_instances_info[i]['prim_index_offset'] = blas_map['prim_index_offset']
 
-            if isinstance(inst.asset, MeshAsset):
+            if inst.asset.asset_type == AssetType.Mesh:
                 self.gpu_instances_info[i]['vertex_or_point_offset'] = blas_map['vert_offset']
                 self.gpu_instances_info[i]['index_offset'] = blas_map['idx_offset']
                 self.gpu_instances_info[i]['material_id'] = self.material_map.get(inst.asset.id, 0)
 
-            elif isinstance(inst.asset, PointsAsset):
+            elif inst.asset.asset_type == AssetType.Points:
                 self.gpu_instances_info[i]['vertex_or_point_offset'] = blas_map['point_offset']
                 self.gpu_instances_info[i]['index_offset'] = 0
                 self.gpu_instances_info[i]['radius_factor'] = inst.properties.get('radius_factor', 1.0)
