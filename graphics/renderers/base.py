@@ -11,7 +11,7 @@ from OpenGL.GL import *
 from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
 
 from geometry.compound_eyes import CompoundEye
-from geometry.primitives import CONE_VERTICES
+from geometry.primitives import CONE_VERTICES, SPHERE_VERTICES
 from graphics.utils import ShaderProgram, ViewMode, ProjectionMode
 from graphics.agent import Agent
 
@@ -58,11 +58,17 @@ class EyeRendererBase(ABC):
 
         # Visualization resources (lazy-loaded)
         self._voronoi_shader = None     # first person view
-        self._cones_shader = None       # third person view
+        self._eye_model_shader = None       # third person view
 
+        # Cone-specific resources
         self._cones_vao = None
         self._cones_vbo = None
         self._nb_cone_vertices = 0
+
+        # Hemisphere-specific resources
+        self._hemispheres_vao = None
+        self._hemispheres_vbo = None
+        self._nb_hemisphere_vertices = 0
 
         self.receptive_field_scale = 1.0 / (2.0 * np.pi)
 
@@ -275,10 +281,10 @@ class EyeRendererBase(ABC):
         self.model.dirty_mask.fill(False)
 
     @property
-    def cones_shader(self):
-        if self._cones_shader is None:
-            self._cones_shader = ShaderProgram(vert_path="shaders/eye_model.vert", frag_path="shaders/eye_model.frag")
-        return self._cones_shader
+    def eye_model_shader(self):
+        if self._eye_model_shader is None:
+            self._eye_model_shader = ShaderProgram(vert_path="shaders/eye_model.vert", frag_path="shaders/eye_model.frag")
+        return self._eye_model_shader
 
     @property
     def voronoi_shader(self):
@@ -305,6 +311,22 @@ class EyeRendererBase(ABC):
             glBindVertexArray(0)
 
         return self._cones_vao
+
+    @property
+    def hemispheres_vao(self):
+        if self._hemispheres_vao is None:
+            self._nb_hemisphere_vertices = len(SPHERE_VERTICES) // 3
+            self._hemispheres_vao = glGenVertexArrays(1)
+            glBindVertexArray(self._hemispheres_vao)
+
+            self._hemispheres_vbo = glGenBuffers(1)
+            glBindBuffer(GL_ARRAY_BUFFER, self._hemispheres_vbo)
+            glBufferData(GL_ARRAY_BUFFER, SPHERE_VERTICES.nbytes, SPHERE_VERTICES, GL_STATIC_DRAW)
+
+            glEnableVertexAttribArray(0)
+            glVertexAttribPointer(0, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
+            glBindVertexArray(0)
+        return self._hemispheres_vao
 
     def _draw_voronoi(self):
         """ Draws the Voronoi visualization using the computed colors """
@@ -344,11 +366,11 @@ class EyeRendererBase(ABC):
 
     def _draw_eye_model(self, observer_camera, agent):
 
-        self.cones_shader.use()
+        self.eye_model_shader.use()
 
         glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glDisable(GL_CULL_FACE)
+        # glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        # glDisable(GL_CULL_FACE)
 
         # TODO: Why is this conversion to numpy necessary??
         view_matrix_np = np.array(observer_camera.view, dtype=np.float32)
@@ -357,9 +379,15 @@ class EyeRendererBase(ABC):
         # This one works fine
         c2w_mat = glm.inverse(agent.view)
 
-        glUniformMatrix4fv(self.cones_shader.get_loc('view'), 1, True, view_matrix_np)
-        glUniformMatrix4fv(self.cones_shader.get_loc('projection'), 1, True, projection_matrix_np)
-        glUniformMatrix4fv(self.cones_shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w_mat))
+        glUniformMatrix4fv(self.eye_model_shader.get_loc('view'), 1, True, view_matrix_np)
+        glUniformMatrix4fv(self.eye_model_shader.get_loc('projection'), 1, True, projection_matrix_np)
+        glUniformMatrix4fv(self.eye_model_shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w_mat))
+
+        # Testing something with light
+
+        # sun-like light source high up (+Y), and slightly to the right (+X) and back (+Z)
+        # light_dir = glm.normalize(glm.vec3(0.5, 1.0, 0.4))
+        # glUniform3fv(self.eye_model_shader.get_loc('light_dir'), 1, glm.value_ptr(light_dir))
 
         # Compute nice-looking cone length for acceptance angles
         avg_radius = np.mean(np.linalg.norm(self.model.data['origin'][:, :3], axis=1))
@@ -371,15 +399,21 @@ class EyeRendererBase(ABC):
 
         visualisation_scale = 10.0
 
-        glUniform1i(self.cones_shader.get_loc('projection_mode'), self.projection_mode)
-        glUniform1f(self.cones_shader.get_loc("cone_length"), cone_length)
-        glUniform1f(self.cones_shader.get_loc("visualisation_scale"), visualisation_scale)
+        glUniform1i(self.eye_model_shader.get_loc('projection_mode'), self.projection_mode)
+        glUniform1f(self.eye_model_shader.get_loc("cone_length"), cone_length)
+        glUniform1f(self.eye_model_shader.get_loc("visualisation_scale"), visualisation_scale)
 
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
 
-        glBindVertexArray(self.cones_vao)
-        glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.num_ommatidia)
+        if self.projection_mode == ProjectionMode.Physical:
+            # Physical layout mode: hemispheres to avoid Z-fighting
+            glBindVertexArray(self.hemispheres_vao)
+            glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_hemisphere_vertices, self.num_ommatidia)
+        else:
+            # Acceptance angle mode: cones
+            glBindVertexArray(self.cones_vao)
+            glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.num_ommatidia)
 
         # Unbind everyone
         glBindVertexArray(0)
@@ -391,7 +425,7 @@ class EyeRendererBase(ABC):
         glDisable(GL_BLEND)
         glDisable(GL_DEPTH_TEST)
 
-        self.cones_shader.stop()
+        self.eye_model_shader.stop()
 
     def free(self):
         """ Free GPU resources """
@@ -403,10 +437,15 @@ class EyeRendererBase(ABC):
         if self._voronoi_shader:
             self._voronoi_shader.free()
 
-        if self._cones_shader:
-            self._cones_shader.free()
+        if self._eye_model_shader:
+            self._eye_model_shader.free()
 
         if self._cones_vao:
             glDeleteVertexArrays(1, [self._cones_vao])
         if self._cones_vbo:
             glDeleteBuffers(1, [self._cones_vbo])
+
+        if self._hemispheres_vao:
+            glDeleteVertexArrays(1, [self._hemispheres_vao])
+        if self._hemispheres_vbo:
+            glDeleteBuffers(1, [self._hemispheres_vbo])
