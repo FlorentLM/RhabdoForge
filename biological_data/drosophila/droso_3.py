@@ -4,12 +4,8 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import xml.etree.ElementTree as ET
 from pathlib import Path
-
-from scipy.interpolate import UnivariateSpline
-from scipy.spatial import KDTree
 from svg.path import parse_path, Line, Close
 from sklearn.decomposition import PCA
-from scipy.optimize import minimize
 
 
 def get_path_centroid(path):
