@@ -7,6 +7,8 @@ from pathlib import Path
 from svg.path import parse_path, Line, Close
 from sklearn.decomposition import PCA
 from scipy.optimize import minimize
+from scipy.spatial import KDTree
+from scipy.interpolate import UnivariateSpline
 
 
 def get_path_centroid(path):
@@ -79,9 +81,10 @@ def parse_drosophila_svg(svg_file: Union[Path, str]) -> dict:
     for grid_id in ['grid-x', 'grid-y', 'grid-v']:
         data['grid_lines'][grid_id] = []
         for path_element in root.findall(f".//svg:g[@id='{grid_id}']/svg:path", ns):
-            path_d = path_element.get('d')
-            if path_d:
-                data['grid_lines'][grid_id].append(parse_path(path_d))
+            if path_element is not None:
+                data['grid_lines'][grid_id].append(parse_path(path_element.get('d')))
+        # add the reference axis too as it's a grid line too
+        data['grid_lines'][grid_id].append(data['axes'][grid_id.replace('grid', 'axis')])
 
     print(
         f"Parsed SVG: Found {len(data['ommatidia'])} ommatidia, {len(data['stars'])} stars, "
@@ -139,32 +142,6 @@ def small_circle_points(points_on_sphere, nb_points=200):
     return circle_points, normal, point_on_plane
 
 
-def small_circle_from_normal(normal, point_on_plane, nb_points=200):
-    dist_from_origin = np.dot(normal, point_on_plane)
-
-    if abs(dist_from_origin) >= 1.0:
-        return np.array([])
-
-    circle_center = dist_from_origin * normal
-    circle_radius = np.sqrt(1 - dist_from_origin ** 2)
-    v1 = np.cross(normal, [0, 0, 1])
-
-    if np.linalg.norm(v1) < 1e-6:
-        v1 = np.cross(normal, [0, 1, 0])
-
-    v1 /= np.linalg.norm(v1)
-    v2 = np.cross(normal, v1)
-    t = np.linspace(0, 2 * np.pi, nb_points)
-    return circle_center + circle_radius * (np.outer(np.cos(t), v1) + np.outer(np.sin(t), v2))
-
-
-def rotate_vector(vector, axis, angle):
-    axis = axis / np.linalg.norm(axis)
-    return (vector * np.cos(angle) +
-            np.cross(axis, vector) * np.sin(angle) +
-            axis * np.dot(axis, vector) * (1 - np.cos(angle)))
-
-
 def clip_lines(lines, data_points, padding_factor=1.05):
     if not lines:
         return []
@@ -185,21 +162,280 @@ def clip_lines(lines, data_points, padding_factor=1.05):
 
     return clipped_lines
 
+##
+
+def grid_optimization(biological_grid_lines, main_axes_data, ommatidia_final,
+                      lattice_centre_final, smoothness_weight=1.0,
+                      data_weight=1.0, consistency_weight=0.5,
+                      edge_flexibility=2.0, max_iter=500):
+
+    optimized_grids = {}
+
+    for axis_id, lines in biological_grid_lines.items():
+        if not lines or axis_id not in main_axes_data:
+            continue
+
+        print(f"\nOptimizing {axis_id}...")
+
+        main_axis_normal = main_axes_data[axis_id]['normal']
+        common_axis = np.cross(main_axis_normal, lattice_centre_final.flatten())
+        common_axis /= np.linalg.norm(common_axis)
+
+        # Sort lines
+        centroids = [np.mean(line['original_data'], axis=0) for line in lines]
+        sort_keys = [np.dot(c, main_axis_normal) for c in centroids]
+        sorted_indices = np.argsort(sort_keys)
+        sorted_lines = [lines[i] for i in sorted_indices]
+
+        num_lines = len(sorted_lines)
+        print(f"  Processing {num_lines} lines...")
+
+        # Pre-compute assignments using KDTree for efficiency
+        print("  Computing ommatidial assignments...")
+        omm_assignments = assign_ommatidia(
+            ommatidia_final, sorted_lines
+        )
+
+        # Check if we have valid assignments
+        total_assigned = sum(len(a) for a in omm_assignments)
+        print(f"  Assigned {total_assigned} ommatidia to lines")
+
+        if total_assigned == 0:
+            print(f"  WARNING: No ommatidia assigned for {axis_id}, skipping optimization")
+            optimized_grids[axis_id] = sorted_lines
+            continue
+
+        # Calculate initial parameters
+        print("  Computing initial parameters...")
+        initial_angles = []
+        initial_distances = []
+        line_eccentricities = []
+
+        for i, line in enumerate(sorted_lines):
+            # Calculate angle
+            n = line['normal']
+            n_proj = n - np.dot(n, common_axis) * common_axis
+            norm = np.linalg.norm(n_proj)
+            if norm > 1e-6:
+                n_proj /= norm
+                dot_prod = np.clip(np.dot(main_axis_normal, n_proj), -1, 1)
+                cross_prod = np.dot(common_axis, np.cross(main_axis_normal, n_proj))
+                angle = np.arctan2(cross_prod, dot_prod)
+            else:
+                angle = 0
+            initial_angles.append(angle)
+
+            # Calculate distance
+            dist = np.dot(line['normal'], line['mean'])
+            initial_distances.append(dist)
+
+            # Calculate eccentricity
+            line_center = np.mean(line['original_data'], axis=0)
+            line_center_norm = np.linalg.norm(line_center)
+            if line_center_norm > 0:
+                line_center /= line_center_norm
+            ecc = np.arccos(np.clip(np.dot(line_center, lattice_centre_final.flatten()), -1, 1))
+            line_eccentricities.append(ecc)
+
+        initial_angles = np.array(initial_angles)
+        initial_distances = np.array(initial_distances)
+        line_eccentricities = np.array(line_eccentricities)
+
+        # Normalize eccentricities
+        if np.max(line_eccentricities) > np.min(line_eccentricities):
+            line_eccentricities = (line_eccentricities - np.min(line_eccentricities)) / \
+                                  (np.max(line_eccentricities) - np.min(line_eccentricities))
+        else:
+            line_eccentricities = np.zeros_like(line_eccentricities)
+
+        # Pre-compute edge weights
+        edge_weights = 1.0 - line_eccentricities * edge_flexibility
+        edge_weights = np.maximum(edge_weights, 0.1)
+
+        print("  Starting optimization...")
+
+        # Simplified objective function
+        def objective(params):
+            angles = params[:num_lines]
+            distances = params[num_lines:]
+
+            # 1. Data fitting term
+            data_cost = 0.0
+            for i, omm_indices in enumerate(omm_assignments):
+                if len(omm_indices) == 0:
+                    continue
+
+                # Reconstruct plane
+                n = rotate_vector(main_axis_normal, common_axis, angles[i])
+                d = distances[i]
+
+                # Calculate distances
+                omm_points = ommatidia_final[omm_indices]
+                plane_distances = np.abs(np.dot(omm_points, n) - d)
+
+                # Simple squared loss with edge weighting
+                data_cost += np.sum(plane_distances ** 2) * (2.0 - line_eccentricities[i])
+
+            # Smoothness term (simplified)
+            smoothness_cost = 0.0
+            if num_lines > 2:
+                # Second differences for smoothness
+                angle_smooth = np.sum(np.diff(angles, n=2) ** 2)
+                dist_smooth = np.sum(np.diff(distances, n=2) ** 2)
+                smoothness_cost = angle_smooth + dist_smooth
+
+            # Basic constraints
+            consistency_cost = 0.0
+
+            # Distance constraints
+            distance_penalties = np.maximum(0, np.abs(distances) - 0.98) ** 2
+            consistency_cost += np.sum(distance_penalties) * 10
+
+            # Prevent bunching (simplified)
+            if num_lines > 1:
+                angle_diffs = np.abs(np.diff(angles))
+                small_angles = np.maximum(0, 0.01 - angle_diffs)
+                consistency_cost += np.sum(small_angles ** 2) * 100
+
+            return (data_weight * data_cost +
+                    smoothness_weight * smoothness_cost +
+                    consistency_weight * consistency_cost)
+
+        # Set up bounds
+        angle_bounds = [(-np.pi, np.pi)] * num_lines
+        dist_bounds = [(-0.98, 0.98)] * num_lines
+        bounds = angle_bounds + dist_bounds
+
+        # Initial guess
+        x0 = np.concatenate([initial_angles, initial_distances])
+
+        # Run optimization with lower max iterations
+        result = minimize(
+            objective, x0,
+            method='L-BFGS-B',
+            bounds=bounds,
+            options={'maxiter': max_iter, 'ftol': 1e-5}
+        )
+
+        print(f"  Optimization complete. Success: {result.success}, Iterations: {result.nit}")
+
+        opt_angles = result.x[:num_lines]
+        opt_distances = result.x[num_lines:]
+
+        # Light post-processing
+        if num_lines > 5:
+            # Quick spline smoothing
+            indices = np.arange(num_lines)
+            try:
+                angle_spline = UnivariateSpline(indices, opt_angles, s=0.1, k=min(3, num_lines - 1))
+                opt_angles = angle_spline(indices)
+            except:
+                pass  # Keep original if spline fails
+
+        # Reconstruct optimized grid lines
+        optimized_lines = []
+        for i in range(num_lines):
+            n_opt = rotate_vector(main_axis_normal, common_axis, opt_angles[i])
+            d_opt = opt_distances[i]
+            mean_opt = d_opt * n_opt
+
+            circle_points = small_circle_from_normal(n_opt, mean_opt)
+
+            optimized_lines.append({
+                'normal': n_opt,
+                'mean': mean_opt,
+                'points': circle_points,
+                'original_data': sorted_lines[i]['original_data'],
+                'angle': opt_angles[i],
+                'distance': d_opt
+            })
+
+        optimized_grids[axis_id] = optimized_lines
+
+        print(f"  Final angle range: [{np.min(opt_angles):.3f}, {np.max(opt_angles):.3f}] rad")
+        print(f"  Final distance range: [{np.min(opt_distances):.3f}, {np.max(opt_distances):.3f}]")
+
+    return optimized_grids
+
+
+def assign_ommatidia(ommatidia, sorted_lines, threshold=0.15):
+    """ Ommatidial assignment using KDTree """
+
+    num_lines = len(sorted_lines)
+    assignments = [[] for _ in range(num_lines)]
+
+    # Build a combined point cloud from all original traces
+    all_trace_points = []
+    point_to_line = []
+
+    for line_idx, line in enumerate(sorted_lines):
+        points = line['original_data']
+        all_trace_points.extend(points)
+        point_to_line.extend([line_idx] * len(points))
+
+    if len(all_trace_points) == 0:
+        return assignments
+
+    all_trace_points = np.array(all_trace_points)
+
+    # Build KDTree for fast nearest neighbor search
+    tree = KDTree(all_trace_points)
+
+    # For each ommatidium, find nearest trace point
+    distances, indices = tree.query(ommatidia, k=1)
+
+    # Assign based on distance threshold
+    for omm_idx, (dist, nearest_idx) in enumerate(zip(distances, indices)):
+        if dist < threshold:
+            line_idx = point_to_line[nearest_idx]
+            assignments[line_idx].append(omm_idx)
+
+    return assignments
+
+
+def rotate_vector(vector, axis, angle):
+    """ Fast rotation using Rodrigues' formula """
+    # Assumes axis is already normalized
+    cos_angle = np.cos(angle)
+    sin_angle = np.sin(angle)
+    dot_product = np.dot(axis, vector)
+
+    return (vector * cos_angle +
+            np.cross(axis, vector) * sin_angle +
+            axis * dot_product * (1 - cos_angle))
+
+
+def small_circle_from_normal(normal, point_on_plane, nb_points=200):
+    """ Generate circle points from plane normal and point """
+
+    dist_from_origin = np.dot(normal, point_on_plane)
+
+    if abs(dist_from_origin) >= 1.0:
+        return np.array([])
+
+    circle_center = dist_from_origin * normal
+    circle_radius = np.sqrt(1 - dist_from_origin ** 2)
+
+    v1 = np.cross(normal, [0, 0, 1])
+    if np.linalg.norm(v1) < 1e-6:
+        v1 = np.cross(normal, [0, 1, 0])
+    v1 /= np.linalg.norm(v1)
+    v2 = np.cross(normal, v1)
+
+    t = np.linspace(0, 2 * np.pi, nb_points)
+    return circle_center + circle_radius * (np.outer(np.cos(t), v1) + np.outer(np.sin(t), v2))
+
 
 ## Controls
 
 REGULARIZE_WITH_MARKERS = True
 REGULARIZE_COPLANAR_GRID = True
-DATA_DRIVEN_SMOOTHING = False
+DATA_DRIVEN_SMOOTHING = True
 REGULARIZE_GRID_ANGLES = False
 
 PLOT_GRID_PLANES_NORMALS = False
 CLIP_GRID = True
 PLOT_BOTH_EYES = False
-
-EM_ITERATIONS = 4               # Number of Expectation-Maximization loops
-POLY_DEGREE_ANGLE = 4           # The "stiffness" of the angle smoothing
-POLY_DEGREE_DIST = 4            # The "stiffness" of the distance smoothing
 
 
 ## Initial projection
@@ -309,125 +545,27 @@ if REGULARIZE_COPLANAR_GRID:
 
 ## (Optional) Smoothing and regularization
 
-# if DATA_DRIVEN_SMOOTHING:
-#     print("\nStarting data-driven grid regularization...")
-#     for axis_id, lines in biological_grid_lines.items():
-#         if not lines or axis_id not in main_axes_data or len(lines) <= max(POLY_DEGREE_ANGLE, POLY_DEGREE_DIST):
-#             print(f"Skipping smoothing for {axis_id} due to insufficient lines.")
-#             continue
-#
-#         print(f"  Processing {axis_id}...")
-#         main_axis_normal = main_axes_data[axis_id]['normal']
-#         common_axis = np.cross(main_axis_normal, lattice_centre_final.flatten())
-#         common_axis /= np.linalg.norm(common_axis)
-#
-#         # Sort lines based on the projection of their original data centroid onto the main axis
-#         centroids = [np.mean(line['original_data'], axis=0) for line in lines]
-#         sort_keys = [np.dot(c, main_axis_normal) for c in centroids]
-#         sorted_lines = [line for _, line in sorted(zip(sort_keys, lines))]
-#
-#         current_lines = sorted_lines
-#
-#         # Expectation-Maximization optimisation
-#         for i in range(EM_ITERATIONS):
-#             print(f"    EM Iteration {i + 1}/{EM_ITERATIONS}...")
-#
-#             # E-STEP: Assign ommatidia to their closest current grid line
-#             num_lines = len(current_lines)
-#             line_normals = np.array([line['normal'] for line in current_lines])
-#             line_dists = np.array([np.dot(line['normal'], line['mean']) for line in current_lines])
-#
-#             # Calculate distance of each ommatidium to each line's plane
-#             # dist(p, plane) = |dot(p, n) - d|
-#             ommatidia_dots = np.dot(ommatidia_final, line_normals.T)
-#             distances_to_planes = np.abs(ommatidia_dots - line_dists)
-#
-#             # Assign each ommatidium to the index of the closest line
-#             assignments = np.argmin(distances_to_planes, axis=1)
-#
-#             # Group ommatidia by their assigned line index
-#             ommatidia_by_line = [ommatidia_final[assignments == j] for j in range(num_lines)]
-#
-#             # M-STEP: Find the best smooth grid that fits the assigned ommatidia
-#             # We define an objective function to minimize. The function's input is a
-#             # set of polynomial coefficients that describe the grid's geometry.
-#             # It returns a "cost": the total squared distance from the generated
-#             # smooth grid to the assigned ommatidia points.
-#
-#             def objective_function(params):
-#                 angle_coeffs = params[:POLY_DEGREE_ANGLE + 1]
-#                 dist_coeffs = params[POLY_DEGREE_ANGLE + 1:]
-#                 smooth_angle_func = np.poly1d(angle_coeffs)
-#                 smooth_dist_func = np.poly1d(dist_coeffs)
-#
-#                 sequence_indices = np.arange(num_lines)
-#                 smooth_angles = smooth_angle_func(sequence_indices)
-#                 smooth_dists = smooth_dist_func(sequence_indices)
-#
-#                 total_error = 0
-#                 for j in range(num_lines):
-#                     assigned_points = ommatidia_by_line[j]
-#                     if assigned_points.shape[0] == 0:
-#                         continue  # No points assigned to this line
-#
-#                     # Reconstruct the normal and distance for this smooth line
-#                     n_smooth = rotate_vector(main_axis_normal, common_axis, smooth_angles[j])
-#                     d_smooth = smooth_dists[j]
-#
-#                     # Calculate and sum the squared distances for this line's points
-#                     error = np.sum((np.dot(assigned_points, n_smooth) - d_smooth) ** 2)
-#                     total_error += error
-#
-#                 return total_error
-#
-#             # Run the optimization
-#             # Get the current parameters to use as an initial guess for the optimizer
-#             angles_for_sorting = []
-#             for line in current_lines:
-#                 n_proj = line['normal'] - np.dot(line['normal'], common_axis) * common_axis
-#                 n_proj /= np.linalg.norm(n_proj)
-#                 dot_prod = np.dot(main_axis_normal, n_proj)
-#                 cross_prod = np.dot(common_axis, np.cross(main_axis_normal, n_proj))
-#                 angles_for_sorting.append(np.arctan2(cross_prod, dot_prod))
-#
-#             original_angles = np.array(angles_for_sorting)
-#             original_distances = np.array([np.dot(line['normal'], line['mean']) for line in current_lines])
-#
-#             # Initial guess for the optimizer from a simple polyfit
-#             p0_angle = np.polyfit(np.arange(num_lines), original_angles, POLY_DEGREE_ANGLE)
-#             p0_dist = np.polyfit(np.arange(num_lines), original_distances, POLY_DEGREE_DIST)
-#             p0 = np.concatenate([p0_angle, p0_dist])
-#
-#             result = minimize(objective_function, p0, method='Nelder-Mead')
-#             best_params = result.x
-#
-#             # Replace the original biological grid lines with the optimized ones
-#             best_angle_coeffs = best_params[:POLY_DEGREE_ANGLE + 1]
-#             best_dist_coeffs = best_params[POLY_DEGREE_ANGLE + 1:]
-#             final_angle_func = np.poly1d(best_angle_coeffs)
-#             final_dist_func = np.poly1d(best_dist_coeffs)
-#
-#             sequence_indices = np.arange(num_lines)
-#             final_angles = final_angle_func(sequence_indices)
-#             final_distances_raw = final_dist_func(sequence_indices)
-#
-#             # Clamp distances to a safe range just inside the sphere's boundary
-#             final_distances = np.clip(final_distances_raw, -0.999, 0.999)
-#
-#             new_lines = []
-#             for j in range(num_lines):
-#                 new_angle = final_angles[j]
-#                 new_dist = final_distances[j]
-#                 new_normal = rotate_vector(main_axis_normal, common_axis, new_angle)
-#                 new_mean = new_dist * new_normal
-#                 new_points = small_circle_from_normal(new_normal, new_mean)
-#                 new_lines.append({'normal': new_normal, 'mean': new_mean, 'points': new_points,
-#                                   'original_data': current_lines[j]['original_data']})
-#             current_lines = new_lines
-#
-#             biological_grid_lines[axis_id] = current_lines
-#
-#     print("Data-driven regularization complete.")
+if DATA_DRIVEN_SMOOTHING:
+    print("\nStarting fast grid optimization...")
+    optimized_grids = grid_optimization(
+        biological_grid_lines,
+        main_axes_data,
+        ommatidia_final,
+        lattice_centre_final,
+        smoothness_weight=0.5,
+        data_weight=2.0,
+        consistency_weight=0.5,
+        edge_flexibility=2.0,
+        max_iter=500
+    )
+
+    # Check which lines were outliers
+    for axis_id, lines in optimized_grids.items():
+        outliers = [i for i, line in enumerate(lines) if line.get('was_outlier', False)]
+        if outliers:
+            print(f"{axis_id} had outliers at indices: {outliers}")
+
+    biological_grid_lines = optimized_grids
 
 
 ## (Optional) Final 60-degree regularization
@@ -477,6 +615,7 @@ if REGULARIZE_GRID_ANGLES:
         main_axes_data[axis_id]['points'])
 
     print("Rigid rotation applied.")
+
 
 ## Plotting
 
