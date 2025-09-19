@@ -11,8 +11,8 @@ from scipy.spatial import cKDTree, Delaunay
 from scipy.interpolate import RBFInterpolator
 
 
-GENERATE_PARAMETRIC_MODEL = True
-REGULARIZE_WITH_MARKERS = True
+GENERATE_PARAMETRIC_MODEL = False
+REGULARIZE_WITH_MARKERS = False
 PARAMETRIC_DENSITY_MULTIPLIER = 1.0
 PARAMETRIC_GRID_ANGLE_DEG = 60.0
 USE_2D_DENSITY = True
@@ -636,18 +636,15 @@ plt.show()
 # Generate second eye and save
 # ---------
 
-eye_width = 215.0           # Eye width in micrometers
+eye_dims = np.array([215.0, 510.0, 430.0])           # Eye dims in micrometers
 inter_eye_dist = 390.0      # Distance between eyes in micrometers
 
-# Calculate current model width along its x-axis
-current_width = lattice_3d[:, 0].max() - lattice_3d[:, 0].min()
-
 # Determine the scaling factor
-scale_factor = eye_width / current_width
+scale_factors = eye_dims / (lattice_3d.max(axis=0) - lattice_3d.min(axis=0))
 
 # Apply scaling to the origins (from the center of the eye)
 eye_center = lattice_3d.mean(axis=0)
-left_eye_origins_scaled = (lattice_3d - eye_center) * scale_factor + eye_center
+left_eye_origins_scaled = (lattice_3d - eye_center) * scale_factors + eye_center
 
 # The medial edge (rightmost point) of the left eye should be at x = -inter_eye_distance / 2
 medial_edge_target_x = -inter_eye_dist / 2.0
@@ -702,7 +699,7 @@ ax.set_ylabel("Y (micrometers)")
 ax.set_zlabel("Z (micrometers)")
 
 # Set up axes to be equal and show the full head width
-full_head_width = 2 * eye_width + inter_eye_dist
+full_head_width = 2 * eye_dims[0] + inter_eye_dist
 ax.set_box_aspect([1, 1, 1])
 ax.set_xlim(-full_head_width / 2, full_head_width / 2)
 ax.set_ylim(-full_head_width / 2, full_head_width / 2)
