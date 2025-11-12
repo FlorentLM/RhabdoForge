@@ -1,7 +1,7 @@
 [project]
 name = "InsectVisionSimulator"
 version = "0.9.5"
-description = "A fast and insect vision simulator"
+description = "A fast insect vision simulator"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -14,5 +14,6 @@ dependencies = [
     "scipy>=1.16.0",
     "trimesh[easy]",
     "pyvista",
-    "pyglm"
+    "pyglm",
+    "pytinybvh @ git+https://github.com/FlorentLM/pytinybvh.git#egg=pytinybvh",
 ]
