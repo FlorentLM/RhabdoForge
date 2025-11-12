@@ -29,11 +29,14 @@ def main():
 
     if USE_POINT_CLOUD:
         # Create a point cloud asset from a file
-        point_cloud_asset = Asset(name='seville', file_path='assets/seville_filtered.ply', radii=0.01)
+        point_cloud_asset = Asset.from_file(name='seville', file_path='assets/seville_filtered.ply', radii=0.01)
         scene.add_instance(point_cloud_asset)
 
+    cube_positions, cube_uvs = np.split(CUBE_VERTICES.reshape(-1, 5), [3], axis=1)
+    cube_faces = CUBE_INDICES.reshape(-1, 3)
+
     # Create a mesh asset from raw vertex and index data
-    crate_asset = Asset(name='crate', vertices=CUBE_VERTICES, indices=CUBE_INDICES, texture_path='textures/wood.jpg')
+    crate_asset = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='textures/wood.jpg')
 
     # Add multiple instances of the same asset
     scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))

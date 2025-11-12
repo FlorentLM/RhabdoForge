@@ -129,7 +129,7 @@ class RasterPoints:
 
     def __init__(self, asset: Asset, vert_shader_path: str, frag_shader_path: str):
         self.source_asset_id = asset.id
-        self.draw_count = asset.num_points
+        self.draw_count = asset._nb_points
 
         self.shaders = ShaderProgram(vert_shader_path, frag_shader_path)
         self.vao = glGenVertexArrays(1)

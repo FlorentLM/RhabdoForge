@@ -452,53 +452,50 @@ def generate_and_save_atlas(font_name=None, font_size=22, output_dir='interactiv
 
 ##
 
-import open3d as o3d
-
-def estimate_radii(pointcloud, k_neighbors=2):
+def estimate_radii(pointcloud, k=2):
     """
     Estimates the radius for each point in a point cloud such that
-    spheres centered at these points would "touch" their nearest neighbors.
+    spheres centered at these points would "touch" their nearest neighbours.
 
     Args:
-        pointcloud (np.ndarray or open3d.geometry.PointCloud): The input point cloud
-        k_neighbors (int): The number of nearest neighbors to consider.
-                           If k_neighbors=2, it finds the single closest neighbor
-                           (excluding the point itself).
+        pointcloud (np.ndarray or trimesh.PointCloud): The input point cloud data.
+        k (int): The number of nearest neighbours to consider (excluding the point itself).
+                           Defaults to 2, which means it looks at the closest distinct point.
 
     Returns:
         numpy.ndarray: An array of estimated radii for each point.
     """
 
-    if isinstance(pointcloud, o3d.geometry.PointCloud):
-        pcd_o3d = pointcloud
-        points = np.asarray(pointcloud.points)
+    import trimesh
+    from scipy.spatial import cKDTree
 
+    if isinstance(pointcloud, trimesh.PointCloud):
+        points = pointcloud.vertices
     elif isinstance(pointcloud, np.ndarray):
         points = pointcloud
-        pcd_o3d = o3d.geometry.PointCloud()
-        pcd_o3d.points = o3d.utility.Vector3dVector(pointcloud)
+    else:
+        raise TypeError("Input 'pointcloud' must be a numpy array or trimesh.PointCloud.")
 
     num_points = points.shape[0]
     radii = np.zeros(num_points, dtype=np.float32)
 
-    pcd_tree = o3d.geometry.KDTreeFlann(pcd_o3d)
+    if num_points == 0:
+        return radii
+
+    if k < 1:
+        raise ValueError("k must be at least 1.")
+
+    kdtree = cKDTree(points)
+
+    distances, _ = kdtree.query(points, k=k + 1)
 
     for i in range(num_points):
-        # Find k_neighbors for the current point
-        # k_neighbors + 1 because the point itself will be included in the search result
-        [k, idx, _] = pcd_tree.search_knn_vector_3d(pcd_o3d.points[i], k_neighbors + 1)
-
-        if k > 1:
-            # The first index (idx[0]) will be the point itself, so we take the second one
-            # If k_neighbors = 1, we need to take idx[1]
-            # If k_neighbors > 1, we might average or take the min of multiple distances
-            # For "spheres touching" the distance to the single closest neighbor is most direct
-
-            closest_neighbor_idx = idx[1]
-            distance = np.linalg.norm(points[i] - points[closest_neighbor_idx])
-            radii[i] = distance / 2.0
+        # check if at least 1 neighbour
+        if len(distances[i]) > 1:
+            closest_neighbour_dist = distances[i][1] # (index 0 is to the point itself, so 0)
+            radii[i] = closest_neighbour_dist / 2.0
         else:
-            # Handle isolated points or point clouds with less than k_neighbors + 1 points
-            radii[i] = 0.1
-
+            # point has no neighbours (isolated point or very sparse cloud)
+            # or fewer than k + 1 points in total
+            radii[i] = 0.1  # default radius
     return radii

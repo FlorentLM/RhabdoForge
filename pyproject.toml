@@ -12,7 +12,7 @@ dependencies = [
     "pillow>=11.3.0",
     "pyopengl>=3.1.9",
     "scipy>=1.16.0",
-    "open3d",
+    "trimesh[easy]",
     "pyvista",
     "pyglm"
 ]

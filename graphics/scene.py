@@ -8,7 +8,10 @@ from enum import Enum, auto
 
 from pathlib import Path
 import numpy as np
-import open3d as o3d
+from PIL import Image
+
+from graphics.models_loaders import trimesh_from_file, trimesh_from_arrays
+from trimesh import Trimesh, PointCloud, Scene as TrimeshScene
 
 from OpenGL.GL import *
 from pyglm import glm
@@ -35,175 +38,191 @@ class Asset:
     - From data: Asset(name="my_pcd", points=points_array, colors=colors_array, radii=0.01)
     """
 
-    def __init__(self,
-                 name: str,
-                 file_path: Optional[Union[Path, str]] = None,
-
-                 # Mesh-specific data
-                 vertices: Optional[np.ndarray] = None,
-                 indices: Optional[np.ndarray] = None,
-                 texture_path: Union[Path, str] = 'textures/wood.jpg',
-
-                 # Point cloud-specific data
-                 points: Optional[ArrayLike] = None,
-                 colors: Optional[ArrayLike] = None,
-                 normals: Optional[ArrayLike] = None,
-                 radii: Optional[Union[float, ArrayLike]] = None
-                 ):
+    def __init__(self, name: str):
         self.id = id(self)
         self.name = name
         self.asset_type: Optional[AssetType] = None
 
-        # Determine asset type and load data
-        if file_path is not None:
-            self._load_from_file(Path(file_path), texture_path=texture_path, radii=radii)
+        # Mesh data
+        self.vertices: Optional[np.ndarray] = None  # (N, 5) array for meshes
+        self.indices: Optional[np.ndarray] = None  # (M, 3) array for meshes
 
-        elif vertices is not None and indices is not None:
-            self._create_mesh_from_data(vertices, indices, texture_path)
+        # Point cloud data
+        self.points: Optional[np.ndarray] = None  # (N, 3) for point clouds
+        self.colors: Optional[np.ndarray] = None  # (N, 3) or (N, 4) for point clouds
+        self.normals: Optional[np.ndarray] = None  # (N, 3) for point clouds
+        self.radii: Optional[np.ndarray] = None  # (N,) for point clouds
 
-        elif points is not None:
-            self._create_points_from_data(points, colors, normals, radii)
+        self.texture_id: Optional[int] = None  # OpenGL texture ID
+        self.texture_path: Optional[Path] = None
+        self._texture_image_data: Optional[Image.Image] = None
 
-        else:
-            raise ValueError(
-                "Insufficient data to create an Asset. Provide either 'file_path', "
-                "('vertices' and 'indices' for a mesh), or 'points' for a point cloud."
-            )
-
-    def _load_from_file(self, path: Path, texture_path: str, radii: Optional[Union[float, ArrayLike]]):
+    @classmethod
+    def from_file(cls, name: str, file_path: Union[Path, str],
+                  texture: Optional[Union[Path, str, Image.Image, np.ndarray]] = None,
+                  radii: Optional[Union[float, ArrayLike]] = None):
         """
-        Loads an asset from a file, determining whether it's a mesh or a point cloud based on its contents
+        Creates an Asset by loading a 3D model from a file using trimesh
         """
-        if not path.exists():
-            raise FileNotFoundError(f"Could not find asset file: {path}")
 
-        print(f"Attempting to load asset from {path}...")
+        instance = cls(name)
+        trimesh_model = trimesh_from_file(file_path)
 
-        # First, try to load the file as a TriangleMesh
-        mesh = o3d.io.read_triangle_mesh(path, enable_post_processing=True)
+        if trimesh_model is None:
+            raise ValueError(f"Failed to load 3D model from {file_path}")
 
-        # **IMPROVEMENT**: Decide type based on content, not file extension.
-        if mesh and mesh.has_triangles():
-            print(f"File '{path}' contains triangles. Loading as a Mesh asset.")
-            self._process_mesh_data(mesh, texture_path)
+        if isinstance(trimesh_model, TrimeshScene):
+            print(
+                f"Info: File '{file_path}' contains multiple meshes (a TrimeshScene). Merging all geometries into a single Asset '{name}'.")
 
-        elif mesh and mesh.has_vertices():
-            print(f"File '{path}' has vertices but no triangles. Loading as a Points asset.")
+            # TODO: Instead of merging everything into a single asset, this should create multiple Asset objects
 
-            # Extract point data from the mesh structure
-            points = np.asarray(mesh.vertices, dtype=np.float32)
-            colors = np.asarray(mesh.vertex_colors, dtype=np.float32) if mesh.has_vertex_colors() else None
-            normals = np.asarray(mesh.vertex_normals, dtype=np.float32) if mesh.has_vertex_normals() else None
-            self._create_points_from_data(points, colors, normals, radii)
-            print(f"Loaded points Asset '{self.name}' with {self.num_points} points from {path}.")
+            trimesh_model = trimesh_model.dump(concatenate=True)
+            if not isinstance(trimesh_model, (Trimesh, PointCloud)):
+                raise ValueError(f"Failed to extract a single Trimesh from scene {file_path} after concatenation.")
 
-        else:
-            # Fallback for formats that read_triangle_mesh might fail on
-            print(f"Could not read triangles from '{path}'. Attempting to load as a Point Cloud.")
+        instance._process_trimesh_object(trimesh_model, radii)
+
+        print(f"Created Asset '{instance.name}' of type {instance.asset_type.name} from file {file_path}.")
+        return instance
+
+    @classmethod
+    def from_arrays(cls, name: str,
+                    vertices: np.ndarray,
+                    faces: Optional[np.ndarray] = None,
+                    normals: Optional[np.ndarray] = None,
+                    vertex_colors: Optional[np.ndarray] = None,
+                    uv_coords: Optional[np.ndarray] = None,
+                    texture: Optional[Union[Path, str, Image.Image, np.ndarray]] = None,
+                    radii: Optional[Union[float, ArrayLike]] = None):
+        """
+        Creates an Asset from numpy arrays using trimesh
+        """
+
+        instance = cls(name)
+
+        instance._process_texture_source(texture)
+
+        trimesh_model = trimesh_from_arrays(
+            vertices=vertices, faces=faces, normals=normals,
+            vertex_colors=vertex_colors, uv_coords=uv_coords, texture_image=instance._texture_image_data
+        )
+        if trimesh_model is None:
+            raise ValueError("Failed to create Trimesh object from arrays.")
+
+        instance._process_trimesh_object(trimesh_model, radii=radii)
+        print(f"Created Asset '{instance.name}' of type {instance.asset_type.name} from arrays.")
+        return instance
+
+    def _process_texture_source(self, texture_source: Optional[Union[Path, str, Image.Image, np.ndarray]]):
+        """Internal helper to process the texture argument."""
+
+        if isinstance(texture_source, Image.Image):
+            self._texture_image_data = texture_source
+
+        elif isinstance(texture_source, np.ndarray):
             try:
-                pcd = o3d.io.read_point_cloud(path)
-                if pcd and pcd.has_points():
-                    self._process_points_data(pcd, radii)
-                    print(f"Loaded points Asset '{self.name}' with {self.num_points} points from {path}.")
-
-                else:
-                    raise IOError(f"File '{path}' could not be loaded as a mesh or a point cloud.")
-
+                self._texture_image_data = Image.fromarray(texture_source)
             except Exception as e:
-                raise IOError(f"Failed to load file '{path}'. Could not interpret as mesh or point cloud. Error: {e}")
+                print(f"Warning: Failed to convert numpy array to PIL Image for asset '{self.name}': {e}")
 
-    def _process_mesh_data(self, mesh: o3d.geometry.TriangleMesh, texture_path: str):
-        """ Processes geometry from an already-loaded Open3D mesh object """
+        elif isinstance(texture_source, (Path, str)):
+            self.texture_path = Path(texture_source)
 
-        # Handle meshes without texture coordinates
-        if not mesh.has_triangle_uvs():
-            print(f"Warning: Mesh for asset '{self.name}' does not contain texture coordinates (UVs).")
-            # Create placeholder UVs (texture mapping for this asset will be incorrect)
+        elif texture_source is not None:
+            print(f"Warning: Unrecognized texture_source type for asset '{self.name}'. Ignoring texture.")
 
-            num_triangles = len(mesh.triangles)
-            mesh.triangle_uvs = o3d.utility.Vector2dVector(np.zeros((num_triangles * 3, 2), dtype=np.float64))
+    def _process_trimesh_object(self, trimesh_obj: Union[Trimesh, PointCloud], radii: Optional[Union[float, ArrayLike]]):
+        """
+        Internal method to populate Asset's data from a trimesh.Trimesh object
+        """
+        if trimesh_obj.is_empty:
+            raise ValueError(f"Trimesh object is empty for asset '{self.name}'.")
 
-            if mesh.has_vertex_colors():
-                print("Info: This mesh has vertex colors, which could be used with a custom shader.")
+        # Decide if mesh or point cloud based on presence of faces attribute and its content
+        if isinstance(trimesh_obj, Trimesh) and trimesh_obj.faces is not None and len(trimesh_obj.faces) > 0:
+            self.asset_type = AssetType.Mesh
+            self._setup_mesh_data(trimesh_obj)
 
-        o3d_verts = np.asarray(mesh.vertices, dtype=np.float32)
-        o3d_uvs = np.asarray(mesh.triangle_uvs, dtype=np.float32)
-        o3d_indices = np.asarray(mesh.triangles, dtype=np.uint32)
+        elif isinstance(trimesh_obj, PointCloud) and trimesh_obj.vertices is not None and len(trimesh_obj.vertices) > 0:
+            self.asset_type = AssetType.Points
+            self._setup_point_cloud_data(trimesh_obj, radii)
 
-        unique_vert_map, vert_list, new_indices_flat = {}, [], []
-        flat_uvs, flat_indices = o3d_uvs.reshape(-1, 2), o3d_indices.flatten()
+        else:
+            raise ValueError(f"Trimesh object for asset '{self.name}' has no discernible geometry (vertices/faces).")
 
-        for i in range(len(flat_indices)):
-            pos_idx, uv_tuple = flat_indices[i], tuple(flat_uvs[i])
-            key = (pos_idx, uv_tuple)
-            if key not in unique_vert_map:
-                new_idx = len(vert_list)
-                unique_vert_map[key] = new_idx
-                pos = o3d_verts[pos_idx]
-                vert_list.append(np.concatenate([pos, uv_tuple]))
+    def _setup_mesh_data(self, trimesh_obj: Trimesh):
+        """ Populates mesh-specific data from a trimesh.Trimesh object. """
+
+        vertices_3d = trimesh_obj.vertices.astype(np.float32)
+        indices = trimesh_obj.faces.astype(np.uint32)
+
+        uvs = np.zeros((len(vertices_3d), 2), dtype=np.float32)
+        if hasattr(trimesh_obj.visual, 'uv') and trimesh_obj.visual.uv is not None and trimesh_obj.visual.uv.shape[0] == \
+                vertices_3d.shape[0]:
+            uvs = trimesh_obj.visual.uv.astype(np.float32)
+        else:
+            print(f"Warning: Mesh '{self.name}' has no valid UVs or UVs count mismatch. Generating dummy UVs.")
+
+        self.vertices = np.concatenate((vertices_3d, uvs), axis=1)
+        self.indices = indices
+
+        if self.texture_path is not None:
+            print(f"Info: Asset '{self.name}' using external texture from path: {self.texture_path}")
+        elif self._texture_image_data is not None:
+            print(f"Info: Asset '{self.name}' using provided in-memory texture.")
+        elif hasattr(trimesh_obj.visual, 'material') and hasattr(trimesh_obj.visual.material, 'image') and trimesh_obj.visual.material.image is not None:
+            self._texture_image_data = trimesh_obj.visual.material.image
+            print(f"Info: Asset '{self.name}' picked up an embedded texture from the loaded model.")
+        else:
+            print(f"Info: Asset '{self.name}' has no texture source (path or embedded image).")
+
+        # TODO: if no texture_path and no embedded image this should use vertex colors if possible
+
+    def _setup_point_cloud_data(self, trimesh_obj: Trimesh, radii: Optional[Union[float, ArrayLike]]):
+        """ Populates point cloud-specific data from a trimesh.Trimesh object. """
+
+        self.points = trimesh_obj.vertices.astype(np.float32)
+        self._nb_points = len(self.points)
+
+        # Extract colors and normals from trimesh visual or compute/default
+        if hasattr(trimesh_obj.visual, 'vertex_colors') and trimesh_obj.visual.vertex_colors is not None and \
+                trimesh_obj.visual.vertex_colors.shape[0] == self._nb_points:
+            # Convert 0-255 uint8 to 0.0-1.0 float if necessary
+            if trimesh_obj.visual.vertex_colors.dtype == np.uint8:
+                self.colors = trimesh_obj.visual.vertex_colors[:, :3].astype(np.float32) / 255.0
             else:
-                new_idx = unique_vert_map[key]
-            new_indices_flat.append(new_idx)
+                self.colors = trimesh_obj.visual.vertex_colors[:, :3].astype(np.float32)
+        else:
+            self.colors = np.ones_like(self.points, dtype=np.float32)  # Default white
 
-        self.vertices = np.array(vert_list, dtype=np.float32)
-        self.indices = np.array(new_indices_flat, dtype=np.uint32).reshape(-1, 3)
-        self.texture_path = Path(texture_path)
-        self.asset_type = AssetType.Mesh
+        if hasattr(trimesh_obj, 'vertex_normals') and trimesh_obj.vertex_normals is not None and \
+                trimesh_obj.vertex_normals.shape[0] == self._nb_points:
+            self.normals = trimesh_obj.vertex_normals.astype(np.float32)
+        else:
+            self.normals = np.zeros_like(self.points, dtype=np.float32)  # Default (0,0,0) if no normals
 
-        print(
-            f"Finalized mesh Asset '{self.name}' with {len(self.vertices)} vertices and {len(self.indices)} triangles.")
-
-    def _create_mesh_from_data(self, vertices: np.ndarray, indices: np.ndarray, texture_path: Union[Path, str]):
-        """ Creates a mesh asset from numpy arrays """
-
-        self.vertices = vertices.reshape(-1, 5)
-        self.indices = indices.reshape(-1, 3)
-        self.texture_path = Path(texture_path)
-        self.asset_type = AssetType.Mesh
-
-        print(f"Created mesh Asset '{self.name}' from data.")
-
-    def _process_points_data(self, pcd: o3d.geometry.PointCloud, radii: Optional[Union[float, ArrayLike]]):
-        """ Processes geometry from an already-loaded Open3D point cloud object """
-
-        if not pcd.has_points():
-            raise ValueError("Point cloud object contains no points.")
-
-        points = np.asarray(pcd.points, dtype=np.float32)
-        colors = np.asarray(pcd.colors, dtype=np.float32) if pcd.has_colors() else None
-        normals = np.asarray(pcd.normals, dtype=np.float32) if pcd.has_normals() else None
-
-        self._create_points_from_data(points, colors, normals, radii=radii)
-
-    def _create_points_from_data(self, points: ArrayLike, colors: Optional[ArrayLike],
-                                 normals: Optional[ArrayLike], radii: Optional[Union[float, ArrayLike]]):
-        """ Creates a point cloud asset from numpy arrays """
-        self.points = np.asarray(points, dtype=np.float32)
-        self.num_points = len(self.points)
-
-        self.colors = np.asarray(colors, dtype=np.float32) if colors is not None else np.ones_like(self.points,
-                                                                                                   dtype=np.float32)
-        self.normals = np.asarray(normals, dtype=np.float32) if normals is not None else np.zeros_like(self.points,
-                                                                                                       dtype=np.float32)
-
+        # Handle radii
         if isinstance(radii, (float, int)):
-            self.radii = np.full(self.num_points, radii, dtype=np.float32)
+            self.radii = np.full(self._nb_points, radii, dtype=np.float32)
         elif radii is not None:
             self.radii = np.asarray(radii, dtype=np.float32)
-            if len(self.radii) != self.num_points:
+            if len(self.radii) != self._nb_points:
                 raise ValueError("Number of radii must match the number of points.")
         else:
             # Fallback to a default only if radii is explicitly None
-            self.radii = np.full(self.num_points, 0.05, dtype=np.float32)
-
-        self.asset_type = AssetType.Points
-
-        print(f"Created points Asset '{self.name}' with {self.num_points} points from data.")
+            self.radii = np.full(self._nb_points, 0.05, dtype=np.float32)
 
     @property
     def nb_triangles(self):
-        if self.asset_type == AssetType.Mesh:
+        if self.asset_type == AssetType.Mesh and self.indices is not None:
             return len(self.indices)
+        return 0
+
+    @property
+    def nb_points(self):
+        if self.asset_type == AssetType.Points and self.points is not None:
+            return self._nb_points
         return 0
 
     # TODO: more properties
@@ -420,7 +439,7 @@ class Scene:
         count = 0
         for instance in self.instances:
             if instance.asset.asset_type == AssetType.Points:
-                count += instance.asset.num_points
+                count += instance.asset.nb_points
         return count
 
     def free(self):

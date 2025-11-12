@@ -674,7 +674,7 @@ output_filename = "drosophila_eye.npz"
 np.savez_compressed(
     output_filename,
     directions=final_dirs,
-    origins=final_origins,
+    origins=final_origins * 0.00001,
     eye_id=eye_ids
 )
 
