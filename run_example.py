@@ -89,7 +89,8 @@ def main():
     if not HEADLESS:
 
         while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer):
-            context.input()
+
+            context.input()  # this processes mouse and keyboard, it can be omitted to run headless
 
             # Rotate dynamic test crate
             dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
@@ -109,7 +110,7 @@ def main():
 
             # ommatidia_data is the array that you'd feed to your neuromorphic model
 
-            context.draw()  # You don't have to display anything if you just want the data, this can be omitted
+            context.draw()  # this draws to the viewport, it can be omitted to run headless
 
             nb_frames += 1
 
