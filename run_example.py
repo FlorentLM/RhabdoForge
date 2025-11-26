@@ -49,9 +49,9 @@ def main():
     scene.add_skybox('textures/bright_day')
 
     # Setup eye model
-    # eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)   # Uniform spherical eye
+    eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)   # Uniform spherical eye
     # eye_model = CompoundEye.from_file('drosophila_eye.npz', eye_parameter=1.5)    # Manually mapped drosophila eye
-    eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)  # Procedurally-generated bee eye
+    # eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)  # Procedurally-generated bee eye
 
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))
@@ -71,7 +71,7 @@ def main():
                                          time_dithering=False,
                                          batch_size=batch_size)
 
-    # -- Example moving ommatidia --
+    # ================== Example moving ommatidia ==================
 
     # Let's pick the one most aligned with the agent's forward direction
     # o = eye_model.query_directions(agent.forward, k=1)
@@ -79,7 +79,7 @@ def main():
     # or a bunch of them near this direction
     foveal_indices = eye_model.query_directions_angle(agent.forward, angle=5.0, degrees=True)
 
-    # -- End example moving ommatidia --
+    # ================== End example moving ommatidia ==================
 
     # Run
     start_time = context.current_time
@@ -94,7 +94,7 @@ def main():
             # Rotate dynamic test crate
             dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
-            #  -- Example moving ommatidium --
+            # ================== Example moving ommatidia ==================
 
             # Animate the foveal patch scanning horizontally
             # eye_model.ommatidia[foveal_indices].dt(context.delta_time).rotate(yaw_delta=5.0)
@@ -102,17 +102,19 @@ def main():
             # Send the updates to the GPU
             eye_renderer.update()
 
-            # -- End example moving ommatidia --
+            # ================== End example moving ommatidia ==================
 
             # Get sensory data from the compound eye renderer
             ommatidia_data = eye_renderer.get_ommatidia_data(agent)
 
-            context.draw()
+            # ommatidia_data is the array that you'd feed to your neuromorphic model
+
+            context.draw()  # You don't have to display anything if you just want the data, this can be omitted
 
             nb_frames += 1
 
     else:
-        # Headless mode
+        # Headless and batched mode
 
         max_steps = 10000
         all_ommatidia_data = []
