@@ -8,6 +8,10 @@ from pyglm import glm
 from OpenGL.GL import *
 import re
 
+from trimesh import Trimesh, PointCloud
+from trimesh.visual import TextureVisuals
+from trimesh.visual.material import SimpleMaterial
+
 # World unit vectors
 WORLD_RIGHT = WORLD_X = glm.vec3(1.0, 0.0, 0.0)
 WORLD_UP = WORLD_Y = glm.vec3(0.0, 1.0, 0.0)
@@ -205,43 +209,6 @@ def load_compute_shader(path_comp):
     return program
 
 
-def load_texture(file_path):
-    bitmap_path = Path(file_path)
-    if not bitmap_path.exists():
-        raise IOError(f"Failed to open texture file {bitmap_path}")
-
-    with Image.open(bitmap_path) as im:
-        w, h = im.width, im.height
-        im_data = im.transpose(Image.FLIP_TOP_BOTTOM).convert("RGBA").tobytes()
-
-    texture_id = glGenTextures(1)
-    glBindTexture(GL_TEXTURE_2D, texture_id)
-
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
-
-    glTexImage2D(GL_TEXTURE_2D,
-                 0,
-                 GL_SRGB_ALPHA,
-                 w,
-                 h,
-                 0,
-                 GL_RGBA,
-                 GL_UNSIGNED_BYTE,
-                 im_data)
-
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0)
-
-    # Unbind texture
-    glBindTexture(GL_TEXTURE_2D, 0)
-
-    return texture_id
-
-
 def load_cubemap(folder_path):
 
     # OpenGL cubemap face order
@@ -364,13 +331,16 @@ def write_pytinybvh_preamble(preamble: str):
 
 ##
 
-def generate_and_save_atlas(font_name=None, font_size=22, output_dir='interactive/fonts', color=(255, 255, 255, 255)):
+def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fonts', color=(255, 255, 255, 255)):
     """
     Generates a fonts atlas texture and its corresponding metadata file
     """
     from os import environ
     environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
-    import pygame
+    try:
+        import pygame
+    except ImportError:
+        raise ImportError("'pygame' package required for pygame texture generation")
     import string
     import json
 
@@ -499,3 +469,96 @@ def estimate_radii(pointcloud, k=2):
             # or fewer than k + 1 points in total
             radii[i] = 0.1  # default radius
     return radii
+
+
+def trimesh_from_arrays(
+    vertices: np.ndarray,
+    faces: np.ndarray = None,
+    normals: np.ndarray = None,
+    vertex_colors: np.ndarray = None,
+    uv_coords: np.ndarray = None,
+    texture_image: Image.Image = None
+) -> Union[Trimesh, PointCloud, None]:
+    """
+    Creates a trimesh.Trimesh object from numpy arrays
+
+    Args:
+        vertices (np.ndarray): N x 3 array of vertex positions.
+        faces (np.ndarray, optional): M x 3 (or M x N_verts_per_face) array of face indices.
+                                      If None, a point cloud is created or faces are inferred by trimesh.
+        normals (np.ndarray, optional): N x 3 array of vertex normals. Will be calculated by trimesh
+                                        if not provided or invalid.
+        vertex_colors (np.ndarray, optional): N x 3 (RGB) or N x 4 (RGBA) array of vertex colors.
+                                              Values can be 0-255 (uint8) or 0.0-1.0 (float).
+        uv_coords (np.ndarray, optional): N x 2 array of UV texture coordinates.
+        texture_image (PIL.Image.Image, optional): A PIL Image object to be used as a texture.
+                                                   Requires uv_coords to be applied.
+
+    Returns:
+        trimesh.Trimesh: A trimesh object created from the provided data.
+                         Or None if an error occurs.
+    """
+    if vertices is None or vertices.ndim != 2 or vertices.shape[1] != 3:
+        print("Error: 'vertices' must be an N x 3 numpy array.")
+        return None
+
+    try:
+        is_mesh = faces is not None and faces.ndim == 2 and faces.shape[1] >= 3
+
+        mesh_kwargs = {'vertices': vertices}
+        if is_mesh:
+            mesh_kwargs['faces'] = faces
+        else:
+            print("Info: No valid faces provided. Creating a trimesh.PointCloud object.")
+
+        if normals is not None:
+            if normals.shape != vertices.shape:
+                print("Warning: 'normals' shape does not match 'vertices' shape. Ignoring provided normals.")
+            else:
+                mesh_kwargs['vertex_normals'] = normals
+
+        # visual attributes (colors, UVs, texture)
+        visual_args = {}
+
+        if uv_coords is not None:
+            if uv_coords.shape[0] == vertices.shape[0] and uv_coords.shape[1] == 2:
+                visual_args['uv'] = uv_coords
+                if texture_image is not None:
+                    material = SimpleMaterial(image=texture_image)
+                    visual_args['material'] = material
+                    print("Info: Texture image and UV coordinates provided.")
+                else:
+                    print(
+                        "Info: UV coordinates provided but no texture image. Model will have UVs but no visual texture.")
+            else:
+                print("Warning: 'uv_coords' count or shape does not match 'vertices'. Ignoring provided UVs.")
+        elif texture_image is not None and uv_coords is None:
+            print("Warning: Texture image provided but no UV coordinates. Texture will not be applied visually.")
+
+        if vertex_colors is not None:
+            if vertex_colors.shape[0] == vertices.shape[0] and vertex_colors.shape[1] in [3, 4]:
+                visual_args['vertex_colors'] = vertex_colors
+                print("Info: Vertex colors provided.")
+            else:
+                print("Warning: 'vertex_colors' count or shape does not match 'vertices'. Ignoring provided colors.")
+
+        if 'uv' in visual_args or 'material' in visual_args:
+            if is_mesh:
+                mesh_kwargs['visual'] = TextureVisuals(**visual_args)
+            else:
+                print("Warning: Texture/UVs provided for a PointCloud. Trimesh.PointCloud does not directly "
+                    "support TextureVisuals. Visual information will be limited to vertex colors if provided.")
+
+        elif 'vertex_colors' in visual_args:
+            mesh_kwargs['vertex_colors'] = visual_args['vertex_colors']
+
+        if is_mesh:
+            model = Trimesh(**mesh_kwargs)
+        else:
+            model = PointCloud(**mesh_kwargs)
+
+        return model
+
+    except Exception as e:
+        print(f"Error creating model from arrays: {e}")
+        return None

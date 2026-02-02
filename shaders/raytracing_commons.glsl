@@ -456,7 +456,14 @@ vec3 trace(Ray r) {
                           getUV(base_vtx + i2) * closest_hit.barycentric_coords.z;
 
             Material hit_mat = materials[hit_inst.material_id];
-            final_color = texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
+
+            if (hit_mat.texture_idx == 0xFFFFFFFFu) {
+                // No texture: use base color
+                final_color = unpack_color(hit_mat.base_color).rgb;
+            } else {
+                // Texture: sample from it
+                final_color = texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
+            }
         }
     } else {
         if (use_skybox) {

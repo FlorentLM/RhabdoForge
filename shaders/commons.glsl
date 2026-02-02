@@ -9,8 +9,9 @@ const float TWOPI = 2.0 * PI;
 const float GAUSS_CONSTANT_K = 2.77258872224;
 
 struct Material {
-    uint texture_idx;
-    uint pad0, pad1, pad2;
+    uint texture_idx;       // 0xFFFFFFFF means no texture, use base_color
+    uint base_color;        // RGBA8 packed into uint32
+    uint pad0, pad1;
 };
 
 struct Ommatidium {
@@ -24,7 +25,16 @@ struct Ommatidium {
     uint padding;
 };
 
-// Helper functions for clean unpacking
+// Helper functions for unpacking
+
+vec4 unpack_color(uint packed_color) {
+    float r = float(packed_color & 255u) / 255.0;
+    float g = float((packed_color >> 8u) & 255u) / 255.0;
+    float b = float((packed_color >> 16u) & 255u) / 255.0;
+    float a = float((packed_color >> 24u) & 255u) / 255.0;
+    return vec4(r, g, b, a);
+}
+
 uint unpack_eye_id(Ommatidium om) {
     return om.packed_data & 7u;
 }

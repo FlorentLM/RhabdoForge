@@ -10,7 +10,7 @@ from graphics.agent import Agent
 from graphics.renderers.panoramic import PanoramicEye
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, Asset, AssetType
-from graphics.utils import load_texture, ShaderProgram, ViewMode
+from graphics.utils import ShaderProgram, ViewMode
 
 
 class CubemapFBO:
@@ -73,8 +73,8 @@ class CubemapFBO:
 
 class RasterMesh:
     """
-    A renderable (rasterization) representation of a mesh asset
-    Holds OpenGL resources
+    A renderable (rasterization) representation of a mesh asset.
+    Holds OpenGL resources.
     """
 
     def __init__(self, asset: Asset, vert_shader_path, frag_shader_path):
@@ -85,7 +85,11 @@ class RasterMesh:
         self.draw_count = self.indices.size
 
         self.shaders = ShaderProgram(vert_shader_path, frag_shader_path)
-        self.texture = load_texture(asset.texture_path)
+
+        # Handle texture loading - supports path, in-memory image, or no texture
+        self.texture = self._load_texture_from_asset(asset)
+        self.has_texture = self.texture != 0
+        self.base_color = asset.material.base_color.copy()  # Store base color for fallback
 
         self.vao = glGenVertexArrays(1)
         glBindVertexArray(self.vao)
@@ -100,7 +104,7 @@ class RasterMesh:
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.ebo)
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, self.indices.nbytes, self.indices, GL_STATIC_DRAW)
 
-        # Vertex attribute pointers (stride and offsets are correct for the new 'vertices' array)
+        # Vertex attribute pointers
         vertex_size_bytes = self.vertices.itemsize * 5
 
         pos_loc = glGetAttribLocation(self.shaders.program_id, "position")
@@ -114,17 +118,50 @@ class RasterMesh:
 
         glBindVertexArray(0)
 
+    def _load_texture_from_asset(self, asset: Asset) -> int:
+        """
+        Loads texture from asset, handling path or in-memory image.
+        Returns OpenGL texture ID, or 0 if no texture.
+        """
+        img = asset.texture_image  # lazy-loaded
+
+        if img is None:
+            return 0
+
+        # Convert to RGBA if needed
+        img = img.convert("RGBA")
+        img_data = img.tobytes()
+        width, height = img.size
+
+        tex_id = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, tex_id)
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, width, height, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, img_data)
+        glGenerateMipmap(GL_TEXTURE_2D)
+
+        glBindTexture(GL_TEXTURE_2D, 0)
+
+        return tex_id
+
     def free(self):
         glDeleteVertexArrays(1, [self.vao])
         glDeleteBuffers(1, [self.vbo])
+        glDeleteBuffers(1, [self.ebo])
         self.shaders.free()
-        glDeleteTextures(1, [self.texture])
+        if self.texture != 0:
+            glDeleteTextures(1, [self.texture])
 
 
 class RasterPoints:
     """
-    A renderable (rasterization) representation of a point cloud asset
-    Holds OpenGL resources
+    A renderable (rasterization) representation of a point cloud asset.
+    Holds OpenGL resources.
     """
 
     def __init__(self, asset: Asset, vert_shader_path: str, frag_shader_path: str):
@@ -168,7 +205,7 @@ class RasterPoints:
 
 
 class RasterInstance:
-    """ An instance wrapper for the rasterizer, holding a baked asset and transform. """
+    """An instance wrapper for the rasterizer, holding a baked asset and transform."""
     def __init__(self, asset: RasterMesh | RasterPoints, transform: glm.mat4, properties: dict):
         self.asset = asset
         self.transform = transform
@@ -189,7 +226,7 @@ class RasterSceneBaker:
     def _bake_all_assets(self):
         """
         Iterates through all unique assets in the scene, creates the corresponding
-        OpenGL resources (RasterMesh/RasterPoints), and caches them.
+        OpenGL resources (RasterMesh/RasterPoints) and caches them.
         """
         print("Baking rasterizer assets...")
         for asset in self.scene.assets.values():
@@ -209,18 +246,17 @@ class RasterSceneBaker:
     def get_renderables(self) -> list[RasterInstance]:
         """
         Provides a list of all instances in a format ready for the rasterizer.
-        This uses the pre-baked asset cache.
+        (uses the pre-baked asset cache)
         """
         renderables = []
         for instance in self.scene.instances:
-            # Look up the already-baked asset from the cache
             baked_asset = self._raster_asset_cache.get(instance.asset.id)
             if baked_asset:
                 renderables.append(RasterInstance(baked_asset, instance.transform, instance.properties))
         return renderables
 
     def free(self):
-        """ Frees all cached OpenGL resources """
+        """Frees all cached OpenGL resources."""
         print("Freeing baked rasterizer assets...")
         for raster_asset in self._raster_asset_cache.values():
             raster_asset.free()
@@ -235,12 +271,12 @@ class EyeRendererRaster(EyeRendererBase):
                  cubemap_res: int = 512,
                  batch_size: int = 1):
 
-        self.scene = scene  # just for convenience
+        self.scene = scene
         self._scene_baked = RasterSceneBaker(scene)
 
         self._cubemap_fbo = CubemapFBO(resolution=cubemap_res)
 
-        # call super after creating the scene for correct VRAM usage computation
+        # super *after* creating the scene for correct VRAM usage computation :)
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
 
         self._rasterizer_shader = ShaderProgram(comp_path='shaders/ommatidia_rasterizer.comp')
@@ -260,20 +296,17 @@ class EyeRendererRaster(EyeRendererBase):
         # no buffers to reallocate
 
     def estimate_vram_usage(self) -> float:
-        """ Override base method to provide a VRAM estimate for the rasterizer """
-
-        # This is kinda hard to calculate precisely without inspecting every texture and mesh
-        # so we assume a baseline and add the cubemap FBO size
+        """Override base method to provide a VRAM estimate for the rasterizer."""
 
         # Cubemap is RGBA8 (4 bytes) * 6 faces
         cubemap_mb = (self._cubemap_fbo.resolution ** 2 * 4 * 6) / (1024 * 1024)
 
-        # A rough conservative guess for shaders, VAOs, VBOs etc
+        # rough conservative guess for shaders, VAOs, VBOs etc
         scene_assets_mb = 50.0
         return cubemap_mb + scene_assets_mb
 
     def _render_instance(self, instance: RasterInstance, view_matrix, projection_matrix):
-        """ Renders a single RasterInstance """
+        """Renders a single RasterInstance."""
 
         asset = instance.asset
 
@@ -284,23 +317,25 @@ class EyeRendererRaster(EyeRendererBase):
         glUniformMatrix4fv(asset.shaders.get_loc("camera"), 1, False, glm.value_ptr(cam_mat))
         glUniformMatrix4fv(asset.shaders.get_loc("model"), 1, False, glm.value_ptr(instance.transform))
 
-        # TODO: unbinding may be skipped when rendering several instances of the same thing
-
         if isinstance(asset, RasterMesh):
+            # Set whether we have a texture
+            glUniform1i(asset.shaders.get_loc("has_texture"), int(asset.has_texture))
+            glUniform4fv(asset.shaders.get_loc("base_color"), 1, asset.base_color)
 
             glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_2D, asset.texture)
-            glDrawElements(GL_TRIANGLES, asset.draw_count, GL_UNSIGNED_INT, None)
+            if asset.has_texture:
+                glBindTexture(GL_TEXTURE_2D, asset.texture)
+            else:
+                glBindTexture(GL_TEXTURE_2D, 0)
 
+            glDrawElements(GL_TRIANGLES, asset.draw_count, GL_UNSIGNED_INT, None)
             glBindTexture(GL_TEXTURE_2D, 0)
 
         elif isinstance(asset, RasterPoints):
             glEnable(GL_PROGRAM_POINT_SIZE)
 
-            # Global multiplier to convert the world-unit radius to an visible pixel size
             pixel_mult = 25.0
             radius_scale = instance.properties.get('radius_scale', 1.0) * pixel_mult
-
             glUniform1f(asset.shaders.get_loc("radius_scale"), radius_scale)
 
             glDrawArrays(GL_POINTS, 0, asset.draw_count)
@@ -308,11 +343,10 @@ class EyeRendererRaster(EyeRendererBase):
             glDisable(GL_PROGRAM_POINT_SIZE)
 
         glBindVertexArray(0)
-
         asset.shaders.stop()
 
     def _render_to_cubemap(self, agent):
-        """ Pass 1: renders to the cubemap """
+        """Pass 1: renders to the cubemap."""
 
         main_viewport = glGetIntegerv(GL_VIEWPORT)
 
@@ -385,7 +419,7 @@ class EyeRendererRaster(EyeRendererBase):
         glViewport(main_viewport[0], main_viewport[1], main_viewport[2], main_viewport[3])
 
     def _sample_cubemap(self):
-        """ Pass 2: samples the cubemap """
+        """Pass 2: samples the cubemap."""
 
         self._rasterizer_shader.use()
 
@@ -419,7 +453,7 @@ class EyeRendererRaster(EyeRendererBase):
         self._rasterizer_shader.stop()
 
     def _compute_colors(self, agent):
-        """ The core ommatidia rendering logic """
+        """The core ommatidia rendering logic."""
 
         # Pass 1: Render to cubemap
         self._render_to_cubemap(agent)
@@ -434,7 +468,7 @@ class EyeRendererRaster(EyeRendererBase):
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 
     def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent):
-        """ Renders one of the rasterizer's supported views to the screen """
+        """Renders one of the rasterizer's supported views to the screen."""
 
         if view_mode == ViewMode.compound_eye:
             self._draw_voronoi()

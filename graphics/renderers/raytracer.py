@@ -11,7 +11,7 @@ from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from graphics.agent import Agent
 from graphics.renderers.base import EyeRendererBase
-from graphics.scene import Scene, Asset, AssetType
+from graphics.scene import Scene, AssetType
 from graphics.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
 from graphics.renderers.panoramic import TextureViewer
 
@@ -75,6 +75,7 @@ class RaytracingSceneBaker:
         print("Ray-tracing scene baking complete.")
 
     def _pack_materials(self):
+        """Packs material data for all mesh assets into GPU buffers."""
 
         assets = [inst.asset for inst in self.scene.instances if inst.asset.asset_type == AssetType.Mesh]
         assets = list(dict.fromkeys(assets))
@@ -82,61 +83,68 @@ class RaytracingSceneBaker:
         if not assets:
             return
 
-        self.material_map = {mesh.id: i for i, mesh in enumerate(assets)}
-        tex_paths = sorted(list({mesh.texture_path for mesh in assets}))
+        self.material_map = {asset.id: i for i, asset in enumerate(assets)}
 
-        tex_map = {path: i for i, path in enumerate(tex_paths)}
-        # Determine the target dimensions from the first texture
-        # All other textures will be resized to match this one
-        try:
-            with Image.open(tex_paths[0]) as first_img:
-                target_w, target_h = first_img.size
-                print(f"Using target texture size: {target_w}x{target_h} (from {tex_paths[0]})")
-        except FileNotFoundError:
-            print(f"Error: Could not open base texture {tex_paths[0]}")
-            return
+        # Collect textures from assets that have them
+        texture_images = []
+        asset_to_tex_idx = {}
 
-        tex_ids = []
+        for asset in assets:
+            if asset.has_texture:
+                img = asset.texture_image  # lazy loads if needed
+                if img is not None:
+                    asset_to_tex_idx[asset.id] = len(texture_images)
+                    texture_images.append(img)
+                else:
+                    asset_to_tex_idx[asset.id] = None
+            else:
+                asset_to_tex_idx[asset.id] = None
 
-        for path in tex_paths:
-            try:
-                img = Image.open(path).convert("RGBA")
+        # Create texture array if we have any
+        if texture_images:
+            target_w, target_h = texture_images[0].size
+            print(f"Creating texture array: {len(texture_images)} textures at {target_w}x{target_h}")
 
-                # Check if the image needs resizing
+            tex_ids = []
+            for i, img in enumerate(texture_images):
                 if img.size != (target_w, target_h):
-                    print(f"Warning: Resizing texture '{path}' from {img.size} to {(target_w, target_h)}.")
+                    print(f"  Resizing texture {i} from {img.size}")
                     img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
-                # Get raw image data for OpenGL
-                img_data = img.tobytes()
+                img_data = img.convert("RGBA").tobytes()
 
-                # Create an OpenGL texture from the (potentially resized) image data
                 tex_id = glGenTextures(1)
                 glBindTexture(GL_TEXTURE_2D, tex_id)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, target_w, target_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, img_data)
-
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, target_w, target_h, 0,
+                             GL_RGBA, GL_UNSIGNED_BYTE, img_data)
                 tex_ids.append(tex_id)
 
-            except Exception as e:
-                print(f"Error processing texture {path}: {e}")
-                # Add a placeholder texture ID (0) if loading fails
-                tex_ids.append(0)
-
-        if tex_ids:
             self.tex_array = self._create_texture_array(tex_ids)
-            # We can delete the individual 2D textures now that their data is in the array
             glDeleteTextures(len(tex_ids), tex_ids)
 
+        # Pack material buffer
         mat_data = np.zeros((len(assets), 4), dtype=np.uint32)
-        for mesh in assets:
-            mat_data[self.material_map[mesh.id], 0] = tex_map[mesh.texture_path]
+
+        for asset in assets:
+            idx = self.material_map[asset.id]
+            tex_idx = asset_to_tex_idx[asset.id]
+
+            # Texture index (0xFFFFFFFF = no texture)
+            mat_data[idx, 0] = tex_idx if tex_idx is not None else 0xFFFFFFFF
+
+            # Pack base_color as RGBA8
+            c = asset.material.base_color
+            r = int(np.clip(c[0], 0, 1) * 255) & 0xFF
+            g = int(np.clip(c[1], 0, 1) * 255) & 0xFF
+            b = int(np.clip(c[2], 0, 1) * 255) & 0xFF
+            a = int(np.clip(c[3], 0, 1) * 255) & 0xFF
+            mat_data[idx, 1] = (a << 24) | (b << 16) | (g << 8) | r
 
         self.materials_ssbo = glGenBuffers(1)
-
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.materials_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, mat_data.nbytes, mat_data, GL_STATIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)

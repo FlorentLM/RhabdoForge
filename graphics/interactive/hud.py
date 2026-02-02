@@ -10,7 +10,7 @@ from PIL import Image
 from OpenGL.GL import *
 from pyglm import glm
 
-from graphics.utils import load_shaders, generate_and_save_atlas
+from graphics.utils import load_shaders, generate_font_atlas
 from graphics.renderers.raytracer import EyeRendererRay
 
 
@@ -48,7 +48,7 @@ class FontRenderer:
 
         json_path = (atlas_dir / f'{font_name}.json')
         if not json_path.exists():
-            generate_and_save_atlas(font_name=font_name, font_size=22, output_dir=atlas_dir)
+            generate_font_atlas(font_name=font_name, font_size=22, output_dir=atlas_dir)
 
         # Load metadata from JSON
         with json_path.open(encoding="UTF-8") as f:
