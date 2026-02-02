@@ -42,9 +42,10 @@ layout(binding = 1) uniform sampler2DArray scene_textures;
 
 uniform uint nb_tlas_nodes;
 uniform vec3 background_color;
+uniform bool use_skybox;
+
 uniform vec3 sun_direction;
 uniform float shadow_intensity;
-uniform bool use_skybox;
 
 // ----------------------------------------------- SSBO Bindings -------------------------------------------------------
 // TODO: Add compile-time ifs around indexed geometry if point cloud only (and vice versa)??
@@ -125,6 +126,7 @@ HitInfo intersect_triangle(inout Ray r, vec3 direction, vec3 v0, vec3 v1, vec3 v
 HitInfo intersect_sphere(inout Ray r, vec3 direction, vec3 center, float radius);
 void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit);
 void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, InstanceInfo inst);
+bool is_occluded(Ray r_world);
 
 // Mini helpers to get vertex data from the buffer
 vec3 getPos(uint i){ uint b = i*5u; return vec3(v[b], v[b+1], v[b+2]); }
@@ -375,29 +377,8 @@ bool hit_sphere(vec3 O, vec3 D, vec3 C, float r2, float tMax, out float tHit) {
 HitInfo intersect_sphere(inout Ray r, vec3 direction, vec3 center, float radius) {
     HitInfo hit;
     hit.found = false;
-
-    vec3 oc = r.origin - center;
-    float a = dot(direction, direction);
-    float b = 2.0 * dot(oc, direction);
-    float c = dot(oc, oc) - radius * radius;
-    float discriminant = b * b - 4 * a * c;
-
-    if (discriminant < 0) {
-        return hit;
-    }
-
-    float sqrt_d = sqrt(discriminant);
-    float t1 = (-b - sqrt_d) / (2.0 * a);
-    float t2 = (-b + sqrt_d) / (2.0 * a);
-    float t = -1.0;
-
-    if (t1 > 1e-6 && t1 < r.t) {
-        t = t1;
-    }
-    if (t2 > 1e-6 && t2 < r.t && (t < 0.0 || t2 < t)) {
-        t = t2;
-    }
-    if (t > 0.0) {
+    float t;
+    if (hit_sphere(r.origin, direction, center, radius*radius, r.t, t)) {
         hit.found = true;
         hit.t = t;
     }
@@ -423,8 +404,160 @@ float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max) {
     return tmin;
 }
 
+// ------------------------------------ Shadow traversal -----------------------------------------------------
+
+bool intersect_triangle_shadow(Ray r, vec3 direction, vec3 v0, vec3 v1, vec3 v2) {
+    vec3 edge1 = v1 - v0;
+    vec3 edge2 = v2 - v0;
+    vec3 h = cross(direction, edge2);
+    float a = dot(edge1, h);
+    if (a > -1e-6 && a < 1e-6) return false;
+    float f = 1.0 / a;
+    vec3 s = r.origin - v0;
+    float u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0) return false;
+    vec3 q = cross(s, edge1);
+    float v = f * dot(direction, q);
+    if (v < 0.0 || u + v > 1.0) return false;
+    float t = f * dot(edge2, q);
+    return (t > 1e-4 && t < r.t);
+}
+
+// Traverse a BLAS and returns immediately if any intersection (no sorting, no attribute calc)
+bool traverse_blas_shadow(Ray r_obj, vec3 dir_obj, InstanceInfo inst) {
+    uint stack[64];
+    uint stack_ptr = 0;
+    stack[stack_ptr++] = 0;
+
+    while (stack_ptr > 0u) {
+        uint node_idx = stack[--stack_ptr];
+
+        #if TBVH_LAYOUT_STANDARD
+            StdNode node = load_blas_node(inst.blas_node_offset, node_idx);
+        #else
+            BvhNode node = blas_nodes[inst.blas_node_offset + node_idx];
+        #endif
+
+        if (intersect_aabb(r_obj, node.data1.xyz, node.data2.xyz) >= r_obj.t) continue;
+
+        uint prim_count = floatBitsToUint(node.data2.w);
+        uint first_idx = floatBitsToUint(node.data1.w);
+
+        if (prim_count > 0u) { // BLAS leaf
+            uint prim_base = inst.prim_index_offset + first_idx;
+
+            for (uint i = 0; i < prim_count; ++i) {
+                uint blas_prim_id = blas_prim_indices[prim_base + i];
+
+                if (inst.is_points == 1u) {
+                     uint point_id = inst.vertex_or_point_offset + blas_prim_id;
+                     vec3 c; float rad;
+                     fast_getPoint(point_id, c, rad);
+                     rad *= inst.radius_factor;
+
+                     float dummy_t;
+                     if (hit_sphere(r_obj.origin, dir_obj, c, rad*rad, r_obj.t, dummy_t)) {
+                        return true;
+                     }
+
+                } else {
+                    uint base_idx = inst.index_offset + blas_prim_id * 3;
+                    vec3 v0 = getPos(inst.vertex_or_point_offset + indices[base_idx + 0]);
+                    vec3 v1 = getPos(inst.vertex_or_point_offset + indices[base_idx + 1]);
+                    vec3 v2 = getPos(inst.vertex_or_point_offset + indices[base_idx + 2]);
+
+                    if (intersect_triangle_shadow(r_obj, dir_obj, v0, v1, v2)) {
+                        return true;
+                    }
+                }
+            }
+        } else { // BLAS internal
+            uint left_idx = first_idx;
+            uint right_idx = left_idx + 1;
+
+            #if TBVH_LAYOUT_STANDARD
+                StdNode ln = load_blas_node(inst.blas_node_offset, left_idx);
+                StdNode rn = load_blas_node(inst.blas_node_offset, right_idx);
+                float d1 = intersect_aabb(r_obj, ln.data1.xyz, ln.data2.xyz);
+                float d2 = intersect_aabb(r_obj, rn.data1.xyz, rn.data2.xyz);
+            #else
+                float d1 = intersect_aabb(r_obj, blas_nodes[inst.blas_node_offset + left_idx].data1.xyz,  blas_nodes[inst.blas_node_offset + left_idx].data2.xyz);
+                float d2 = intersect_aabb(r_obj, blas_nodes[inst.blas_node_offset + right_idx].data1.xyz, blas_nodes[inst.blas_node_offset + right_idx].data2.xyz);
+            #endif
+
+            // Sort to visit closer nodes first
+            if (d1 > d2) { float td=d1; d1=d2; d2=td; uint ti=left_idx; left_idx=right_idx; right_idx=ti; }
+            if (d2 < r_obj.t && stack_ptr < 64) stack[stack_ptr++] = right_idx;
+            if (d1 < r_obj.t && stack_ptr < 64) stack[stack_ptr++] = left_idx;
+        }
+    }
+    return false;
+}
+
+// TLAS traversal for occlusion (any hit)
+bool is_occluded(Ray r_world) {
+    if (nb_tlas_nodes == 0u) return false;
+
+    vec3 dir_world = 1.0 / r_world.inv_direction;
+
+    uint stack[64];
+    uint stack_ptr = 0;
+    stack[stack_ptr++] = 0u;
+
+    while (stack_ptr > 0u) {
+        uint node_idx = stack[--stack_ptr];
+        #if TBVH_LAYOUT_STANDARD
+            StdNode node = load_tlas_node(node_idx);
+        #else
+            BvhNode node = tlas_nodes[node_idx];
+        #endif
+
+        if (intersect_aabb(r_world, node.data1.xyz, node.data2.xyz) >= r_world.t) continue;
+
+        uint prim_count = floatBitsToUint(node.data2.w);
+        uint first_idx = floatBitsToUint(node.data1.w);
+
+        if (prim_count > 0u) { // TLAS leaf
+            for (uint j = 0u; j < prim_count; ++j) {
+                uint instance_id = tlas_prim_indices[first_idx + j];
+                InstanceInfo inst = instances[instance_id];
+
+                // Transform ray to object space
+                Ray r_obj;
+                r_obj.origin = (inst.inverse_transform * vec4(r_world.origin, 1.0)).xyz;
+                vec3 dir_obj = (inst.inverse_transform * vec4(dir_world, 0.0)).xyz;
+                r_obj.inv_direction = 1.0 / dir_obj;
+                r_obj.t = r_world.t; // max distance should be the same
+
+                if (traverse_blas_shadow(r_obj, dir_obj, inst)) {
+                    return true; // early exit
+                }
+            }
+        } else { // TLAS internal node
+            uint left_idx = first_idx;
+            uint right_idx = first_idx + 1;
+            #if TBVH_LAYOUT_STANDARD
+                StdNode ln = load_tlas_node(left_idx);
+                StdNode rn = load_tlas_node(right_idx);
+                float d1 = intersect_aabb(r_world, ln.data1.xyz, ln.data2.xyz);
+                float d2 = intersect_aabb(r_world, rn.data1.xyz, rn.data2.xyz);
+            #else
+                float d1 = intersect_aabb(r_world, tlas_nodes[left_idx].data1.xyz,  tlas_nodes[left_idx].data2.xyz);
+                float d2 = intersect_aabb(r_world, tlas_nodes[right_idx].data1.xyz, tlas_nodes[right_idx].data2.xyz);
+            #endif
+
+            if (d1 > d2) { float td=d1; d1=d2; d2=td; uint ti=left_idx; left_idx=right_idx; right_idx=ti; }
+            if (d2 < r_world.t && stack_ptr < 64) stack[stack_ptr++] = right_idx;
+            if (d1 < r_world.t && stack_ptr < 64) stack[stack_ptr++] = left_idx;
+        }
+    }
+    return false;
+}
+
+// ------------------------------------------------ Main trace ---------------------------------------------------------
+
 float compute_shadow(vec3 hit_pos, vec3 light_dir) {
-    // Offset slightly along normal to avoid self-intersection
+    // Offset slightly along normal/light dir to avoid self-intersection
     vec3 shadow_origin = hit_pos + light_dir * 0.001;
 
     Ray shadow_ray;
@@ -432,10 +565,7 @@ float compute_shadow(vec3 hit_pos, vec3 light_dir) {
     shadow_ray.inv_direction = 1.0 / light_dir;
     shadow_ray.t = 1e10;  // Large distance (sun is infinitely far)
 
-    HitInfo shadow_hit;
-    traverse_tlas(shadow_ray, light_dir, shadow_hit);
-
-    if (shadow_hit.found) {
+    if (is_occluded(shadow_ray)) {
         return shadow_intensity;  // In shadow
     }
     return 1.0;  // Fully lit
