@@ -473,6 +473,10 @@ class EyeRendererRay(EyeRendererBase):
         self._samples_per_ommatidium = 0
         self.samples_per_ommatidium = nb_samples
 
+        # TESTING CRAPPY SHADOWS
+        self.sun_direction = glm.normalize(glm.vec3(0.5, 1.0, 0.3))
+        self.shadow_intensity = 0.3
+
     @property
     def samples_per_ommatidium(self):
         return self._samples_per_ommatidium
@@ -596,6 +600,10 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1i(shader.get_loc('use_skybox'), int(self.scene.skybox is not None))
         bg = self.scene.background_color
         glUniform3f(shader.get_loc('background_color'), bg[0], bg[1], bg[2])
+
+        # TESTING CRAPPY SHADOWS
+        glUniform3f(shader.get_loc('sun_direction'), self.sun_direction.x, self.sun_direction.y, self.sun_direction.z)
+        glUniform1f(shader.get_loc('shadow_intensity'), self.shadow_intensity)
 
     def _raytrace_panoramic(self, agent):
         """ Dispatches a compute shader to generate a ray-traced panoramic image """

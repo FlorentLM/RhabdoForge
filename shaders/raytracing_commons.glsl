@@ -42,6 +42,8 @@ layout(binding = 1) uniform sampler2DArray scene_textures;
 
 uniform uint nb_tlas_nodes;
 uniform vec3 background_color;
+uniform vec3 sun_direction;
+uniform float shadow_intensity;
 uniform bool use_skybox;
 
 // ----------------------------------------------- SSBO Bindings -------------------------------------------------------
@@ -294,17 +296,17 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
             uint right_idx = left_idx + 1;
 
             #if TBVH_LAYOUT_STANDARD
-            
+
                 StdNode leftNode  = load_blas_node(inst.blas_node_offset, left_idx);
                 StdNode rightNode = load_blas_node(inst.blas_node_offset, right_idx);
                 float d1 = intersect_aabb(r_obj, leftNode.data1.xyz,  leftNode.data2.xyz);
                 float d2 = intersect_aabb(r_obj, rightNode.data1.xyz, rightNode.data2.xyz);
-            
+
             #else
-            
+
                 float d1 = intersect_aabb(r_obj, blas_nodes[inst.blas_node_offset + left_idx].data1.xyz,  blas_nodes[inst.blas_node_offset + left_idx].data2.xyz);
                 float d2 = intersect_aabb(r_obj, blas_nodes[inst.blas_node_offset + right_idx].data1.xyz, blas_nodes[inst.blas_node_offset + right_idx].data2.xyz);
-            
+
             #endif // TBVH_LAYOUT_STANDARD
 
             // Push the farther node first, so the closer one is processed next
@@ -421,6 +423,24 @@ float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max) {
     return tmin;
 }
 
+float compute_shadow(vec3 hit_pos, vec3 light_dir) {
+    // Offset slightly along normal to avoid self-intersection
+    vec3 shadow_origin = hit_pos + light_dir * 0.001;
+
+    Ray shadow_ray;
+    shadow_ray.origin = shadow_origin;
+    shadow_ray.inv_direction = 1.0 / light_dir;
+    shadow_ray.t = 1e10;  // Large distance (sun is infinitely far)
+
+    HitInfo shadow_hit;
+    traverse_tlas(shadow_ray, light_dir, shadow_hit);
+
+    if (shadow_hit.found) {
+        return shadow_intensity;  // In shadow
+    }
+    return 1.0;  // Fully lit
+}
+
 // General-purpose trace and shade function
 vec3 trace(Ray r) {
 
@@ -431,14 +451,16 @@ vec3 trace(Ray r) {
     vec3 final_color;
     if (closest_hit.found) {
         InstanceInfo hit_inst = instances[closest_hit.instance_id];
+        vec3 surface_color;
+
         if (closest_hit.is_point_hit) {
             // For point clouds, primitive_idx is the point index within the asset
             uint point_id = hit_inst.vertex_or_point_offset + closest_hit.primitive_idx;
             Point hit_point = getPoint(point_id);
-            vec3 linear_point_color = pow(hit_point.color.rgb, vec3(2.2));
-            final_color = linear_point_color;
+            surface_color = pow(hit_point.color.rgb, vec3(2.2));
+
         } else {
-            // For triangles, primitive_idx is the triangle index within the asset
+            // For triangles primitive_idx is the triangle index within the asset
             uint blas_prim_id = closest_hit.primitive_idx;
 
             // Calculate the base index in the indices buffer for this triangle
@@ -459,12 +481,18 @@ vec3 trace(Ray r) {
 
             if (hit_mat.texture_idx == 0xFFFFFFFFu) {
                 // No texture: use base color
-                final_color = unpack_color(hit_mat.base_color).rgb;
+                surface_color = unpack_color(hit_mat.base_color).rgb;
             } else {
                 // Texture: sample from it
-                final_color = texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
+                surface_color = texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
             }
         }
+
+        // TESTING CRAPPY SHADOWS
+        vec3 hit_pos = r.origin + direction * closest_hit.t;
+        float shadow = compute_shadow(hit_pos, sun_direction);
+        final_color = surface_color * shadow;
+
     } else {
         if (use_skybox) {
             final_color = texture(skybox, direction).rgb;
