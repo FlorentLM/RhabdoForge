@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 
 from graphics.scene import Scene, Asset
@@ -31,6 +33,9 @@ def main():
         # Create a point cloud asset from a file
         point_cloud_asset = Asset.from_file(name='seville', file_path='assets/seville_filtered.ply', radii=0.01)
         scene.add_instance(point_cloud_asset)
+
+    # example_obj = Path().home() / 'Downloads/gapArray.obj'
+    # scene.load(example_obj)
 
     cube_positions, cube_uvs = np.split(CUBE_VERTICES.reshape(-1, 5), [3], axis=1)
     cube_faces = CUBE_INDICES.reshape(-1, 3)
