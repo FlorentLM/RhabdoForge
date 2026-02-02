@@ -44,6 +44,7 @@ uniform uint nb_tlas_nodes;
 uniform vec3 background_color;
 uniform bool use_skybox;
 
+uniform bool enable_shadows;
 uniform vec3 sun_direction;
 uniform float shadow_intensity;
 
@@ -618,9 +619,12 @@ vec3 trace(Ray r) {
             }
         }
 
-        // TESTING CRAPPY SHADOWS
-        vec3 hit_pos = r.origin + direction * closest_hit.t;
-        float shadow = compute_shadow(hit_pos, sun_direction);
+        // TESTING SHADOWS
+        float shadow = 1.0;
+        if (enable_shadows) {
+            vec3 hit_pos = r.origin + direction * closest_hit.t;
+            shadow = compute_shadow(hit_pos, sun_direction);
+        }
         final_color = surface_color * shadow;
 
     } else {

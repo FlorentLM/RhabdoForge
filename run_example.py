@@ -18,6 +18,7 @@ def main():
     NB_OMMATIDIA = 1962
     NB_SAMPLES = 16
     HEADLESS = False
+    ENABLE_SHADOWS = True   # basic shadows (only for ray tracing for now)
 
     USE_ASYNC_BATCHING = True
     BATCH_SIZE = 1000
@@ -29,26 +30,26 @@ def main():
 
     scene = Scene()
 
-    # if USE_POINT_CLOUD:
-    #     # Create a point cloud asset from a file
-    #     point_cloud_asset = Asset.from_file(name='seville', file_path='assets/seville_filtered.ply', radii=0.01)
-    #     scene.add_instance(point_cloud_asset)
+    if USE_POINT_CLOUD:
+        # Create a point cloud asset from a file
+        point_cloud_asset = Asset.from_file(name='seville', file_path='assets/seville_filtered.ply', radii=0.01)
+        scene.add_instance(point_cloud_asset)
 
-    example_obj = Path().home() / 'Downloads/gapArray.obj'
-    scene.load(example_obj)
+    # example_obj = Path().home() / 'Downloads/gapArray.obj'
+    # scene.load(example_obj)
 
-    # cube_positions, cube_uvs = np.split(CUBE_VERTICES.reshape(-1, 5), [3], axis=1)
-    # cube_faces = CUBE_INDICES.reshape(-1, 3)
+    cube_positions, cube_uvs = np.split(CUBE_VERTICES.reshape(-1, 5), [3], axis=1)
+    cube_faces = CUBE_INDICES.reshape(-1, 3)
 
     # Create a mesh asset from raw vertex and index data
-    # crate_asset = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='textures/wood.jpg')
+    crate_asset = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='textures/wood.jpg')
 
     # Add multiple instances of the same asset
-    # scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))
-    # scene.add_instance(asset=crate_asset, transform=(3.0, 0.0, 0.0))
+    scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))
+    scene.add_instance(asset=crate_asset, transform=(3.0, 0.0, 0.0))
 
     # A crate that will move
-    # dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
+    dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
 
     # Add a skybox
     scene.add_skybox('textures/bright_day')
@@ -68,7 +69,8 @@ def main():
         eye_renderer = EyeRendererRay(eye_model=eye_model, scene=scene,
                                       nb_samples=NB_SAMPLES,
                                       time_dithering=False,
-                                      batch_size=batch_size)
+                                      batch_size=batch_size,
+                                      enable_shadows=ENABLE_SHADOWS)
 
     else:
         eye_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene,
@@ -98,7 +100,7 @@ def main():
             context.input()  # this processes mouse and keyboard, it can be omitted to run headless
 
             # Rotate dynamic test crate
-            # dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
+            dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
             # ================== Example moving ommatidia ==================
 

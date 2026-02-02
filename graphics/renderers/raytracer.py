@@ -441,7 +441,9 @@ class EyeRendererRay(EyeRendererBase):
                  time_dithering: bool = True,
                  nb_samples: int = 256,
                  pano_res: Tuple[int, int] = (1024, 512),
-                 batch_size: int = 1):
+                 batch_size: int = 1,
+                 enable_shadows: bool = False,
+        ):
 
         # Store a reference to the scene manager
         self.scene = scene   # just for convenience
@@ -474,6 +476,7 @@ class EyeRendererRay(EyeRendererBase):
         self.samples_per_ommatidium = nb_samples
 
         # TESTING CRAPPY SHADOWS
+        self.enable_shadows = enable_shadows
         self.sun_direction = glm.normalize(glm.vec3(0.5, 1.0, 0.3))
         self.shadow_intensity = 0.3
 
@@ -602,6 +605,8 @@ class EyeRendererRay(EyeRendererBase):
         glUniform3f(shader.get_loc('background_color'), bg[0], bg[1], bg[2])
 
         # TESTING CRAPPY SHADOWS
+        glUniform1i(shader.get_loc('enable_shadows'), int(self.enable_shadows))
+
         glUniform3f(shader.get_loc('sun_direction'), self.sun_direction.x, self.sun_direction.y, self.sun_direction.z)
         glUniform1f(shader.get_loc('shadow_intensity'), self.shadow_intensity)
 
