@@ -113,7 +113,6 @@ class Context:
 
         if action == glfw.PRESS:
 
-            # if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % len(ViewMode)
             if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % 3
 
             if key == glfw.KEY_V: self.renderer.tiled_mode = not self.renderer.tiled_mode
@@ -137,6 +136,14 @@ class Context:
             if key in (glfw.KEY_KP_SUBTRACT, glfw.KEY_MINUS):
                 if hasattr(self.renderer, 'samples_per_ommatidium'):
                     self.renderer.samples_per_ommatidium = max(1, self.renderer.samples_per_ommatidium // 2)
+
+            if key == glfw.KEY_KP_MULTIPLY:
+                if hasattr(self.renderer, 'samples_per_pixel'):
+                    self.renderer.samples_per_pixel *= 2
+
+            if key == glfw.KEY_KP_DIVIDE:
+                if hasattr(self.renderer, 'samples_per_pixel'):
+                    self.renderer.samples_per_pixel = max(1, self.renderer.samples_per_pixel // 2)
 
     def input(self):
 

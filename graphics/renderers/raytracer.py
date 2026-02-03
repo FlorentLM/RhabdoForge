@@ -452,10 +452,10 @@ class EyeRendererRay(EyeRendererBase):
         self._scene_baked = RaytracingSceneBaker(scene)
 
         # Rendering mode
-        self.enable_path_tracing = path_tracing
+        self.path_tracing = path_tracing
 
         # Path tracing settings
-        self.max_bounces = 5
+        self.max_bounces = 3
         self.sky_intensity = 1.0
         self.sun_intensity = 2.0
         self.sun_direction = glm.normalize(glm.vec3(0.5, 1.0, 0.3))
@@ -508,6 +508,7 @@ class EyeRendererRay(EyeRendererBase):
         if new_value == self._samples_per_ommatidium:
             return
 
+        self.samples_per_pixel = 1
         self._samples_per_ommatidium = new_value
         self.total_samples = self.num_ommatidia * self._samples_per_ommatidium
         required_buffer_size = self.total_samples * bytes_per_sample
@@ -623,7 +624,7 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1f(shader.get_loc('time'), float(self._time_counter))
 
         # Path tracing settings
-        glUniform1i(shader.get_loc('enable_path_tracing'), int(self.enable_path_tracing))
+        glUniform1i(shader.get_loc('enable_path_tracing'), int(self.path_tracing))
         glUniform1i(shader.get_loc('max_bounces'), self.max_bounces)
         glUniform1f(shader.get_loc('sky_intensity'), self.sky_intensity)
         glUniform1f(shader.get_loc('sun_intensity'), self.sun_intensity)
@@ -654,7 +655,7 @@ class EyeRendererRay(EyeRendererBase):
         self._bind_resources(self.panoramic_shader)
 
         # TODO: Maybe move this in the common uniforms
-        glUniform1i(self.panoramic_shader.get_loc('nb_samples'), self.samples_per_ommatidium)   # TODO: that's nb samples per *pixel* in this mode, not per ommatidium
+        glUniform1i(self.panoramic_shader.get_loc('nb_samples'), self.samples_per_pixel)
 
         # Panoramic-specific uniforms
         c2w_mat = glm.inverse(agent.view)
@@ -681,7 +682,7 @@ class EyeRendererRay(EyeRendererBase):
         self._bind_resources(self.perspective_shader)
 
         # TODO: Maybe move this in the common uniforms
-        glUniform1i(self.perspective_shader.get_loc('nb_samples'), self.samples_per_ommatidium)  # TODO: that's nb samples per *pixel* in this mode, not per ommatidium
+        glUniform1i(self.perspective_shader.get_loc('nb_samples'), self.samples_per_pixel)
 
         # Perspective-specific uniforms
         c2w = glm.inverse(agent.view)

@@ -10,7 +10,7 @@ from PIL import Image
 from OpenGL.GL import *
 from pyglm import glm
 
-from graphics.utils import load_shaders, generate_font_atlas
+from graphics.utils import load_shaders, generate_font_atlas, ViewMode
 from graphics.renderers.raytracer import EyeRendererRay
 
 
@@ -134,6 +134,7 @@ class HUD:
 
         self.width = self.ctx.window_size[0]
         self.height = self.ctx.window_size[1]
+        self.nb_px = self.width * self.height
 
         self.show = True
 
@@ -201,18 +202,33 @@ class HUD:
 
             is_raytracer = isinstance(active_renderer, EyeRendererRay)
 
-            render_mode = "Ray-Tracer" if is_raytracer else "Rasterizer"
+            if is_raytracer:
+                render_mode = "Path-tracer" if active_renderer.path_tracing else "Ray-tracer"
+            else:
+                render_mode = "Rasterizer"
             sample_label = "Rays" if is_raytracer else "Samples"
+
+            view_mode = self.view_modes_names[self.ctx.view_mode]
+
+            has_pixels = view_mode in ('Panoramic', 'Third person')
 
             pos = self.ctx.agent.position
 
-            num_om = getattr(active_renderer, 'num_ommatidia', 0)
-            num_samples = getattr(active_renderer, 'samples_per_ommatidium', 1)
+            nb_om = getattr(active_renderer, 'num_ommatidia', 0)
+            nb_om_samples = getattr(active_renderer, 'samples_per_ommatidium', 1)
+            nb_px_samples = getattr(active_renderer, 'samples_per_pixel', 1)
 
-            total_samples = num_om * num_samples
-            self._info_text = (f'FPS: {avg_fps:>4.2f} | Mode: {render_mode} | Ommatidia: {num_om} | '
-                             f'{sample_label}: {num_samples} | XYZ: [ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ] | '
-                             f'View mode: {self.view_modes_names[self.ctx.view_mode]} | Projection mode: {self.proj_modes_names[active_renderer.projection_mode]}')
+            samples_pp_str = f', {nb_px_samples}/px' if has_pixels else ''
+
+            proj_mode = self.proj_modes_names[active_renderer.projection_mode]
+
+            self._info_text = (f'FPS: {avg_fps:>4.2f} | '
+                               f'Mode: {render_mode} | '
+                               f'Ommatidia: {nb_om} | '
+                               f'{sample_label}: {nb_om_samples}/om{samples_pp_str} | '
+                               f'XYZ: [ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ] | '
+                               f'View mode: {view_mode} | '
+                               f'Projection mode: {proj_mode}')
 
             margin, line_height = 10, self.font_renderer.font_size * 1.1
             info_sv = self.font_renderer.generate_text_vertices(self._info_text, margin + 1,
@@ -226,13 +242,14 @@ class HUD:
             tri_count = self.ctx.scene.total_triangles
             point_count = self.ctx.scene.total_points
 
+            total_pp = f' (om) + {nb_px_samples * self.nb_px:,} (px)' if has_pixels else ''
 
             if point_count > 0:
-                self._stats_text_lines = [f'Total {sample_label}: {total_samples:,}',
+                self._stats_text_lines = [f'Total {sample_label}: {nb_om * nb_om_samples:,}{total_pp}',
                                         f'Scene Triangles: {tri_count:,}',
                                         f'Scene Points: {point_count:,}']
             else:
-                self._stats_text_lines = [f'Total {sample_label}: {total_samples:,}',
+                self._stats_text_lines = [f'Total {sample_label}: {nb_om * nb_om_samples:,}{total_pp}',
                                         f'Scene Triangles: {tri_count:,}']
 
             stats_sv, stats_fv = [], []
