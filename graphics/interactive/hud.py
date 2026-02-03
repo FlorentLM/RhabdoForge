@@ -167,7 +167,7 @@ class HUD:
 
         self._controls_text_lines = [
             'ESC: Quit', 'H: Show/hide HUD', 'R: Reset rotation', 'O: Teleport to origin', 'X: Dither once',
-            f'+/-: Increase/decrease {sample_label}', 'T: Toggle time dithering',
+            f'+/-: Increase/decrease {sample_label}', 'L: Toggle Sun control', 'T: Toggle time dithering',
             'V: Toggle Voronoi view', 'P: Projection mode (acceptance / layout)', 'C: Change view',
             'Ctrl/Space: Down/Up', 'Q/E: Roll', 'Mouse: Yaw & Pitch', 'WASD: Move', '------', 'Controls:'
         ]
