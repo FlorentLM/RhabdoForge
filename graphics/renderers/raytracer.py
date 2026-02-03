@@ -436,18 +436,34 @@ class RaytracingSceneBaker:
         if self.tex_array != 0:
             glDeleteTextures(1, [self.tex_array])
 
+
 class EyeRendererRay(EyeRendererBase):
     def __init__(self, eye_model, scene: Scene,
                  time_dithering: bool = True,
                  nb_samples: int = 256,
                  pano_res: Tuple[int, int] = (1024, 512),
                  batch_size: int = 1,
-                 enable_shadows: bool = False,
+                 path_tracing: bool = False,
+                 enable_shadows: bool = True,
         ):
 
         # Store a reference to the scene manager
         self.scene = scene   # just for convenience
         self._scene_baked = RaytracingSceneBaker(scene)
+
+        # Rendering mode
+        self.enable_path_tracing = path_tracing
+
+        # Path tracing settings
+        self.max_bounces = 5
+        self.sky_intensity = 1.0
+        self.sun_intensity = 2.0
+        self.sun_direction = glm.normalize(glm.vec3(0.5, 1.0, 0.3))
+        self.sun_angular_radius = 0.02
+
+        # Simple shadow settings
+        self.enable_shadows = enable_shadows
+        self.shadow_intensity = 0.3
 
         # we call super().__init__ *after* baking the scene so we can estimate VRAM
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
@@ -471,14 +487,9 @@ class EyeRendererRay(EyeRendererBase):
         # Intermediate Ray result SSBO
         self.ray_results_ssbo = glGenBuffers(1)
 
-        # Set the default number of samples with the setter to allocate the SSBO
+        # Default number of samples
         self._samples_per_ommatidium = 0
-        self.samples_per_ommatidium = nb_samples
-
-        # TESTING CRAPPY SHADOWS
-        self.enable_shadows = enable_shadows
-        self.sun_direction = glm.normalize(glm.vec3(0.5, 1.0, 0.3))
-        self.shadow_intensity = 0.3
+        self.samples_per_ommatidium = nb_samples    # via the setter to allocate the SSBO
 
     @property
     def samples_per_ommatidium(self):
@@ -508,7 +519,8 @@ class EyeRendererRay(EyeRendererBase):
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     def estimate_vram_usage(self) -> float:
-        """ Override base method to provide a more accurate VRAM estimate for the raytracer """
+        """Override base method to provide a more accurate VRAM estimate for the raytracer."""
+
         baker = self._scene_baked
         total_bytes = 0
         buffers = [
@@ -526,9 +538,7 @@ class EyeRendererRay(EyeRendererBase):
         return total_bytes / (1024 * 1024)  # Convert to MB
 
     def _initialize_pano_resources(self):
-        """ Creates all resources needed for the panoramic view """
-
-        print("Lazy-loading panoramic ray-tracer resources...")
+        """Creates all resources needed for the panoramic view."""
 
         if self.panoramic_shader is None:
             self.panoramic_shader = ShaderProgram(comp_path='shaders/panoramic_raytracing.comp')
@@ -573,19 +583,9 @@ class EyeRendererRay(EyeRendererBase):
 
             self._persp_texture_id = tex
 
-    def _bind_scene_resources(self, shader: ShaderProgram):
+    def _bind_ssbos(self):
+        """Binds all scene geometry SSBOs to their fixed slots (2-10)."""
 
-        # Bind Textures
-        if self._scene_baked.scene.skybox:
-            glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_CUBE_MAP, self._scene_baked.skybox_texture)
-            glUniform1i(shader.get_loc('skybox'), 0)
-
-        glActiveTexture(GL_TEXTURE1)
-        glBindTexture(GL_TEXTURE_2D_ARRAY, self._scene_baked.tex_array)
-        glUniform1i(shader.get_loc('scene_textures'), 1)
-
-        # Bind SSBOs
         # bindings 0 and 1 are for the ommatidia data and rays outputs
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self._scene_baked.vertices_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self._scene_baked.indices_ssbo)
@@ -597,29 +597,66 @@ class EyeRendererRay(EyeRendererBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, self._scene_baked.tlas_indices_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, self._scene_baked.blas_indices_ssbo)
 
-        # Set Uniforms
+    def _bind_textures(self, shader: ShaderProgram):
+        """Binds skybox and material textures."""
+
+        if self._scene_baked.scene.skybox:
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_CUBE_MAP, self._scene_baked.skybox_texture)
+            glUniform1i(shader.get_loc('skybox'), 0)
+
+        glActiveTexture(GL_TEXTURE1)
+        glBindTexture(GL_TEXTURE_2D_ARRAY, self._scene_baked.tex_array)
+        glUniform1i(shader.get_loc('scene_textures'), 1)
+
+    def _set_common_uniforms(self, shader: ShaderProgram):
+
+        # Scene structure
         glUniform1ui(shader.get_loc('nb_tlas_nodes'), len(self._scene_baked.cpu_TLAS_nodes))
 
+        # Background / sky
         glUniform1i(shader.get_loc('use_skybox'), int(self.scene.skybox is not None))
         bg = self.scene.background_color
         glUniform3f(shader.get_loc('background_color'), bg[0], bg[1], bg[2])
 
-        # TESTING CRAPPY SHADOWS
-        glUniform1i(shader.get_loc('enable_shadows'), int(self.enable_shadows))
+        # Time (for RNG seeding)
+        glUniform1f(shader.get_loc('time'), float(self._time_counter))
 
+        # Path tracing settings
+        glUniform1i(shader.get_loc('enable_path_tracing'), int(self.enable_path_tracing))
+        glUniform1i(shader.get_loc('max_bounces'), self.max_bounces)
+        glUniform1f(shader.get_loc('sky_intensity'), self.sky_intensity)
+        glUniform1f(shader.get_loc('sun_intensity'), self.sun_intensity)
         glUniform3f(shader.get_loc('sun_direction'), self.sun_direction.x, self.sun_direction.y, self.sun_direction.z)
+        glUniform1f(shader.get_loc('sun_angular_radius'), self.sun_angular_radius)
+
+        # Simple shadow settings (non-path-traced mode)
+        glUniform1i(shader.get_loc('enable_shadows'), int(self.enable_shadows))
         glUniform1f(shader.get_loc('shadow_intensity'), self.shadow_intensity)
 
+    def _bind_resources(self, shader: ShaderProgram):
+        """
+        Convenience method: binds SSBOs, textures, and sets common uniforms.
+        """
+        self._bind_ssbos()
+        self._bind_textures(shader)
+        self._set_common_uniforms(shader)
+
     def _raytrace_panoramic(self, agent):
-        """ Dispatches a compute shader to generate a ray-traced panoramic image """
+        """Dispatches a compute shader to generate a ray-traced panoramic image."""
 
         self.panoramic_shader.use()
 
         # Bind the output texture to image unit 0 for writing
         glBindImageTexture(0, self._pano_texture_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
 
-        self._bind_scene_resources(self.panoramic_shader)
+        # Bind scene resources and common uniforms
+        self._bind_resources(self.panoramic_shader)
 
+        # TODO: Maybe move this in the common uniforms
+        glUniform1i(self.panoramic_shader.get_loc('nb_samples'), self.samples_per_ommatidium)   # TODO: that's nb samples per *pixel* in this mode, not per ommatidium
+
+        # Panoramic-specific uniforms
         c2w_mat = glm.inverse(agent.view)
         glUniformMatrix4fv(self.panoramic_shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
@@ -628,21 +665,25 @@ class EyeRendererRay(EyeRendererBase):
         work_groups_y = (self._pano_res[1] + 15) // 16
         glDispatchCompute(work_groups_x, work_groups_y, 1)
 
-        # Barrier to ensure imageStore operations are complete before the texture is used for drawing
+        # ensure imageStore writes are complete before the texture is used for drawing
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
 
         self.panoramic_shader.stop()
 
     def _raytrace_perspective(self, agent):
+
         self.perspective_shader.use()
 
         # Output image
         glBindImageTexture(0, self._persp_texture_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
 
-        # Scene resources (BLAS/TLAS, textures, skybox, uniforms) – reuse existing binder
-        self._bind_scene_resources(self.perspective_shader)
+        # Bind scene resources and common uniforms
+        self._bind_resources(self.perspective_shader)
 
-        # Camera transforms
+        # TODO: Maybe move this in the common uniforms
+        glUniform1i(self.perspective_shader.get_loc('nb_samples'), self.samples_per_ommatidium)  # TODO: that's nb samples per *pixel* in this mode, not per ommatidium
+
+        # Perspective-specific uniforms
         c2w = glm.inverse(agent.view)
         glUniformMatrix4fv(self.perspective_shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w))
 
@@ -658,47 +699,43 @@ class EyeRendererRay(EyeRendererBase):
         self.perspective_shader.stop()
 
     def _raytrace(self, agent):
-
-        # Pass 1: Ray-tracing
+        """Pass 1: Ray-tracing for ommatidia."""
 
         self.raytrace_shader.use()
 
-        # Bind input/output buffers for this pass
+        # Bind ommatidia-specific input/output buffers
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.ray_results_ssbo)
 
-        # Bind all shared scene data (textures, geometry, BVHs)
-        self._bind_scene_resources(self.raytrace_shader)
+        # Bind scene resources and common uniforms
+        self._bind_resources(self.raytrace_shader)
 
-        # Set Uniforms
+        # Ommatidia-specific uniforms
         glUniform1i(self.raytrace_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
-        glUniform1f(self.raytrace_shader.get_loc('time'), float(self._time_counter))
 
-        # Set camera uniforms for transforming rays into world space
+        # Camera uniforms for transforming rays into world space
         c2w_mat = glm.inverse(agent.view)
         glUniformMatrix4fv(self.raytrace_shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
         # Dispatch compute shader
-        # Calculate the number of workgroups needed to process all rays
-        workgroup_size = 64  # workgroup size is 64 in the shader
+        workgroup_size = 64  # TODO: maybe tweak workgroup size
         work_groups = (self.total_samples + (workgroup_size - 1)) // workgroup_size
         glDispatchCompute(work_groups, 1, 1)
 
-        # This barrier is critical: it ensures all writes to the ray_results_ssbo
-        # from this pass are complete before the next pass tries to read from it
+        # make sure writes to ray_results_ssbo are complete before the next pass tries to read from it
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
         self.raytrace_shader.stop()
 
     def _reduction(self):
-        """ Pass 2: Reduction """
+        """Pass 2: Reduction."""
 
         self.reduction_shader.use()
 
         # Bind buffers
-        # Binding 0: Input for this pass - the raw ray results from Pass 1
+        # Binding 0: input for this pass (raw ray results from pass 1)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.ray_results_ssbo)
-        # Binding 1: Output for this pass - the final averaged color for each ommatidium
+        # Binding 1: output for this pass (final averaged color for each ommatidium)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
 
         # Set uniforms
@@ -710,13 +747,11 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1i(self.reduction_shader.get_loc('frame_index'), frame_offset)
 
         # Dispatch compute shader
-        # Calculate workgroups needed to process all ommatidia
-        workgroup_size = 64     # workgroup size is 64 in the shader
+        workgroup_size = 64  # TODO: maybe tweak workgroup size
         work_groups = (self.num_ommatidia + (workgroup_size - 1)) // workgroup_size
         glDispatchCompute(work_groups, 1, 1)
 
-        # Another critical barrier: ensures the final_colors_ssbo is fully written
-        # before the CPU or the drawing shader tries to read from it in the next frame
+        # final_colors_ssbo must be fully written before the CPU or the drawing shader tries to read from it
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
         self.reduction_shader.stop()
@@ -743,7 +778,7 @@ class EyeRendererRay(EyeRendererBase):
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
     def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent = None):
-        """ Renders one of the rasterizer's supported views to the screen """
+        """Renders one of the rasterizer's supported views to the screen."""
 
         if view_mode == ViewMode.compound_eye:
             self._draw_voronoi()
@@ -758,7 +793,6 @@ class EyeRendererRay(EyeRendererBase):
             self._texture_viewer.draw(self._pano_texture_id)
 
         elif view_mode == ViewMode.perspective or view_mode == ViewMode.third_person:
-        # elif view_mode == ViewMode.perspective:
 
             if self._persp_texture_id == 0 or self.perspective_shader is None:
                 self._initialize_persp_resources()
@@ -772,7 +806,7 @@ class EyeRendererRay(EyeRendererBase):
 
 
     def free(self):
-        """ Frees all GPU resources, including shaders and all buffers """
+        """Frees all GPU resources, including shaders and all buffers."""
 
         glDeleteBuffers(1, [self.ray_results_ssbo])
         if self.raytrace_shader: self.raytrace_shader.free()

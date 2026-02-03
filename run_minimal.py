@@ -13,7 +13,8 @@ def main():
     # Configuration
     NB_OMMATIDIA = 1962
     NB_SAMPLES = 16
-    ENABLE_SHADOWS = True   # basic shadows (only for ray tracing for now)
+    ENABLE_SHADOWS = True   # basic shadows (only for ray tracing)
+    PATH_TRACING = True
 
     # -----------------------------------------------
 
@@ -29,8 +30,8 @@ def main():
     # scene.add_skybox('textures/bright_day')
 
     # Setup eye model
-    # eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)   # Uniform spherical eye
-    eye_model = CompoundEye.from_file('drosophila_eye.npz', eye_parameter=1.5)  # Manually mapped drosophila eye
+    eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)   # Uniform spherical eye
+    # eye_model = CompoundEye.from_file('drosophila_eye.npz', eye_parameter=1.5)  # Manually mapped drosophila eye
     # eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)  # Procedurally-generated bee eye
 
     # Setup Agent
@@ -40,7 +41,8 @@ def main():
     eye_renderer = EyeRendererRay(eye_model=eye_model, scene=scene,
                                   nb_samples=NB_SAMPLES,
                                   time_dithering=False,
-                                  enable_shadows=ENABLE_SHADOWS)
+                                  enable_shadows=ENABLE_SHADOWS,
+                                  path_tracing=PATH_TRACING)
 
     while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer):
 
