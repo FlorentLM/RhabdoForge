@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Union, Sequence, Dict, Optional
 from enum import IntEnum
 from PIL import Image
 import numpy as np
@@ -562,3 +562,87 @@ def trimesh_from_arrays(
     except Exception as e:
         print(f"Error creating model from arrays: {e}")
         return None
+
+
+def extract_obj_curves(
+        file_path,
+        object_filter: Optional[Union[str, Sequence[str]]] = 'NurbsPath',
+        resample: int = None
+    ) -> Dict[str, np.ndarray]:
+    """
+    Extracts curve coordinates from an .obj file.
+
+    Args:
+        file_path: Path to .obj file
+        object_filter: Optional name(s) of objects to extract
+        resample: Optionally resamples the curve to have this many evenly spaced points.
+    """
+    vertices = []
+    temp_indices = {}
+    current_object = "Default"
+
+    if object_filter is not None and isinstance(object_filter, str):
+        target_objects = {object_filter}
+    elif object_filter is not None:
+        target_objects = set(object_filter)
+    else:
+        target_objects = object_filter
+
+    with open(file_path, 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if not parts: continue
+
+            type_code = parts[0]
+
+            if type_code == 'v':
+                vertices.append([float(x) for x in parts[1:4]])
+
+            elif type_code == 'o':
+                current_object = parts[1]
+                if (current_object in target_objects or not target_objects) and current_object not in temp_indices:
+                    temp_indices[current_object] = []
+
+            elif type_code == 'l':
+                if current_object in target_objects or not target_objects:
+                    indices = []
+                    for idx in parts[1:]:
+                        idx = int(idx)
+                        real_idx = idx - 1 if idx > 0 else len(vertices) + idx
+                        indices.append(real_idx)
+
+                    current_list = temp_indices[current_object]
+
+                    if not current_list:
+                        current_list.extend(indices)
+                    else:
+                        start_idx = 1 if current_list[-1] == indices[0] else 0
+                        current_list.extend(indices[start_idx:])
+    final_curves = {}
+
+    for obj_name, indices in temp_indices.items():
+        if not indices:
+            continue
+
+        coords = np.array([vertices[i] for i in indices])
+
+        if resample and resample > 1:
+            coords = resample_path(coords, resample)
+
+        final_curves[obj_name] = coords
+
+    return final_curves
+
+
+def resample_path(points: np.ndarray, num_samples: int) -> np.ndarray:
+    """
+    Takes a path of points and returns a new path with 'num_samples' evenly spaced along the total arc length.
+    """
+    dists = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    cum_dist = np.concatenate(([0], np.cumsum(dists)))
+    total_length = cum_dist[-1]
+    target_dists = np.linspace(0, total_length, num_samples)
+    new_points = np.zeros((num_samples, 3))
+    for i in range(3):
+        new_points[:, i] = np.interp(target_dists, cum_dist, points[:, i])
+    return new_points
