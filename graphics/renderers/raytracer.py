@@ -638,6 +638,7 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1f(shader.get_loc('sun_intensity'), self.sun.intensity)
         glUniform3f(shader.get_loc('sun_direction'), self.sun.direction.x, self.sun.direction.y, self.sun.direction.z)
         glUniform1f(shader.get_loc('sun_angular_radius'), self.sun.angular_radius)
+        glUniform3f(shader.get_loc('sun_color'), self.sun.color.x, self.sun.color.y, self.sun.color.z)
 
         # Simple shadow settings (non-path-traced mode)
         glUniform1i(shader.get_loc('enable_shadows'), int(self.enable_shadows))

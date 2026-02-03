@@ -17,7 +17,13 @@ from graphics.interactive.hud import HUD
 
 class Context:
 
-    def __init__(self, window_size: tuple = None, fps_limit: int = None, v_sync: bool = False, invert_mouseY = False):
+    def __init__(self,
+                 window_size:
+                 tuple = None,
+                 fps_limit: int = None,
+                 v_sync: bool = False,
+                 invert_mouseY: bool = False
+         ):
 
         self._window_size = window_size if window_size is not None else (1280, 720)
         self._fps_limit = fps_limit if fps_limit is not None else 0
@@ -42,7 +48,7 @@ class Context:
         glfw.swap_interval(int(self._v_sync))
 
         glEnable(GL_DEPTH_TEST)
-        glEnable(GL_FRAMEBUFFER_SRGB)   # we want linear (non-gamma corrected)
+        glEnable(GL_FRAMEBUFFER_SRGB)  # we want linear (non-gamma corrected)
 
         self.agent = None
         self.renderer = None
@@ -59,6 +65,10 @@ class Context:
         self.keyboard_turn_speed: float = 1.0
         self.mouse_sensitivity: float = 0.5
         self.mouse_y_dir: float = 1.0 if invert_mouseY else -1.0
+
+        # Sun control mode
+        self.sun_control_mode: bool = False
+        self.sun_orbit_sensitivity: float = 0.2
 
     def run_interactive(self, agent: Agent, scene: Scene, renderer: EyeRendererBase,
                         window_size=None, fps_limit=None, v_sync=None, invert_mouseY=None):
@@ -106,8 +116,16 @@ class Context:
         return not glfw.window_should_close(self.window)
 
     def scroll_callback(self, window, xoffset, yoffset):
-        zoom_factor = 0.9 ** yoffset  # yoffset > 0 => 0.9 (zoom in), yoffset < 0 => 1.11 (zoom out)
-        self.observer.zoom(zoom_factor)
+        if self.sun_control_mode and hasattr(self.renderer, 'sun'):
+            # Scroll adjusts sun intensity
+            sun = self.renderer.sun
+            intensity_factor = 1.1 ** yoffset  # yoffset > 0 => brighter
+            sun.intensity = max(0.1, min(10.0, sun.intensity * intensity_factor))
+            print(f"Sun intensity: {sun.intensity:.2f}")
+        else:
+            # Normal mode: scroll zooms camera
+            zoom_factor = 0.9 ** yoffset  # yoffset > 0 => 0.9 (zoom in), yoffset < 0 => 1.11 (zoom out)
+            self.observer.zoom(zoom_factor)
 
     def key_callback(self, window, key, scancode, action, mods):
 
@@ -121,6 +139,11 @@ class Context:
 
             if key == glfw.KEY_H:
                 if self.hud: self.hud.show = not self.hud.show
+
+            if key == glfw.KEY_L:
+                self.sun_control_mode = not self.sun_control_mode
+                mode_name = "Sun" if self.sun_control_mode else "View"
+                print(f"Mouse control: {mode_name}")
 
             if key == glfw.KEY_X:
                 self.renderer.dither()
@@ -188,7 +211,7 @@ class Context:
         if glm.length(move_direction) > 0:
             self.agent.dt(self._delta_time).translate(glm.normalize(move_direction) * self.move_speed)
 
-        # Mouse rotation
+        # Mouse input
         current_mouse_pos = glfw.get_cursor_pos(self.window)
         if self.last_mouse_pos is None:
             self.last_mouse_pos = current_mouse_pos
@@ -197,15 +220,23 @@ class Context:
         dy = (current_mouse_pos[1] - self.last_mouse_pos[1])
         self.last_mouse_pos = current_mouse_pos
 
-        mouse_yaw_delta = dx * self.mouse_sensitivity * -1
-        mouse_pitch_delta = dy * self.mouse_sensitivity * self.mouse_y_dir
+        # Sun control: mouse orbits the sun around the scene
+        if self.sun_control_mode and hasattr(self.renderer, 'sun'):
+            sun = self.renderer.sun
+            current_azimuth = sun.azimuth
+            current_elevation = sun.elevation
+            current_distance = sun.distance
 
-        # Apply rotation
-        if self.view_mode == ViewMode.third_person:
-            # Mouse pans the camera
-            self.observer.pan(azimuth_delta=mouse_yaw_delta * 0.5,
-                              elevation_delta=mouse_pitch_delta * 0.5,
-                              degrees=True)
+            # Horizontal mouse = azimuth change
+            new_azimuth = current_azimuth + dx * self.sun_orbit_sensitivity * -1
+
+            # Vertical mouse = elevation change (clamped to stay above horizon)
+            new_elevation = current_elevation - dy * self.sun_orbit_sensitivity
+            new_elevation = max(1.0, min(89.0, new_elevation))
+
+            # Apply if there was any mouse movement
+            if abs(dx) > 0.1 or abs(dy) > 0.1:
+                sun.from_angles(new_azimuth, new_elevation, current_distance)
 
             # Keyboard rotates the agent
             self.agent.rotate(
@@ -213,18 +244,38 @@ class Context:
                 roll_delta=roll_input * self.keyboard_turn_speed,
                 degrees=True
             )
+
+        # Normal view control
         else:
-            # First-person: Mouse controls yaw/pitch, keyboard controls roll
-            self.agent.rotate(
-                yaw_delta=mouse_yaw_delta,
-                pitch_delta=mouse_pitch_delta,
-                roll_delta=roll_input * self.keyboard_turn_speed,
-                degrees=True
-            )
+            mouse_yaw_delta = dx * self.mouse_sensitivity * -1
+            mouse_pitch_delta = dy * self.mouse_sensitivity * self.mouse_y_dir
+
+            # Apply rotation
+            if self.view_mode == ViewMode.third_person:
+                # Mouse pans the camera
+                self.observer.pan(azimuth_delta=mouse_yaw_delta * 0.5,
+                                  elevation_delta=mouse_pitch_delta * 0.5,
+                                  degrees=True)
+
+                # Keyboard rotates the agent
+                self.agent.rotate(
+                    yaw_delta=yaw_input * self.keyboard_turn_speed,
+                    roll_delta=roll_input * self.keyboard_turn_speed,
+                    degrees=True
+                )
+            else:
+                # First-person: Mouse controls yaw/pitch, keyboard controls roll
+                self.agent.rotate(
+                    yaw_delta=mouse_yaw_delta,
+                    pitch_delta=mouse_pitch_delta,
+                    roll_delta=roll_input * self.keyboard_turn_speed,
+                    degrees=True
+                )
 
         # Resets
         if glfw.get_key(self.window, glfw.KEY_O) == glfw.PRESS: self.agent.position = (0.0, 0.0, 0.0)
-        if glfw.get_key(self.window, glfw.KEY_R) == glfw.PRESS: self.agent.yaw, self.agent.pitch, self.agent.roll = (0.0, 0.0, 0.0)
+        if glfw.get_key(self.window, glfw.KEY_R) == glfw.PRESS: self.agent.yaw, self.agent.pitch, self.agent.roll = (
+            0.0, 0.0, 0.0)
 
     def draw(self):
 

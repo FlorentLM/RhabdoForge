@@ -36,9 +36,10 @@ class ProjectionMode(IntEnum):
 
 class DeltaTimeTransformer:
     """
-    A temporary proxy object for applying framerate-independent transforms
+    A proxy object for applying framerate-independent transforms.
+
     It wraps a target object (like an Agent or Instance) and scales all
-    subsequent chained transformation calls by a delta_time value
+    subsequent chained transformation calls by a delta_time value.
     """
     def __init__(self, target: Any, delta_time: float):
         self._target = target

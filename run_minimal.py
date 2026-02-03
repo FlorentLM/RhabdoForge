@@ -9,12 +9,11 @@ from graphics.context import Context
 
 
 def main():
-
     # Configuration
     NB_OMMATIDIA = 1962
     NB_SAMPLES = 16
-    ENABLE_SHADOWS = True   # basic shadows (only for ray tracing)
-    PATH_TRACING = True
+    ENABLE_SHADOWS = True  # basic shadows (only for ray tracing)
+    PATH_TRACING = False
 
     # -----------------------------------------------
 
@@ -27,16 +26,15 @@ def main():
     scene.load(example_obj)
 
     # Add a skybox
-    # scene.add_skybox('textures/bright_day')
+    scene.add_skybox('textures/bright_day')
 
     # Setup eye model
-    eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)   # Uniform spherical eye
+    eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)  # Uniform spherical eye
     # eye_model = CompoundEye.from_file('drosophila_eye.npz', eye_parameter=1.5)  # Manually mapped drosophila eye
     # eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)  # Procedurally-generated bee eye
 
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 0.0))
-
 
     eye_renderer = EyeRendererRay(eye_model=eye_model, scene=scene,
                                   nb_samples=NB_SAMPLES,
@@ -45,7 +43,6 @@ def main():
                                   path_tracing=PATH_TRACING)
 
     while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer):
-
         context.input()  # this processes mouse and keyboard, it can be omitted to run headless
 
         # Get sensory data from the compound eye renderer

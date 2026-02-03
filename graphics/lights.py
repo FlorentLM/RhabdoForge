@@ -19,57 +19,62 @@ class _SunDeltaTimeTransformer(DeltaTimeTransformer):
 
 class Sun:
     """
-    Represents the Sun in the scene.
+    Represents a directional sun light.
+
+    The sun is treated as infinitely distant - only direction matters for lighting.
+    Position is stored for visualisation (sun disk) and to make orbit() intuitive.
     """
-    # TODO: Have this inherit from a Light class
 
     def __init__(self,
                  position: Sequence[float] = (50.0, 100.0, 30.0),
                  intensity: float = 2.0,
                  angular_radius: float = 0.02,
-                 color: Sequence[float] = (1.0, 1.0, 1.0)):
+                 color: Sequence[float] = None):
         """
         Args:
-            position: World-space position of the sun. Direction toward origin is computed from this
+            position: Direction the sun shines FROM (will be normalised for lighting)
             intensity: Brightness multiplier
-            angular_radius: Apparent angular size of the sun disk (in radians) (affects soft shadows)
-            color: RGB colour of the sunlight (normalised 0-1)
+            angular_radius: Apparent angular size of the sun disk in radians (affects soft shadows)
+            color: RGB colour override (None = automatic elevation-based colour)
         """
         self._position = glm.vec3(position)
         self._intensity = intensity
         self._angular_radius = angular_radius
-        self._color = glm.vec3(color)
-
-        # Target point the sun orbits around (default: origin)
-        self._target = glm.vec3(0.0, 0.0, 0.0)
+        self._color_override = glm.vec3(color) if color is not None else None
 
     def dt(self, delta_time: float) -> DeltaTimeTransformer:
-        """
-        Enables framerate-independent transformations for a chain of method calls.
-        """
+        """Enables framerate-independent transformations."""
         return _SunDeltaTimeTransformer(self, delta_time)
 
     @property
     def position(self) -> glm.vec3:
-        """World-space position of the sun."""
+        """World-space position (for visualisation / orbit calculations)."""
         return self._position
 
     @position.setter
     def position(self, value: Union[glm.vec3, ArrayLike]):
         self._position = glm.vec3(value)
 
+    @property
+    def direction(self) -> glm.vec3:
+        """Normalised direction TO the sun (for shadow rays and lighting calculations)."""
+        length = glm.length(self._position)
+        if length < 1e-6:
+            return glm.vec3(0.0, 1.0, 0.0)
+        return glm.normalize(self._position)
+
     def translate(self, translation: Union[glm.vec3, ArrayLike]):
-        """Translates the sun by a given vector."""
+        """Translates the sun position."""
         self._position += glm.vec3(translation)
         return self
 
     def orbit(self, angle: float, axis: Union[str, glm.vec3, ArrayLike] = 'y', degrees: bool = True):
         """
-        Orbits the sun around the target point (default: origin) along the given axis.
+        Orbits the sun around the origin.
 
         Args:
             angle: Rotation angle
-            axis: Axis to rotate around (can be 'x', 'y', 'z' or a vec3)
+            axis: Axis to rotate around ('x', 'y', 'z' or a vec3)
             degrees: If True, angle is in degrees
         """
         if isinstance(axis, str):
@@ -88,11 +93,8 @@ class Sun:
             rotation_axis = glm.vec3(axis)
 
         angle_rad = glm.radians(angle) if degrees else angle
-
-        offset = self._position - self._target
         rotation = glm.rotate(glm.mat4(1.0), angle_rad, rotation_axis)
-        rotated_offset = glm.vec3(rotation * glm.vec4(offset, 0.0))
-        self._position = self._target + rotated_offset
+        self._position = glm.vec3(rotation * glm.vec4(self._position, 0.0))
 
         return self
 
@@ -103,7 +105,7 @@ class Sun:
         Args:
             azimuth: Horizontal angle (0 = +Z, 90 = +X when looking down Y axis)
             elevation: Vertical angle above horizon (0 = horizon, 90 = directly overhead)
-            distance: Distance from target point
+            distance: Distance from origin (for visualisation only)
             degrees: If True, angles are in degrees
         """
         if degrees:
@@ -115,52 +117,24 @@ class Sun:
         y = distance * np.sin(elevation)
         z = distance * cos_el * np.cos(azimuth)
 
-        self._position = self._target + glm.vec3(x, y, z)
+        self._position = glm.vec3(x, y, z)
         return self
 
     @property
     def azimuth(self) -> float:
-        """Current azimuth angle (in degrees)."""
-        offset = self._position - self._target
-        return np.degrees(np.arctan2(offset.x, offset.z))
+        """Current azimuth angle in degrees."""
+        return np.degrees(np.arctan2(self._position.x, self._position.z))
 
     @property
     def elevation(self) -> float:
-        """Current elevation angle (in degrees)."""
-        offset = self._position - self._target
-        horizontal_dist = np.sqrt(offset.x**2 + offset.z**2)
-        return np.degrees(np.arctan2(offset.y, horizontal_dist))
+        """Current elevation angle in degrees."""
+        horizontal_dist = np.sqrt(self._position.x ** 2 + self._position.z ** 2)
+        return np.degrees(np.arctan2(self._position.y, horizontal_dist))
 
     @property
     def distance(self) -> float:
-        """Distance from target point."""
-        return glm.length(self._position - self._target)
-
-    @property
-    def target(self) -> glm.vec3:
-        """The point the sun is directed toward."""
-        return self._target
-
-    @target.setter
-    def target(self, value: Union[glm.vec3, ArrayLike]):
-        self._target = glm.vec3(value)
-
-    def lookat(self, target: Union[glm.vec3, ArrayLike]):
-        """Sets the target point the sun shines toward."""
-        self._target = glm.vec3(target)
-        return self
-
-    @property
-    def direction(self) -> glm.vec3:
-        """
-        Normalized direction vector *from* the sun *to* the target.
-        """
-        dir_vec = self._target - self._position
-        length = glm.length(dir_vec)
-        if length < 1e-6:
-            # if sun is at target
-            return glm.normalize(glm.vec3(0.0, -1.0, 0.0))
-        return glm.normalize(dir_vec)
+        """Distance from origin."""
+        return glm.length(self._position)
 
     @property
     def intensity(self) -> float:
@@ -172,7 +146,7 @@ class Sun:
 
     @property
     def angular_radius(self) -> float:
-        """Angular radius in radians (for soft shadow penumbra)."""
+        """Angular radius in radians."""
         return self._angular_radius
 
     @angular_radius.setter
@@ -181,36 +155,58 @@ class Sun:
 
     @property
     def color(self) -> glm.vec3:
-        return self._color
+        """
+        Sun colour (based on elevation).
+
+        Returns warm orange/red near horizon, white at high elevation.
+        """
+
+        if self._color_override is not None:
+            return self._color_override
+
+        elevation = self.elevation  # in degrees
+
+        if elevation <= 0.0:
+            # Below horizon: deep red/orange
+            return glm.vec3(1.0, 0.3, 0.1)
+        elif elevation < 6.0:
+            # Golden hour: orange gold
+            t = elevation / 6.0
+            return glm.vec3(1.0, 0.3 + 0.4 * t, 0.1 + 0.3 * t)
+        elif elevation < 15.0:
+            # Golden hour transition: gold / warm white
+            t = (elevation - 6.0) / 9.0
+            return glm.vec3(1.0, 0.7 + 0.25 * t, 0.4 + 0.5 * t)
+        elif elevation < 30.0:
+            # Warm daylight
+            t = (elevation - 15.0) / 15.0
+            return glm.vec3(1.0, 0.95 + 0.05 * t, 0.9 + 0.1 * t)
+        else:
+            # High sun: neutral white
+            return glm.vec3(1.0, 1.0, 1.0)
 
     @color.setter
-    def color(self, value: Union[glm.vec3, ArrayLike]):
-        self._color = glm.vec3(value)
+    def color(self, value: Union[glm.vec3, ArrayLike, None]):
+        """Set a fixed colour override, or None to use automatic elevation-based colour."""
+        if value is None:
+            self._color_override = None
+        else:
+            self._color_override = glm.vec3(value)
 
     def set_time_of_day(self, hour: float, latitude: float = 45.0):
         """
-        Rough sun position based on time of day.
+        Approximate sun position based on time of day.
 
         Args:
-            hour: Time in 24-hour format
-            latitude: Observer latitude in degrees (affects max sun elevation)
+            hour: Time in 24-hour format (6 = sunrise, 12 = noon, 18 = sunset)
+            latitude: Observer latitude in degrees
         """
         azimuth = (hour - 6.0) * 15.0  # 15 degrees/hour, 0 at 6am
 
-        # Elevation: peaks at noon, 0 at sunrise/sunset
         hour_from_noon = abs(hour - 12.0)
-        max_elevation = 90.0 - abs(latitude - 23.5)  # rough approximation
+        max_elevation = 90.0 - abs(latitude - 23.5)
         elevation = max_elevation * np.cos(np.radians(hour_from_noon * 15.0))
-        elevation = max(0.0, elevation)  # below horizon
+        elevation = max(0.0, elevation)
 
-        self.set_from_angles(azimuth, elevation)
-
-        # Adjust colour temperature based on elevation :)
-        if elevation < 15.0:
-            # golden hour
-            warmth = 1.0 - (elevation / 15.0)
-            self._color = glm.vec3(1.0, 0.9 - 0.2 * warmth, 0.7 - 0.3 * warmth)
-        else:
-            self._color = glm.vec3(1.0, 1.0, 1.0)
-
+        self.from_angles(azimuth, elevation)
         return self

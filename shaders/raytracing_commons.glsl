@@ -56,6 +56,7 @@ uniform float sky_intensity;
 uniform float sun_intensity;
 uniform vec3 sun_direction;         // direction to the sun (normalised)
 uniform float sun_angular_radius;   // angular size for soft shadows
+uniform vec3 sun_color;             // sun disk colour
 
 // Legacy shadow mode (for simple non-path-tracing)
 uniform bool enable_shadows;
@@ -210,8 +211,20 @@ vec3 sample_sun_direction(vec3 sun_dir, float angular_radius, float r1, float r2
     return normalize(sun_dir + T * cos(phi) * r + B * sin(phi) * r);
 }
 
+// Check if ray direction hits the sun disk
+bool hits_sun_disk(vec3 direction) {
+    float cos_angle = dot(direction, sun_direction);
+    float cos_threshold = cos(sun_angular_radius);
+    return cos_angle >= cos_threshold;
+}
+
 // Get sky color for a direction (environment lighting)
 vec3 get_sky_color(vec3 direction) {
+    // Check if looking at sun disk
+    if (sun_intensity > 0.0 && hits_sun_disk(direction)) {
+        return sun_color * sun_intensity;
+    }
+
     if (use_skybox) {
         return texture(skybox, direction).rgb * sky_intensity;
     } else {
@@ -623,7 +636,7 @@ vec3 trace_simple(Ray r) {
             vec3 hit_pos = r.origin + direction * closest_hit.t;
             shadow = compute_shadow(hit_pos, sun_direction);
         }
-        final_color = surface_color * shadow;
+        final_color = surface_color * sun_color * shadow;
     } else {
         final_color = get_sky_color(direction);
     }
@@ -665,7 +678,7 @@ vec3 trace_path(Ray r, inout uint rng_state) {
                 shadow_ray.t = 1e10;
 
                 if (!is_occluded(shadow_ray)) {
-                    radiance += throughput * surface_color * sun_intensity * NdotL;
+                    radiance += throughput * surface_color * sun_color * sun_intensity * NdotL;
                 }
             }
         }
