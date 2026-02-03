@@ -14,7 +14,7 @@ from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, AssetType
 from graphics.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
 from graphics.renderers.panoramic import TextureViewer
-
+from graphics.lights import Sun
 
 # Custom detailed dtype for the GPU SSBO
 gpu_instance_dtype = np.dtype([
@@ -342,8 +342,10 @@ class RaytracingSceneBaker:
         upload(self.tlas_nodes_ssbo, self.cpu_TLAS_nodes, GL_DYNAMIC_DRAW, np.float32, 1)
 
         # Leaf -> thing mappings
-        upload(self.tlas_indices_ssbo, self.cpu_TLAS_prim_indices, GL_STATIC_DRAW, np.uint32, 1)  # TLAS: leaf -> instance
-        upload(self.blas_indices_ssbo, self.cpu_BLAS_prim_indices, GL_STATIC_DRAW, np.uint32, 1)  # BLAS: leaf -> primitive
+        upload(self.tlas_indices_ssbo, self.cpu_TLAS_prim_indices,
+               GL_STATIC_DRAW, np.uint32, 1)  # TLAS: leaf -> instance
+        upload(self.blas_indices_ssbo, self.cpu_BLAS_prim_indices,
+               GL_STATIC_DRAW, np.uint32, 1)  # BLAS: leaf -> primitive
 
         # Per-instance info (updates with animation)
         upload(self.instances_info_ssbo, self.gpu_instances_info, GL_DYNAMIC_DRAW, gpu_instance_dtype, 1)
@@ -374,7 +376,8 @@ class RaytracingSceneBaker:
 
             # Update the CPU-side buffer destined for the GPU
             self.gpu_instances_info[tlas_idx]['transform'] = transform
-            self.gpu_instances_info[tlas_idx]['inverse_transform'] = np.asarray(glm.inverse(instance.transform), dtype=np.float32)
+            self.gpu_instances_info[tlas_idx]['inverse_transform'] = np.asarray(
+                glm.inverse(instance.transform), dtype=np.float32)
 
         # Refit the TLAS in C++ after all transforms are set
         self.TLAS.refit_tlas()
@@ -448,7 +451,7 @@ class EyeRendererRay(EyeRendererBase):
         ):
 
         # Store a reference to the scene manager
-        self.scene = scene   # just for convenience
+        self.scene = scene  # just for convenience
         self._scene_baked = RaytracingSceneBaker(scene)
 
         # Rendering mode
@@ -457,9 +460,13 @@ class EyeRendererRay(EyeRendererBase):
         # Path tracing settings
         self.max_bounces = 3
         self.sky_intensity = 1.0
-        self.sun_intensity = 2.0
-        self.sun_direction = glm.normalize(glm.vec3(0.5, 1.0, 0.3))
-        self.sun_angular_radius = 0.02
+
+        # Sun lighting
+        self.sun = Sun(
+            position=(50.0, 100.0, 30.0),
+            intensity=1.0,
+            angular_radius=0.02
+        )
 
         # Simple shadow settings
         self.enable_shadows = enable_shadows
@@ -473,7 +480,7 @@ class EyeRendererRay(EyeRendererBase):
         self.reduction_shader = ShaderProgram(comp_path='shaders/rays_reduction.comp')
 
         # panoramic view shader
-        self.panoramic_shader = None    # lazily-loaded
+        self.panoramic_shader = None  # lazily-loaded
 
         # standard perspective view shader (also lazy-loaded)
         self._persp_res = None
@@ -489,7 +496,7 @@ class EyeRendererRay(EyeRendererBase):
 
         # Default number of samples
         self._samples_per_ommatidium = 0
-        self.samples_per_ommatidium = nb_samples    # via the setter to allocate the SSBO
+        self.samples_per_ommatidium = nb_samples  # via the setter to allocate the SSBO
 
     @property
     def samples_per_ommatidium(self):
@@ -513,7 +520,8 @@ class EyeRendererRay(EyeRendererBase):
         self.total_samples = self.num_ommatidia * self._samples_per_ommatidium
         required_buffer_size = self.total_samples * bytes_per_sample
 
-        print(f"Allocating ray result buffer for {self.total_samples:,} total samples ({required_buffer_size / (1024*1024):.2f} MB).")
+        print(f"Allocating ray result buffer for {self.total_samples:,} "
+              f"total samples ({required_buffer_size / (1024 * 1024):.2f} MB).")
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ray_results_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, required_buffer_size, None, GL_DYNAMIC_DRAW)
@@ -627,9 +635,9 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1i(shader.get_loc('enable_path_tracing'), int(self.path_tracing))
         glUniform1i(shader.get_loc('max_bounces'), self.max_bounces)
         glUniform1f(shader.get_loc('sky_intensity'), self.sky_intensity)
-        glUniform1f(shader.get_loc('sun_intensity'), self.sun_intensity)
-        glUniform3f(shader.get_loc('sun_direction'), self.sun_direction.x, self.sun_direction.y, self.sun_direction.z)
-        glUniform1f(shader.get_loc('sun_angular_radius'), self.sun_angular_radius)
+        glUniform1f(shader.get_loc('sun_intensity'), self.sun.intensity)
+        glUniform3f(shader.get_loc('sun_direction'), self.sun.direction.x, self.sun.direction.y, self.sun.direction.z)
+        glUniform1f(shader.get_loc('sun_angular_radius'), self.sun.angular_radius)
 
         # Simple shadow settings (non-path-traced mode)
         glUniform1i(shader.get_loc('enable_shadows'), int(self.enable_shadows))
