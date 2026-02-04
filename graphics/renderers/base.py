@@ -1,12 +1,12 @@
+import OpenGL
+OpenGL.ERROR_CHECKING = False
+
 import random
 from abc import ABC, abstractmethod
 from typing import Optional
-
 import numpy as np
-import OpenGL
 from pyglm import glm
 
-OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
 
@@ -33,7 +33,7 @@ def query_available_VRAM() -> int:
 
 class EyeRendererBase(ABC):
     """
-    Abstract base class for an insect eye model, handling visualization and common properties
+    Abstract base class for an insect eye model, handling visualisation and common properties
     """
 
     def __init__(self, eye_model: CompoundEye, time_dithering: bool = True, nb_samples: int = 256, batch_size: int = 1):
@@ -173,7 +173,7 @@ class EyeRendererBase(ABC):
         """
         return 100.0    # conservative guess
 
-    def get_ommatidia_data(self, agent: Agent) -> Optional[np.ndarray]:
+    def get_ommatidia_data(self, agent: Agent, readback: bool = True) -> Optional[np.ndarray]:
         """
         Runs one frame of simulation. Behavior is determined by the `batch_size`
         - If batch_size = 1: Blocks and returns the current frame's data
@@ -189,20 +189,25 @@ class EyeRendererBase(ABC):
             # Synchronous path
 
             self._compute_colors(agent)
-            glFinish()
 
-            bytes_to_read = self.num_ommatidia * 16
-            glBindBuffer(GL_COPY_READ_BUFFER, self.history_ssbo)
-            glBindBuffer(GL_COPY_WRITE_BUFFER, self.sync_pbo)
-            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, bytes_to_read)
+            if readback:
+                glFinish()
 
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, self.sync_pbo)
-            ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
-            ctypes.memmove(self.sync_cpu_buffer.ctypes.data, ptr, bytes_to_read)
-            glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+                bytes_to_read = self.num_ommatidia * 16
+                glBindBuffer(GL_COPY_READ_BUFFER, self.history_ssbo)
+                glBindBuffer(GL_COPY_WRITE_BUFFER, self.sync_pbo)
+                glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, bytes_to_read)
 
-            return self.sync_cpu_buffer
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, self.sync_pbo)
+                ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
+                ctypes.memmove(self.sync_cpu_buffer.ctypes.data, ptr, bytes_to_read)
+                glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+
+                return self.sync_cpu_buffer
+            else:
+                return None
+
         else:
             # Asynchronous path
 

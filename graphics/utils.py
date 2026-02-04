@@ -567,7 +567,7 @@ def trimesh_from_arrays(
 
 def extract_obj_curves(
         file_path,
-        object_filter: Optional[Union[str, Sequence[str]]] = 'NurbsPath',
+        object_filter: Optional[Union[str, Sequence[str]]] = None,
         resample: int = None
     ) -> Dict[str, np.ndarray]:
     """

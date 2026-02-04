@@ -1,4 +1,6 @@
+from abc import ABC, abstractmethod
 from typing import Union, Sequence
+from enum import Enum, auto
 from numpy.typing import ArrayLike
 import numpy as np
 from pyglm import glm
@@ -6,45 +8,197 @@ from pyglm import glm
 from graphics.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
 
-class _SunDeltaTimeTransformer(DeltaTimeTransformer):
+# Custom dtypes for the GPU SSBOs
+point_light_dtype = np.dtype([
+    ('position', np.float32, 3),
+    ('radius', np.float32),
+    ('color', np.float32, 3),
+    ('intensity', np.float32),
+    ('constant_atten', np.float32),
+    ('linear_atten', np.float32),
+    ('quadratic_atten', np.float32),
+    ('cast_shadows', np.uint32),
+])  # total 48 bytes
 
-    def __init__(self, target: 'Sun', delta_time: float):
+area_light_dtype = np.dtype([
+    ('position', np.float32, 3),
+    ('width', np.float32),
+    ('normal', np.float32, 3),
+    ('height', np.float32),
+    ('tangent', np.float32, 3),
+    ('intensity', np.float32),
+    ('bitangent', np.float32, 3),
+    ('cast_shadows', np.uint32),
+    ('color', np.float32, 3),
+    ('two_sided', np.uint32),
+])  # total 64 bytes
+
+
+class LightType(Enum):
+    DIRECTIONAL = auto()    # Infinitely distant (sun, moon)
+    POINT = auto()          # Omnidirectional (with falloff)
+    AREA = auto()           # Rectangular/disk emitter
+
+
+class Light(ABC):
+    """
+    Abstract base class for all light types.
+    """
+
+    def __init__(self,
+                 color: Sequence[float] = (1.0, 1.0, 1.0),
+                 intensity: float = 1.0,
+                 cast_shadows: bool = True,
+                 enabled: bool = True):
+        """
+        Args:
+            color: RGB colour of the light
+            intensity: Brightness multiplier
+            cast_shadows: Whether this light casts shadows
+            enabled: Whether this light contributes to the scene
+        """
+        self._color = glm.vec3(color)
+        self._intensity = max(0.0, intensity)
+        self.cast_shadows = cast_shadows
+        self.enabled = enabled
+
+    @property
+    @abstractmethod
+    def light_type(self) -> LightType:
+        pass
+
+    @property
+    def color(self) -> glm.vec3:
+        return self._color
+
+    @color.setter
+    def color(self, value: Union[glm.vec3, ArrayLike, None]):
+        if value is None:
+            self._color = glm.vec3(1.0, 1.0, 1.0)
+        else:
+            self._color = glm.vec3(value)
+
+    @property
+    def intensity(self) -> float:
+        return self._intensity
+
+    @intensity.setter
+    def intensity(self, value: float):
+        self._intensity = max(0.0, value)
+
+
+class _LightDeltaTimeTransformer(DeltaTimeTransformer):
+    """Delta-time transformer for lights with orbital/positional controls."""
+
+    # TODO: Orbit might make this way into the other classes actually
+
+    def __init__(self, target: 'Light', delta_time: float):
         super().__init__(target, delta_time)
 
     def orbit(self, angle: float, axis: Union[str, glm.vec3, ArrayLike] = 'y', degrees: bool = True):
-        scaled_angle = angle * self._delta_time
-        self._target.orbit(scaled_angle, axis, degrees=degrees)
+        """Orbits the light around the origin (for lights that support it)."""
+        if hasattr(self._target, 'orbit'):
+            scaled_angle = angle * self._delta_time
+            self._target.orbit(scaled_angle, axis, degrees=degrees)
         return self
 
 
-class Sun:
+class DirectionalLight(Light):
     """
-    Represents a directional sun light.
+    Infinitely distant light source.
+    """
 
-    The sun is treated as infinitely distant - only direction matters for lighting.
-    Position is stored for visualisation (sun disk) and to make orbit() intuitive.
+    def __init__(self,
+                 direction: Sequence[float] = (0.0, 1.0, 0.0),
+                 color: Sequence[float] = (1.0, 1.0, 1.0),
+                 intensity: float = 1.0,
+                 angular_size: float = 0.0,
+                 **kwargs):
+        """
+        Args:
+            direction: Direction the light shines FROM (will be normalised)
+            color: RGB colour
+            intensity: Brightness multiplier
+            angular_size: Angular radius in radians (for soft shadows, 0 = hard shadows)
+        """
+        super().__init__(color=color, intensity=intensity, **kwargs)
+        self._direction = glm.normalize(glm.vec3(direction))
+        self._angular_radius = max(0.0, angular_size)
+
+    @property
+    def light_type(self) -> LightType:
+        return LightType.DIRECTIONAL
+
+    @property
+    def direction(self) -> glm.vec3:
+        """Normalised direction TO the light source."""
+        return self._direction
+
+    @direction.setter
+    def direction(self, value: Union[glm.vec3, ArrayLike]):
+        vec = glm.vec3(value)
+        length = glm.length(vec)
+        if length > 1e-6:
+            self._direction = vec / length
+        else:
+            self._direction = glm.vec3(0.0, 1.0, 0.0)
+
+    @property
+    def angular_radius(self) -> float:
+        """Angular radius in radians (affects soft shadow size)."""
+        return self._angular_radius
+
+    @angular_radius.setter
+    def angular_radius(self, value: float):
+        self._angular_radius = max(0.0, value)
+
+
+class Sun(DirectionalLight):
+    """
+    Directional sun light with orbital controls and automatic colour temperature.
+
+    Extends DirectionalLight with:
+    - Position-based direction
+    - Elevation-based colour temperature (warm at horizon, white at zenith)
+    - Time-of-day simulation
     """
 
     def __init__(self,
                  position: Sequence[float] = (50.0, 100.0, 30.0),
                  intensity: float = 2.0,
                  angular_size: float = 0.02,
-                 color: Sequence[float] = None):
+                 color: Sequence[float] = None,
+                 **kwargs):
         """
         Args:
-            position: Direction the sun shines FROM (will be normalised for lighting)
+            position: Direction the sun shines from (magnitude used for visualisation)
             intensity: Brightness multiplier
-            angular_size: Apparent angular size of the sun disk in radians (affects soft shadows)
+            angular_size: Apparent angular size of sun disk in radians
             color: RGB colour override (None = automatic elevation-based colour)
         """
-        self._position = glm.vec3(position)
-        self._intensity = intensity
-        self._angular_radius = angular_size
-        self._color_override = glm.vec3(color) if color is not None else None
+        super().__init__(
+            direction=(0.0, 1.0, 0.0),
+            color=color if color is not None else (1.0, 1.0, 1.0),
+            intensity=intensity,
+            angular_size=angular_size,
+            **kwargs
+        )
 
-    def dt(self, delta_time: float) -> DeltaTimeTransformer:
+        self._position = glm.vec3(position)
+        self._color_override = glm.vec3(color) if color is not None else None
+        self._update_direction_from_position()
+
+    def _update_direction_from_position(self):
+        """Updates the direction vector from the current position."""
+        length = glm.length(self._position)
+        if length > 1e-6:
+            self._direction = self._position / length
+        else:
+            self._direction = glm.vec3(0.0, 1.0, 0.0)
+
+    def dt(self, delta_time: float) -> _LightDeltaTimeTransformer:
         """Enables framerate-independent transformations."""
-        return _SunDeltaTimeTransformer(self, delta_time)
+        return _LightDeltaTimeTransformer(self, delta_time)
 
     @property
     def position(self) -> glm.vec3:
@@ -54,18 +208,17 @@ class Sun:
     @position.setter
     def position(self, value: Union[glm.vec3, ArrayLike]):
         self._position = glm.vec3(value)
+        self._update_direction_from_position()
 
     @property
     def direction(self) -> glm.vec3:
-        """Normalised direction TO the sun (for shadow rays and lighting calculations)."""
-        length = glm.length(self._position)
-        if length < 1e-6:
-            return glm.vec3(0.0, 1.0, 0.0)
-        return glm.normalize(self._position)
+        """Normalised direction to the sun."""
+        return self._direction
 
     def translate(self, translation: Union[glm.vec3, ArrayLike]):
         """Translates the sun position."""
         self._position += glm.vec3(translation)
+        self._update_direction_from_position()
         return self
 
     def orbit(self, angle: float, axis: Union[str, glm.vec3, ArrayLike] = 'y', degrees: bool = True):
@@ -95,6 +248,7 @@ class Sun:
         angle_rad = glm.radians(angle) if degrees else angle
         rotation = glm.rotate(glm.mat4(1.0), angle_rad, rotation_axis)
         self._position = glm.vec3(rotation * glm.vec4(self._position, 0.0))
+        self._update_direction_from_position()
 
         return self
 
@@ -118,6 +272,7 @@ class Sun:
         z = distance * cos_el * np.cos(azimuth)
 
         self._position = glm.vec3(x, y, z)
+        self._update_direction_from_position()
         return self
 
     @property
@@ -137,57 +292,33 @@ class Sun:
         return glm.length(self._position)
 
     @property
-    def intensity(self) -> float:
-        return self._intensity
-
-    @intensity.setter
-    def intensity(self, value: float):
-        self._intensity = max(0.0, value)
-
-    @property
-    def angular_radius(self) -> float:
-        """Angular radius in radians."""
-        return self._angular_radius
-
-    @angular_radius.setter
-    def angular_radius(self, value: float):
-        self._angular_radius = max(0.001, value)
-
-    @property
     def color(self) -> glm.vec3:
         """
-        Sun colour (based on elevation).
-
-        Returns warm orange/red near horizon, white at high elevation.
+        Sun colour (based on elevation if no override set).
+        Warm orange/red near horizon, white at zenith.
         """
-
         if self._color_override is not None:
             return self._color_override
 
         elevation = self.elevation  # in degrees
 
         if elevation <= 0.0:
-            # Below horizon: deep red/orange
             return glm.vec3(1.0, 0.3, 0.1)
         elif elevation < 6.0:
-            # Golden hour: orange gold
             t = elevation / 6.0
             return glm.vec3(1.0, 0.3 + 0.4 * t, 0.1 + 0.3 * t)
         elif elevation < 15.0:
-            # Golden hour transition: gold / warm white
             t = (elevation - 6.0) / 9.0
             return glm.vec3(1.0, 0.7 + 0.25 * t, 0.4 + 0.5 * t)
         elif elevation < 30.0:
-            # Warm daylight
             t = (elevation - 15.0) / 15.0
             return glm.vec3(1.0, 0.95 + 0.05 * t, 0.9 + 0.1 * t)
         else:
-            # High sun: neutral white
             return glm.vec3(1.0, 1.0, 1.0)
 
     @color.setter
     def color(self, value: Union[glm.vec3, ArrayLike, None]):
-        """Set a fixed colour override, or None to use automatic elevation-based colour."""
+        """Set a fixed colour override, or None to use elevation-based colour."""
         if value is None:
             self._color_override = None
         else:
@@ -201,7 +332,7 @@ class Sun:
             hour: Time in 24-hour format (6 = sunrise, 12 = noon, 18 = sunset)
             latitude: Observer latitude in degrees
         """
-        azimuth = (hour - 6.0) * 15.0  # 15 degrees/hour, 0 at 6am
+        azimuth = (hour - 6.0) * 15.0  # 15 degrees/hour
 
         hour_from_noon = abs(hour - 12.0)
         max_elevation = 90.0 - abs(latitude - 23.5)
@@ -210,3 +341,204 @@ class Sun:
 
         self.from_angles(azimuth, elevation)
         return self
+
+
+class PointLight(Light):
+    """
+    Omnidirectional point light with distance attenuation.
+    """
+
+    def __init__(self,
+                 position: Sequence[float] = (0.0, 1.0, 0.0),
+                 color: Sequence[float] = (1.0, 1.0, 1.0),
+                 intensity: float = 1.0,
+                 radius: float = 0.0,
+                 constant: float = 1.0,
+                 linear: float = 0.09,
+                 quadratic: float = 0.032,
+                 **kwargs):
+        """
+        Args:
+            position: World-space position
+            color: RGB colour
+            intensity: Brightness multiplier
+            radius: Physical radius for soft shadows (0 = point source)
+            constant: Constant attenuation factor
+            linear: Linear attenuation factor
+            quadratic: Quadratic attenuation factor
+        """
+        super().__init__(color=color, intensity=intensity, **kwargs)
+        self._position = glm.vec3(position)
+        self._radius = max(0.0, radius)
+        self.constant = constant
+        self.linear = linear
+        self.quadratic = quadratic
+
+    @property
+    def light_type(self) -> LightType:
+        return LightType.POINT
+
+    @property
+    def position(self) -> glm.vec3:
+        return self._position
+
+    @position.setter
+    def position(self, value: Union[glm.vec3, ArrayLike]):
+        self._position = glm.vec3(value)
+
+    @property
+    def radius(self) -> float:
+        """Physical radius for soft shadows."""
+        return self._radius
+
+    @radius.setter
+    def radius(self, value: float):
+        self._radius = max(0.0, value)
+
+    def translate(self, translation: Union[glm.vec3, ArrayLike]):
+        self._position += glm.vec3(translation)
+        return self
+
+    def attenuation_at(self, distance: float) -> float:
+        """Calculate attenuation factor at a given distance."""
+        return 1.0 / (self.constant + self.linear * distance + self.quadratic * distance * distance)
+
+
+class AreaLight(Light):
+    """
+    Rectangular area light for soft shadows (path tracing only).
+    """
+
+    def __init__(self,
+                 position: Sequence[float] = (0.0, 2.0, 0.0),
+                 normal: Sequence[float] = (0.0, -1.0, 0.0),
+                 width: float = 1.0,
+                 height: float = 1.0,
+                 color: Sequence[float] = (1.0, 1.0, 1.0),
+                 intensity: float = 5.0,
+                 two_sided: bool = False,
+                 **kwargs):
+        """
+        Args:
+            position: Center of the light rectangle
+            normal: Direction the light faces (perpendicular to surface)
+            width: Width of the rectangle
+            height: Height of the rectangle
+            color: RGB colour
+            intensity: Brightness multiplier
+            two_sided: Whether light emits from both sides
+        """
+        super().__init__(color=color, intensity=intensity, **kwargs)
+        self._position = glm.vec3(position)
+        self._normal = glm.normalize(glm.vec3(normal))
+        self._width = max(0.001, width)
+        self._height = max(0.001, height)
+        self.two_sided = two_sided
+
+        self._update_tangent_frame()
+
+    def _update_tangent_frame(self):
+        """Builds orthonormal tangent and bitangent vectors from the normal."""
+        up = glm.vec3(0.0, 1.0, 0.0) if abs(self._normal.y) < 0.999 else glm.vec3(1.0, 0.0, 0.0)
+        self._tangent = glm.normalize(glm.cross(up, self._normal))
+        self._bitangent = glm.cross(self._normal, self._tangent)
+
+    @property
+    def light_type(self) -> LightType:
+        return LightType.AREA
+
+    @property
+    def position(self) -> glm.vec3:
+        """Center of the light rectangle."""
+        return self._position
+
+    @position.setter
+    def position(self, value: Union[glm.vec3, ArrayLike]):
+        self._position = glm.vec3(value)
+
+    @property
+    def normal(self) -> glm.vec3:
+        """Direction the light faces."""
+        return self._normal
+
+    @normal.setter
+    def normal(self, value: Union[glm.vec3, ArrayLike]):
+        self._normal = glm.normalize(glm.vec3(value))
+        self._update_tangent_frame()
+
+    @property
+    def tangent(self) -> glm.vec3:
+        """Tangent vector (width direction)."""
+        return self._tangent
+
+    @property
+    def bitangent(self) -> glm.vec3:
+        """Bitangent vector (height direction)."""
+        return self._bitangent
+
+    @property
+    def width(self) -> float:
+        return self._width
+
+    @width.setter
+    def width(self, value: float):
+        self._width = max(0.001, value)
+
+    @property
+    def height(self) -> float:
+        return self._height
+
+    @height.setter
+    def height(self, value: float):
+        self._height = max(0.001, value)
+
+    @property
+    def area(self) -> float:
+        """Surface area of the light."""
+        return self._width * self._height
+
+    def translate(self, translation: Union[glm.vec3, ArrayLike]):
+        """Translates the light position."""
+        self._position += glm.vec3(translation)
+        return self
+
+    def sample_point(self, u: float, v: float) -> glm.vec3:
+        """
+        Sample a point on the light surface.
+
+        Args:
+            u, v: Random values in [0, 1]
+        """
+        local_u = (u - 0.5) * self._width
+        local_v = (v - 0.5) * self._height
+        return self._position + self._tangent * local_u + self._bitangent * local_v
+
+
+def pack_point_light(light: PointLight) -> np.ndarray:
+    """Pack a PointLight into a numpy array matching the GPU struct."""
+    data = np.zeros(1, dtype=point_light_dtype)
+    data['position'] = light.position.x, light.position.y, light.position.z
+    data['radius'] = light.radius
+    data['color'] = light.color.x, light.color.y, light.color.z
+    data['intensity'] = light.intensity
+    data['constant_atten'] = light.constant
+    data['linear_atten'] = light.linear
+    data['quadratic_atten'] = light.quadratic
+    data['cast_shadows'] = 1 if light.cast_shadows else 0
+    return data
+
+
+def pack_area_light(light: AreaLight) -> np.ndarray:
+    """Pack an AreaLight into a numpy array matching the GPU struct."""
+    data = np.zeros(1, dtype=area_light_dtype)
+    data['position'] = light.position.x, light.position.y, light.position.z
+    data['width'] = light.width
+    data['normal'] = light.normal.x, light.normal.y, light.normal.z
+    data['height'] = light.height
+    data['tangent'] = light.tangent.x, light.tangent.y, light.tangent.z
+    data['intensity'] = light.intensity
+    data['bitangent'] = light.bitangent.x, light.bitangent.y, light.bitangent.z
+    data['cast_shadows'] = 1 if light.cast_shadows else 0
+    data['color'] = light.color.x, light.color.y, light.color.z
+    data['two_sided'] = 1 if light.two_sided else 0
+    return data

@@ -1,5 +1,4 @@
 import OpenGL
-
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
@@ -12,8 +11,13 @@ from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 from graphics.agent import Agent
 from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, AssetType
+from graphics.lights import (
+    PointLight, AreaLight,
+    point_light_dtype, area_light_dtype, pack_point_light, pack_area_light
+)
 from graphics.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
 from graphics.renderers.panoramic import TextureViewer
+
 
 # Custom detailed dtype for the GPU SSBO
 gpu_instance_dtype = np.dtype([
@@ -34,6 +38,8 @@ class RaytracingSceneBaker:
     """
     Manages the creation, ownership, and updating of BVH structures
     and GPU buffers from a logical Scene object.
+
+    Also packs lights from the scene into GPU-ready SSBOs.
     """
 
     def __init__(self, scene: Scene):
@@ -45,17 +51,25 @@ class RaytracingSceneBaker:
         # Maps the ID of a Scene.Instance to its index in the TLAS array
         self.dynamic_instance_map: Dict[int, int] = {}
 
-        # OpenGL handles
+        # OpenGL handles for geometry
         self.skybox_texture = 0
         self.materials_ssbo, self.tex_array = 0, 0
         self.triangles_ssbo, self.points_ssbo = 0, 0
         self.tlas_nodes_ssbo, self.blas_nodes_ssbo = 0, 0
         self.instances_info_ssbo, self.tlas_indices_ssbo = 0, 0
 
-        # CPU-side data for building and updating
+        # OpenGL handles for lights
+        self.point_lights_ssbo = 0
+        self.area_lights_ssbo = 0
+
+        # CPU-side data for building (and updating)
         self.gpu_instances_info: Optional[np.ndarray] = None
         self.material_map: Dict[int, int] = {}
         self.asset_to_blas_map: Dict[int, Dict] = {}
+
+        # Light counts (for uniform upload)
+        self.num_point_lights = 0
+        self.num_area_lights = 0
 
         print("Baking ray-tracing scene...")
         if not self.scene.instances:
@@ -71,7 +85,67 @@ class RaytracingSceneBaker:
 
         self._upload_buffers()
 
+        # Pack lights after geometry
+        self._pack_lights()
+
         print("Ray-tracing scene baking complete.")
+
+    def _pack_lights(self):
+        """Packs all lights from the scene into GPU SSBOs."""
+
+        point_lights = [l for l in self.scene.lights if isinstance(l, PointLight) and l.enabled and l.intensity > 0]
+        area_lights = [l for l in self.scene.lights if isinstance(l, AreaLight) and l.enabled and l.intensity > 0]
+
+        self.num_point_lights = len(point_lights)
+        self.num_area_lights = len(area_lights)
+
+        # Pack point lights
+        if point_lights:
+            packed = np.concatenate([pack_point_light(l) for l in point_lights])
+        else:
+            packed = np.zeros(1, dtype=point_light_dtype)   # TODO: These should be compile-time omitted instead of dummy
+
+        self.point_lights_ssbo = glGenBuffers(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.point_lights_ssbo)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, packed.nbytes, packed, GL_DYNAMIC_DRAW)
+
+        # Pack area lights
+        if area_lights:
+            packed = np.concatenate([pack_area_light(l) for l in area_lights])
+        else:
+            packed = np.zeros(1, dtype=area_light_dtype)
+
+        self.area_lights_ssbo = glGenBuffers(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.area_lights_ssbo)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, packed.nbytes, packed, GL_DYNAMIC_DRAW)
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
+        if self.num_point_lights > 0 or self.num_area_lights > 0:
+            print(f"Packed {self.num_point_lights} point lights, {self.num_area_lights} area lights")
+
+    def update_lights(self):
+        """Re-packs lights if they have changed."""
+
+        point_lights = [l for l in self.scene.lights
+                        if isinstance(l, PointLight) and l.enabled and l.intensity > 0]
+        area_lights = [l for l in self.scene.lights
+                       if isinstance(l, AreaLight) and l.enabled and l.intensity > 0]
+
+        self.num_point_lights = len(point_lights)
+        self.num_area_lights = len(area_lights)
+
+        if point_lights:
+            packed = np.concatenate([pack_point_light(l) for l in point_lights])
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.point_lights_ssbo)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, packed.nbytes, packed, GL_DYNAMIC_DRAW)
+
+        if area_lights:
+            packed = np.concatenate([pack_area_light(l) for l in area_lights])
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.area_lights_ssbo)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, packed.nbytes, packed, GL_DYNAMIC_DRAW)
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     def _pack_materials(self):
         """Packs material data for all mesh assets into GPU buffers."""
@@ -183,7 +257,7 @@ class RaytracingSceneBaker:
 
                 blas = BVH.from_indexed_mesh(verts4, indices)
 
-                # Append mesh data to global lists
+                # All mesh data goes to a global list
                 all_vertices.append(asset.vertices)
                 all_indices.append(asset.indices.flatten())
 
@@ -194,6 +268,7 @@ class RaytracingSceneBaker:
                     'idx_offset': current_idx_offset,
                     'is_points': 0  # Mesh asset, not a point cloud
                 }
+
                 current_vert_offset += len(asset.vertices)
                 current_idx_offset += len(asset.indices.flatten())
 
@@ -237,6 +312,7 @@ class RaytracingSceneBaker:
 
             if supports_layout(target_layout) and target_layout != blas.layout:
                 blas.convert_to(target_layout, compact=True)
+
             elif target_layout != blas.layout:
                 print(f"Warning: Layout {target_layout.name} not supported. Falling back to Standard.")
                 blas.convert_to(Layout.Standard, compact=True)
@@ -430,6 +506,7 @@ class RaytracingSceneBaker:
             self.vertices_ssbo, self.indices_ssbo, self.points_ssbo, self.materials_ssbo,
             self.tlas_nodes_ssbo, self.blas_nodes_ssbo, self.instances_info_ssbo,
             self.tlas_indices_ssbo, self.blas_indices_ssbo,
+            self.point_lights_ssbo, self.area_lights_ssbo,
         ] if b != 0]
 
         if buffers:
@@ -447,7 +524,9 @@ class EyeRendererRay(EyeRendererBase):
                  batch_size: int = 1,
                  path_tracing: bool = False,
                  enable_shadows: bool = True,
-        ):
+                 enable_ambient: bool = True,
+                 enable_direct: bool = True,
+                 ):
 
         # Store a reference to the scene manager
         self.scene = scene  # just for convenience
@@ -460,9 +539,11 @@ class EyeRendererRay(EyeRendererBase):
         self.max_bounces = 3
         self.sky_intensity = 1.0
 
-        
-        # Simple shadow settings
+        # Global lighting controls
+        self.enable_ambient = enable_ambient
+        self.enable_direct = enable_direct
         self.enable_shadows = enable_shadows
+        self.ambient_intensity = 1.0
 
         # we call super().__init__ *after* baking the scene so we can estimate VRAM
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
@@ -545,7 +626,6 @@ class EyeRendererRay(EyeRendererBase):
             self.panoramic_shader = ShaderProgram(comp_path='shaders/panoramic_raytracing.comp')
 
         if self._pano_texture_id == 0:
-
             texture_id = glGenTextures(1)
             glBindTexture(GL_TEXTURE_2D, texture_id)
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, self._pano_res[0], self._pano_res[1], 0, GL_RGBA, GL_FLOAT, None)
@@ -571,7 +651,6 @@ class EyeRendererRay(EyeRendererBase):
             self._persp_res = (viewport[2], viewport[3])
 
         if self._persp_texture_id == 0:
-
             tex = glGenTextures(1)
             glBindTexture(GL_TEXTURE_2D, tex)
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, self._persp_res[0], self._persp_res[1], 0, GL_RGBA, GL_FLOAT,
@@ -585,9 +664,10 @@ class EyeRendererRay(EyeRendererBase):
             self._persp_texture_id = tex
 
     def _bind_ssbos(self):
-        """Binds all scene geometry SSBOs to their fixed slots (2-10)."""
+        """Binds all scene geometry and light SSBOs to their fixed slots."""
 
-        # bindings 0 and 1 are for the ommatidia data and rays outputs
+        # Bindings 0 and 1 are for the ommatidia data and rays outputs
+        # Bindings 2-10 are scene geometry
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self._scene_baked.vertices_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self._scene_baked.indices_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, self._scene_baked.materials_ssbo)
@@ -597,6 +677,10 @@ class EyeRendererRay(EyeRendererBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, self._scene_baked.instances_info_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, self._scene_baked.tlas_indices_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, self._scene_baked.blas_indices_ssbo)
+
+        # Bindings 11-12 are lights
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, self._scene_baked.point_lights_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, self._scene_baked.area_lights_ssbo)
 
     def _bind_textures(self, shader: ShaderProgram):
         """Binds skybox and material textures."""
@@ -619,21 +703,43 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1i(shader.get_loc('use_skybox'), int(self.scene.skybox is not None))
         bg = self.scene.background_color
         glUniform3f(shader.get_loc('background_color'), bg[0], bg[1], bg[2])
+        glUniform1f(shader.get_loc('sky_intensity'), self.sky_intensity)
 
         # Time (for RNG seeding)
         glUniform1f(shader.get_loc('time'), float(self._time_counter))
 
+        # Global lighting controls
+        glUniform1i(shader.get_loc('enable_ambient'), int(self.enable_ambient))
+        glUniform1i(shader.get_loc('enable_direct'), int(self.enable_direct))
+        glUniform1i(shader.get_loc('enable_shadows'), int(self.enable_shadows))
+        glUniform1f(shader.get_loc('ambient_intensity'), self.ambient_intensity)
+
         # Path tracing settings
         glUniform1i(shader.get_loc('enable_path_tracing'), int(self.path_tracing))
         glUniform1i(shader.get_loc('max_bounces'), self.max_bounces)
-        glUniform1f(shader.get_loc('sky_intensity'), self.sky_intensity)
-        glUniform1f(shader.get_loc('sun_intensity'), self.scene.sun.intensity)
-        glUniform3f(shader.get_loc('sun_direction'), self.scene.sun.direction.x, self.scene.sun.direction.y, self.scene.sun.direction.z)
-        glUniform1f(shader.get_loc('sun_angular_radius'), self.scene.sun.angular_radius)
-        glUniform3f(shader.get_loc('sun_color'), self.scene.sun.color.x, self.scene.sun.color.y, self.scene.sun.color.z)
 
-        # Simple shadow settings (non-path-traced mode)
-        glUniform1i(shader.get_loc('enable_shadows'), int(self.enable_shadows))
+        # Sun (check if exists and is enabled)
+        sun = self.scene.sun
+        has_sun = sun is not None and sun.enabled and sun.intensity > 0
+        glUniform1i(shader.get_loc('sun_enabled'), int(has_sun))
+
+        if has_sun:
+            glUniform1f(shader.get_loc('sun_intensity'), sun.intensity)
+            glUniform3f(shader.get_loc('sun_direction'), sun.direction.x, sun.direction.y, sun.direction.z)
+            glUniform1f(shader.get_loc('sun_angular_radius'), sun.angular_radius)
+            glUniform3f(shader.get_loc('sun_color'), sun.color.x, sun.color.y, sun.color.z)
+            glUniform1i(shader.get_loc('sun_cast_shadows'), int(sun.cast_shadows))
+        else:
+            # Set safe defaults when no sun
+            glUniform1f(shader.get_loc('sun_intensity'), 0.0)
+            glUniform3f(shader.get_loc('sun_direction'), 0.0, 1.0, 0.0)
+            glUniform1f(shader.get_loc('sun_angular_radius'), 0.0)
+            glUniform3f(shader.get_loc('sun_color'), 1.0, 1.0, 1.0)
+            glUniform1i(shader.get_loc('sun_cast_shadows'), 0)
+
+        # Additional lights counts
+        glUniform1i(shader.get_loc('num_point_lights'), self._scene_baked.num_point_lights)
+        glUniform1i(shader.get_loc('num_area_lights'), self._scene_baked.num_area_lights)
 
     def _bind_resources(self, shader: ShaderProgram):
         """
@@ -804,7 +910,6 @@ class EyeRendererRay(EyeRendererBase):
 
         if view_mode == ViewMode.third_person:
             self._draw_eye_model(point_of_view, agent)
-
 
     def free(self):
         """Frees all GPU resources, including shaders and all buffers."""

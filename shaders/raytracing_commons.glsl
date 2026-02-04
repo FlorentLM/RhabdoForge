@@ -35,6 +35,36 @@ struct InstanceInfo {
     uint pad0;
 };  // Total size 160 bytes
 
+// ============================================ Light structs =======================================
+
+const int MAX_LIGHTS_PER_PASS = 16;
+
+// Point light data (packed for GPU)
+struct PointLightData {
+    vec3 position;
+    float radius;           // Physical radius for soft shadows
+    vec3 color;
+    float intensity;
+    float constant_atten;   // Attenuation factors
+    float linear_atten;
+    float quadratic_atten;
+    uint cast_shadows;      // 0 = no shadow rays, 1 = cast shadows
+};
+
+// Area light data (packed for GPU)
+struct AreaLightData {
+    vec3 position;
+    float width;
+    vec3 normal;
+    float height;
+    vec3 tangent;
+    float intensity;
+    vec3 bitangent;
+    uint cast_shadows;      // 0 = no shadow rays, 1 = cast shadows
+    vec3 color;
+    uint two_sided;         // 0 = one-sided, 1 = two-sided
+};
+
 // ================================== Textures (fixed bindings) =====================================
 
 layout(binding = 0) uniform samplerCube skybox;
@@ -48,22 +78,34 @@ uniform uint nb_tlas_nodes;
 // Background / environment
 uniform vec3 background_color;
 uniform bool use_skybox;
+uniform float sky_intensity;        // Intensity for sky colour and sun disk
+
+// Global lighting controls
+uniform bool enable_ambient;        // Toggle ambient/fill lighting from sky
+uniform bool enable_direct;         // Toggle all direct lighting (sun + point + area)
+uniform bool enable_shadows;        // Global shadow override (false = skip all shadow rays)
+uniform float ambient_intensity;    // Multiplier for ambient (independent of sky_intensity)
 
 // Path tracing configuration
 uniform bool enable_path_tracing;
 uniform int max_bounces;
-uniform float sky_intensity;
-uniform float sun_intensity;
-uniform vec3 sun_direction;         // direction to the sun (normalised)
-uniform float sun_angular_radius;   // angular size for soft shadows
-uniform vec3 sun_color;             // sun disk colour
 
-// Legacy shadow mode (for simple non-path-tracing)
-uniform bool enable_shadows;
+// Sun/directional light
+uniform bool sun_enabled;           // Whether sun contributes to lighting
+uniform float sun_intensity;        // Sun brightness (0 = effectively disabled)
+uniform vec3 sun_direction;         // Direction to the sun (normalised)
+uniform float sun_angular_radius;   // Angular size for soft shadows
+uniform vec3 sun_color;             // Sun disk colour
+uniform bool sun_cast_shadows;      // Per-light shadow toggle for sun
+
+// Additional lights counts
+uniform int num_point_lights;
+uniform int num_area_lights;
 
 // ====================================== SSBO Bindings =============================================
 // Bindings 0-1 are shader-specific (e.g. ommatidia input, ray output)
-// Bindings 2-10 are scene data, bound by _bind_scene_ssbos()
+// Bindings 2-10 are scene data
+// Bindings 11-12 are additional lights
 
 // Node access (Standard layout)
 
@@ -125,6 +167,10 @@ layout(row_major, std430, binding = 8) readonly buffer InstancesBuffer { Instanc
 layout(std430, binding = 9) readonly buffer TlasPrimIndexBuffer { uint tlas_prim_indices[]; };
 layout(std430, binding = 10) readonly buffer BlasPrimIndexBuffer { uint blas_prim_indices[]; };
 
+// Additional lights
+layout(std430, binding = 11) readonly buffer PointLightsBuffer { PointLightData point_lights[]; };
+layout(std430, binding = 12) readonly buffer AreaLightsBuffer { AreaLightData area_lights[]; };
+
 // ================================= Forward declarations ==========================================
 
 float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max);
@@ -157,7 +203,8 @@ void fast_getPoint(uint point_idx, out vec3 pos, out float radius) {
     radius = points_data[base_offset + 3u];
 }
 
-// PCG-style hash for RNG
+// ==================================== RNG ========================================================
+
 uint pcg_hash(uint seed) {
     uint state = seed * 747796405u + 2891336453u;
     uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
@@ -169,8 +216,9 @@ float random_float(inout uint rng_state) {
     return float(rng_state) / 4294967295.0;
 }
 
+// ==================================== Sampling ===================================================
+
 // Cosine-weighted hemisphere sampling (importance sampling for diffuse)
-// Returns direction in tangent space (z-up)
 vec3 cosine_sample_hemisphere(float r1, float r2) {
     float phi = TWOPI * r1;
     float cos_theta = sqrt(r2);
@@ -195,7 +243,7 @@ vec3 tangent_to_world(vec3 dir, vec3 N, vec3 T, vec3 B) {
     return dir.x * T + dir.y * B + dir.z * N;
 }
 
-// Sample a direction toward an area light (sun disk)
+// Sample a direction toward the sun disk
 vec3 sample_sun_direction(vec3 sun_dir, float angular_radius, float r1, float r2) {
     if (angular_radius <= 0.0) {
         return sun_dir;
@@ -205,57 +253,575 @@ vec3 sample_sun_direction(vec3 sun_dir, float angular_radius, float r1, float r2
     build_basis(sun_dir, T, B);
 
     float phi = TWOPI * r1;
-    float r = angular_radius * sqrt(r2);  // sqrt for uniform disk
+    float r = angular_radius * sqrt(r2);
 
     return normalize(sun_dir + T * cos(phi) * r + B * sin(phi) * r);
 }
 
-// Get sun disk color for a direcrtion
+// ==================================== Sun disk ===================================================
+
 vec3 get_sun_disk_color(vec3 direction) {
+    if (!sun_enabled || sun_intensity <= 0.0) {
+        return vec3(0.0);
+    }
+
     float cos_angle = dot(direction, sun_direction);
     float cos_radius = cos(sun_angular_radius);
 
     if (cos_angle < cos_radius) {
         return vec3(0.0);
     }
+
     float r = acos(cos_angle) / sun_angular_radius;
     float limb = 1.0 - 0.6 * (1.0 - sqrt(1.0 - r*r));
-    // soft edge falloff
     float edge_softness = 1.0 - smoothstep(0.85, 1.0, r);
 
     return sun_color * limb * edge_softness;
 }
 
-// Get sky color for a direction (environment lighting)
-vec3 get_sky_color(vec3 direction) {
-    vec3 sun_contribution = get_sun_disk_color(direction);
-
-    vec3 sky;
-    if (use_skybox) {
-        sky = texture(skybox, direction).rgb;
-    } else {
-        sky = background_color;
-    }
-
-    // How much to tint based on sun altitude
-    float sun_altitude = sun_direction.y;
-    float sunset_factor = 1.0 - smoothstep(-0.1, 0.4, sun_altitude);
-
-    // Shift hue toward sun color for the entire sky
-    // Reduce sky saturation and blend toward warm tones
-    float luma = dot(sky, vec3(0.2126, 0.7152, 0.0722));
-    vec3 desaturated = vec3(luma);
-
-    // Warm tint color (sun color mixed with orange)
-    vec3 warm_tint = mix(sun_color, vec3(1.0, 0.5, 0.2), 0.3);
-
-    // desaturate sky and tint it
-    vec3 tinted_sky = mix(sky, desaturated * warm_tint, sunset_factor * 0.8);
-
-    return tinted_sky * sky_intensity + sun_contribution;
+// Desaturate sun color a bit
+vec3 get_effective_sun_color(float tint_strength) {
+    return mix(vec3(1.0), normalize(sun_color) * length(sun_color), tint_strength);
 }
 
-// ================================= BVH traversal ======================================
+// ================================= Light sources sampling ==========================================
+
+float point_light_attenuation(PointLightData light, float distance) {
+    return 1.0 / (light.constant_atten + light.linear_atten * distance + light.quadratic_atten * distance * distance);
+}
+
+vec3 sample_point_light_direction(PointLightData light, vec3 hit_pos, float r1, float r2, out float dist) {
+    vec3 to_light = light.position - hit_pos;
+    dist = length(to_light);
+    vec3 light_dir = to_light / dist;
+
+    if (light.radius > 0.0) {
+        vec3 T, B;
+        build_basis(light_dir, T, B);
+
+        float sin_theta_max = light.radius / dist;
+        float cos_theta = 1.0 - r2 * (1.0 - sqrt(1.0 - sin_theta_max * sin_theta_max));
+        float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+
+        light_dir = normalize(
+            light_dir * cos_theta +
+            T * cos(r1 * TWOPI) * sin_theta +
+            B * sin(r1 * TWOPI) * sin_theta
+        );
+    }
+
+    return light_dir;
+}
+
+vec3 sample_area_light_point(AreaLightData light, float r1, float r2) {
+    float u = (r1 - 0.5) * light.width;
+    float v = (r2 - 0.5) * light.height;
+    return light.position + light.tangent * u + light.bitangent * v;
+}
+
+// ===================================== Sky / Background ==========================================
+
+vec3 get_sky_color(vec3 direction) {
+    vec3 sky;
+
+    if (use_skybox) {
+        sky = texture(skybox, direction).rgb * sky_intensity;
+    } else {
+        sky = background_color * sky_intensity;
+    }
+
+    // Add sun disk (always visible in the sky, independently of direct lighting)
+    if (sun_enabled && sun_intensity > 0.0) {
+        sky += get_sun_disk_color(direction) * sun_intensity;
+    }
+
+    return sky;
+}
+
+// ===================================== Surface data ==============================================
+
+vec3 get_surface_color(HitInfo hit) {
+    InstanceInfo hit_inst = instances[hit.instance_id];
+
+    if (hit.is_point_hit) {
+        uint point_id = hit_inst.vertex_or_point_offset + hit.primitive_idx;
+        Point hit_point = getPoint(point_id);
+        return pow(hit_point.color.rgb, vec3(2.2));  // sRGB to linear
+    } else {
+        uint blas_prim_id = hit.primitive_idx;
+        uint base_idx = hit_inst.index_offset + blas_prim_id * 3;
+        uint i0 = indices[base_idx + 0];
+        uint i1 = indices[base_idx + 1];
+        uint i2 = indices[base_idx + 2];
+
+        uint base_vtx = hit_inst.vertex_or_point_offset;
+
+        vec2 hit_uv = getUV(base_vtx + i0) * hit.barycentric_coords.x +
+                      getUV(base_vtx + i1) * hit.barycentric_coords.y +
+                      getUV(base_vtx + i2) * hit.barycentric_coords.z;
+
+        Material hit_mat = materials[hit_inst.material_id];
+
+        if (hit_mat.texture_idx == 0xFFFFFFFFu) {
+            return unpack_color(hit_mat.base_color).rgb;
+        } else {
+            return texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
+        }
+    }
+}
+
+// Get surface normal at hit point (world space)
+vec3 get_surface_normal(HitInfo hit, vec3 ray_dir) {
+    InstanceInfo hit_inst = instances[hit.instance_id];
+    vec3 normal_obj;
+
+    if (hit.is_point_hit) {
+        uint point_id = hit_inst.vertex_or_point_offset + hit.primitive_idx;
+        Point p = getPoint(point_id);
+        normal_obj = p.normal;
+        if (length(normal_obj) < 0.001) {
+            normal_obj = vec3(0.0, 1.0, 0.0);
+        }
+    } else {
+        uint blas_prim_id = hit.primitive_idx;
+        uint base_idx = hit_inst.index_offset + blas_prim_id * 3;
+        uint i0 = indices[base_idx + 0];
+        uint i1 = indices[base_idx + 1];
+        uint i2 = indices[base_idx + 2];
+
+        uint base_vtx = hit_inst.vertex_or_point_offset;
+        vec3 v0 = getPos(base_vtx + i0);
+        vec3 v1 = getPos(base_vtx + i1);
+        vec3 v2 = getPos(base_vtx + i2);
+
+        normal_obj = normalize(cross(v1 - v0, v2 - v0));
+    }
+
+    mat3 normal_matrix = mat3(hit_inst.transform);
+    vec3 normal_world = normalize(normal_matrix * normal_obj);
+
+    if (dot(normal_world, ray_dir) > 0.0) {
+        normal_world = -normal_world;
+    }
+
+    return normal_world;
+}
+
+// ===================================== Ambient light =============================================
+
+vec3 get_ambient_light() {
+    vec3 ambient;
+
+    if (use_skybox) {
+        // Sample skybox from multiple directions for approximate irradiance
+        ambient = vec3(0.0);
+        ambient += texture(skybox, vec3(0.0, 1.0, 0.0)).rgb;
+        ambient += texture(skybox, vec3(1.0, 0.3, 0.0)).rgb;
+        ambient += texture(skybox, vec3(-1.0, 0.3, 0.0)).rgb;
+        ambient += texture(skybox, vec3(0.0, 0.3, 1.0)).rgb;
+        ambient += texture(skybox, vec3(0.0, 0.3, -1.0)).rgb;
+        ambient /= 5.0;
+    } else {
+        ambient = background_color;
+    }
+
+    // Desaturate to reduce color cast
+    float ambient_saturation = 0.3;
+    float luma = dot(ambient, vec3(0.2126, 0.7152, 0.0722));
+    ambient = mix(vec3(luma), ambient, ambient_saturation);
+
+    return ambient * sky_intensity * ambient_intensity;
+}
+
+// ===================================== Shadows ============================================
+
+bool test_shadow(vec3 hit_pos, vec3 normal, vec3 light_dir) {
+    vec3 shadow_origin = hit_pos + normal * 0.001;
+
+    Ray shadow_ray;
+    shadow_ray.origin = shadow_origin;
+    shadow_ray.inv_direction = 1.0 / light_dir;
+    shadow_ray.t = 1e10;
+
+    return is_occluded(shadow_ray);
+}
+
+bool test_shadow_distance(vec3 hit_pos, vec3 normal, vec3 light_dir, float max_dist) {
+    vec3 shadow_origin = hit_pos + normal * 0.001;
+
+    Ray shadow_ray;
+    shadow_ray.origin = shadow_origin;
+    shadow_ray.inv_direction = 1.0 / light_dir;
+    shadow_ray.t = max_dist - 0.002;
+
+    return is_occluded(shadow_ray);
+}
+
+bool should_trace_shadow(bool light_casts_shadows) {
+    return enable_shadows && light_casts_shadows;
+}
+
+// ===================================== Direct lighting ==================================
+
+vec3 calculate_direct_lighting(vec3 hit_pos, vec3 normal, inout uint rng_state) {
+    vec3 direct_light = vec3(0.0);
+
+    // Sun
+    if (sun_enabled && sun_intensity > 0.0) {
+        float r1 = random_float(rng_state);
+        float r2 = random_float(rng_state);
+        vec3 light_dir = sample_sun_direction(sun_direction, sun_angular_radius, r1, r2);
+
+        float NdotL = max(dot(normal, light_dir), 0.0);
+
+        if (NdotL > 0.0) {
+            bool shadowed = false;
+            if (should_trace_shadow(sun_cast_shadows)) {
+                Ray shadow_ray;
+                shadow_ray.origin = hit_pos + normal * 0.001;
+                shadow_ray.inv_direction = 1.0 / light_dir;
+                shadow_ray.t = 1e10;
+                shadowed = is_occluded(shadow_ray);
+            }
+
+            if (!shadowed) {
+                direct_light += sun_color * sun_intensity * NdotL;
+            }
+        }
+    }
+
+    // Point lights
+    if (num_point_lights > 0) {
+        int p_count = min(num_point_lights, MAX_LIGHTS_PER_PASS);
+
+        for (int i = 0; i < p_count; i++) {
+            float intensity = point_lights[i].intensity;
+            if (intensity <= 0.0) continue;
+
+            float r1 = random_float(rng_state);
+            float r2 = random_float(rng_state);
+            float dist;
+
+            vec3 light_dir = sample_point_light_direction(point_lights[i], hit_pos, r1, r2, dist);
+
+            float NdotL = max(dot(normal, light_dir), 0.0);
+
+            if (NdotL > 0.0) {
+                bool shadowed = false;
+
+                if (should_trace_shadow(point_lights[i].cast_shadows != 0u)) {
+                    Ray shadow_ray;
+                    shadow_ray.origin = hit_pos + normal * 0.001;
+                    shadow_ray.inv_direction = 1.0 / light_dir;
+                    shadow_ray.t = dist - 0.002;
+                    shadowed = is_occluded(shadow_ray);
+                }
+
+                if (!shadowed) {
+                    // Load remainder of data
+                    PointLightData light = point_lights[i];
+                    float atten = point_light_attenuation(light, dist);
+                    direct_light += light.color * intensity * NdotL * atten;
+                }
+            }
+        }
+    }
+
+    // Area lights
+    if (num_area_lights > 0) {
+        int a_count = min(num_area_lights, MAX_LIGHTS_PER_PASS);
+
+        for (int i = 0; i < a_count; i++) {
+            float intensity = area_lights[i].intensity;
+            if (intensity <= 0.0) continue;
+
+            float r1 = random_float(rng_state);
+            float r2 = random_float(rng_state);
+
+            AreaLightData light = area_lights[i];
+
+            vec3 sample_pos = sample_area_light_point(light, r1, r2);
+            vec3 to_light = sample_pos - hit_pos;
+            float dist = length(to_light);
+            vec3 light_dir = to_light / dist;
+
+            float NdotL = max(dot(normal, light_dir), 0.0);
+            float light_cos = -dot(light.normal, light_dir);
+
+            if (light.two_sided != 0u) {
+                light_cos = abs(light_cos);
+            }
+
+            if (NdotL > 0.0 && light_cos > 0.0) {
+                bool shadowed = false;
+                if (should_trace_shadow(light.cast_shadows != 0u)) {
+                    Ray shadow_ray;
+                    shadow_ray.origin = hit_pos + normal * 0.001;
+                    shadow_ray.inv_direction = 1.0 / light_dir;
+                    shadow_ray.t = dist - 0.002;
+                    shadowed = is_occluded(shadow_ray);
+                }
+
+                if (!shadowed) {
+                    float area = light.width * light.height;
+                    float geometry = (NdotL * light_cos * area) / (dist * dist);
+                    direct_light += light.color * intensity * geometry;
+                }
+            }
+        }
+    }
+
+    return direct_light;
+}
+
+// ===================================== Ray trace (simple) ==============================================
+
+vec3 trace_simple(Ray r) {
+    vec3 direction = 1.0 / r.inv_direction;
+    HitInfo closest_hit;
+    traverse_tlas(r, direction, closest_hit);
+
+    if (!closest_hit.found) {
+        return get_sky_color(direction);
+    }
+
+    vec3 surface_color = get_surface_color(closest_hit);
+    vec3 hit_pos = r.origin + direction * closest_hit.t;
+    vec3 normal = get_surface_normal(closest_hit, direction);
+
+    vec3 result = vec3(0.0);
+
+    // Ambient
+    if (enable_ambient) {
+        vec3 ambient_light = get_ambient_light();
+        float hemisphere_factor = dot(normal, vec3(0.0, 1.0, 0.0)) * 0.4 + 0.6;
+        result += surface_color * ambient_light * hemisphere_factor;
+    }
+
+    // Direct lighting
+    if (enable_direct) {
+        // temporary RNG state based on position to get deterministic but noisy shadows
+        uint simple_rng = uint(hit_pos.x * 10000.0) ^ uint(hit_pos.z * 10000.0);
+
+        vec3 incoming_light = calculate_direct_lighting(hit_pos, normal, simple_rng);
+        result += surface_color * incoming_light;
+    }
+
+    return result;
+}
+
+// ===================================== Path trace ================================================
+
+vec3 trace_path(Ray r, inout uint rng_state) {
+
+    vec3 throughput = vec3(1.0);
+    vec3 radiance = vec3(0.0);
+
+    vec3 direction = 1.0 / r.inv_direction;
+
+    for (int bounce = 0; bounce <= max_bounces; bounce++) {
+        HitInfo hit;
+        traverse_tlas(r, direction, hit);
+
+        if (!hit.found) {
+            // Sky contribution and sun disk display
+            radiance += throughput * get_sky_color(direction);
+            break;
+        }
+
+        vec3 hit_pos = r.origin + direction * hit.t;
+        vec3 surface_color = get_surface_color(hit);
+        vec3 normal = get_surface_normal(hit, direction);
+
+        // Ambient (first bounce only)
+        if (bounce == 0 && enable_ambient) {
+            vec3 ambient_light = get_ambient_light();
+            float hemisphere_factor = dot(normal, vec3(0.0, 1.0, 0.0)) * 0.4 + 0.6;
+            radiance += throughput * surface_color * ambient_light * hemisphere_factor;
+        }
+
+        // Direct lighting (Next Event Estimation)
+        if (enable_direct) {
+            vec3 incoming_light = calculate_direct_lighting(hit_pos, normal, rng_state);
+            radiance += throughput * surface_color * incoming_light;
+        }
+
+        // Russian roulette
+        if (bounce >= 3) {
+            float survival_prob = min(max(throughput.r, max(throughput.g, throughput.b)), 0.95);
+            if (random_float(rng_state) > survival_prob) {
+                break;
+            }
+            throughput /= survival_prob;
+        }
+
+        // Sample next bounce
+        float r1 = random_float(rng_state);
+        float r2 = random_float(rng_state);
+
+        vec3 T, B;
+        build_basis(normal, T, B);
+        vec3 local_dir = cosine_sample_hemisphere(r1, r2);
+        vec3 new_direction = tangent_to_world(local_dir, normal, T, B);
+
+        throughput *= surface_color;
+
+        r.origin = hit_pos + normal * 0.001;
+        direction = new_direction;
+        r.inv_direction = 1.0 / direction;
+        r.t = 1e10;
+    }
+
+    return radiance;
+}
+
+// ================================ Prim intersection functions ====================================
+
+HitInfo intersect_triangle(inout Ray r, vec3 direction, vec3 v0, vec3 v1, vec3 v2) {
+    HitInfo hit;
+    hit.found = false;
+
+    vec3 edge1 = v1 - v0;
+    vec3 edge2 = v2 - v0;
+
+    vec3 h = cross(direction, edge2);
+    float a = dot(edge1, h);
+
+    if (a > -1e-6 && a < 1e-6) {
+        return hit;
+    }
+
+    float f = 1.0 / a;
+    vec3 s = r.origin - v0;
+    float u = f * dot(s, h);
+
+    if (u < 0.0 || u > 1.0) {
+        return hit;
+    }
+
+    vec3 q = cross(s, edge1);
+    float vv = f * dot(direction, q);
+
+    if (vv < 0.0 || u + vv > 1.0) {
+        return hit;
+    }
+
+    float t = f * dot(edge2, q);
+
+    if (t > 0.0 && t < r.t) {
+        hit.found = true;
+        hit.t = t;
+        float w = 1.0 - u - vv;
+        hit.barycentric_coords = vec3(w, u, vv);
+        r.t = t;
+    }
+
+    return hit;
+}
+
+HitInfo intersect_sphere(inout Ray r, vec3 direction, vec3 center, float radius) {
+    HitInfo hit;
+    hit.found = false;
+
+    vec3 oc = r.origin - center;
+    float a = dot(direction, direction);
+    float half_b = dot(oc, direction);
+    float c = dot(oc, oc) - radius * radius;
+    float discriminant = half_b * half_b - a * c;
+
+    if (discriminant < 0.0) {
+        return hit;
+    }
+
+    float sqrt_d = sqrt(discriminant);
+    float t = (-half_b - sqrt_d) / a;
+
+    if (t < 0.0) {
+        t = (-half_b + sqrt_d) / a;
+    }
+
+    if (t > 0.0 && t < r.t) {
+        hit.found = true;
+        hit.t = t;
+        r.t = t;
+    }
+
+    return hit;
+}
+
+float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max) {
+    vec3 t0 = (aabb_min - r.origin) * r.inv_direction;
+    vec3 t1 = (aabb_max - r.origin) * r.inv_direction;
+    vec3 tmin_v = min(t0, t1);
+    vec3 tmax_v = max(t0, t1);
+    float tmin = max(max(tmin_v.x, tmin_v.y), tmin_v.z);
+    float tmax = min(min(tmax_v.x, tmax_v.y), tmax_v.z);
+    return (tmax >= max(tmin, 0.0)) ? tmin : 1e30;
+}
+
+
+// Occlusion test for shadow rays
+bool is_occluded(Ray r_world) {
+
+    if (nb_tlas_nodes == 0u) return false;
+
+    vec3 dir_world = 1.0 / r_world.inv_direction;
+
+    uint stack[64];
+    uint stack_ptr = 0;
+    stack[stack_ptr++] = 0u;
+
+    while (stack_ptr > 0u) {
+        uint node_idx = stack[--stack_ptr];
+        #if TBVH_LAYOUT_STANDARD
+            StdNode node = load_tlas_node(node_idx);
+        #else
+            BvhNode node = tlas_nodes[node_idx];
+        #endif
+
+        if (intersect_aabb(r_world, node.data1.xyz, node.data2.xyz) >= r_world.t) continue;
+
+        uint prim_count = floatBitsToUint(node.data2.w);
+        uint first_idx = floatBitsToUint(node.data1.w);
+
+        if (prim_count > 0u) {
+            for (uint j = 0u; j < prim_count; ++j) {
+                uint instance_id = tlas_prim_indices[first_idx + j];
+                InstanceInfo inst = instances[instance_id];
+
+                Ray r_obj;
+                r_obj.origin = (inst.inverse_transform * vec4(r_world.origin, 1.0)).xyz;
+                vec3 dir_obj = (inst.inverse_transform * vec4(dir_world, 0.0)).xyz;
+                r_obj.inv_direction = 1.0 / dir_obj;
+                r_obj.t = 1e10;
+
+                HitInfo blas_hit;
+                traverse_blas(r_obj, dir_obj, blas_hit, inst);
+                if (blas_hit.found) return true;
+            }
+        } else {
+            uint left_idx = first_idx;
+            uint right_idx = first_idx + 1;
+            #if TBVH_LAYOUT_STANDARD
+                StdNode leftNode = load_tlas_node(left_idx);
+                StdNode rightNode = load_tlas_node(right_idx);
+                float d1 = intersect_aabb(r_world, leftNode.data1.xyz, leftNode.data2.xyz);
+                float d2 = intersect_aabb(r_world, rightNode.data1.xyz, rightNode.data2.xyz);
+            #else
+                float d1 = intersect_aabb(r_world, tlas_nodes[left_idx].data1.xyz, tlas_nodes[left_idx].data2.xyz);
+                float d2 = intersect_aabb(r_world, tlas_nodes[right_idx].data1.xyz, tlas_nodes[right_idx].data2.xyz);
+            #endif
+            if (d1 > d2) { float td=d1; d1=d2; d2=td; uint ti=left_idx; left_idx=right_idx; right_idx=ti; }
+            if (d2 < r_world.t && stack_ptr < 64) stack[stack_ptr++] = right_idx;
+            if (d1 < r_world.t && stack_ptr < 64) stack[stack_ptr++] = left_idx;
+        }
+    }
+    return false;
+
+}
+
+
+// ================================= Traversal functions ======================================
 
 void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
     closest_hit.found = false;
@@ -412,370 +978,8 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
     }
 }
 
-// ================================ Intersections ====================================
+// ===================================== Main entry ================================================
 
-HitInfo intersect_triangle(inout Ray r, vec3 direction, vec3 v0, vec3 v1, vec3 v2) {
-    HitInfo hit;
-    hit.found = false;
-
-    vec3 edge1 = v1 - v0;
-    vec3 edge2 = v2 - v0;
-
-    vec3 h = cross(direction, edge2);
-    float a = dot(edge1, h);
-
-    if (a > -1e-6 && a < 1e-6) {
-        return hit;
-    }
-
-    float f = 1.0 / a;
-    vec3 s = r.origin - v0;
-    float u = f * dot(s, h);
-
-    if (u < 0.0 || u > 1.0) {
-        return hit;
-    }
-
-    vec3 q = cross(s, edge1);
-    float vv = f * dot(direction, q);
-
-    if (vv < 0.0 || u + vv > 1.0) {
-        return hit;
-    }
-
-    float t = f * dot(edge2, q);
-
-    if (t > 0.0 && t < r.t) {
-        hit.found = true;
-        hit.t = t;
-        float w = 1.0 - u - vv;
-        hit.barycentric_coords = vec3(w, u, vv);
-        r.t = t;
-    }
-
-    return hit;
-}
-
-HitInfo intersect_sphere(inout Ray r, vec3 direction, vec3 center, float radius) {
-    HitInfo hit;
-    hit.found = false;
-
-    vec3 oc = r.origin - center;
-    float a = dot(direction, direction);
-    float half_b = dot(oc, direction);
-    float c = dot(oc, oc) - radius * radius;
-    float discriminant = half_b * half_b - a * c;
-
-    if (discriminant < 0.0) {
-        return hit;
-    }
-
-    float sqrt_d = sqrt(discriminant);
-    float t = (-half_b - sqrt_d) / a;
-
-    if (t < 0.0) {
-        t = (-half_b + sqrt_d) / a;
-    }
-
-    if (t > 0.0 && t < r.t) {
-        hit.found = true;
-        hit.t = t;
-        r.t = t;
-    }
-
-    return hit;
-}
-
-float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max) {
-    vec3 t0 = (aabb_min - r.origin) * r.inv_direction;
-    vec3 t1 = (aabb_max - r.origin) * r.inv_direction;
-    vec3 tmin_v = min(t0, t1);
-    vec3 tmax_v = max(t0, t1);
-    float tmin = max(max(tmin_v.x, tmin_v.y), tmin_v.z);
-    float tmax = min(min(tmax_v.x, tmax_v.y), tmax_v.z);
-    return (tmax >= max(tmin, 0.0)) ? tmin : 1e30;
-}
-
-
-// Occlusion test for shadow rays
-bool is_occluded(Ray r_world) {
-    if (nb_tlas_nodes == 0u) return false;
-
-    vec3 dir_world = 1.0 / r_world.inv_direction;
-
-    uint stack[64];
-    uint stack_ptr = 0;
-    stack[stack_ptr++] = 0u;
-
-    while (stack_ptr > 0u) {
-        uint node_idx = stack[--stack_ptr];
-        #if TBVH_LAYOUT_STANDARD
-            StdNode node = load_tlas_node(node_idx);
-        #else
-            BvhNode node = tlas_nodes[node_idx];
-        #endif
-
-        if (intersect_aabb(r_world, node.data1.xyz, node.data2.xyz) >= r_world.t) continue;
-
-        uint prim_count = floatBitsToUint(node.data2.w);
-        uint first_idx = floatBitsToUint(node.data1.w);
-
-        if (prim_count > 0u) {
-            for (uint j = 0u; j < prim_count; ++j) {
-                uint instance_id = tlas_prim_indices[first_idx + j];
-                InstanceInfo inst = instances[instance_id];
-
-                Ray r_obj;
-                r_obj.origin = (inst.inverse_transform * vec4(r_world.origin, 1.0)).xyz;
-                vec3 dir_obj = (inst.inverse_transform * vec4(dir_world, 0.0)).xyz;
-                r_obj.inv_direction = 1.0 / dir_obj;
-                r_obj.t = 1e10;
-
-                HitInfo blas_hit;
-                traverse_blas(r_obj, dir_obj, blas_hit, inst);
-                if (blas_hit.found) return true;
-            }
-        } else {
-            uint left_idx = first_idx;
-            uint right_idx = first_idx + 1;
-            #if TBVH_LAYOUT_STANDARD
-                StdNode leftNode = load_tlas_node(left_idx);
-                StdNode rightNode = load_tlas_node(right_idx);
-                float d1 = intersect_aabb(r_world, leftNode.data1.xyz, leftNode.data2.xyz);
-                float d2 = intersect_aabb(r_world, rightNode.data1.xyz, rightNode.data2.xyz);
-            #else
-                float d1 = intersect_aabb(r_world, tlas_nodes[left_idx].data1.xyz, tlas_nodes[left_idx].data2.xyz);
-                float d2 = intersect_aabb(r_world, tlas_nodes[right_idx].data1.xyz, tlas_nodes[right_idx].data2.xyz);
-            #endif
-            if (d1 > d2) { float td=d1; d1=d2; d2=td; uint ti=left_idx; left_idx=right_idx; right_idx=ti; }
-            if (d2 < r_world.t && stack_ptr < 64) stack[stack_ptr++] = right_idx;
-            if (d1 < r_world.t && stack_ptr < 64) stack[stack_ptr++] = left_idx;
-        }
-    }
-    return false;
-}
-
-// ==================================== Surface properties =========================================
-
-// Get surface color at hit point
-vec3 get_surface_color(HitInfo hit) {
-    InstanceInfo hit_inst = instances[hit.instance_id];
-
-    if (hit.is_point_hit) {
-        uint point_id = hit_inst.vertex_or_point_offset + hit.primitive_idx;
-        Point hit_point = getPoint(point_id);
-        return pow(hit_point.color.rgb, vec3(2.2));  // sRGB to linear
-    } else {
-        uint blas_prim_id = hit.primitive_idx;
-        uint base_idx = hit_inst.index_offset + blas_prim_id * 3;
-        uint i0 = indices[base_idx + 0];
-        uint i1 = indices[base_idx + 1];
-        uint i2 = indices[base_idx + 2];
-
-        uint base_vtx = hit_inst.vertex_or_point_offset;
-
-        vec2 hit_uv = getUV(base_vtx + i0) * hit.barycentric_coords.x +
-                      getUV(base_vtx + i1) * hit.barycentric_coords.y +
-                      getUV(base_vtx + i2) * hit.barycentric_coords.z;
-
-        Material hit_mat = materials[hit_inst.material_id];
-
-        if (hit_mat.texture_idx == 0xFFFFFFFFu) {
-            return unpack_color(hit_mat.base_color).rgb;
-        } else {
-            return texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
-        }
-    }
-}
-
-// Get surface normal at hit point (world space)
-vec3 get_surface_normal(HitInfo hit, vec3 ray_dir) {
-    InstanceInfo hit_inst = instances[hit.instance_id];
-    vec3 normal_obj;
-
-    if (hit.is_point_hit) {
-        uint point_id = hit_inst.vertex_or_point_offset + hit.primitive_idx;
-        Point p = getPoint(point_id);
-        normal_obj = p.normal;
-        if (length(normal_obj) < 0.001) {
-            normal_obj = vec3(0.0, 1.0, 0.0);
-        }
-    } else {
-        uint blas_prim_id = hit.primitive_idx;
-        uint base_idx = hit_inst.index_offset + blas_prim_id * 3;
-        uint i0 = indices[base_idx + 0];
-        uint i1 = indices[base_idx + 1];
-        uint i2 = indices[base_idx + 2];
-
-        uint base_vtx = hit_inst.vertex_or_point_offset;
-        vec3 v0 = getPos(base_vtx + i0);
-        vec3 v1 = getPos(base_vtx + i1);
-        vec3 v2 = getPos(base_vtx + i2);
-
-        normal_obj = normalize(cross(v1 - v0, v2 - v0));
-    }
-
-    // Transform normal to world space
-    mat3 normal_matrix = mat3(hit_inst.transform);
-    vec3 normal_world = normalize(normal_matrix * normal_obj);
-
-    // Make sure normal faces ray
-    if (dot(normal_world, ray_dir) > 0.0) {
-        normal_world = -normal_world;
-    }
-
-    return normal_world;
-}
-
-// ===================================== Trace ===========================================
-
-// Estimate ambient light from sky
-// For skybox: would ideally use precomputed SH or cubemap mip, but we approximate
-// For solid color: just background_color scaled by sky_intensity
-vec3 get_ambient_light() {
-    vec3 ambient;
-    if (use_skybox) {
-        ambient = vec3(0.0);
-        ambient += texture(skybox, vec3(0.0, 1.0, 0.0)).rgb;
-        ambient += texture(skybox, vec3(1.0, 0.3, 0.0)).rgb;
-        ambient += texture(skybox, vec3(-1.0, 0.3, 0.0)).rgb;
-        ambient += texture(skybox, vec3(0.0, 0.3, 1.0)).rgb;
-        ambient += texture(skybox, vec3(0.0, 0.3, -1.0)).rgb;
-        ambient /= 5.0;
-    } else {
-        ambient = background_color;
-    }
-
-    // Desaturate ambient to reduce color cast (0.0 = grayscale, 1.0 = full color)
-    float ambient_saturation = 0.3;     // TODO: Maybe make this a uniform
-    float luma = dot(ambient, vec3(0.2126, 0.7152, 0.0722));
-    ambient = mix(vec3(luma), ambient, ambient_saturation);
-
-    return ambient * sky_intensity;
-}
-
-// Test if point is in shadow (returns true if occluded)
-bool test_shadow(vec3 hit_pos, vec3 normal, vec3 light_dir) {
-    vec3 shadow_origin = hit_pos + normal * 0.001;
-
-    Ray shadow_ray;
-    shadow_ray.origin = shadow_origin;
-    shadow_ray.inv_direction = 1.0 / light_dir;
-    shadow_ray.t = 1e10;
-
-    return is_occluded(shadow_ray);
-}
-
-// Desaturate sun color for more natural lighting
-// Real sun is close to white; strong color only at sunrise/sunset
-vec3 get_effective_sun_color(float tint_strength) {
-    return mix(vec3(1.0), normalize(sun_color) * length(sun_color), tint_strength);
-}
-
-vec3 trace_simple(Ray r) {
-    vec3 direction = 1.0 / r.inv_direction;
-    HitInfo closest_hit;
-    traverse_tlas(r, direction, closest_hit);
-
-    if (!closest_hit.found) {
-        return get_sky_color(direction);
-    }
-
-    vec3 surface_color = get_surface_color(closest_hit);
-    vec3 hit_pos = r.origin + direction * closest_hit.t;
-    vec3 normal = get_surface_normal(closest_hit, direction);
-
-    // Ambient derived from sky (hemisphere weighting)
-    vec3 ambient_light = get_ambient_light();
-    float hemisphere_factor = dot(normal, vec3(0.0, 1.0, 0.0)) * 0.4 + 0.6; // bias toward uniform
-    vec3 ambient = ambient_light * hemisphere_factor;
-
-    // Direct sun contribution
-    float NdotL = max(dot(normal, sun_direction), 0.0);
-    vec3 direct = vec3(0.0);
-
-    if (NdotL > 0.0 && sun_intensity > 0.0) {
-        bool in_shadow = enable_shadows && test_shadow(hit_pos, normal, sun_direction);
-
-        if (!in_shadow) {
-            vec3 sun_contribution = get_effective_sun_color(0.3); // 30 pct tint // TODO: Maybe add this as uniform
-            direct = sun_contribution * sun_intensity * NdotL;
-        }
-    }
-
-    return surface_color * (ambient + direct);
-}
-
-// Path trace
-vec3 trace_path(Ray r, inout uint rng_state) {
-    vec3 throughput = vec3(1.0);
-    vec3 radiance = vec3(0.0);
-
-    vec3 direction = 1.0 / r.inv_direction;
-
-    for (int bounce = 0; bounce <= max_bounces; bounce++) {
-        HitInfo hit;
-        traverse_tlas(r, direction, hit);
-
-        if (!hit.found) {
-            radiance += throughput * get_sky_color(direction);
-            break;
-        }
-
-        vec3 hit_pos = r.origin + direction * hit.t;
-        vec3 surface_color = get_surface_color(hit);
-        vec3 normal = get_surface_normal(hit, direction);
-
-        // Direct lighting (Next Event Estimation)
-        if (sun_intensity > 0.0) {
-            float r1 = random_float(rng_state);
-            float r2 = random_float(rng_state);
-            vec3 light_dir = sample_sun_direction(sun_direction, sun_angular_radius, r1, r2);
-
-            float NdotL = max(dot(normal, light_dir), 0.0);
-
-            if (NdotL > 0.0) {
-                Ray shadow_ray;
-                shadow_ray.origin = hit_pos + normal * 0.001;
-                shadow_ray.inv_direction = 1.0 / light_dir;
-                shadow_ray.t = 1e10;
-
-                if (!is_occluded(shadow_ray)) {
-                    radiance += throughput * surface_color * sun_color * sun_intensity * NdotL;
-                }
-            }
-        }
-
-        // Russian roulette
-        if (bounce >= 3) {
-            float survival_prob = min(max(throughput.r, max(throughput.g, throughput.b)), 0.95);
-            if (random_float(rng_state) > survival_prob) {
-                break;
-            }
-            throughput /= survival_prob;
-        }
-
-        // Sample next bounce direction (cosine-weighted for diffuse)
-        float r1 = random_float(rng_state);
-        float r2 = random_float(rng_state);
-
-        vec3 T, B;
-        build_basis(normal, T, B);
-        vec3 local_dir = cosine_sample_hemisphere(r1, r2);
-        vec3 new_direction = tangent_to_world(local_dir, normal, T, B);
-
-        throughput *= surface_color;
-
-        r.origin = hit_pos + normal * 0.001;
-        direction = new_direction;
-        r.inv_direction = 1.0 / direction;
-        r.t = 1e10;
-    }
-
-    return radiance;
-}
-
-// Main entry func
 vec3 trace(Ray r, inout uint rng_state) {
     if (enable_path_tracing) {
         return trace_path(r, rng_state);

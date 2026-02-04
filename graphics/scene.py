@@ -23,8 +23,7 @@ from OpenGL.GL import (ctypes,
 from pyglm import glm
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
 from graphics.utils import trimesh_from_arrays, load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
-from graphics.lights import Sun
-
+from graphics.lights import Sun, Light, PointLight, AreaLight
 
 
 class MaterialData:
@@ -467,16 +466,20 @@ class Scene:
     """
     The logical scene representation. A simple container for assets and instances.
     """
+
     def __init__(self, background_color: Sequence[float] = (0.0, 0.0, 0.0)):
         self.assets: Dict[str, Asset] = {}
         self.instances: List[Instance] = []
-        self.skybox: Optional[Skybox] = None
+        self._skybox: Optional[Skybox] = None
         self.background_color = background_color
-        self.sun = Sun(
+
+        self._lights: List[Light] = []
+
+        self._sun = Sun(
             intensity=1.0,
             angular_size=0.05
         )
-        self.sun.from_angles(azimuth=4.84, elevation=39.75)
+        self._sun.from_angles(azimuth=4.84, elevation=39.75)
 
     def add_instance(self, asset: Union[Asset, str], transform: Optional[Union[glm.mat4, ArrayLike]] = None, **kwargs) -> Instance:
 
@@ -507,10 +510,6 @@ class Scene:
         instance = Instance(asset_obj, transform, **kwargs)
         self.instances.append(instance)
         return instance
-
-    def add_skybox(self, texture_path: str):
-        """ Creates and loads a skybox from a directory of textures """
-        self.skybox = Skybox(texture_path)
 
     def load(self,
             file_path: Union[str, Path],
@@ -583,6 +582,53 @@ class Scene:
         return new_instances
 
     @property
+    def skybox(self):
+        return self._skybox
+    
+    def add_skybox(self, texture_path: str):
+        """Creates and loads a skybox from a directory of textures."""
+        self._skybox = Skybox(texture_path)
+    
+    def clear_skybox(self):
+        self._skybox = None
+    
+    @property
+    def sun(self) -> Optional[Sun]:
+        return self._sun
+
+    @sun.setter
+    def sun(self, value: Optional[Sun]):
+        self._sun = value
+
+    @property
+    def lights(self) -> List[Light]:
+        return self._lights
+
+    def add_light(self, light: Light):
+        if isinstance(light, Sun):
+            print("[WARN] Use scene.sun = ... to set the sun, not add_light()")
+            self._sun = light
+        else:
+            self._lights.append(light)
+
+    def remove_light(self, light: Light):
+        if light in self._lights:
+            self._lights.remove(light)
+        elif light is self._sun:
+            self._sun = None
+
+    def clear_lights(self):
+        self._lights.clear()
+
+    @property
+    def point_lights(self) -> List['PointLight']:
+        return [l for l in self._lights if isinstance(l, PointLight)]
+
+    @property
+    def area_lights(self) -> List['AreaLight']:
+        return [l for l in self._lights if isinstance(l, AreaLight)]
+
+    @property
     def total_triangles(self) -> int:
         count = 0
         for instance in self.instances:
@@ -601,4 +647,5 @@ class Scene:
     def free(self):
         self.assets.clear()
         self.instances.clear()
+        self._lights.clear()
         # Note: GPU resources tied to skybox/assets are freed by the bakers/renderers

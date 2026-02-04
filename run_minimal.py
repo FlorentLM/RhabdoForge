@@ -12,7 +12,7 @@ def main():
     # Configuration
     NB_OMMATIDIA = 1962
     NB_SAMPLES = 16
-    ENABLE_SHADOWS = True  # basic shadows (only for ray tracing)
+    ENABLE_SHADOWS = False  # basic shadows (only for ray tracing)
     PATH_TRACING = False
 
     # -----------------------------------------------
@@ -21,6 +21,7 @@ def main():
     context = Context()
 
     scene = Scene(background_color=[0.45, 0.6, 0.7])
+    scene.sun.color = [1.0, 1.0, 1.0]
 
     example_obj = Path().home() / 'Downloads/gapArray.obj'
     scene.load(example_obj)
