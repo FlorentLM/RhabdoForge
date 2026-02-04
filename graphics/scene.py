@@ -1,18 +1,12 @@
 import OpenGL
-import trimesh
-
-from graphics.lights import Sun
-
 OpenGL.ERROR_CHECKING = False
-
 from typing import Dict, List, Optional, Union, Sequence
 from numpy.typing import ArrayLike
 from enum import Enum, auto
-
 from pathlib import Path
 import numpy as np
 from PIL import Image
-
+import trimesh
 from trimesh import Trimesh, PointCloud, Scene as TrimeshScene
 
 from OpenGL.GL import (ctypes,
@@ -29,6 +23,7 @@ from OpenGL.GL import (ctypes,
 from pyglm import glm
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
 from graphics.utils import trimesh_from_arrays, load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
+from graphics.lights import Sun
 
 
 

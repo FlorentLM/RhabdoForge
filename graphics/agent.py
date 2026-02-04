@@ -1,3 +1,5 @@
+import OpenGL
+OpenGL.ERROR_CHECKING = False
 from typing import Sequence, Union
 from numpy.typing import ArrayLike
 import numpy as np
