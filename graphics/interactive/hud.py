@@ -11,7 +11,7 @@ from OpenGL.GL import *
 from pyglm import glm
 
 from graphics.utils import load_shaders, generate_font_atlas
-from graphics.renderers.raytracer import EyeRendererRay
+from graphics.renderers.raytracer import Raytracer, PathTracer
 
 
 class FontRenderer:
@@ -163,7 +163,7 @@ class HUD:
     def _update_controls_text(self):
 
         # The main renderer (not the debug one) determines the "sample" label
-        sample_label = "rays" if self.ctx.renderer and isinstance(self.ctx.renderer, EyeRendererRay) else "samples"
+        sample_label = "rays" if self.ctx.renderer and isinstance(self.ctx.renderer, Raytracer) else "samples"
 
         self._controls_text_lines = [
             'ESC: Quit', 'H: Show/hide HUD', 'R: Reset rotation', 'O: Teleport to origin', 'X: Dither once',
@@ -200,13 +200,15 @@ class HUD:
 
             active_renderer = self.ctx.renderer
 
-            is_raytracer = isinstance(active_renderer, EyeRendererRay)
+            is_ray_based = isinstance(active_renderer, Raytracer)
 
-            if is_raytracer:
-                render_mode = "Path-tracer" if active_renderer.path_tracing else "Ray-tracer"
+            if is_ray_based and isinstance(active_renderer, PathTracer):
+                render_mode = "Path-tracer"
+            elif is_ray_based:
+                render_mode = "Ray-tracer"
             else:
                 render_mode = "Rasterizer"
-            sample_label = "Rays" if is_raytracer else "Samples"
+            sample_label = "Rays" if is_ray_based else "Samples"
 
             view_mode = self.view_modes_names[self.ctx.view_mode]
 

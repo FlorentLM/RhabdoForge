@@ -8,7 +8,7 @@ from OpenGL.GL import *
 import glfw
 from pyglm import glm
 
-from graphics.renderers.base import EyeRendererBase
+from graphics.renderers.base import BaseInsectEyeRenderer
 from graphics.scene import Scene
 from graphics.agent import Agent, OrbitCamera
 from graphics.utils import WORLD_UP, WORLD_DOWN, ViewMode, ProjectionMode
@@ -70,7 +70,7 @@ class Context:
         self.sun_control_mode: bool = False
         self.sun_orbit_sensitivity: float = 0.2
 
-    def run_interactive(self, agent: Agent, scene: Scene, renderer: EyeRendererBase,
+    def run_interactive(self, agent: Agent, scene: Scene, renderer: BaseInsectEyeRenderer,
                         window_size=None, fps_limit=None, v_sync=None, invert_mouseY=None):
         """ On first call, initialises and shows the window. Then checks if the interactive loop should continue. """
 

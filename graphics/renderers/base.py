@@ -31,7 +31,7 @@ def query_available_VRAM() -> int:
     return 0
 
 
-class EyeRendererBase(ABC):
+class BaseInsectEyeRenderer(ABC):
     """
     Abstract base class for an insect eye model, handling visualisation and common properties
     """

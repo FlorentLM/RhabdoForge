@@ -8,7 +8,7 @@ from pyglm import glm
 from geometry.compound_eyes import CompoundEye
 from graphics.agent import Agent
 from graphics.renderers.panoramic import PanoramicEye
-from graphics.renderers.base import EyeRendererBase
+from graphics.renderers.base import BaseInsectEyeRenderer
 from graphics.scene import Scene, Asset, AssetType
 from graphics.utils import ShaderProgram, ViewMode
 
@@ -263,7 +263,7 @@ class RasterSceneBaker:
         self._raster_asset_cache.clear()
 
 
-class EyeRendererRaster(EyeRendererBase):
+class Rasterizer(BaseInsectEyeRenderer):
 
     def __init__(self, eye_model: CompoundEye, scene: Scene,
                  time_dithering: bool = False,

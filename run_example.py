@@ -6,8 +6,8 @@ from graphics.scene import Scene, Asset
 from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
-from graphics.renderers.rasterizer import EyeRendererRaster
-from graphics.renderers.raytracer import EyeRendererRay
+from graphics.renderers.rasterizer import Rasterizer
+from graphics.renderers.raytracer import Raytracer
 from graphics.context import Context
 
 
@@ -66,17 +66,17 @@ def main():
     batch_size = BATCH_SIZE if (HEADLESS and USE_ASYNC_BATCHING) else 1
 
     if USE_RAYTRACER:
-        eye_renderer = EyeRendererRay(eye_model=eye_model, scene=scene,
-                                      nb_samples=NB_SAMPLES,
-                                      time_dithering=False,
-                                      batch_size=batch_size,
-                                      enable_shadows=ENABLE_SHADOWS)
+        eye_renderer = Raytracer(eye_model=eye_model, scene=scene,
+                                 nb_samples=NB_SAMPLES,
+                                 time_dithering=False,
+                                 batch_size=batch_size,
+                                 enable_shadows=ENABLE_SHADOWS)
 
     else:
-        eye_renderer = EyeRendererRaster(eye_model=eye_model, scene=scene,
-                                         nb_samples=NB_SAMPLES,
-                                         time_dithering=False,
-                                         batch_size=batch_size)
+        eye_renderer = Rasterizer(eye_model=eye_model, scene=scene,
+                                  nb_samples=NB_SAMPLES,
+                                  time_dithering=False,
+                                  batch_size=batch_size)
 
     # ================== Example moving ommatidia ==================
 

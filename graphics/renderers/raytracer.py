@@ -3,20 +3,28 @@ OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 from typing import Tuple, List, Dict, Optional
+from enum import IntEnum
 import numpy as np
 from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from graphics.agent import Agent
-from graphics.renderers.base import EyeRendererBase
+from graphics.renderers.base import BaseInsectEyeRenderer
 from graphics.scene import Scene, AssetType
 from graphics.lights import (
-    PointLight, AreaLight,
+    Sun, PointLight, AreaLight,
     point_light_dtype, area_light_dtype, pack_point_light, pack_area_light
 )
 from graphics.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
 from graphics.renderers.panoramic import TextureViewer
+
+
+class LightType(IntEnum):
+    """Light type enum matching the shader's primary_light_type uniform."""
+    DIRECTIONAL = 0  # Sun-like directional light
+    POINT = 1        # Point light
+    AREA = 2         # Area light
 
 
 # Custom detailed dtype for the GPU SSBO
@@ -516,43 +524,41 @@ class RaytracingSceneBaker:
             glDeleteTextures(1, [self.tex_array])
 
 
-class EyeRendererRay(EyeRendererBase):
+class Raytracer(BaseInsectEyeRenderer):
+    """
+    Raytracer for compound eye rendering.
+    For path tracing, use PathTracer subclass instead.
+    """
+
+    OMMATIDIA_SHADER = 'shaders/ommatidia_raytracing.comp'
+    PANORAMIC_SHADER = 'shaders/panoramic_raytracing.comp'
+    PERSPECTIVE_SHADER = 'shaders/perspective_raytracing.comp'
+
     def __init__(self, eye_model, scene: Scene,
                  time_dithering: bool = True,
                  nb_samples: int = 256,
                  pano_res: Tuple[int, int] = (1024, 512),
                  batch_size: int = 1,
-                 path_tracing: bool = False,
                  enable_shadows: bool = True,
                  enable_ambient: bool = True,
-                 enable_direct: bool = True,
+                 enable_direct: bool = True
                  ):
 
-        # Store a reference to the scene manager
         self.scene = scene  # just for convenience
         self._scene_baked = RaytracingSceneBaker(scene)
-
-        # Rendering mode
-        self.path_tracing = path_tracing
-
-        # Path tracing settings
-        self.max_bounces = 3
-        self.sky_intensity = 1.0
 
         # Global lighting controls
         self.enable_ambient = enable_ambient
         self.enable_direct = enable_direct
         self.enable_shadows = enable_shadows
         self.ambient_intensity = 1.0
+        self.sky_intensity = 1.0
 
-        # we call super().__init__ *after* baking the scene so we can estimate VRAM
+        # super().__init__ *after* baking the scene to estimate VRAM
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
 
-        print("Compiling ray-tracing and reduction shaders...")
-        self.raytrace_shader = ShaderProgram(comp_path='shaders/ommatidia_raytracing.comp')
-        self.reduction_shader = ShaderProgram(comp_path='shaders/rays_reduction.comp')
+        self._compile_shaders()
 
-        # panoramic view shader
         self.panoramic_shader = None  # lazily-loaded
 
         # standard perspective view shader (also lazy-loaded)
@@ -600,6 +606,20 @@ class EyeRendererRay(EyeRendererBase):
         glBufferData(GL_SHADER_STORAGE_BUFFER, required_buffer_size, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
+    def _compile_shaders(self):
+        """Compiles the appropriate shaders based on multi-light mode."""
+        print(f"Compiling {'multi-light' if self.lights_count > 1 else 'single-light'} ray-tracing shaders...")
+
+        shader_path = self.OMMATIDIA_SHADER_ML if self.lights_count > 1 else self.OMMATIDIA_SHADER  # TODO: get rid of the duplicate shaders, inject the define before compile
+        self.raytrace_shader = ShaderProgram(comp_path=shader_path)
+        self.reduction_shader = ShaderProgram(comp_path='shaders/rays_reduction.comp')
+
+    @property
+    def lights_count(self) -> int:
+        total_lights = (1 if (self.scene.sun and self.scene.sun.enabled and self.scene.sun.intensity > 0) else 0)
+        total_lights += self._scene_baked.num_point_lights + self._scene_baked.num_area_lights
+        return total_lights
+
     def estimate_vram_usage(self) -> float:
         """Override base method to provide a more accurate VRAM estimate for the raytracer."""
 
@@ -623,7 +643,8 @@ class EyeRendererRay(EyeRendererBase):
         """Creates all resources needed for the panoramic view."""
 
         if self.panoramic_shader is None:
-            self.panoramic_shader = ShaderProgram(comp_path='shaders/panoramic_raytracing.comp')
+            shader_path = self.PANORAMIC_SHADER_ML if self.lights_count > 1 else self.PANORAMIC_SHADER
+            self.panoramic_shader = ShaderProgram(comp_path=shader_path)
 
         if self._pano_texture_id == 0:
             texture_id = glGenTextures(1)
@@ -644,7 +665,8 @@ class EyeRendererRay(EyeRendererBase):
     def _initialize_persp_resources(self):
 
         if self.perspective_shader is None:
-            self.perspective_shader = ShaderProgram(comp_path='shaders/perspective_raytracing.comp')
+            shader_path = self.PERSPECTIVE_SHADER_ML if self.lights_count > 1 else self.PERSPECTIVE_SHADER
+            self.perspective_shader = ShaderProgram(comp_path=shader_path)
 
         if self._persp_res is None:
             viewport = glGetIntegerv(GL_VIEWPORT)
@@ -678,9 +700,10 @@ class EyeRendererRay(EyeRendererBase):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, self._scene_baked.tlas_indices_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, self._scene_baked.blas_indices_ssbo)
 
-        # Bindings 11-12 are lights
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, self._scene_baked.point_lights_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, self._scene_baked.area_lights_ssbo)
+        # Bindings 11-12 are lights (only in multi-light mode)
+        if self.lights_count > 1:
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, self._scene_baked.point_lights_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, self._scene_baked.area_lights_ssbo)
 
     def _bind_textures(self, shader: ShaderProgram):
         """Binds skybox and material textures."""
@@ -693,6 +716,27 @@ class EyeRendererRay(EyeRendererBase):
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, self._scene_baked.tex_array)
         glUniform1i(shader.get_loc('scene_textures'), 1)
+
+    def _get_primary_light(self):
+        """
+        Returns the primary light and its type.
+        Priority: Sun > first PointLight > first AreaLight
+        """
+        sun = self.scene.sun
+        if sun is not None and sun.enabled and sun.intensity > 0:
+            return sun, LightType.DIRECTIONAL
+
+        # Check for point lights
+        for light in self.scene.lights:
+            if isinstance(light, PointLight) and light.enabled and light.intensity > 0:
+                return light, LightType.POINT
+
+        # Check for area lights
+        for light in self.scene.lights:
+            if isinstance(light, AreaLight) and light.enabled and light.intensity > 0:
+                return light, LightType.AREA
+
+        return None, None
 
     def _set_common_uniforms(self, shader: ShaderProgram):
 
@@ -714,32 +758,58 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1i(shader.get_loc('enable_shadows'), int(self.enable_shadows))
         glUniform1f(shader.get_loc('ambient_intensity'), self.ambient_intensity)
 
-        # Path tracing settings
-        glUniform1i(shader.get_loc('enable_path_tracing'), int(self.path_tracing))
-        glUniform1i(shader.get_loc('max_bounces'), self.max_bounces)
+        # Primary light
+        primary_light, light_type = self._get_primary_light()
+        has_primary = primary_light is not None
 
-        # Sun (check if exists and is enabled)
-        sun = self.scene.sun
-        has_sun = sun is not None and sun.enabled and sun.intensity > 0
-        glUniform1i(shader.get_loc('sun_enabled'), int(has_sun))
+        glUniform1i(shader.get_loc('primary_light_enabled'), int(has_primary))
 
-        if has_sun:
-            glUniform1f(shader.get_loc('sun_intensity'), sun.intensity)
-            glUniform3f(shader.get_loc('sun_direction'), sun.direction.x, sun.direction.y, sun.direction.z)
-            glUniform1f(shader.get_loc('sun_angular_radius'), sun.angular_radius)
-            glUniform3f(shader.get_loc('sun_color'), sun.color.x, sun.color.y, sun.color.z)
-            glUniform1i(shader.get_loc('sun_cast_shadows'), int(sun.cast_shadows))
+        if has_primary:
+            glUniform1i(shader.get_loc('primary_light_type'), int(light_type))
+            glUniform1i(shader.get_loc('primary_light_shadows'), int(primary_light.cast_shadows))
+
+            if light_type == LightType.DIRECTIONAL:
+                # Sun / directional light
+                sun = primary_light
+                glUniform3f(shader.get_loc('primary_light_dir'), sun.direction.x, sun.direction.y, sun.direction.z)
+                glUniform3f(shader.get_loc('primary_light_pos'), 0.0, 0.0, 0.0)  # unused for directional
+                glUniform3f(shader.get_loc('primary_light_color'), sun.color.x, sun.color.y, sun.color.z)
+                glUniform1f(shader.get_loc('primary_light_intensity'), sun.intensity)
+                glUniform1f(shader.get_loc('primary_light_radius'), sun.angular_radius)
+
+            elif light_type == LightType.POINT:
+                # Point light as primary
+                light = primary_light
+                pos = light.position
+                glUniform3f(shader.get_loc('primary_light_dir'), 0.0, 1.0, 0.0)  # unused for point
+                glUniform3f(shader.get_loc('primary_light_pos'), pos.x, pos.y, pos.z)
+                glUniform3f(shader.get_loc('primary_light_color'), light.color.x, light.color.y, light.color.z)
+                glUniform1f(shader.get_loc('primary_light_intensity'), light.intensity)
+                glUniform1f(shader.get_loc('primary_light_radius'), light.radius)
+
+            elif light_type == LightType.AREA:
+                # Area light as primary
+                light = primary_light
+                pos = light.position
+                glUniform3f(shader.get_loc('primary_light_dir'), light.normal.x, light.normal.y, light.normal.z)
+                glUniform3f(shader.get_loc('primary_light_pos'), pos.x, pos.y, pos.z)
+                glUniform3f(shader.get_loc('primary_light_color'), light.color.x, light.color.y, light.color.z)
+                glUniform1f(shader.get_loc('primary_light_intensity'), light.intensity)
+                glUniform1f(shader.get_loc('primary_light_radius'), 0.0)
         else:
-            # Set safe defaults when no sun
-            glUniform1f(shader.get_loc('sun_intensity'), 0.0)
-            glUniform3f(shader.get_loc('sun_direction'), 0.0, 1.0, 0.0)
-            glUniform1f(shader.get_loc('sun_angular_radius'), 0.0)
-            glUniform3f(shader.get_loc('sun_color'), 1.0, 1.0, 1.0)
-            glUniform1i(shader.get_loc('sun_cast_shadows'), 0)
+            # No primary light, null defaults
+            glUniform1i(shader.get_loc('primary_light_type'), 0)
+            glUniform3f(shader.get_loc('primary_light_dir'), 0.0, 1.0, 0.0)
+            glUniform3f(shader.get_loc('primary_light_pos'), 0.0, 0.0, 0.0)
+            glUniform3f(shader.get_loc('primary_light_color'), 1.0, 1.0, 1.0)
+            glUniform1f(shader.get_loc('primary_light_intensity'), 0.0)
+            glUniform1f(shader.get_loc('primary_light_radius'), 0.0)
+            glUniform1i(shader.get_loc('primary_light_shadows'), 0)
 
         # Additional lights counts
-        glUniform1i(shader.get_loc('num_point_lights'), self._scene_baked.num_point_lights)
-        glUniform1i(shader.get_loc('num_area_lights'), self._scene_baked.num_area_lights)
+        if self.lights_count > 1:
+            glUniform1i(shader.get_loc('num_point_lights'), self._scene_baked.num_point_lights)
+            glUniform1i(shader.get_loc('num_area_lights'), self._scene_baked.num_area_lights)
 
     def _bind_resources(self, shader: ShaderProgram):
         """
@@ -920,7 +990,51 @@ class EyeRendererRay(EyeRendererBase):
 
         if self.panoramic_shader: self.panoramic_shader.free()
         if self._pano_texture_id != 0: glDeleteTextures(1, [self._pano_texture_id])
+
+        if self.perspective_shader: self.perspective_shader.free()
+        if self._persp_texture_id != 0: glDeleteTextures(1, [self._persp_texture_id])
+
         if self._texture_viewer: self._texture_viewer.free()
 
         self._scene_baked.free()
         super().free()
+
+
+class PathTracer(Raytracer):
+    """
+    Path tracer: multiple bounces with Monte Carlo integration.
+    """
+
+    OMMATIDIA_SHADER = 'shaders/ommatidia_pathtracing.comp'
+    PANORAMIC_SHADER = 'shaders/panoramic_pathtracing.comp'
+    PERSPECTIVE_SHADER = 'shaders/perspective_pathtracing.comp'
+
+    def __init__(self, eye_model, scene: Scene,
+                 time_dithering: bool = True,
+                 nb_samples: int = 256,
+                 pano_res: Tuple[int, int] = (1024, 512),
+                 batch_size: int = 1,
+                 enable_shadows: bool = True,
+                 enable_ambient: bool = True,
+                 enable_direct: bool = True,
+                 multi_light: bool = None,
+                 max_bounces: int = 3,
+                 ):
+
+        self.max_bounces = max_bounces
+
+        super().__init__(
+            eye_model=eye_model,
+            scene=scene,
+            time_dithering=time_dithering,
+            nb_samples=nb_samples,
+            pano_res=pano_res,
+            batch_size=batch_size,
+            enable_shadows=enable_shadows,
+            enable_ambient=enable_ambient,
+            enable_direct=enable_direct
+        )
+
+    def _set_common_uniforms(self, shader: ShaderProgram):
+        super()._set_common_uniforms(shader)
+        glUniform1i(shader.get_loc('max_bounces'), self.max_bounces)
