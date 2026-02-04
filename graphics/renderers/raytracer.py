@@ -14,7 +14,6 @@ from graphics.renderers.base import EyeRendererBase
 from graphics.scene import Scene, AssetType
 from graphics.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
 from graphics.renderers.panoramic import TextureViewer
-from graphics.lights import Sun
 
 # Custom detailed dtype for the GPU SSBO
 gpu_instance_dtype = np.dtype([
@@ -461,16 +460,9 @@ class EyeRendererRay(EyeRendererBase):
         self.max_bounces = 3
         self.sky_intensity = 1.0
 
-        # Sun lighting
-        self.sun = Sun(
-            position=(50.0, 100.0, 30.0),
-            intensity=1.0,
-            angular_radius=0.02
-        )
-
+        
         # Simple shadow settings
         self.enable_shadows = enable_shadows
-        self.shadow_intensity = 0.3
 
         # we call super().__init__ *after* baking the scene so we can estimate VRAM
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
@@ -635,14 +627,13 @@ class EyeRendererRay(EyeRendererBase):
         glUniform1i(shader.get_loc('enable_path_tracing'), int(self.path_tracing))
         glUniform1i(shader.get_loc('max_bounces'), self.max_bounces)
         glUniform1f(shader.get_loc('sky_intensity'), self.sky_intensity)
-        glUniform1f(shader.get_loc('sun_intensity'), self.sun.intensity)
-        glUniform3f(shader.get_loc('sun_direction'), self.sun.direction.x, self.sun.direction.y, self.sun.direction.z)
-        glUniform1f(shader.get_loc('sun_angular_radius'), self.sun.angular_radius)
-        glUniform3f(shader.get_loc('sun_color'), self.sun.color.x, self.sun.color.y, self.sun.color.z)
+        glUniform1f(shader.get_loc('sun_intensity'), self.scene.sun.intensity)
+        glUniform3f(shader.get_loc('sun_direction'), self.scene.sun.direction.x, self.scene.sun.direction.y, self.scene.sun.direction.z)
+        glUniform1f(shader.get_loc('sun_angular_radius'), self.scene.sun.angular_radius)
+        glUniform3f(shader.get_loc('sun_color'), self.scene.sun.color.x, self.scene.sun.color.y, self.scene.sun.color.z)
 
         # Simple shadow settings (non-path-traced mode)
         glUniform1i(shader.get_loc('enable_shadows'), int(self.enable_shadows))
-        glUniform1f(shader.get_loc('shadow_intensity'), self.shadow_intensity)
 
     def _bind_resources(self, shader: ShaderProgram):
         """

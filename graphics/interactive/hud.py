@@ -10,7 +10,7 @@ from PIL import Image
 from OpenGL.GL import *
 from pyglm import glm
 
-from graphics.utils import load_shaders, generate_font_atlas, ViewMode
+from graphics.utils import load_shaders, generate_font_atlas
 from graphics.renderers.raytracer import EyeRendererRay
 
 
@@ -228,7 +228,9 @@ class HUD:
                                f'{sample_label}: {nb_om_samples}/om{samples_pp_str} | '
                                f'XYZ: [ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ] | '
                                f'View mode: {view_mode} | '
-                               f'Projection mode: {proj_mode}')
+                               f'Projection mode: {proj_mode}'
+                               # f' | Sun: azm={self.ctx.renderer.sun.azimuth:.2f}, elv={self.ctx.renderer.sun.elevation:.2f}'
+                               )
 
             margin, line_height = 10, self.font_renderer.font_size * 1.1
             info_sv = self.font_renderer.generate_text_vertices(self._info_text, margin + 1,

@@ -117,11 +117,10 @@ class Context:
 
     def scroll_callback(self, window, xoffset, yoffset):
         if self.sun_control_mode and hasattr(self.renderer, 'sun'):
-            # Scroll adjusts sun intensity
-            sun = self.renderer.sun
+            # scroll adjusts sun intensity
+            sun = self.renderer.scene.sun
             intensity_factor = 1.1 ** yoffset  # yoffset > 0 => brighter
             sun.intensity = max(0.1, min(10.0, sun.intensity * intensity_factor))
-            print(f"Sun intensity: {sun.intensity:.2f}")
         else:
             # Normal mode: scroll zooms camera
             zoom_factor = 0.9 ** yoffset  # yoffset > 0 => 0.9 (zoom in), yoffset < 0 => 1.11 (zoom out)
@@ -221,8 +220,8 @@ class Context:
         self.last_mouse_pos = current_mouse_pos
 
         # Sun control: mouse orbits the sun around the scene
-        if self.sun_control_mode and hasattr(self.renderer, 'sun'):
-            sun = self.renderer.sun
+        if self.sun_control_mode and hasattr(self.renderer.scene, 'sun'):
+            sun = self.renderer.scene.sun
             current_azimuth = sun.azimuth
             current_elevation = sun.elevation
             current_distance = sun.distance

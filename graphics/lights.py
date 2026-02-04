@@ -28,18 +28,18 @@ class Sun:
     def __init__(self,
                  position: Sequence[float] = (50.0, 100.0, 30.0),
                  intensity: float = 2.0,
-                 angular_radius: float = 0.02,
+                 angular_size: float = 0.02,
                  color: Sequence[float] = None):
         """
         Args:
             position: Direction the sun shines FROM (will be normalised for lighting)
             intensity: Brightness multiplier
-            angular_radius: Apparent angular size of the sun disk in radians (affects soft shadows)
+            angular_size: Apparent angular size of the sun disk in radians (affects soft shadows)
             color: RGB colour override (None = automatic elevation-based colour)
         """
         self._position = glm.vec3(position)
         self._intensity = intensity
-        self._angular_radius = angular_radius
+        self._angular_radius = angular_size
         self._color_override = glm.vec3(color) if color is not None else None
 
     def dt(self, delta_time: float) -> DeltaTimeTransformer:
@@ -98,7 +98,7 @@ class Sun:
 
         return self
 
-    def from_angles(self, azimuth: float, elevation: float, distance: float = 100.0, degrees: bool = True):
+    def from_angles(self, azimuth: float, elevation: float, distance: float = 1000.0, degrees: bool = True):
         """
         Sets the sun position from spherical coordinates.
 

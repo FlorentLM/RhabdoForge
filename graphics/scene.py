@@ -1,6 +1,8 @@
 import OpenGL
 import trimesh
 
+from graphics.lights import Sun
+
 OpenGL.ERROR_CHECKING = False
 
 from typing import Dict, List, Optional, Union, Sequence
@@ -475,6 +477,11 @@ class Scene:
         self.instances: List[Instance] = []
         self.skybox: Optional[Skybox] = None
         self.background_color = background_color
+        self.sun = Sun(
+            intensity=1.0,
+            angular_size=0.05
+        )
+        self.sun.from_angles(azimuth=4.84, elevation=39.75)
 
     def add_instance(self, asset: Union[Asset, str], transform: Optional[Union[glm.mat4, ArrayLike]] = None, **kwargs) -> Instance:
 

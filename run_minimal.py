@@ -26,7 +26,7 @@ def main():
     scene.load(example_obj)
 
     # Add a skybox
-    scene.add_skybox('textures/bright_day')
+    scene.add_skybox('textures/bright_day_nosun')
 
     # Setup eye model
     eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)  # Uniform spherical eye

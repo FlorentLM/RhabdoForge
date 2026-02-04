@@ -52,7 +52,7 @@ def main():
     dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
 
     # Add a skybox
-    scene.add_skybox('textures/bright_day')
+    scene.add_skybox('textures/bright_day_nosun')
 
     # Setup eye model
     eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)   # Uniform spherical eye

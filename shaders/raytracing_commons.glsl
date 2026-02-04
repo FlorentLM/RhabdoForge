@@ -60,7 +60,6 @@ uniform vec3 sun_color;             // sun disk colour
 
 // Legacy shadow mode (for simple non-path-tracing)
 uniform bool enable_shadows;
-uniform float shadow_intensity;
 
 // ====================================== SSBO Bindings =============================================
 // Bindings 0-1 are shader-specific (e.g. ommatidia input, ray output)
@@ -211,25 +210,49 @@ vec3 sample_sun_direction(vec3 sun_dir, float angular_radius, float r1, float r2
     return normalize(sun_dir + T * cos(phi) * r + B * sin(phi) * r);
 }
 
-// Check if ray direction hits the sun disk
-bool hits_sun_disk(vec3 direction) {
+// Get sun disk color for a direcrtion
+vec3 get_sun_disk_color(vec3 direction) {
     float cos_angle = dot(direction, sun_direction);
-    float cos_threshold = cos(sun_angular_radius);
-    return cos_angle >= cos_threshold;
+    float cos_radius = cos(sun_angular_radius);
+
+    if (cos_angle < cos_radius) {
+        return vec3(0.0);
+    }
+    float r = acos(cos_angle) / sun_angular_radius;
+    float limb = 1.0 - 0.6 * (1.0 - sqrt(1.0 - r*r));
+    // soft edge falloff
+    float edge_softness = 1.0 - smoothstep(0.85, 1.0, r);
+
+    return sun_color * limb * edge_softness;
 }
 
 // Get sky color for a direction (environment lighting)
 vec3 get_sky_color(vec3 direction) {
-    // Check if looking at sun disk
-    if (sun_intensity > 0.0 && hits_sun_disk(direction)) {
-        return sun_color * sun_intensity;
+    vec3 sun_contribution = get_sun_disk_color(direction);
+
+    vec3 sky;
+    if (use_skybox) {
+        sky = texture(skybox, direction).rgb;
+    } else {
+        sky = background_color;
     }
 
-    if (use_skybox) {
-        return texture(skybox, direction).rgb * sky_intensity;
-    } else {
-        return background_color * sky_intensity;
-    }
+    // How much to tint based on sun altitude
+    float sun_altitude = sun_direction.y;
+    float sunset_factor = 1.0 - smoothstep(-0.1, 0.4, sun_altitude);
+
+    // Shift hue toward sun color for the entire sky
+    // Reduce sky saturation and blend toward warm tones
+    float luma = dot(sky, vec3(0.2126, 0.7152, 0.0722));
+    vec3 desaturated = vec3(luma);
+
+    // Warm tint color (sun color mixed with orange)
+    vec3 warm_tint = mix(sun_color, vec3(1.0, 0.5, 0.2), 0.3);
+
+    // desaturate sky and tint it
+    vec3 tinted_sky = mix(sky, desaturated * warm_tint, sunset_factor * 0.8);
+
+    return tinted_sky * sky_intensity + sun_contribution;
 }
 
 // ================================= BVH traversal ======================================
@@ -606,20 +629,47 @@ vec3 get_surface_normal(HitInfo hit, vec3 ray_dir) {
 
 // ===================================== Trace ===========================================
 
+// Estimate ambient light from sky
+// For skybox: would ideally use precomputed SH or cubemap mip, but we approximate
+// For solid color: just background_color scaled by sky_intensity
+vec3 get_ambient_light() {
+    vec3 ambient;
+    if (use_skybox) {
+        ambient = vec3(0.0);
+        ambient += texture(skybox, vec3(0.0, 1.0, 0.0)).rgb;
+        ambient += texture(skybox, vec3(1.0, 0.3, 0.0)).rgb;
+        ambient += texture(skybox, vec3(-1.0, 0.3, 0.0)).rgb;
+        ambient += texture(skybox, vec3(0.0, 0.3, 1.0)).rgb;
+        ambient += texture(skybox, vec3(0.0, 0.3, -1.0)).rgb;
+        ambient /= 5.0;
+    } else {
+        ambient = background_color;
+    }
 
-// Simple trace (direct lighting only)
-float compute_shadow(vec3 hit_pos, vec3 light_dir) {
-    vec3 shadow_origin = hit_pos + light_dir * 0.001;
+    // Desaturate ambient to reduce color cast (0.0 = grayscale, 1.0 = full color)
+    float ambient_saturation = 0.3;     // TODO: Maybe make this a uniform
+    float luma = dot(ambient, vec3(0.2126, 0.7152, 0.0722));
+    ambient = mix(vec3(luma), ambient, ambient_saturation);
+
+    return ambient * sky_intensity;
+}
+
+// Test if point is in shadow (returns true if occluded)
+bool test_shadow(vec3 hit_pos, vec3 normal, vec3 light_dir) {
+    vec3 shadow_origin = hit_pos + normal * 0.001;
 
     Ray shadow_ray;
     shadow_ray.origin = shadow_origin;
     shadow_ray.inv_direction = 1.0 / light_dir;
     shadow_ray.t = 1e10;
 
-    if (is_occluded(shadow_ray)) {
-        return shadow_intensity;
-    }
-    return 1.0;
+    return is_occluded(shadow_ray);
+}
+
+// Desaturate sun color for more natural lighting
+// Real sun is close to white; strong color only at sunrise/sunset
+vec3 get_effective_sun_color(float tint_strength) {
+    return mix(vec3(1.0), normalize(sun_color) * length(sun_color), tint_strength);
 }
 
 vec3 trace_simple(Ray r) {
@@ -627,20 +677,33 @@ vec3 trace_simple(Ray r) {
     HitInfo closest_hit;
     traverse_tlas(r, direction, closest_hit);
 
-    vec3 final_color;
-    if (closest_hit.found) {
-        vec3 surface_color = get_surface_color(closest_hit);
-
-        float shadow = 1.0;
-        if (enable_shadows) {
-            vec3 hit_pos = r.origin + direction * closest_hit.t;
-            shadow = compute_shadow(hit_pos, sun_direction);
-        }
-        final_color = surface_color * sun_color * shadow;
-    } else {
-        final_color = get_sky_color(direction);
+    if (!closest_hit.found) {
+        return get_sky_color(direction);
     }
-    return final_color;
+
+    vec3 surface_color = get_surface_color(closest_hit);
+    vec3 hit_pos = r.origin + direction * closest_hit.t;
+    vec3 normal = get_surface_normal(closest_hit, direction);
+
+    // Ambient derived from sky (hemisphere weighting)
+    vec3 ambient_light = get_ambient_light();
+    float hemisphere_factor = dot(normal, vec3(0.0, 1.0, 0.0)) * 0.4 + 0.6; // bias toward uniform
+    vec3 ambient = ambient_light * hemisphere_factor;
+
+    // Direct sun contribution
+    float NdotL = max(dot(normal, sun_direction), 0.0);
+    vec3 direct = vec3(0.0);
+
+    if (NdotL > 0.0 && sun_intensity > 0.0) {
+        bool in_shadow = enable_shadows && test_shadow(hit_pos, normal, sun_direction);
+
+        if (!in_shadow) {
+            vec3 sun_contribution = get_effective_sun_color(0.3); // 30 pct tint // TODO: Maybe add this as uniform
+            direct = sun_contribution * sun_intensity * NdotL;
+        }
+    }
+
+    return surface_color * (ambient + direct);
 }
 
 // Path trace
