@@ -2,7 +2,9 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d, Akima1DInterpolator
 import matplotlib.pyplot as plt
-import time
+
+
+# Exact replica of Stürlz et al. 2010, with interpolation for the edges
 
 
 def akima_interpolator(x, y, fill_value):
@@ -10,9 +12,7 @@ def akima_interpolator(x, y, fill_value):
     Creates an Akima interpolator that returns a specific fill_value for queries outside the original range
     (prevents premature termination of the generation loop at the poles)
     """
-
     akima_fn = Akima1DInterpolator(x, y)
-
     min_x, max_x = x.min(), x.max()
 
     # Wrapper function that enforces boundary condition
@@ -27,8 +27,8 @@ def akima_interpolator(x, y, fill_value):
     return wrapper
 
 
-def load_azimuth_data(file_path="stuff/biological_data/sturzl2010_azimuth_max.csv", interp='akima'):
-    """ Loads and prepares the azimuth boundary data using the robust interpolator """
+def load_azimuth_data(file_path, interp='akima'):
+    """Loads and prepares the azimuth boundary data using the robust interpolator."""
 
     try:
         azimuth_df = pd.read_csv(file_path, encoding="utf-8").dropna()
@@ -61,27 +61,36 @@ IOA_H_MID = 3.7
 IOA_H_MAX = 4.6
 IOA_V_MIN = 1.5
 IOA_V_MAX = 4.5
-DEG2RAD = np.pi / 180
 
 
 def ioa_h_to_azimuth_delta(ioa_h, elevation):
-    """ Calculates the change in azimuth in degrees """
-    if abs(np.cos(elevation * DEG2RAD)) < 1e-9:
+    """Calculates the change in azimuth in degrees."""
+
+    ioa_h_rad = np.radians(ioa_h)
+    elevation_rad = np.radians(elevation)
+
+    if abs(np.cos(elevation_rad)) < 1e-9:
         return 180.0
-    return 2 * np.arcsin(np.sin((ioa_h / 2) * DEG2RAD) / np.cos(elevation * DEG2RAD)) / DEG2RAD
+
+    return np.degrees(2 * np.arcsin(np.sin(ioa_h_rad / 2.0) / np.cos(elevation_rad)))
 
 
 def get_ioa_h_scalar(a, e):
-    """ Scalar version of the horizontal IOA calculation """
+    """Scalar version of the horizontal IOA calculation."""
 
     abs_e = abs(e)
     if a >= 0:
-        if a <= 45: return IOA_H_MID + (a / 45) * (IOA_H_MIN - IOA_H_MID)
-        if a <= 90: return IOA_H_MIN + ((a - 45) / 45) * (IOA_H_MID - IOA_H_MIN)
+        if a <= 45:
+            return IOA_H_MID + (a / 45) * (IOA_H_MIN - IOA_H_MID)
+        if a <= 90:
+            return IOA_H_MIN + ((a - 45) / 45) * (IOA_H_MID - IOA_H_MIN)
         factor_e = (90 - abs_e) / 40 if abs_e > 50 else 1.0
-        if a <= 150: return IOA_H_MID + ((a - 90) / 60) * (IOA_H_MAX - IOA_H_MID) * factor_e
-        if a <= 180: return IOA_H_MID + (IOA_H_MAX - IOA_H_MID) * factor_e if abs_e > 50 else IOA_H_MAX
-        if a <= 270: return IOA_H_MAX
+        if a <= 150:
+            return IOA_H_MID + ((a - 90) / 60) * (IOA_H_MAX - IOA_H_MID) * factor_e
+        if a <= 180:
+            return IOA_H_MID + (IOA_H_MAX - IOA_H_MID) * factor_e if abs_e > 50 else IOA_H_MAX
+        if a <= 270:
+            return IOA_H_MAX
     else:
         abs_a = abs(a)
         if a >= -45:
@@ -98,7 +107,7 @@ def get_ioa_v(e):
 
 
 def _generate_zone(zone, az_fn_12, az_fn_34):
-    """ Generates ommatidia for a specific zone """
+    """Generates ommatidia for a specific zone."""
 
     zone_ommatidia = []
 
@@ -117,7 +126,8 @@ def _generate_zone(zone, az_fn_12, az_fn_34):
 
         # Condition for inner loop to continue growth
         def is_in_bounds(current_a, current_e):
-            if abs(current_e) > 88.9: return False
+            if abs(current_e) > 88.99:
+                return False
             az_boundary = boundary_fn(current_e)
             if zone in [1, 2]:  # Grow right
                 return current_a < min(az_boundary, 270)
@@ -133,7 +143,8 @@ def _generate_zone(zone, az_fn_12, az_fn_34):
             zone_ommatidia.append((a, e, ioa_h, ioa_v))
 
             delta_a = ioa_h_to_azimuth_delta(get_ioa_h_scalar(a, e), e)
-            if delta_a < 1e-6: break  # Prevent infinite loop
+            if delta_a < 1e-6:
+                break
             a += delta_a * sign_a
 
         # Move to the next elevation
@@ -144,9 +155,8 @@ def _generate_zone(zone, az_fn_12, az_fn_34):
 
 
 def generate_eye_model(az_fn_12, az_fn_34):
-    """ Combining the four zones into a full eye """
+    """Combining the four zones into a full eye."""
 
-    # Generate each of the four zones independently
     om_z1 = _generate_zone(1, az_fn_12, az_fn_34)
     om_z2 = _generate_zone(2, az_fn_12, az_fn_34)
     om_z3 = _generate_zone(3, az_fn_12, az_fn_34)
@@ -159,6 +169,7 @@ def generate_eye_model(az_fn_12, az_fn_34):
     # Remove duplicates
     ommatidia_array = np.unique(ommatidia_array.round(decimals=3), axis=0)
     return ommatidia_array
+
 
 ##
 
@@ -180,8 +191,10 @@ def angles_to_vectors(angles_deg: np.ndarray) -> np.ndarray:
 ##
 
 PLOT = True
+STURZL_DATA = "biological_data/bee/sturzl2010_azimuth_max.csv"
 
-az_fn_12, az_fn_34, raw_dfs = load_azimuth_data(interp='akima')
+
+az_fn_12, az_fn_34, raw_dfs = load_azimuth_data(STURZL_DATA, interp='akima')
 
 # This generates the right eye
 ommatidia_right_data = generate_eye_model(az_fn_12, az_fn_34)
@@ -209,12 +222,12 @@ left_eye_ids = np.zeros(num_ommatidia, dtype=int)
 right_eye_dirs = angles_to_vectors(ommatidia_right_angles)
 left_eye_dirs = angles_to_vectors(ommatidia_left_angles)
 
-# Define plausible origins for the eyes
-eye_radius = 0.0015     # 1.5 mm radius
-eye_separation = 0.001  # 1 mm separation
+# Define plausible origins for the eyes (in mm)
+eye_radius_mm = 1.5       # 1.5 mm radius
+eye_separation_mm = 1.0   # 1 mm separation
 
-right_eye_origins = right_eye_dirs * eye_radius + np.array([eye_separation, 0, 0])
-left_eye_origins = left_eye_dirs * eye_radius - np.array([eye_separation, 0, 0])
+right_eye_origins = right_eye_dirs * eye_radius_mm + np.array([eye_separation_mm, 0, 0])
+left_eye_origins = left_eye_dirs * eye_radius_mm - np.array([eye_separation_mm, 0, 0])
 
 # Concatenate data for both eyes
 both_eyes_origs = np.concatenate((right_eye_origins, left_eye_origins))
@@ -223,7 +236,6 @@ both_eyes_ioas_deg = np.concatenate((ommatidia_right_ioas_deg, ommatidia_left_io
 both_eyes_ids = np.concatenate((right_eye_ids, left_eye_ids))
 both_eyes_ioas_rad = np.deg2rad(both_eyes_ioas_deg)
 
-# Save as npz
 np.savez_compressed(
     "bee_eye.npz",
     directions=both_eyes_dirs,
@@ -233,7 +245,6 @@ np.savez_compressed(
 )
 
 if PLOT:
-    # Plotting
     plt.figure(figsize=(12, 6))
 
     # Plot generated ommatidia
@@ -244,12 +255,13 @@ if PLOT:
     plt.plot(az_fn_12(elevations), elevations, color='orangered', lw=2, label="Interpolated boundary (1-2)")
     plt.plot(az_fn_34(elevations), elevations, color='limegreen', lw=2, label="Interpolated boundary (3-4)")
 
-    # Plot the original stuff data points
+    # Plot the original data points
     df_12, df_34 = raw_dfs
-    plt.plot(df_12['azimuth_max_1_2'], df_12['elevation_1_2'], 'o', color='darkred', markersize=5,
-             label="Raw data (1-2)")
-    plt.plot(df_34['azimuth_max_3_4'], df_34['elevation_3_4'], 'o', color='darkgreen', markersize=5,
-             label="Raw data (3-4)")
+    plt.plot(df_12['azimuth_max_1_2'], df_12['elevation_1_2'],
+             'o', color='darkred', markersize=5, label="Raw data (1-2)")
+
+    plt.plot(df_34['azimuth_max_3_4'], df_34['elevation_3_4'],
+             'o', color='darkgreen', markersize=5, label="Raw data (3-4)")
 
     plt.xlim(-90, 270)
     plt.ylim(-90, 90)
