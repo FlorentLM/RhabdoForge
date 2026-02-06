@@ -16,9 +16,9 @@ def main():
 
     scene.add_skybox('textures/bright_day_nosun')
 
-    eye_model = CompoundEye(num_ommatidia=1962, force_isotropic=True)
-    # eye_model = CompoundEye.from_file('drosophila_eye.npz', eye_parameter=1.5)
-    # eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)
+    # eye_model = CompoundEye(num_ommatidia=1962, force_isotropic=True)
+    # eye_model = CompoundEye.from_file('drosophila_Kemppainen.npz', eye_parameter=1.5)
+    eye_model = CompoundEye.from_file('bee_Sturzl.npz', eye_parameter=1.1)
 
     agent = Agent(position=(0.0, 0.0, 4.0))
 

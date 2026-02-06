@@ -18,7 +18,7 @@ def plot_eye_3d(eye_model, glyph_length=0.02, show_origins=False):
 
     points_polydata['directions'] = -directions
 
-    points_polydata['scale'] = np.full(eye_model.num_ommatidia, glyph_length)
+    points_polydata['scale'] = np.full(eye_model.nb_om, glyph_length)
 
     # "glyph" filter to place a cone at each point
     geom = pv.Cone(radius=0.3, resolution=12)  # radius is a ratio of the length

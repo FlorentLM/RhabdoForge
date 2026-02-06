@@ -498,6 +498,10 @@ if GENERATE_PARAMETRIC_MODEL:
     lattice_sphere = stereo_to_sphere(lattice_2d, fwd, rgt, up)
     lattice_3d = project_to_ellipsoid(lattice_sphere + ellipsoid['center'], ellipsoid)
 
+    # Compute viewing directions from origin (head center), not from ellipsoid center
+    # This ensures directions have proper forward (-Z) components
+    lattice_directions = lattice_3d / np.linalg.norm(lattice_3d, axis=1, keepdims=True)
+
     fig = plt.figure(figsize=(16, 12))
 
     # 3D plot
@@ -598,6 +602,8 @@ if GENERATE_PARAMETRIC_MODEL:
     plt.tight_layout()
 
 else:
+    lattice_3d = ommatidia_3d
+
     fig = plt.figure(figsize=(12, 12))
     ax = fig.add_subplot(111, projection='3d')
 
@@ -660,62 +666,22 @@ left_eye_origins = left_eye_origins_scaled + translation
 right_eye_origins = left_eye_origins.copy()
 right_eye_origins[:, 0] *= -1
 
-right_eye_dirs = lattice_sphere.copy()
+left_eye_dirs = lattice_3d / np.linalg.norm(lattice_3d, axis=1, keepdims=True)
+right_eye_dirs = left_eye_dirs.copy()
 right_eye_dirs[:, 0] *= -1
-
-final_dirs = np.concatenate((lattice_sphere, right_eye_dirs))
+final_dirs = np.concatenate((left_eye_dirs, right_eye_dirs))
 final_origins = np.concatenate((left_eye_origins, right_eye_origins))
 
-nb_ommatidia = lattice_sphere.shape[0]
+nb_ommatidia = lattice_directions.shape[0]
 eye_ids = np.concatenate([
     np.zeros(nb_ommatidia, dtype=int), # Left eye ID = 0
     np.ones(nb_ommatidia, dtype=int)   # Right eye ID = 1
 ])
 
-output_filename = "drosophila_eye.npz"
-np.savez_compressed(
-    output_filename,
-    directions=final_dirs,
-    origins=final_origins,
-    eye_id=eye_ids
-)
-
-print(f"\nSaved model with two eyes to '{output_filename}'")
-
-# ==============================================================================
-# Visualization of the two eyes
-# ==============================================================================
-
-fig = plt.figure(figsize=(12, 10))
-ax = fig.add_subplot(111, projection='3d')
-
-# Plot both eyes
-ax.scatter(left_eye_origins[:, 0], left_eye_origins[:, 1], left_eye_origins[:, 2],
-           c='gray', s=10, alpha=0.75, label='Left Eye')
-ax.scatter(right_eye_origins[:, 0], right_eye_origins[:, 1], right_eye_origins[:, 2],
-           c='#575757', s=10, alpha=0.75, label='Right Eye')
-
-ax.set_title("Drosophila Eyes Model", fontsize=16)
-ax.set_xlabel("X (mm)")
-ax.set_ylabel("Y (mm)")
-ax.set_zlabel("Z (mm)")
-
-# Set up axes to be equal and show the full head width
-full_head_width = 2 * eye_dims_mm[0] + inter_eye_dist_mm
-ax.set_box_aspect([1, 1, 1])
-ax.set_xlim(-full_head_width / 2, full_head_width / 2)
-ax.set_ylim(-full_head_width / 2, full_head_width / 2)
-ax.set_zlim(-full_head_width / 2, full_head_width / 2)
-
-
-# Add a 3-axis gizmo at the center of the head
-gizmo_length = 0.15  # mm
-ax.quiver(0, 0, 0, gizmo_length, 0, 0, color='r', arrow_length_ratio=0.1, label='Right (+X)')
-ax.quiver(0, 0, 0, 0, gizmo_length, 0, color='g', arrow_length_ratio=0.1, label='Up (+Y)')
-ax.quiver(0, 0, 0, 0, 0, -gizmo_length, color='b', arrow_length_ratio=0.1, label='Forward (-Z)')
-
-# View from the front
-ax.view_init(elev=5, azim=-90)
-ax.legend()
-plt.tight_layout()
-plt.show()
+# output_filename = "drosophila_Buchner.npz"
+# np.savez_compressed(
+#     output_filename,
+#     directions=final_dirs,
+#     origins=final_origins,
+#     eye_id=eye_ids
+# )

@@ -1,22 +1,25 @@
 import numpy as np
 from scipy.spatial import cKDTree as KDTree
-import matplotlib.pyplot as plt
+from species_models.plots import plot_eyes_3d
 
 
-# Generate drosophila eyes according to Kemppainen et al. 2022
+# Replica of model from Kemppainen et al., 2022 (10.1073/pnas.2109717119).
 #
 # Parameters from original code:
-#
-EYE_RADIUS = 1.1 * 1000 * (400 * (0.8 / 985)) / 2  # R_z ≈ 178.68 µm
-EYE_HORIZONTAL_R = 1.1 * 1000 * (470 * (0.8 / 985)) / 2  # R_wide ≈ 209.95 µm
+EYE_RADIUS = 1.1 * 1000 * (400 * (0.8 / 985)) / 2           # R_z ~ 178.68 µm
+EYE_HORIZONTAL_R = 1.1 * 1000 * (470 * (0.8 / 985)) / 2     # R_wide ~ 209.95 µm
 R_OMMATIDIA = 8.0
 EYE_LOWER_ANGLE = np.radians(60)
 EYE_HEAD_CP_DISTANCE = 193.4
 OMMATIDIA_LIMIT = 800
 
-##
+
+# TODO: These three should go to the utils module, but need to deal with the various reference frames
 
 def cart_to_sph(pts):
+    """
+    Cartesian to spherical (internal coordinate system for eye construction).
+    """
     r = np.linalg.norm(pts, axis=1)
     theta = np.arccos(np.clip(pts[:, 2] / r, -1.0, 1.0))
     phi = np.arctan2(pts[:, 1], pts[:, 0])
@@ -24,6 +27,9 @@ def cart_to_sph(pts):
 
 
 def sph_to_cart(r, theta, phi):
+    """
+    Spherical to cartesian (internal coordinate system for eye construction).
+    """
     return np.stack([
         r * np.sin(theta) * np.cos(phi),
         r * np.sin(theta) * np.sin(phi),
@@ -53,20 +59,28 @@ def local_to_global(local_pts, center_pt):
     return (Rz @ Rx @ local_pts.T).T
 
 
+##
+
+
 def hex_neighbours(center_pt):
-    """Generates 6 neighbour candidates for a point."""
+    """
+    Generates 6 neighbour candidates for a point.
+    """
     angles = np.linspace(0, 2 * np.pi, 7)[:-1]
     # Local candidates in XZ plane relative to a Y-axis eye-normal
     local_nodes = np.zeros((6, 3))
     local_nodes[:, 0] = 2 * R_OMMATIDIA * np.sin(angles)
-    local_nodes[:, 1] = np.linalg.norm(center_pt)  # Push out to current radius
+    local_nodes[:, 1] = np.linalg.norm(center_pt)  # push out to current radius
     local_nodes[:, 2] = 2 * R_OMMATIDIA * np.cos(angles)
 
     return local_to_global(local_nodes, center_pt)
 
 
-def build_eye_geometry():
-
+def build_eye():
+    """
+    Build a single eye in internal coordinate system (the right one).
+    Returns ommatidia locations in µm.
+    """
     start_p = sph_to_cart(np.array([EYE_RADIUS]), np.array([np.pi / 2]), np.array([0.0]))[0]
     points = [start_p]
 
@@ -96,7 +110,7 @@ def build_eye_geometry():
         candidates_flat = np.vstack(all_candidates)
         dists, _ = tree.query(candidates_flat, k=1)
 
-        added_in_batch = []
+        added = []
         for i, d in enumerate(dists):
             cand = candidates_flat[i]
 
@@ -104,22 +118,22 @@ def build_eye_geometry():
             if cand[0] <= 0:
                 continue
 
-            # Distance check (original logic: > 1.25 * R_omm)
+            # Distance check
             if d > R_OMMATIDIA * 1.25:
-                if len(added_in_batch) > 0:
-                    temp_tree = KDTree(added_in_batch)
+                if len(added) > 0:
+                    temp_tree = KDTree(added)
                     d_internal, _ = temp_tree.query(cand, k=1)
 
                     if d_internal < R_OMMATIDIA * 1.25:
                         continue
 
-                added_in_batch.append(cand)
+                added.append(cand)
                 next_queue.append(cand)
 
-        if not added_in_batch:
+        if not added:
             break
 
-        points_arr = np.vstack([points_arr, added_in_batch])
+        points_arr = np.vstack([points_arr, added])
         queue = next_queue
 
         if len(points_arr) > OMMATIDIA_LIMIT * 2:  # hard break safety
@@ -150,101 +164,73 @@ def build_eye_geometry():
 
 
 def generate_eyes():
-    right_eye = build_eye_geometry()
+    """
+    Generate both eyes in OpenGL coordinate system (X=right, Y=up, Z=back/into screen).
 
-    left_eye = right_eye.copy()
-    left_eye[:, 0] *= -1
+    Returns:
+        directions: (N, 3) array of unit direction vectors in Cartesian coordinates
+        origins: (N, 3) array of ommatidium origins in Cartesian coordinates (in mm if scale_to_mm=True)
+        eye_id: (N,) array of eye identifiers (1=right, 0=left)
+    """
 
-    def to_gl_mm(pts):
-        # Blender (X, Y, Z) -> OpenGL (X, Z, -Y)
-        return np.stack([pts[:, 0], pts[:, 2], -pts[:, 1]], axis=1) * 0.001
+    # Build right eye in internal coordinate system
+    right_eye_internal = build_eye()
 
-    r_orig = to_gl_mm(right_eye)
-    l_orig = to_gl_mm(left_eye)
+    # Mirror for left eye
+    left_eye_internal = right_eye_internal.copy()
+    left_eye_internal[:, 0] *= -1
 
-    offset = EYE_HEAD_CP_DISTANCE * 0.001
-    r_orig[:, 0] += offset
-    l_orig[:, 0] -= offset
+    offset = EYE_HEAD_CP_DISTANCE
 
-    # Directions
-    r_dir = r_orig - [offset, 0, 0]
+    right_eye_internal[:, 0] += offset
+    left_eye_internal[:, 0] -= offset
+
+    # Convert to OpenGL:
+    # Internal: X = lateral, Y = up, Z = front
+    # OpenGL: X = lateral(right), Y = up, Z = back
+    right_eye = right_eye_internal.copy()
+    right_eye[:, 2] = -right_eye_internal[:, 2]
+
+    left_eye = left_eye_internal.copy()
+    left_eye[:, 2] = -left_eye_internal[:, 2]
+
+    # Compute directions (pointing from eye centers to ommatidium)
+    right_center = np.array([offset, 0, 0])
+    left_center = np.array([-offset, 0, 0])
+
+    r_dir = right_eye - right_center
     r_dir /= np.linalg.norm(r_dir, axis=1, keepdims=True)
-    l_dir = l_orig - [-offset, 0, 0]
+
+    l_dir = left_eye - left_center
     l_dir /= np.linalg.norm(l_dir, axis=1, keepdims=True)
 
     directions = np.vstack([r_dir, l_dir])
-    origins = np.vstack([r_orig, l_orig])
-    eye_id = np.concatenate([np.ones(len(r_orig)), np.zeros(len(l_orig))])
+    origins = np.vstack([right_eye, left_eye])
+    eye_id = np.concatenate([np.ones(len(right_eye)), np.zeros(len(left_eye))])
+
+    origins *= 0.001
 
     return directions, origins, eye_id
 
 
-
-def plot_eye_model(origins, eye_id, title=''):
-
-    fig = plt.figure(figsize=(14, 10))
-    ax = fig.add_subplot(111, projection='3d')
-
-    left_mask = eye_id == 0
-    right_mask = eye_id == 1
-
-    ax.scatter(origins[left_mask, 0], origins[left_mask, 1], origins[left_mask, 2],
-               c='#4a90d9', s=8, alpha=0.7, label=f'Left ({left_mask.sum()})')
-    ax.scatter(origins[right_mask, 0], origins[right_mask, 1], origins[right_mask, 2],
-               c='#d94a4a', s=8, alpha=0.7, label=f'Right ({right_mask.sum()})')
-
-    max_extent = np.abs(origins).max() * 1.3
-    ax.quiver(0, 0, 0, max_extent*0.3, 0, 0, color='r', arrow_length_ratio=0.1)
-    ax.quiver(0, 0, 0, 0, max_extent*0.3, 0, color='g', arrow_length_ratio=0.1)
-    ax.quiver(0, 0, 0, 0, 0, -max_extent*0.3, color='b', arrow_length_ratio=0.1)
-
-    ax.set_xlabel('X (mm) - Right')
-    ax.set_ylabel('Y (mm) - Up')
-    ax.set_zlabel('Z (mm)')
-    ax.set_title(title)
-
-    ax.set_xlim(-max_extent, max_extent)
-    ax.set_ylim(-max_extent, max_extent)
-    ax.set_zlim(-max_extent, max_extent)
-    ax.set_box_aspect([1, 1, 1])
-    ax.legend(loc='upper right')
-    ax.view_init(elev=15, azim=-70)
-
-    plt.tight_layout()
-    return fig, ax
-
-
 if __name__ == "__main__":
-    import time
 
-    print("Parameters from original code:")
-    print(f"  EYE_RADIUS (R_z): {EYE_RADIUS:.2f} µm")
-    print(f"  EYE_HORIZONTAL_R (R_wide): {EYE_HORIZONTAL_R:.2f} µm")
-    print(f"  R_OMMATIDIA: {R_OMMATIDIA} µm")
-    print(f"  EYE_LOWER_ANGLE: {np.degrees(EYE_LOWER_ANGLE):.1f}°")
-    print(f"  EYE_HEAD_CP_DISTANCE: {EYE_HEAD_CP_DISTANCE:.2f} µm")
-    print("(source: https://github.com/JuusolaLab/Hyperacute_Stereopsis_paper/blob/main/CG-Compound-Eye/model_init.py)")
-    print()
+    PLOT_EYES = True
 
-    start = time.time()
     directions, origins, eye_id = generate_eyes()
 
-    n_total = len(directions)
-    n_left = (eye_id == 0).sum()
-    n_right = (eye_id == 1).sum()
-
-    print(f"Generated {n_total} ommatidia in {time.time() - start:.2f} seconds:")
-    print(f"  Left eye: {n_left}")
-    print(f"  Right eye: {n_right}")
-
-    output_file = "drosophila_eye_Kemppainen.npz"
+    output_filename = "species_models/drosophila_Kemppainen.npz"
     np.savez_compressed(
-        output_file,
+        output_filename,
         directions=directions,
         origins=origins,
         eye_id=eye_id
     )
-    print(f"\nSaved to '{output_file}'")
 
-    plot_eye_model(origins, eye_id, "Drosophila eyes\n(adapted from Kemppainen et al., 2022)")
-    plt.show()
+    print(f"Generated {len(directions)} ommatidia")
+    print(f"Origin range (mm): X=[{origins[:, 0].min():.3f}, {origins[:, 0].max():.3f}], "
+          f"Y=[{origins[:, 1].min():.3f}, {origins[:, 1].max():.3f}], "
+          f"Z=[{origins[:, 2].min():.3f}, {origins[:, 2].max():.3f}]")
+
+    if PLOT_EYES:
+        plot_eyes_3d(origins, directions, eye_id, title='Drosophila eyes (from Kemppainen et al., 2022)')
