@@ -254,7 +254,7 @@ if __name__ == "__main__":
     PLOT_EYES = True
     REPRODUCE_PAPERS_PLOT = False
 
-    file_path = "biological_data/bee_Sturzl2010/sturzl2010_azimuth_max.csv"
+    file_path = "species_models/bee_Sturzl2010/sturzl2010_azimuth_max.csv"
 
     zone_12, zone_34 = load_azimuth_data(file_path)
     interp_fn_12, interp_fn_34 = get_interp(zone_12, zone_34, interp='akima')
