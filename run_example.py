@@ -35,9 +35,6 @@ def main():
         point_cloud_asset = Asset.from_file(name='seville', file_path='assets/seville_filtered.ply', radii=0.01)
         scene.add_instance(point_cloud_asset)
 
-    # example_obj = Path().home() / 'Downloads/gapArray.obj'
-    # scene.load(example_obj)
-
     cube_positions, cube_uvs = np.split(CUBE_VERTICES.reshape(-1, 5), [3], axis=1)
     cube_faces = CUBE_INDICES.reshape(-1, 3)
 
@@ -55,9 +52,11 @@ def main():
     scene.add_skybox('textures/bright_day_nosun')
 
     # Setup eye model
-    eye_model = CompoundEye(num_ommatidia=NB_OMMATIDIA, force_isotropic=True)   # Uniform spherical eye
-    # eye_model = CompoundEye.from_file('drosophila_eye.npz', eye_parameter=1.5)    # Manually mapped drosophila eye
-    # eye_model = CompoundEye.from_file('bee_eye.npz', eye_parameter=1.1)  # Procedurally-generated bee eye
+    # eye_model = CompoundEye(num_ommatidia=1962, force_isotropic=True)
+    eye_model = CompoundEye.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+    # eye_model = CompoundEye.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
+    # eye_model = CompoundEye.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
+
 
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))

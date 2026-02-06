@@ -227,10 +227,5 @@ if __name__ == "__main__":
         eye_id=eye_id
     )
 
-    print(f"Generated {len(directions)} ommatidia")
-    print(f"Origin range (mm): X=[{origins[:, 0].min():.3f}, {origins[:, 0].max():.3f}], "
-          f"Y=[{origins[:, 1].min():.3f}, {origins[:, 1].max():.3f}], "
-          f"Z=[{origins[:, 2].min():.3f}, {origins[:, 2].max():.3f}]")
-
     if PLOT_EYES:
         plot_eyes_3d(origins, directions, eye_id, title='Drosophila eyes (from Kemppainen et al., 2022)')
