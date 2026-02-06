@@ -74,14 +74,26 @@ def plot_eyes_3d(origins, directions, eye_id, title, arrow_length=0.1, show_sphe
         ax.plot_wireframe(x_sphere, y_sphere, z_sphere, color='gray', alpha=0.05, linewidth=0.5)
 
     else:
-        # Direction arrows
-        ax.quiver(origins[right_mask, 0], origins[right_mask, 1], origins[right_mask, 2],
-                  directions[right_mask, 0], directions[right_mask, 1], directions[right_mask, 2],
-                  length=arrow_length, color='red', alpha=0.3, linewidth=1, arrow_length_ratio=0.2)
+        tips = origins + directions * arrow_length
 
-        ax.quiver(origins[left_mask, 0], origins[left_mask, 1], origins[left_mask, 2],
-                  directions[left_mask, 0], directions[left_mask, 1], directions[left_mask, 2],
-                  length=arrow_length, color='blue', alpha=0.3, linewidth=1, arrow_length_ratio=0.2)
+        def plot_sticks(mask, color, label_prefix):
+            if not np.any(mask):
+                return
+
+            p_start = origins[mask]
+            p_end = tips[mask]
+
+            ax.scatter(p_end[:, 0], p_end[:, 1], p_end[:, 2],
+                       c=color, s=5, alpha=0.5, marker='.', label=f'{label_prefix} directions')
+
+            nan_separator = np.full((p_start.shape[0], 3), np.nan)
+            segments = np.stack((p_start, p_end, nan_separator), axis=1).reshape(-1, 3)
+
+            ax.plot(segments[:, 0], segments[:, 1], segments[:, 2],
+                    color=color, alpha=0.3, linewidth=1)
+
+        plot_sticks(right_mask, 'red', 'Right')
+        plot_sticks(left_mask, 'blue', 'Left')
 
         max_range = np.array([
             origins[:, 0].max() - origins[:, 0].min(),
