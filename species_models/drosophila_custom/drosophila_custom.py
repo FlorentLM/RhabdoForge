@@ -227,8 +227,7 @@ def project_to_stereo(points_3d: np.ndarray, center_point: np.ndarray) -> Tuple:
 
     # Orthonormal basis
     fwd = center_point / np.linalg.norm(center_point)
-    tmp = np.array([0, 0, 1]) if abs(fwd[2]) < 0.9 else np.array([1, 0, 0])
-    rgt = np.cross(fwd, tmp)
+    rgt = np.cross([0, 1, 0], fwd)
     rgt /= np.linalg.norm(rgt)
     up = np.cross(fwd, rgt)
 
