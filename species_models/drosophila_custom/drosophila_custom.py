@@ -236,7 +236,7 @@ def project_to_stereo(points_3d: np.ndarray, center_point: np.ndarray) -> Tuple:
     projections = []
     for p in points_3d:
         denom = 1 + np.dot(p, fwd)
-        denom = max(denom, 1e-6) # avoid div/0
+        denom = max(denom, 1e-6)  # avoid div/0
         x = np.dot(p, rgt) / denom
         y = np.dot(p, up) / denom
         projections.append([x, y])
@@ -277,7 +277,7 @@ def generate_hexagonal_template(angle_deg: float = 60.0) -> np.ndarray:
     return np.array(points)
 
 
-def compute_density_field(data_points: np.ndarray, use_2d: bool = True) -> callable:
+def compute_density_field(data_points: np.ndarray, use_2d: bool = True) -> Tuple[callable, float]:
     """
     Compute density field from data points.
     """
@@ -286,15 +286,32 @@ def compute_density_field(data_points: np.ndarray, use_2d: bool = True) -> calla
     distances, _ = tree.query(data_points, k=7)
     local_spacing = distances[:, 1:].mean(axis=1)
 
+    # Normalise by mean spacing to get relative values
+    mean_spacing = local_spacing.mean()
+    relative_spacing = local_spacing / mean_spacing
+
     if use_2d:
-        rbf = RBFInterpolator(data_points, local_spacing, kernel='thin_plate_spline', smoothing=0.01)
-        return lambda x: rbf(x)
+        rbf = RBFInterpolator(data_points, relative_spacing, kernel='thin_plate_spline', smoothing=0.2)
+
+        def density_func(x):
+            if x.ndim == 1:
+                x = x[np.newaxis, :]
+            return rbf(x).flatten()
+
+        return density_func, mean_spacing
     else:
         # Radial density
         radii = np.linalg.norm(data_points, axis=1)
-        coeffs = np.polyfit(radii, local_spacing, 3)
+        coeffs = np.polyfit(radii, relative_spacing, 3)
         poly = np.poly1d(coeffs)
-        return lambda x: poly(np.linalg.norm(x, axis=1))
+
+        def density_func(x):
+            if x.ndim == 1:
+                x = x[np.newaxis, :]
+            r = np.linalg.norm(x, axis=1)
+            return poly(r)
+
+        return density_func, mean_spacing
 
 
 def optimize_lattice(
@@ -302,24 +319,76 @@ def optimize_lattice(
         template: np.ndarray,
         density_mult: float = 1.0,
         use_2d_density: bool = True
-    ) -> Tuple:
+) -> Tuple:
     """
-    Optimize lattice to match data density.
+    Optimize lattice to match data density by fitting origin, rotation, and base spacing.
     """
-    density_func = compute_density_field(data_points, use_2d=use_2d_density)
+    density_func, mean_spacing = compute_density_field(data_points, use_2d=use_2d_density)
 
-    # Get reference spacing from data
-    tree = cKDTree(data_points)
-    distances, _ = tree.query(data_points, k=7)
-    ref_spacing = distances[:, 1:].mean()
+    def transform_with_density(origin, rotation, base_spacing, template, density_func, density_mult):
+        """Transform template using the 2D density field."""
 
-    scaled_template = template * ref_spacing * density_mult
+        correction = np.sqrt(2.0)
+        scaled = template * base_spacing * density_mult * correction
 
-    return scaled_template, density_func
+        # Rotate
+        cos_r, sin_r = np.cos(rotation), np.sin(rotation)
+        rot_matrix = np.array([[cos_r, -sin_r], [sin_r, cos_r]])
+        rotated = scaled @ rot_matrix.T
+
+        # Translate
+        transformed = origin + rotated
+
+        # Apply spatially varying density
+        density_values = density_func(transformed)
+        final = origin + (transformed - origin) * density_values[:, None]
+
+        return final
+
+    def loss(params):
+        origin = params[:2]
+        rotation = params[2]
+        base_spacing = params[3]
+
+        generated = transform_with_density(
+            origin, rotation, base_spacing,
+            template, density_func, density_mult
+        )
+
+        # Find nearest neighbors
+        tree = cKDTree(generated)
+        dist, _ = tree.query(data_points)
+        return np.mean(dist ** 2)
+
+    # Initial parameters
+    initial = [0.0, 0.0, 0.0, mean_spacing]
+
+    # Bounds
+    bounds = [
+        (-0.1, 0.1), (-0.1, 0.1),  # origin
+        (-np.pi / 6, np.pi / 6),  # rotation
+        (mean_spacing * 0.7, mean_spacing * 1.3),  # spacing
+    ]
+
+    print("Optimizing lattice...")
+    result = minimize(loss, initial, method='L-BFGS-B', bounds=bounds,
+                      options={'maxiter': 1000, 'ftol': 1e-10})
+
+    print(f"Optimization complete. Loss: {result.fun:.6f}")
+    print(f"  Origin: ({result.x[0]:.4f}, {result.x[1]:.4f})")
+    print(f"  Rotation: {np.rad2deg(result.x[2]):.2f}°")
+    print(f"  Base spacing: {result.x[3]:.4f}")
+
+    # Generate final lattice
+    final_lattice = transform_with_density(
+        result.x[:2], result.x[2], result.x[3],
+        template, density_func, density_mult
+    )
+
+    return final_lattice, density_func
 
 
 def build_eye(svg_path, return_raw_data=False, skip_source_regularisation=False, show_plots=False):
-
     data = parse_drosophila_svg(svg_path)
 
     # Unproject Buchner data from 2D to 3D
@@ -333,7 +402,8 @@ def build_eye(svg_path, return_raw_data=False, skip_source_regularisation=False,
     }
 
     if show_plots:
-        plot_buchner_3d(directions_3d, stars_3d, origin_3d, axes_3d, title="Drosophila ommatidia viewing directions (Buchner, 1971)")
+        plot_buchner_3d(directions_3d, stars_3d, origin_3d, axes_3d,
+                        title="Drosophila ommatidia viewing directions (Buchner, 1971)")
 
     if not skip_source_regularisation:
         directions_3d = regularize_buchner_data(directions_3d, stars_3d)
