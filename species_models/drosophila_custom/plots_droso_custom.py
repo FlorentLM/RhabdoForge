@@ -148,3 +148,66 @@ def plot_parametric_model(ommatidia_ellipsoid, lattice_3d, stars_3d, origin_3d,
                  fontsize=16, y=1.02)
     plt.tight_layout()
     plt.show()
+
+
+def plot_density_2d(raw_pts_2d, lattice_pts_2d, rbf_func, mean_spacing):
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(14, 6))
+
+    padding = 0.1
+    x_min, x_max = raw_pts_2d[:, 0].min() - padding, raw_pts_2d[:, 0].max() + padding
+    y_min, y_max = raw_pts_2d[:, 1].min() - padding, raw_pts_2d[:, 1].max() + padding
+    gx, gy = np.meshgrid(np.linspace(x_min, x_max, 100), np.linspace(y_min, y_max, 100))
+    grid_pts = np.column_stack([gx.ravel(), gy.ravel()])
+
+    spacing_vals = rbf_func(grid_pts).reshape(gx.shape) * mean_spacing
+
+    im = ax1.contourf(gx, gy, spacing_vals, levels=20, cmap='viridis_r')
+    ax1.scatter(raw_pts_2d[:, 0], raw_pts_2d[:, 1], c='red', s=2, alpha=0.5, label='Raw data')
+    ax1.set_title("Inter-ommatidial spacing (stereographic)")
+    fig.colorbar(im, ax=ax1, label='Relative spacing')
+    ax1.legend()
+
+    ax2.scatter(lattice_pts_2d[:, 0], lattice_pts_2d[:, 1], s=5, c='black', edgecolors='none')
+    ax2.set_title(f"Procedural lattice")
+    ax2.set_aspect('equal')
+
+    ax3.scatter(raw_pts_2d[:, 0], raw_pts_2d[:, 1], c='black', s=2, alpha=0.5, label='Real ommatidia')
+    ax3.scatter(lattice_pts_2d[:, 0], lattice_pts_2d[:, 1], c='green', s=2, alpha=0.5, label='Procedural lattice')
+    ax3.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_density_3d(origins, directions, title="Visual Density Map"):
+
+    tree = cKDTree(directions)
+    dists, _ = tree.query(directions, k=7)
+    angular_spacing_deg = np.degrees(np.mean(dists[:, 1:], axis=1))
+
+    fig = plt.figure(figsize=(12, 10))
+    ax = fig.add_subplot(111, projection='3d')
+
+    sc = ax.scatter(origins[:, 0], origins[:, 2], origins[:, 1],
+                    c=angular_spacing_deg, cmap='plasma_r', s=20, alpha=0.8)
+
+    cbar = fig.colorbar(sc, ax=ax, shrink=0.5, aspect=10)
+    cbar.set_label('Inter-ommatidial angle $\Delta\phi$ [degrees]')
+
+    ax.set_xlabel('Lateral (X)')
+    ax.set_ylabel('Anterior-Posterior (Z)')
+    ax.set_zlabel('Dorsal-Ventral (Y)')
+    ax.set_title(title)
+
+    max_range = np.array([origins[:, 0].max() - origins[:, 0].min(),
+                          origins[:, 1].max() - origins[:, 1].min(),
+                          origins[:, 2].max() - origins[:, 2].min()]).max() / 2.0
+    mid_x = (origins[:, 0].max() + origins[:, 0].min()) * 0.5
+    mid_y = (origins[:, 1].max() + origins[:, 1].min()) * 0.5
+    mid_z = (origins[:, 2].max() + origins[:, 2].min()) * 0.5
+    ax.set_xlim(mid_x - max_range, mid_x + max_range)
+    ax.set_ylim(mid_z - max_range, mid_z + max_range)
+    ax.set_zlim(mid_y - max_range, mid_y + max_range)
+
+    plt.show()

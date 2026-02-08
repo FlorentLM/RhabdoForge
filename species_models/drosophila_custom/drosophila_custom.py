@@ -4,12 +4,11 @@ from pathlib import Path
 import numpy as np
 import xml.etree.ElementTree as ET
 from svg.path import parse_path, Line, Close
-from scipy.optimize import minimize
+from scipy.optimize import minimize, minimize_scalar
 from scipy.spatial import cKDTree, Delaunay
 from scipy.interpolate import RBFInterpolator
 
-from species_models.drosophila_custom.plots_droso_custom import plot_buchner_3d, plot_parametric_model
-from species_models.utils import position_eyes
+from species_models.drosophila_custom.plots_droso_custom import plot_density_3d, plot_density_2d, plot_buchner_3d
 from species_models.plots import plot_eyes_3d
 
 
@@ -18,15 +17,15 @@ from species_models.plots import plot_eyes_3d
 #
 # Plots from Heisenberg and Wolff, 1984 (10.1007/978-3-642-69936-8) were manually redigitised,
 # and are used as ground truth to fit the model to.
-#
-PARAMETRIC_DENSITY_MULTIPLIER = 1.0
-PARAMETRIC_GRID_ANGLE_DEG = 60.0
-USE_2D_DENSITY = True
+
+DENSITY_SCALE = 1.0         # Relative density (1.0 = match data, 2.0 = twice as dense)
+LATTICE_ANGLE_DEG = 60.0    # Angle between lattice basis vectors (60° = hexagonal)
+REGULARIZATION = True       # Use Buchner's 'forward' markers to correct the raw data points
+SHOW_DEBUG_PLOTS = True     # Show intermediate fitting plots
 
 
 @dataclass
-class EyeData:
-    # small class for storing the parsed svg data
+class BuchnerSVGContent:
     ommatidia: np.ndarray
     stars: np.ndarray
     lattice_origin: np.ndarray
@@ -36,6 +35,7 @@ class EyeData:
 
 
 def get_path_centroid(path) -> np.ndarray:
+    """Calculate centroid of an SVG path"""
     if not path:
         return np.zeros(2)
     points = [(path[0].start.real, path[0].start.imag)]
@@ -45,9 +45,7 @@ def get_path_centroid(path) -> np.ndarray:
 
 
 def sample_path(path, pts_per_segment: int = 20) -> np.ndarray:
-    """
-    Sample points along a path.
-    """
+    """Sample points along an SVG path"""
     if not path:
         return np.array([])
 
@@ -62,10 +60,8 @@ def sample_path(path, pts_per_segment: int = 20) -> np.ndarray:
     return np.array(points)
 
 
-def parse_drosophila_svg(svg_file: Path) -> EyeData:
-    """
-    Parse SVG file and extract eye data.
-    """
+def parse_drosophila_svg(svg_file: Path) -> BuchnerSVGContent:
+    """Parse SVG file and extract eye data"""
     tree = ET.parse(svg_file)
     root = tree.getroot()
     ns = {'svg': 'http://www.w3.org/2000/svg'}
@@ -109,7 +105,7 @@ def parse_drosophila_svg(svg_file: Path) -> EyeData:
 
     print(f"Parsed: {len(ommatidia)} ommatidia, {len(stars)} stars, {len(axes)} axes")
 
-    return EyeData(
+    return BuchnerSVGContent(
         ommatidia=np.array(ommatidia),
         stars=np.array(stars),
         lattice_origin=lattice_origin,
@@ -119,376 +115,318 @@ def parse_drosophila_svg(svg_file: Path) -> EyeData:
     )
 
 
-def inverse_stereographic(points_2d: np.ndarray, center_lon_deg: float) -> Tuple[np.ndarray, np.ndarray]:
+def unproject(points_2d: np.ndarray, center: np.ndarray, radius: float) -> np.ndarray:
     """
-    Inverse equatorial stereographic projection.
-    """
-    x, y = points_2d[:, 0], points_2d[:, 1]
-    lon0_rad = np.deg2rad(center_lon_deg)
+    Inverse stereographic projection.
 
+    Coordinate system:
+    -Z = Anterior, +Y = Dorsal, +X = Right (for left eye)
+    """
+    # Center, flip, normalise
+    p = (points_2d - center) * -1
+    p = p * (2.0 / radius)
+
+    # Inverse stereographic projection
+    x, y = p[:, 0], p[:, 1]
     rho = np.sqrt(x ** 2 + y ** 2)
-    rho = np.where(rho == 0, 1e-9, rho)
     c = 2 * np.arctan(rho / 2.0)
 
-    lat_rad = np.arcsin(np.clip((y * np.sin(c)) / rho, -1.0, 1.0))
-    lon_rad = lon0_rad + np.arctan2(x * np.sin(c), rho * np.cos(c))
+    # Center is left pole (-90 deg longitude)
+    lon0 = -np.pi / 2
+    lat = np.arcsin(np.clip((y * np.sin(c)) / (rho + 1e-9), -1, 1))
+    lon = lon0 + np.arctan2(x * np.sin(c), rho * np.cos(c))
 
-    return np.rad2deg(lon_rad), np.rad2deg(lat_rad)
+    # Spherical to Cartesian
+    X = np.cos(lat) * np.sin(lon)
+    Y = np.sin(lat)
+    Z = -np.cos(lat) * np.cos(lon)
+
+    return np.column_stack([X, Y, Z])
 
 
-def spherical_to_cartesian(lon_deg: np.ndarray, lat_deg: np.ndarray) -> np.ndarray:
+def project_to_stereo(dirs_3d: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Convert spherical to 3D Cartesian coordinates.
+    Project 3D directions to stereographic plane centered on the data.
     """
-    lon_rad, lat_rad = np.deg2rad(lon_deg), np.deg2rad(lat_deg)
-
-    x = np.cos(lat_rad) * np.sin(lon_rad)
-    y = np.sin(lat_rad)
-    z = -np.cos(lat_rad) * np.cos(lon_rad)
-
-    return np.column_stack([x, y, z])
-
-
-def unproject(points_2d: np.ndarray, hem_center: np.ndarray, hem_radius: float) -> np.ndarray:
-    """
-    Unproject 2D points to 3D sphere.
-    """
-
-    # Translate, flip and scale
-    translated = points_2d - hem_center
-    translated *= -1
-    scaled = translated * (2.0 / hem_radius)
-
-    # Apply inverse stereographic projection
-    lon, lat = inverse_stereographic(scaled, -90.0)
-
-    return spherical_to_cartesian(lon, lat)
-
-
-def regularize_buchner_data(points_3d: np.ndarray, stars_markers_3d: np.ndarray) -> np.ndarray:
-    """
-    Warp points based on the fiducial star markers in the plot.
-    """
-
-    # Fit polynomial to star positions
-    coeffs = np.polyfit(stars_markers_3d[:, 1], stars_markers_3d[:, 0], 2)
-    deviation_func = np.poly1d(coeffs)
-
-    # Apply correction
-    corrected = points_3d.copy()
-    corrected[:, 0] -= deviation_func(corrected[:, 1])
-
-    # Normalise to unit sphere
-    norms = np.linalg.norm(corrected, axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1, norms)
-
-    return corrected / norms
-
-
-def fit_ellipsoid(points: np.ndarray) -> dict:
-    """
-    Fit ellipsoid to points.
-    """
-
-    def loss(p, pts):
-        center, radii = p[:3], p[3:6]
-        normalized = (pts - center) / radii
-        return np.sum((np.sum(normalized ** 2, axis=1) - 1) ** 2)
-
-    # Initial guess
-    p0 = np.concatenate([points.mean(axis=0), points.std(axis=0)])
-
-    # Optimize
-    bounds = [(-2, 2)] * 3 + [(0.1, 3)] * 3
-    result = minimize(loss, p0, args=(points,), method='L-BFGS-B', bounds=bounds)
-
-    ellipsoid = {'center': result.x[:3], 'radii': result.x[3:6]}
-
-    return ellipsoid
-
-
-def project_to_ellipsoid(points: np.ndarray, ellipsoid: dict) -> np.ndarray:
-    """
-    Project points onto ellipsoid surface.
-    """
-    center, radii = ellipsoid['center'], ellipsoid['radii']
-    rays = points - center
-    if rays.ndim == 1:
-        rays = rays[np.newaxis, :]
-
-    t = 1.0 / np.sqrt(np.sum((rays / radii) ** 2, axis=1, keepdims=True))
-    return (center + rays * t).squeeze()
-
-
-def project_to_stereo(points_3d: np.ndarray, center_point: np.ndarray) -> Tuple:
-    """
-    Project 3D points onto stereographic plane.
-    """
-
-    # Orthonormal basis
-    fwd = center_point / np.linalg.norm(center_point)
+    center_dir = np.mean(dirs_3d, axis=0)
+    fwd = center_dir / np.linalg.norm(center_dir)
     rgt = np.cross([0, 1, 0], fwd)
     rgt /= np.linalg.norm(rgt)
     up = np.cross(fwd, rgt)
 
-    # Project each point
-    projections = []
-    for p in points_3d:
-        denom = 1 + np.dot(p, fwd)
-        denom = max(denom, 1e-6)  # avoid div/0
-        x = np.dot(p, rgt) / denom
-        y = np.dot(p, up) / denom
-        projections.append([x, y])
+    denom = 1 + np.dot(dirs_3d, fwd)
+    points_2d = np.column_stack([
+        np.dot(dirs_3d, rgt) / denom,
+        np.dot(dirs_3d, up) / denom
+    ])
 
-    return np.array(projections), fwd, rgt, up
+    return points_2d, fwd, rgt, up
 
 
-def stereo_to_sphere(points_2d: np.ndarray, fwd: np.ndarray, rgt: np.ndarray, up: np.ndarray) -> np.ndarray:
+def stereo_to_sphere(points_2d: np.ndarray, fwd: np.ndarray,
+                     rgt: np.ndarray, up: np.ndarray) -> np.ndarray:
     """
-    Back-project from stereographic plane to sphere.
+    Back-project from stereographic plane to unit sphere.
     """
     x, y = points_2d[:, 0], points_2d[:, 1]
     r2 = x ** 2 + y ** 2
     denom = 1 + r2
 
-    # avoid div/0
-    denom = np.where(denom < 1e-9, 1e-9, denom)
-    scale = 2.0 / denom
-    comp_fwd = (1 - r2) / denom
-
-    return scale[:, None] * (x[:, None] * rgt + y[:, None] * up) + comp_fwd[:, None] * fwd
+    return (2.0 / denom)[:, None] * (x[:, None] * rgt + y[:, None] * up) + \
+        ((1 - r2) / denom)[:, None] * fwd
 
 
-def generate_hexagonal_template(angle_deg: float = 60.0) -> np.ndarray:
+def buchner_regularization(raw_dirs: np.ndarray, markers: np.ndarray) -> np.ndarray:
     """
-    Generate hexagonal lattice template.
-    """
-    angle_rad = np.deg2rad(angle_deg)
-    basis1 = np.array([1, 0])
-    basis2 = np.array([np.cos(angle_rad), np.sin(angle_rad)])
+    Warp points based on the regularisation markers in the plot.
 
-    grid_range = 50
-    points = []
-    for i in range(-grid_range, grid_range + 1):
-        for j in range(-grid_range, grid_range + 1):
-            points.append(i * basis1 + j * basis2)
-
-    return np.array(points)
-
-
-def compute_density_field(data_points: np.ndarray, use_2d: bool = True) -> Tuple[callable, float]:
-    """
-    Compute density field from data points.
+    raw_dirs: Raw viewing directions from digitized data
+    markers: 3D positions of star markers
     """
 
-    tree = cKDTree(data_points)
-    distances, _ = tree.query(data_points, k=7)
-    local_spacing = distances[:, 1:].mean(axis=1)
+    # Fit polynomial to star positions
+    coeffs = np.polyfit(markers[:, 1], markers[:, 0], 2)
+    deviation_func = np.poly1d(coeffs)
 
-    # Normalise by mean spacing to get relative values
-    mean_spacing = local_spacing.mean()
-    relative_spacing = local_spacing / mean_spacing
+    regularized = raw_dirs.copy()
+    regularized[:, 0] -= deviation_func(regularized[:, 1])
 
-    if use_2d:
-        rbf = RBFInterpolator(data_points, relative_spacing, kernel='thin_plate_spline', smoothing=0.2)
+    # Renormalize to unit sphere
+    norms = np.linalg.norm(regularized, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)
 
-        def density_func(x):
-            if x.ndim == 1:
-                x = x[np.newaxis, :]
-            return rbf(x).flatten()
-
-        return density_func, mean_spacing
-    else:
-        # Radial density
-        radii = np.linalg.norm(data_points, axis=1)
-        coeffs = np.polyfit(radii, relative_spacing, 3)
-        poly = np.poly1d(coeffs)
-
-        def density_func(x):
-            if x.ndim == 1:
-                x = x[np.newaxis, :]
-            r = np.linalg.norm(x, axis=1)
-            return poly(r)
-
-        return density_func, mean_spacing
+    return regularized / norms
 
 
-def optimize_lattice(
-        data_points: np.ndarray,
-        template: np.ndarray,
-        density_mult: float = 1.0,
-        use_2d_density: bool = True
-) -> Tuple:
+def fit_lattice(raw_dirs: np.ndarray,
+                density_scale: float = 1.0,
+                lattice_angle: float = np.pi / 3,
+                show_debug_plots: bool = True) -> np.ndarray:
     """
-    Optimize lattice to match data density by fitting origin, rotation, and base spacing.
+    Fit hexagonal lattice to match ommatidial density distribution.
+
+    raw_dirs: 3D viewing directions (already unprojected from SVG)
+    density_scale: Relative density (1.0 = original, 2.0 = twice as dense)
+    lattice_angle: Angle between lattice basis vectors (π/3 = hexagonal)
+    show_debug_plots: Whether to display intermediate plots
     """
-    density_func, mean_spacing = compute_density_field(data_points, use_2d=use_2d_density)
+    # Project to stereographic plane for density analysis
+    pts_2d, fwd, rgt, up = project_to_stereo(raw_dirs)
 
-    def transform_with_density(origin, rotation, base_spacing, template, density_func, density_mult):
-        """Transform template using the 2D density field."""
+    # Estimate local spacing in the raw data
+    tree_raw = cKDTree(pts_2d)
+    dist, _ = tree_raw.query(pts_2d, k=7)
+    spacing = dist[:, 1:].mean(axis=1)
+    mean_s = spacing.mean()
 
-        correction = np.sqrt(2.0)
-        scaled = template * base_spacing * density_mult * correction
+    # Build RBF interpolator for density field
+    # (normalized spacing - higher values = lower density)
+    rbf = RBFInterpolator(pts_2d, spacing / mean_s,
+                          kernel='thin_plate_spline', smoothing=0.1)
 
-        # Rotate
-        cos_r, sin_r = np.cos(rotation), np.sin(rotation)
-        rot_matrix = np.array([[cos_r, -sin_r], [sin_r, cos_r]])
-        rotated = scaled @ rot_matrix.T
+    # Generate hexagonal lattice template
+    b1 = np.array([1, 0])
+    b2 = np.array([np.cos(lattice_angle), np.sin(lattice_angle)])
+    grid = np.array([i * b1 + j * b2 for i in range(-55, 55) for j in range(-55, 55)])
 
-        # Translate
-        transformed = origin + rotated
+    # Create convex hull for pruning
+    hull = Delaunay(pts_2d)
 
-        # Apply spatially varying density
-        density_values = density_func(transformed)
-        final = origin + (transformed - origin) * density_values[:, None]
+    def is_inside(points, buffer=0.03):
+        """Check if points are inside data extent."""
+        inside = hull.find_simplex(points) >= 0
+        if buffer == 0:
+            return inside
 
-        return final
+        outside_indices = np.where(~inside)[0]
+        if len(outside_indices) > 0:
+            d_to_hull, _ = tree_raw.query(points[outside_indices])
+            inside[outside_indices] = d_to_hull < buffer
 
-    def loss(params):
-        origin = params[:2]
-        rotation = params[2]
-        base_spacing = params[3]
+        return inside
 
-        generated = transform_with_density(
-            origin, rotation, base_spacing,
-            template, density_func, density_mult
-        )
+    def loss(p):
+        origin, rot, scale = p[:2], p[2], p[3]
+        mat = np.array([[np.cos(rot), -np.sin(rot)],
+                        [np.sin(rot), np.cos(rot)]])
+        transformed = (grid * scale) @ mat.T + origin
 
-        # Find nearest neighbors
-        tree = cKDTree(generated)
-        dist, _ = tree.query(data_points)
-        return np.mean(dist ** 2)
+        # Forward error: how far are data points from lattice?
+        t_tree = cKDTree(transformed)
+        d_fwd, _ = t_tree.query(pts_2d)
 
-    # Initial parameters
-    initial = [0.0, 0.0, 0.0, mean_spacing]
+        # Backward error: how far are lattice points from data?
+        mask = is_inside(transformed, buffer=0)
+        d_bwd, _ = tree_raw.query(transformed[mask]) if np.any(mask) else (np.array([1e3]), 0)
 
-    # Bounds
-    bounds = [
-        (-0.1, 0.1), (-0.1, 0.1),  # origin
-        (-np.pi / 6, np.pi / 6),  # rotation
-        (mean_spacing * 0.7, mean_spacing * 1.3),  # spacing
-    ]
+        return np.mean(d_fwd ** 2) * 2.0 + np.mean(d_bwd ** 2)
 
-    print("Optimizing lattice...")
-    result = minimize(loss, initial, method='L-BFGS-B', bounds=bounds,
-                      options={'maxiter': 1000, 'ftol': 1e-10})
+    # Adjust base spacing for density scaling
+    adjusted_spacing = mean_s / np.sqrt(density_scale)
 
-    print(f"Optimization complete. Loss: {result.fun:.6f}")
-    print(f"  Origin: ({result.x[0]:.4f}, {result.x[1]:.4f})")
-    print(f"  Rotation: {np.rad2deg(result.x[2]):.2f}°")
-    print(f"  Base spacing: {result.x[3]:.4f}")
+    # Optimize lattice
+    res = minimize(loss, [0, 0, 0, adjusted_spacing],
+                   bounds=[(-0.1, 0.1), (-0.1, 0.1),
+                           (-np.pi / 4, np.pi / 4),
+                           (adjusted_spacing * 0.8, adjusted_spacing * 1.05)])
 
-    # Generate final lattice
-    final_lattice = transform_with_density(
-        result.x[:2], result.x[2], result.x[3],
-        template, density_func, density_mult
-    )
+    o, r, s = res.x[:2], res.x[2], res.x[3]
+    mat = np.array([[np.cos(r), -np.sin(r)], [np.sin(r), np.cos(r)]])
+    lattice = (grid * s) @ mat.T + o
 
-    return final_lattice, density_func
+    # density-based warping
+    density_scales = rbf(lattice)
+    lattice = o + (lattice - o) * density_scales[:, None]
+
+    # Prune to eye shape
+    lattice = lattice[is_inside(lattice, buffer=mean_s * 0.6)]
+
+    print(f"Lattice optimization complete. Generated {len(lattice)} ommatidia")
+    print(f"  Density scale: {density_scale:.2f}x")
+    print(f"  Lattice angle: {np.degrees(lattice_angle):.1f}°")
+
+    if show_debug_plots:
+        plot_density_2d(pts_2d, lattice, rbf, mean_s)
+
+    return stereo_to_sphere(lattice, fwd, rgt, up)
 
 
-def build_eye(svg_path, return_raw_data=False, skip_source_regularisation=False, show_plots=False):
+def get_ellipsoid_points(directions: np.ndarray, rx: float, ry: float, rz: float) -> np.ndarray:
+    """
+    Calculate intersection points of direction rays with an ellipsoid.
+    """
+    val = (directions[:, 0] / rx) ** 2 + \
+          (directions[:, 1] / ry) ** 2 + \
+          (directions[:, 2] / rz) ** 2
+    t = 1.0 / np.sqrt(val)
+    return directions * t[:, np.newaxis]
+
+
+def build_eye(svg_path: Path,
+              density_scale: float = DENSITY_SCALE,
+              lattice_angle_deg: float = LATTICE_ANGLE_DEG,
+              regularize: bool = REGULARIZATION,
+              show_plots: bool = SHOW_DEBUG_PLOTS,
+              return_raw_data: bool = False) -> np.ndarray:
+    """
+    svg_path : Path to SVG file containing digitized ommatidial positions
+    density_scale: Relative density (1.0 = match data, 2.0 = twice as dense)
+    lattice_angle_deg: Angle between lattice basis vectors (60° = hexagonal)
+    regularize: Regularization (using Buchner's 'forward' markers)
+    show_plots: Whether to display debug plots
+    return_raw_data: If True, return raw unprojected directions instead of fitted lattice
+    """
+
     data = parse_drosophila_svg(svg_path)
 
-    # Unproject Buchner data from 2D to 3D
-    directions_3d = unproject(data.ommatidia, data.hemisphere_center, data.hemisphere_radius)
-    stars_3d = unproject(data.stars, data.hemisphere_center, data.hemisphere_radius)
-    origin_3d = unproject(data.lattice_origin[np.newaxis, :], data.hemisphere_center, data.hemisphere_radius)[0]
+    raw_dirs = unproject(data.ommatidia, data.hemisphere_center, data.hemisphere_radius)
 
-    axes_3d = {
-        axis_id: unproject(points, data.hemisphere_center, data.hemisphere_radius)
-        for axis_id, points in data.axes.items()
-    }
+    if len(data.stars) > 0:
+        stars_3d = unproject(data.stars, data.hemisphere_center, data.hemisphere_radius)
+    else:
+        stars_3d = np.array([])
+
+    if regularize and len(stars_3d) > 0:
+        raw_dirs = buchner_regularization(raw_dirs, stars_3d)
 
     if show_plots:
-        plot_buchner_3d(directions_3d, stars_3d, origin_3d, axes_3d,
+        stars_3d = unproject(data.stars, data.hemisphere_center, data.hemisphere_radius)
+        origin_3d = unproject(data.lattice_origin[np.newaxis, :], data.hemisphere_center, data.hemisphere_radius)[0]
+
+        axes_3d = {
+            axis_id: unproject(points, data.hemisphere_center, data.hemisphere_radius)
+            for axis_id, points in data.axes.items()
+        }
+
+        plot_buchner_3d(raw_dirs, stars_3d, origin_3d, axes_3d,
                         title="Drosophila ommatidia viewing directions (Buchner, 1971)")
 
-    if not skip_source_regularisation:
-        directions_3d = regularize_buchner_data(directions_3d, stars_3d)
-
     if return_raw_data:
-        return directions_3d
+        return raw_dirs
 
-    # Fit ellipsoid
-    ellipsoid = fit_ellipsoid(directions_3d)
-    ommatidia_ellipsoid = project_to_ellipsoid(directions_3d, ellipsoid)
-
-    # Project to stereographic plane
-    points_sphere = ommatidia_ellipsoid - ellipsoid['center']
-    points_sphere /= np.linalg.norm(points_sphere, axis=1, keepdims=True)
-
-    projection_center = origin_3d - ellipsoid['center']
-    projection_center /= np.linalg.norm(projection_center)
-
-    ommatidia_2d, fwd, rgt, up = project_to_stereo(points_sphere, projection_center)
-
-    template = generate_hexagonal_template(angle_deg=PARAMETRIC_GRID_ANGLE_DEG)
-    lattice_2d, density_func = optimize_lattice(
-        ommatidia_2d, template, PARAMETRIC_DENSITY_MULTIPLIER, use_2d_density=USE_2D_DENSITY
+    lattice_dirs = fit_lattice(
+        raw_dirs,
+        density_scale=density_scale,
+        lattice_angle=np.radians(lattice_angle_deg),
+        show_debug_plots=show_plots
     )
 
-    # Prune to data extent
-    hull = Delaunay(ommatidia_2d)
-    keep = hull.find_simplex(lattice_2d) >= 0
-    lattice_2d = lattice_2d[keep]
+    lattice_dirs = lattice_dirs / np.linalg.norm(lattice_dirs, axis=1, keepdims=True)
 
-    nb_ommatidia = lattice_2d.shape[0]
-    print(f"Generated {nb_ommatidia} ommatidia")
+    return lattice_dirs
 
-    # Back-project to 3D
-    lattice_sphere = stereo_to_sphere(lattice_2d, fwd, rgt, up)
-    lattice_3d = project_to_ellipsoid(lattice_sphere + ellipsoid['center'], ellipsoid)
-
-    if show_plots:
-        plot_parametric_model(ommatidia_ellipsoid, lattice_3d, stars_3d, origin_3d,
-                              axes_3d, ommatidia_2d, lattice_2d, density_func,
-                              nb_ommatidia, USE_2D_DENSITY, PARAMETRIC_GRID_ANGLE_DEG,
-                              PARAMETRIC_DENSITY_MULTIPLIER)
-    return lattice_3d
-
-
-##
 
 if __name__ == "__main__":
 
-    PLOT_EYES = True
+    PLOT = True
+
+    # Head dimensions adapted from Posnien et al., 2012, "Evolution of Eye Morphology and Rhodopsin Expression",
+    # 10.1371/journal.pone.0037346
+    HW = 830.0      # Head width (µm)
+    FW = 400.0      # Frons width, medial gap (µm)
+    EL = 530.0      # Eye length, vertical (µm)
+    ED = 420.0      # Eye depth, anterior-posterior (µm)
 
     svg_file = Path("species_models/drosophila_custom/drosophila_Buchner_1971_redigitized.svg")
 
-    positions = build_eye(svg_file, show_plots=PLOT_EYES)
-
-    # positions are on the unit sphere, so positions == directions anyway, but to be explicit
-    directions = positions / np.linalg.norm(positions, axis=1, keepdims=True)
-
-    # Values from "Evolution of Eye Morphology and Rhodopsin Expression in the Drosophila melanogaster Species Subgroup"
-    HW_um = 830.0  # Head width (µm)
-    FW_um = 400.0  # Frons width (µm) (distance between the most medial points of each eye)
-    EL_um = 530.0  # Eye length (µm) (vertical)
-    ED_um = 420.0  # Eye depth (µm) (anterior-posterior)
-
-    # Scale and position both eyes
-    final_origins, final_directions, eye_ids = position_eyes(
-        positions, directions,
-        HW_um * 0.001,
-        FW_um * 0.001,
-        EL_um * 0.001,
-        ED_um * 0.001
+    L_dirs = build_eye(
+        svg_file,
+        density_scale=DENSITY_SCALE,
+        lattice_angle_deg=LATTICE_ANGLE_DEG,
+        regularize=REGULARIZATION,
+        show_plots=PLOT
     )
 
-    output_filename = "species_models/drosophila_custom.npz"
-    np.savez_compressed(
-        output_filename,
-        directions=final_directions,
-        origins=final_origins,
-        eye_id=eye_ids
-    )
+    target_width = (HW - FW) / 2.0
+    ry = EL / 2.0
+    rz = ED / 2.0
 
-    if PLOT_EYES:
+
+    def error_func(rx_guess):
+        pts = get_ellipsoid_points(L_dirs, rx_guess, ry, rz)
+        width = np.max(pts[:, 0]) - np.min(pts[:, 0])
+        return (width - target_width) ** 2
+
+
+    res = minimize_scalar(error_func, bounds=(10, 500), method='bounded')
+    best_rx = res.x
+    print(f"Ellipsoid fit: Rx = {best_rx:.2f} µm")
+
+    # Generate left eye positions
+    L_origins_local = get_ellipsoid_points(L_dirs, best_rx, ry, rz)
+
+    # Align medial edge to -FW/2
+    current_medial_x = np.max(L_origins_local[:, 0])
+    target_medial_x = -FW / 2.0
+    shift_x = target_medial_x - current_medial_x
+    L_origins = L_origins_local + np.array([shift_x, 0, 0])
+
+    R_origins = L_origins.copy()
+    R_origins[:, 0] *= -1
+    R_dirs = L_dirs.copy()
+    R_dirs[:, 0] *= -1
+
+    all_origins = np.vstack([L_origins, R_origins])
+    all_directions = np.vstack([L_dirs, R_dirs])
+    eye_ids = np.concatenate([np.zeros(len(L_origins)), np.ones(len(R_origins))])
+
+    print(f"\nFinal eye model:")
+    print(f"  Total ommatidia: {len(all_origins)}")
+    print(f"  Left eye: {len(L_origins)}")
+    print(f"  Right eye: {len(R_origins)}")
+
+    np.savez_compressed("species_models/drosophila_custom.npz",
+                        directions=all_directions,
+                        origins=all_origins,
+                        eye_id=eye_ids)
+
+    if PLOT:
         plot_eyes_3d(
-            final_origins,
-            final_directions,
+            all_origins,
+            all_directions,
             eye_ids,
-            title='Drosophila eyes\n(custom parametric model fitted on data by Buchner, 1971)',
+            title='Drosophila eyes\n(parametric model fitted to Buchner, 1971)',
             show_sphere_projection=True
         )
+
+        plot_density_3d(all_origins, all_directions, title="Ommatidia density")
