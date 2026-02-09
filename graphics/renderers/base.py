@@ -402,7 +402,7 @@ class BaseInsectEyeRenderer(ABC):
         cone_length_factor = 10.0
         cone_length = avg_radius * cone_length_factor
 
-        visualisation_scale = 10.0
+        visualisation_scale = 1.0
 
         glUniform1i(self.eye_model_shader.get_loc('projection_mode'), self.projection_mode)
         glUniform1f(self.eye_model_shader.get_loc("cone_length"), cone_length)

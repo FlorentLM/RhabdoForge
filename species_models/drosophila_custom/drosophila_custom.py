@@ -415,6 +415,8 @@ if __name__ == "__main__":
     print(f"  Left eye: {len(L_origins)}")
     print(f"  Right eye: {len(R_origins)}")
 
+    all_origins *= 0.001
+
     np.savez_compressed("species_models/drosophila_custom.npz",
                         directions=all_directions,
                         origins=all_origins,

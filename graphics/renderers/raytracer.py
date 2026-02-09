@@ -912,7 +912,7 @@ class Raytracer(BaseInsectEyeRenderer):
         # Bind buffers
         # Binding 0: input for this pass (raw ray results from pass 1)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.ray_results_ssbo)
-        # Binding 1: output for this pass (final averaged color for each ommatidium)
+        # Binding 1: output for this pass (final averaged colour for each ommatidium)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
 
         # Set uniforms
@@ -1017,7 +1017,6 @@ class PathTracer(Raytracer):
                  enable_shadows: bool = True,
                  enable_ambient: bool = True,
                  enable_direct: bool = True,
-                 multi_light: bool = None,
                  max_bounces: int = 3,
                  ):
 

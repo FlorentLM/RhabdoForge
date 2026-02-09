@@ -75,6 +75,29 @@ class DeltaTimeTransformer:
         self._target.scale(interpolated_scale)
         return self
 
+    def follow(self, trajectory, align_orientation: bool = True):
+        """
+        Updates the target's position based on the Trajectory state.
+
+        Args:
+            trajectory: An instance of geometry.paths.Trajectory
+            align_orientation: If True, calls lookat() (or equivalent) to face movement direction.
+        """
+        new_pos, tangent = trajectory.advance(self._delta_time)
+
+        self._target.position = new_pos
+
+        if align_orientation:
+            # look at a point slightly ahead in tangent direction
+            target_look = new_pos - tangent
+
+            if hasattr(self._target, 'lookat'):
+                self._target.lookat(target_look)
+
+            elif hasattr(self._target, 'direction'):
+                self._target.direction = tangent
+
+        return self
 
 
 ## Shader compiling functions
@@ -578,6 +601,7 @@ def extract_obj_curves(
         object_filter: Optional name(s) of objects to extract
         resample: Optionally resamples the curve to have this many evenly spaced points.
     """
+    file_path = Path(file_path)
     vertices = []
     temp_indices = {}
     current_object = "Default"
@@ -589,10 +613,11 @@ def extract_obj_curves(
     else:
         target_objects = object_filter
 
-    with open(file_path, 'r') as f:
+    with file_path.open('r') as f:
         for line in f:
             parts = line.strip().split()
-            if not parts: continue
+            if not parts:
+                continue
 
             type_code = parts[0]
 
@@ -601,11 +626,11 @@ def extract_obj_curves(
 
             elif type_code == 'o':
                 current_object = parts[1]
-                if (current_object in target_objects or not target_objects) and current_object not in temp_indices:
+                if (not target_objects or current_object in target_objects) and current_object not in temp_indices:
                     temp_indices[current_object] = []
 
             elif type_code == 'l':
-                if current_object in target_objects or not target_objects:
+                if not target_objects or current_object in target_objects:
                     indices = []
                     for idx in parts[1:]:
                         idx = int(idx)

@@ -131,7 +131,7 @@ class Agent:
         return self
 
     def lookat(self, target_pos: glm.vec3 | ArrayLike):
-        """ Orients the agent to look at a specific target position """
+        """Orients the agent to look at a specific target position."""
 
         target_pos = glm.vec3(target_pos)
 
