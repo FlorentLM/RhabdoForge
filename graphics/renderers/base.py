@@ -185,6 +185,8 @@ class BaseInsectEyeRenderer(ABC):
         if self._time_dithering:
             self._time_counter += 1
 
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
         if is_sync_mode:
             # Synchronous path
 
@@ -204,7 +206,7 @@ class BaseInsectEyeRenderer(ABC):
                 glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
                 glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
 
-                return self.sync_cpu_buffer
+                return self.sync_cpu_buffer.copy()
             else:
                 return None
 
