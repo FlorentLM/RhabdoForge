@@ -12,18 +12,20 @@ from trimesh import Trimesh, PointCloud, Scene as TrimeshScene
 from OpenGL.GL import (ctypes,
                        glGenVertexArrays, glGenBuffers,
                        glEnableVertexAttribArray, glVertexAttribPointer, glGetUniformLocation,
-                       glBindVertexArray,  glBindBuffer,  glBindTexture,
+                       glBindVertexArray, glBindBuffer, glBindTexture,
                        glDepthFunc, glDrawElements,
                        glUseProgram, glEnable, glDisable,
                        glUniformMatrix4fv, glUniform1i,
-                       glActiveTexture,  glBufferData,
+                       glActiveTexture, glBufferData,
                        GL_TEXTURE0, GL_TEXTURE_CUBE_MAP, GL_ELEMENT_ARRAY_BUFFER, GL_UNSIGNED_INT, GL_CULL_FACE,
                        GL_TRIANGLES, GL_LESS, GL_LEQUAL, GL_FLOAT, GL_ARRAY_BUFFER, GL_STATIC_DRAW)
 
 from pyglm import glm
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
-from graphics.utils import trimesh_from_arrays, load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
+from graphics.utils import trimesh_from_arrays, load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, \
+    DeltaTimeTransformer
 from graphics.lights import Sun, Light, PointLight, AreaLight
+from graphics.movement import TransformMixin
 
 
 class MaterialData:
@@ -308,11 +310,12 @@ class Asset:
         return 0
 
 
-class Instance:
+class Instance(TransformMixin):
     """
     Logical instance of an Asset in the scene. Renderer-agnostic.
     This class is the single source of truth for an instance's transform.
     """
+
     def __init__(self,
                  asset: Asset,
                  transform: Optional[Union[glm.mat4, ArrayLike]] = None,
@@ -351,66 +354,22 @@ class Instance:
         """
         return DeltaTimeTransformer(self, delta_time)
 
-    @property
-    def position(self):
-        return glm.vec3(self.transform[3])
-
-    @position.setter
-    def position(self, value: Union[glm.vec3, ArrayLike]):
-        self.transform[3] = glm.vec4(glm.vec3(value), 1.0)
-
-    def translate(self, translation: Union[glm.vec3, ArrayLike]):
-        self.transform = glm.translate(self.transform, glm.vec3(translation))
-        return self
-
-    def rotate_axis(self, angle: float, axis: Union[str, glm.vec3, ArrayLike], degrees: bool = True):
-        """
-        Rotates the instance around a given axis
-        """
-
-        if isinstance(axis, str):
-            axis_str = axis.lower()
-            axis_map = {
-                'x': WORLD_RIGHT,
-                'y': WORLD_UP,
-                'z': WORLD_FORWARD,
-                'right': WORLD_RIGHT,
-                'left': -WORLD_RIGHT,
-                'up': WORLD_UP,
-                'down': -WORLD_UP,
-                'forward': WORLD_FORWARD,
-                'backward': -WORLD_FORWARD,
-                'yaw': WORLD_UP,
-                'pitch': WORLD_RIGHT,
-                'roll': WORLD_FORWARD,
-            }
-            try:
-                rotation_axis = axis_map[axis_str]
-            except KeyError:
-                raise ValueError(f"Unknown axis identifier: '{axis}'. Valid options are: {list(axis_map.keys())}")
-        else:
-            rotation_axis = glm.vec3(axis)
-
-        angle_rad = glm.radians(angle) if degrees else angle
-        self.transform = glm.rotate(self.transform, angle_rad, rotation_axis)
-        return self
-
     def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0, degrees: bool = True):
-        """ Rotates the instance by given Euler angle deltas """
-
+        """
+        Rotates the instance by given Euler angle deltas.
+        (for Instance objects, rotations are applied around world axes sequentially)
+        """
         if yaw_delta != 0.0:
             self.transform = glm.rotate(self.transform, glm.radians(yaw_delta) if degrees else yaw_delta, WORLD_UP)
 
         if pitch_delta != 0.0:
-            self.transform = glm.rotate(self.transform, glm.radians(pitch_delta) if degrees else pitch_delta, WORLD_RIGHT)
+            self.transform = glm.rotate(self.transform, glm.radians(pitch_delta) if degrees else pitch_delta,
+                                        WORLD_RIGHT)
 
         if roll_delta != 0.0:
-            self.transform = glm.rotate(self.transform, glm.radians(roll_delta) if degrees else roll_delta, WORLD_FORWARD)
+            self.transform = glm.rotate(self.transform, glm.radians(roll_delta) if degrees else roll_delta,
+                                        WORLD_FORWARD)
 
-        return self
-
-    def scale(self, scale_factors: Union[glm.vec3, ArrayLike]):
-        self.transform = glm.scale(self.transform, glm.vec3(scale_factors))
         return self
 
 
@@ -458,8 +417,8 @@ class Skybox:
         glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, None)
         glBindVertexArray(0)
 
-        glEnable(GL_CULL_FACE) # Re-enable culling for the rest of the scene
-        glDepthFunc(GL_LESS) # restore default depth function
+        glEnable(GL_CULL_FACE)  # Re-enable culling for the rest of the scene
+        glDepthFunc(GL_LESS)  # restore default depth function
 
 
 class Scene:
@@ -481,7 +440,8 @@ class Scene:
         )
         self._sun.from_angles(azimuth=4.84, elevation=39.75)
 
-    def add_instance(self, asset: Union[Asset, str], transform: Optional[Union[glm.mat4, ArrayLike]] = None, **kwargs) -> Instance:
+    def add_instance(self, asset: Union[Asset, str], transform: Optional[Union[glm.mat4, ArrayLike]] = None,
+                     **kwargs) -> Instance:
 
         if isinstance(asset, Asset):
             asset_obj = asset
@@ -584,14 +544,14 @@ class Scene:
     @property
     def skybox(self):
         return self._skybox
-    
+
     def add_skybox(self, texture_path: str):
         """Creates and loads a skybox from a directory of textures."""
         self._skybox = Skybox(texture_path)
-    
+
     def clear_skybox(self):
         self._skybox = None
-    
+
     @property
     def sun(self) -> Optional[Sun]:
         return self._sun

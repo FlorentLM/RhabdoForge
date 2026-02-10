@@ -4,7 +4,7 @@ from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
 from graphics.renderers.raytracer import Raytracer
 from graphics.context import Context
-from graphics.trajectories import Curve, Trajectory
+from graphics.movement import Curve, Trajectory
 from graphics.utils import extract_obj_curves
 
 
