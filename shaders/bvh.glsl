@@ -214,7 +214,7 @@ float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max) {
     vec3 tmax_v = max(t0, t1);
     float tmin = max(max(tmin_v.x, tmin_v.y), tmin_v.z);
     float tmax = min(min(tmax_v.x, tmax_v.y), tmax_v.z);
-    return (tmax >= max(tmin, 0.0)) ? tmin : 1e30;
+    return (tmax >= max(tmin, 0.0)) ? tmin : 1.0/0.0;
 }
 
 // ================================= Forward declarations ==========================================
