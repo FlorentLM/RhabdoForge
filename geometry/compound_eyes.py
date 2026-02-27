@@ -326,10 +326,10 @@ class CompoundEye:
                  eye_id: Optional[Union[int, ArrayLike]] = None,
                  custom_ids: Optional[Union[ArrayLike, int]] = None,
                  eye_parameter: Optional[Union[float, Tuple]] = None,
-                 lens_diameter: Optional[Union[float, Tuple]] = None,
-                 rhabdom_diameter: Optional[Union[float, Tuple]] = None,
-                 focal_length: Optional[Union[float, Tuple]] = None,
-                 wavelength: float = 500e-9,  # TODO: this is a nice temporary value, but the shaders will compute the 3 channels independently
+                 lens_diameter_nm: Optional[Union[float, Tuple]] = None,
+                 rhabdom_diameter_nm: Optional[Union[float, Tuple]] = None,
+                 focal_length_nm: Optional[Union[float, Tuple]] = None,
+                 wavelength_nm: float = 500,  # TODO: this is a temporary value, the shaders should eventually compute the 3 channels independently
                  eye_radius: float = 0.01,
                  force_isotropic: bool = False
                  ):
@@ -448,7 +448,6 @@ class CompoundEye:
             print("Using provided interommatidial angles.")
             angles_arr = np.asarray(interommatidial_angles_rad, dtype=np.float32)
 
-            # Broadcast the user's data to the correct shape
             if angles_arr.shape == (self.num_ommatidia,):
                 angles_broadcast = angles_arr[:, np.newaxis]
             else:
@@ -473,18 +472,18 @@ class CompoundEye:
             print("Using provided acceptance angles (Δρ).")
             estimated_angles = acceptance_angles_rad
 
-        elif all(p is not None for p in [lens_diameter, rhabdom_diameter, focal_length]):
+        elif all(p is not None for p in [lens_diameter_nm, rhabdom_diameter_nm, focal_length_nm]):
             # Priority 2: Estimate from optical parameters
             print("Calculating acceptance angles (Δρ) from physical optical parameters.")
-            D_minor, D_major = self._unpack(lens_diameter, "lens_diameter")
-            d_minor, d_major = self._unpack(rhabdom_diameter, "rhabdom_diameter")
-            f_minor, f_major = self._unpack(focal_length, "focal_length")
+            D_minor, D_major = self._unpack(lens_diameter_nm, "lens_diameter")
+            d_minor, d_major = self._unpack(rhabdom_diameter_nm, "rhabdom_diameter")
+            f_minor, f_major = self._unpack(focal_length_nm, "focal_length")
 
-            delta_phi_optics_minor = wavelength / D_minor
+            delta_phi_optics_minor = wavelength_nm / D_minor
             delta_phi_receptor_minor = d_minor / f_minor
             angles_minor_rad = np.sqrt(delta_phi_optics_minor ** 2 + delta_phi_receptor_minor ** 2)
 
-            delta_phi_optics_major = wavelength / D_major
+            delta_phi_optics_major = wavelength_nm / D_major
             delta_phi_receptor_major = d_major / f_major
             angles_major_rad = np.sqrt(delta_phi_optics_major ** 2 + delta_phi_receptor_major ** 2)
             estimated_angles = np.vstack([angles_minor_rad, angles_major_rad]).T
@@ -506,7 +505,14 @@ class CompoundEye:
                 estimated_angles = np.vstack([mean_angles, mean_angles]).T
 
         # Set acceptance angles
-        self._set_acceptance_angles(estimated_angles)
+        if estimated_angles is None:
+            raise AttributeError("Warning: No acceptance angles were provided or could be estimated.")
+
+        angles_arr = np.asarray(estimated_angles, dtype=np.float32)
+        if angles_arr.shape == (self.num_ommatidia,):
+            self.data['acceptance_angles'] = angles_arr[:, np.newaxis]
+        else:
+            self.data['acceptance_angles'] = angles_arr
 
         # Now that Δρ and Δφ are known, calculate the resulting eye parameter p
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -537,26 +543,6 @@ class CompoundEye:
             return self._prepare_param(param[0], f"{name}_minor"), self._prepare_param(param[1], f"{name}_major")
         p_scalar = self._prepare_param(param, name)
         return p_scalar, p_scalar
-
-    def _set_acceptance_angles(self, angles_rad: Union[np.ndarray, Tuple, float, None]):
-        """
-        Helper to assign acceptance angles to all ommatidia
-        """
-        if angles_rad is None:
-            print("Warning: No acceptance angles were provided or could be estimated.")
-            return
-
-        angles_arr = np.asarray(angles_rad, dtype=np.float32)
-
-        # This logic handles scalar, (2,), (N,), and (N,2) cases via broadcasting
-        if angles_arr.shape == (self.num_ommatidia,):
-            # If shape is (N,), broadcast to (N,2) for isotropic angles
-            self.data['acceptance_angles'] = angles_arr[:, np.newaxis]
-        else:
-            # Handles scalar -> (1,) -> (N,2) broadcasting
-            # Handles (2,) -> (N,2) broadcasting
-            # Handles (N,2) -> (N,2) direct assignment
-            self.data['acceptance_angles'] = angles_arr
 
     @property
     def interommatidial_angles_rad(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -839,8 +825,7 @@ class CompoundEye:
         center_direction = np.asarray(center_direction, dtype=np.float32)
         center_direction /= np.linalg.norm(center_direction)
 
-        # Convert the search angle (cone radius) to a Euclidean distance
-        # (chord length) on the unit sphere
+        # Convert the search angle (cone radius) to a Euclidean distance (chord length) on the unit sphere
         angle_rad = np.deg2rad(angle) if degrees else angle
         radius = 2.0 * np.sin(angle_rad / 2.0)
 
@@ -903,7 +888,7 @@ def estimate_lod(num_ommatidia: int) -> int:
 
 def icosahedron_faces() -> np.ndarray:
     """
-    Defines the base (z-axis aligned) icosahedron and returns the vertices for the 20 triangular faces
+    Defines the base (z-axis aligned) icosahedron and returns the vertices for the 20 triangular faces.
     """
     # TODO: Move this to the primitives file maybe?
 
@@ -964,7 +949,7 @@ def barycentric_coords(n_subdiv: int) -> np.ndarray:
 
 
 def subdivide_icosahedron(n_subdiv: int) -> np.ndarray:
-    """ Subdivides icosahedron using barycentric coordinates """
+    """Subdivides icosahedron using barycentric coordinates."""
 
     verts = icosahedron_faces()
     bary = barycentric_coords(n_subdiv)
