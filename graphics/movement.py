@@ -308,7 +308,7 @@ class CollisionMixin:
 
         return self
 
-    def query_whiskers(self, directions, max_dist=0.1):
+    def tactile_query(self, directions, max_dist=0.1):
         """
         Casts rays in given directions (e.g. tactile sensing with left/right antennae).
         Returns list of booleans (True if an obstacle is closer than max_dist).
