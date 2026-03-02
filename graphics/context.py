@@ -116,9 +116,9 @@ class Context:
         return not glfw.window_should_close(self.window)
 
     def scroll_callback(self, window, xoffset, yoffset):
-        if self.sun_control_mode and hasattr(self.renderer, 'sun'):
+        if self.sun_control_mode and self.scene and self.scene.sun:
             # scroll adjusts sun intensity
-            sun = self.renderer.scene.sun
+            sun = self.scene.sun
             intensity_factor = 1.1 ** yoffset  # yoffset > 0 => brighter
             sun.intensity = max(0.1, min(10.0, sun.intensity * intensity_factor))
         else:
@@ -220,8 +220,8 @@ class Context:
         self.last_mouse_pos = current_mouse_pos
 
         # Sun control: mouse orbits the sun around the scene
-        if self.sun_control_mode and hasattr(self.renderer.scene, 'sun'):
-            sun = self.renderer.scene.sun
+        if self.sun_control_mode and self.scene and self.scene.sun:
+            sun = self.scene.sun
             current_azimuth = sun.azimuth
             current_elevation = sun.elevation
             current_distance = sun.distance
