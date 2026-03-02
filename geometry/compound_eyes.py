@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, Union, Sequence
 import numpy as np
@@ -28,6 +29,32 @@ GPU_OMMATIDIUM_DTYPE = np.dtype([
 
 DEFAULT_ANGLE = 'deg'
 # DEFAULT_ANGLE = 'rad'
+
+
+@dataclass
+class RhabdomereLayout:
+    """Configuration for a specific biological rhabdomere layout."""
+    name: str
+    offsets_um: np.ndarray  # X and Y offsets in micrometres, shape (R, 2)
+    focal_length_um: float  # focal length (micrometres)
+    diameters_um: Optional[np.ndarray]  # diameter of each receptor, shape (R,)
+
+
+# # Data from Juusola et al. (Drosophila)
+# DROSOPHILA_RHABDOMERES = RhabdomereLayout(
+#     name="Drosophila_R1_R7",
+#     focal_length_um=21.0,
+#     offsets_um=np.array([
+#         [-1.6881, 1.0273],  # R1
+#         [-1.8046, -0.9934],  # R2
+#         [-1.7111, -2.9717],  # R3
+#         [-0.0025, -1.9261],  # R4
+#         [1.6690, -0.9493],  # R5
+#         [1.6567, 0.9762],  # R6
+#         [0.0045, -0.0113]  # R7/8 (Central)
+#     ]),
+#     diameters_um=np.array([1.86, 1.86, 1.86, 1.86, 1.86, 1.86, 1.57])
+# )
 
 
 def rotate_vectors(vectors: np.ndarray, axes: np.ndarray, angles: np.ndarray, degrees: bool = True) -> np.ndarray:
@@ -359,13 +386,13 @@ class CompoundEye:
 
         # Determine ommatidial directions
         if directions is not None:
-            # Priority 1: Direct directions are provided
+            # Priority 1: directions are provided
             print("Using provided direction vectors.")
             directions = np.asarray(directions, dtype=np.float32)
             nb_effective_dirs = len(directions)
 
         else:
-            # Priority 2: Generate directions from num_ommatidia
+            # Priority 2: Generate directions from ommatidia_count
             print(f"Generating uniform direction vectors for approx. {num_ommatidia} ommatidia.")
             lod = estimate_lod(num_ommatidia)
             directions = subdivide_icosahedron(lod)
@@ -373,36 +400,40 @@ class CompoundEye:
             if abs(num_ommatidia - nb_effective_dirs) > 1:
                 print(f"Note: Using {nb_effective_dirs} ommatidia to match subdivision level {lod}.")
 
-        self.num_ommatidia = nb_effective_dirs
-        self.data = np.zeros(self.num_ommatidia, dtype=GPU_OMMATIDIUM_DTYPE)
+        self.ommatidia_count = nb_effective_dirs
+        self.data = np.zeros(self.ommatidia_count, dtype=GPU_OMMATIDIUM_DTYPE)
 
-        self.ommatidia = OmmatidiaCollection(self.data, self)
+        self._is_rhabdomeres = False
+        self._lens_data = None
+        self.receptor_count = 1
 
+        # Directions
         norms = np.linalg.norm(directions, axis=1, keepdims=True)
         self.data['direction'][:, :3] = directions / norms
         self.data['direction'][:, 3] = 0.0  # w=0 for directions
 
-        # Ommatidia origins
+        # Origins
         if origins is not None:
             origins_arr = np.asarray(origins, dtype=np.float32)
             if origins_arr.ndim == 1 and origins_arr.shape[0] == 3:
-                print(f"Using a single origin {origins_arr} for all {self.num_ommatidia} ommatidia.")
-                self.data['origin'][:, :3] = origins_arr  # Broadcast single origin
-
-            elif origins_arr.shape == (self.num_ommatidia, 3):
+                print(f"Using a single origin {origins_arr} for all {self.ommatidia_count} ommatidia.")
                 self.data['origin'][:, :3] = origins_arr
+
+            elif origins_arr.shape == (self.ommatidia_count, 3):
+                self.data['origin'][:, :3] = origins_arr
+
             else:
                 raise ValueError(
-                    f"Invalid shape for 'origins': {origins_arr.shape}. Expected ({self.num_ommatidia}, 3) or (3,).")
+                    f"Invalid shape for 'origins': {origins_arr.shape}. Expected ({self.ommatidia_count}, 3) or (3,).")
         elif eye_radius > 0:
             self.data['origin'][:, :3] = self.data['direction'][:, :3] * eye_radius
-        # else: origins are already (0, 0, 0)
+
         self.data['origin'][:, 3] = 1.0  # w=1 for positions
 
-        # Set receptor sensitivities
+        # Metadata and packing
+        self.ommatidia = OmmatidiaCollection(self.data, self)   # temporary proxy for packing metadata
         self.ommatidia.sensitivity = sensitivities if sensitivities is not None else 1.0
 
-        # Prepare data for packing
         id_arr = np.zeros(self.num_ommatidia, dtype=np.uint32)
         if eye_id is not None:
             prepared_ids = self._prepare_param(eye_id, "eye_id")
@@ -424,47 +455,55 @@ class CompoundEye:
                 raise ValueError("Custom IDs must be in the range [0, 65535].")
             custom_ids_arr = prepared_custom_ids.astype(np.uint32)
 
-        packed_data = (id_arr & 0x07) | ((types_arr & 0x0F) << 3) | ((custom_ids_arr & 0xFFFF) << 11)
+        packed_data = (id_arr.astype(np.uint32) & 0x07) | \
+                      ((types_arr.astype(np.uint32) & 0x0F) << 3) | \
+                      ((custom_ids_arr.astype(np.uint32) & 0xFFFF) << 11)
         self.data['packed_data'] = packed_data
 
-        self.dirty_mask = np.zeros(self.num_ommatidia, dtype=bool)
+        # Prep spatial queries
+        self.dirty_mask = np.zeros(self.ommatidia_count, dtype=bool)
         self.needs_rebuild = {'direction': False, 'origin': True}
-
         self.kdtree_directions = KDTree(self.data['direction'][:, :3])
         self.kdtree_positions = KDTree(self.data['origin'][:, :3])
 
-        # Interommatidial angles (Δφ), tilt, and neighbours count
-
-        # Always compute lattice properties from the geometric layout (origins)
-        print("Estimating lattice properties (tilt, neighbours, IOA) from ommatidia origins...")
-        est_minor_rad, est_major_rad, tilts, counts = self._compute_lattice_properties()
-
-        # Always set the tilt and neighbour count from the geometric analysis
-        self.data['tilt'] = tilts
-        self.ommatidia.neighbours_count = counts
+        # Lattice geometry (Δφ and Tilt)
+        # (check if origins overlap: indicates loading a pre-expanded eye)  # TODO: Too fragile, maybe should just save th flag
+        is_pre_expanded = False
+        if self.ommatidia_count > 1:
+            if np.allclose(self.data['origin'][0], self.data['origin'][1], atol=1e-7):
+                is_pre_expanded = True
 
         if interommatidial_angles_rad is not None:
-            # Priority 1: User provides ground-truth angles. Override the estimates.
+            # Case A: User provided ground-truth angles
             print("Using provided interommatidial angles.")
             angles_arr = np.asarray(interommatidial_angles_rad, dtype=np.float32)
 
-            if angles_arr.shape == (self.num_ommatidia,):
-                angles_broadcast = angles_arr[:, np.newaxis]
+            if angles_arr.shape == (self.ommatidia_count,):
+                self.ioa_minor_rad = angles_arr
+                self.ioa_major_rad = angles_arr
             else:
-                angles_broadcast = np.broadcast_to(angles_arr, (self.num_ommatidia, 2))
+                angles_broadcast = np.broadcast_to(angles_arr, (self.ommatidia_count, 2))
+                self.ioa_minor_rad = np.minimum(angles_broadcast[:, 0], angles_broadcast[:, 1])
+                self.ioa_major_rad = np.maximum(angles_broadcast[:, 0], angles_broadcast[:, 1])
 
-            # Ensure minor is the smaller value
-            self.ioa_minor_rad = np.minimum(angles_broadcast[:, 0], angles_broadcast[:, 1])
-            self.ioa_major_rad = np.maximum(angles_broadcast[:, 0], angles_broadcast[:, 1])
+            self.data['interommatidial_angles'][:, 0] = self.ioa_minor_rad
+            self.data['interommatidial_angles'][:, 1] = self.ioa_major_rad
 
+        elif not is_pre_expanded:
+            # Case B: Standard lens eye, run estimation
+            print("Estimating lattice properties (tilt, neighbours, IOA) from ommatidia origins...")
+            est_minor, est_major, tilts, counts = self._compute_lattice_properties()
+
+            self.ioa_minor_rad, self.ioa_major_rad = est_minor, est_major
+            self.data['interommatidial_angles'][:, 0] = est_minor
+            self.data['interommatidial_angles'][:, 1] = est_major
+            self.data['tilt'] = tilts
+            self.ommatidia.neighbours_count = counts
         else:
-            # Priority 2: No angles provided, use estimated ones
-            print("Using estimated interommatidial angles.")
-            self.ioa_minor_rad = est_minor_rad
-            self.ioa_major_rad = est_major_rad
-
-        self.data['interommatidial_angles'][:, 0] = self.ioa_minor_rad
-        self.data['interommatidial_angles'][:, 1] = self.ioa_major_rad
+            # Case C: Pre-expanded (rhabdomeres) eye, read existing data
+            print("Detected pre-expanded data. Skipping geometric estimation.")
+            self.ioa_minor_rad = self.data['interommatidial_angles'][:, 0]
+            self.ioa_major_rad = self.data['interommatidial_angles'][:, 1]
 
         # Acceptance angles (Δρ)
         if acceptance_angles_rad is not None:
@@ -479,37 +518,27 @@ class CompoundEye:
             d_minor, d_major = self._unpack(rhabdom_diameter_nm, "rhabdom_diameter")
             f_minor, f_major = self._unpack(focal_length_nm, "focal_length")
 
-            delta_phi_optics_minor = wavelength_nm / D_minor
-            delta_phi_receptor_minor = d_minor / f_minor
-            angles_minor_rad = np.sqrt(delta_phi_optics_minor ** 2 + delta_phi_receptor_minor ** 2)
-
-            delta_phi_optics_major = wavelength_nm / D_major
-            delta_phi_receptor_major = d_major / f_major
-            angles_major_rad = np.sqrt(delta_phi_optics_major ** 2 + delta_phi_receptor_major ** 2)
-            estimated_angles = np.vstack([angles_minor_rad, angles_major_rad]).T
+            acc_min = np.sqrt((wavelength_nm / D_minor) ** 2 + (d_minor / f_minor) ** 2)
+            acc_maj = np.sqrt((wavelength_nm / D_major) ** 2 + (d_major / f_major) ** 2)
+            estimated_angles = np.vstack([acc_min, acc_maj]).T
         else:
             # Priority 3: Estimate from geometry using eye parameter 'p'
             p = eye_parameter if eye_parameter is not None else 1.0
             print(f"Estimating acceptance angles (Δρ) from interommatidial angles (Δφ) with eye parameter p={p}.")
-            p_minor, p_major = (p, p) if isinstance(p, (int, float)) else p
-            delta_rho_minor = p_minor * self.ioa_minor_rad
-            delta_rho_major = p_major * self.ioa_major_rad
-            estimated_angles = np.vstack([delta_rho_minor, delta_rho_major]).T
+            p_min, p_maj = (p, p) if isinstance(p, (int, float)) else p
+            estimated_angles = np.vstack([p_min * self.ioa_minor_rad, p_maj * self.ioa_major_rad]).T
 
         # Apply isotropic constraint if requested
-        if force_isotropic and estimated_angles is not None:
-            angles = np.asarray(estimated_angles)
-            if angles.ndim >= 1:
-                angles_2d = np.atleast_2d(angles)
-                mean_angles = np.mean(angles_2d, axis=1)
-                estimated_angles = np.vstack([mean_angles, mean_angles]).T
+        if force_isotropic:
+            mean_angles = np.mean(np.atleast_2d(estimated_angles), axis=1)
+            estimated_angles = np.vstack([mean_angles, mean_angles]).T
 
-        # Set acceptance angles
+        # Assign acceptance angles Δρ
         if estimated_angles is None:
             raise AttributeError("Warning: No acceptance angles were provided or could be estimated.")
 
         angles_arr = np.asarray(estimated_angles, dtype=np.float32)
-        if angles_arr.shape == (self.num_ommatidia,):
+        if angles_arr.shape == (self.ommatidia_count,):
             self.data['acceptance_angles'] = angles_arr[:, np.newaxis]
         else:
             self.data['acceptance_angles'] = angles_arr
@@ -523,17 +552,20 @@ class CompoundEye:
         np.nan_to_num(self.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         np.nan_to_num(self.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
+        # Final refresh of the proxy to ensure it captures everythign
+        self.ommatidia = OmmatidiaCollection(self.data, self)
+
     def _prepare_param(self, param, name="param"):
         """
         Ensures parameter is a numpy array of the correct shape
         """
         arr = np.asarray(param, dtype=np.float32)
         if arr.ndim == 0:
-            return np.full(self.num_ommatidia, arr.item())
-        if arr.ndim == 1 and len(arr) == self.num_ommatidia:
+            return np.full(self.ommatidia_count, arr.item())
+        if arr.ndim == 1 and len(arr) == self.ommatidia_count:
             return arr
         raise ValueError(
-            f"Parameter '{name}' has invalid shape. Must be scalar or 1D array of length {self.num_ommatidia}.")
+            f"Parameter '{name}' has invalid shape. Must be scalar or 1D array of length {self.ommatidia_count}.")
 
     def _unpack(self, param, name="param"):
         """
@@ -608,9 +640,9 @@ class CompoundEye:
         Returns:
             A tuple of numpy arrays: (ioa_minor_rad, ioa_major_rad, tilts_rad, neighbour_counts)
         """
-        if self.num_ommatidia <= k:
-            zeros = np.zeros(self.num_ommatidia, dtype=np.float32)
-            return zeros, zeros, zeros, np.zeros(self.num_ommatidia, dtype=np.uint32)
+        if self.ommatidia_count <= k:
+            zeros = np.zeros(self.ommatidia_count, dtype=np.float32)
+            return zeros, zeros, zeros, np.zeros(self.ommatidia_count, dtype=np.uint32)
 
         # Calculate physical direction vectors from a common center
         all_origins = self.data['origin'][:, :3]
@@ -625,8 +657,8 @@ class CompoundEye:
         neighbour_distances = distances[:, 1:]
 
         if neighbour_indices.size == 0:
-            zeros = np.zeros(self.num_ommatidia, dtype=np.float32)
-            return zeros, zeros, zeros, np.zeros(self.num_ommatidia, dtype=np.uint32)
+            zeros = np.zeros(self.ommatidia_count, dtype=np.float32)
+            return zeros, zeros, zeros, np.zeros(self.ommatidia_count, dtype=np.uint32)
 
         # Convert Euclidean distance on unit sphere to angular separation
         angular_separations = 2.0 * np.arcsin(np.clip(neighbour_distances / 2.0, -1.0, 1.0))
@@ -651,11 +683,11 @@ class CompoundEye:
         proj_x = np.sum(delta_vectors * local_x_axes[:, np.newaxis, :], axis=2)
         proj_y = np.sum(delta_vectors * local_y_axes[:, np.newaxis, :], axis=2)
 
-        tilts_rad = np.zeros(self.num_ommatidia, dtype=np.float32)
-        ioa_major_arr = np.zeros(self.num_ommatidia, dtype=np.float32)
-        ioa_minor_arr = np.zeros(self.num_ommatidia, dtype=np.float32)
+        tilts_rad = np.zeros(self.ommatidia_count, dtype=np.float32)
+        ioa_major_arr = np.zeros(self.ommatidia_count, dtype=np.float32)
+        ioa_minor_arr = np.zeros(self.ommatidia_count, dtype=np.float32)
 
-        for i in range(self.num_ommatidia):
+        for i in range(self.ommatidia_count):
             # Use only immediate neighbours for PCA
             immediate_mask = is_immediate_neighbour[i]
             points = np.vstack([proj_x[i, immediate_mask], proj_y[i, immediate_mask]]).T
@@ -714,7 +746,7 @@ class CompoundEye:
         single nearest neighbour, which represents the largest "gap" in the eye.
         """
 
-        if self.num_ommatidia == 1:
+        if self.ommatidia_count == 1:
             return 0.0
 
         distances, _ = self.kdtree_directions.query(self.data['direction'][:, :3], k=2)
@@ -844,7 +876,15 @@ class CompoundEye:
         return indices
 
     def __repr__(self):
-        summary = [f"<CompoundEye with {self.num_ommatidia} ommatidia>"]
+
+        nb_om = self.ommatidia_count
+        nb_rhab = self.receptor_count
+
+        if self.is_rhabdomeres:
+
+            summary = [f"<CompoundEye with {nb_om/nb_rhab}x{nb_rhab} rhabdomeres>"]
+        else:
+            summary = [f"<CompoundEye with {nb_om} ommatidia>"]
 
         # TODO: Add orientation?
 
@@ -873,6 +913,106 @@ class CompoundEye:
 
         return "\n".join(summary)
 
+    @property
+    def is_rhabdomeres(self) -> bool:
+        return self._is_rhabdomeres
+
+    def to_rhabdomeres(self, layout: 'RhabdomereLayout'):
+
+        if self._is_rhabdomeres:
+            return
+
+        # Store original lens lattice for collapse/referencing
+        self._lens_data = self.data.copy()
+        N = self.ommatidia_count
+        R = len(layout.offsets_um)
+
+        new_data = np.zeros(N * R, dtype=GPU_OMMATIDIUM_DTYPE)
+
+        lens_fwd = self.data['direction'][:, :3]
+        lens_pos = self.data['origin'][:, :3]
+
+        # tangent space
+        dots = np.abs(lens_fwd @ WORLD_UP)
+        ref_ups = np.where(dots[:, np.newaxis] > 0.9999, WORLD_RIGHT, WORLD_UP)
+        local_right = np.cross(lens_fwd, ref_ups)
+        local_right /= np.linalg.norm(local_right, axis=1, keepdims=True)
+        local_up = np.cross(local_right, lens_fwd)
+
+        # dx, dy = physical micrometres behind the lens
+        dx = layout.offsets_um[:, 0]
+        dy = layout.offsets_um[:, 1]
+        f = layout.focal_length_um
+
+        is_ventral = lens_pos[:, 1] < 0 # TODO: This should be a property maybe?
+
+        # Local vectors (from lens centre to receptor tip)
+        local_tip_offsets = np.tile(np.column_stack([dx, dy, np.full(R, -f)]), (N, 1, 1))
+        local_tip_offsets[is_ventral, :, 1] *= -1  # equator flip
+
+        # to world space
+        world_tip_offsets = (
+                local_tip_offsets[..., 0:1] * local_right[:, None, :] +
+                local_tip_offsets[..., 1:2] * local_up[:, None, :] +
+                local_tip_offsets[..., 2:3] * lens_fwd[:, None, :]
+        ).reshape(-1, 3)
+
+        # Origin is receptor tip
+        new_data['origin'][:, :3] = np.repeat(lens_pos, R, axis=0) + world_tip_offsets
+        new_data['origin'][:, 3] = 1.0
+
+        # Direction is the vector from the tip through the lens centre
+        # (which is -world_tip_offsets normalised)
+        new_dirs = -world_tip_offsets
+        new_dirs /= np.linalg.norm(new_dirs, axis=1, keepdims=True)
+        new_data['direction'][:, :3] = new_dirs
+
+        # inherit the Δφ and Tilt from the parent lens lattice
+        # (allows the L-cell neurons to know the lens spacing even in rhabdomere mode)
+        new_data['interommatidial_angles'] = np.repeat(self.data['interommatidial_angles'], R, axis=0)
+        new_data['tilt'] = np.repeat(self.data['tilt'], R)
+        new_data['acceptance_angles'][:, 0] = np.tile(layout.diameters_um / f, N)
+        new_data['acceptance_angles'][:, 1] = np.tile(layout.diameters_um / f, N)
+
+        eye_ids = np.repeat(self.ommatidia.eye_id, R)
+        receptor_types = np.tile(np.arange(R), N)
+        parent_ids = np.repeat(np.arange(N), R)
+        new_data['packed_data'] = (eye_ids & 0x07) | ((receptor_types & 0x0F) << 3) | ((parent_ids & 0xFFFF) << 11)
+
+        self.data = new_data
+        self.ommatidia_count = N * R    # TODO: maybe this should always store the lens count
+        self.receptor_count = R
+        self._is_rhabdomeres = True
+
+        self.ommatidia = OmmatidiaCollection(self.data, self)
+
+        self.needs_rebuild['direction'] = True
+        self.needs_rebuild['origin'] = True
+        self.rebuild_spatial()
+
+    def from_rhabdomeres(self):
+        """
+        Collapses the receptor array back into a single lens lattice.
+        """
+        if not self._is_rhabdomeres or self._lens_data is None:
+            print("Eye is not in rhabdomere mode.")
+            return
+
+        # Restore cached lens lattice
+        self.data = self._lens_data
+        self.ommatidia_count = len(self.data)
+        self.receptor_count = 1
+        self._is_rhabdomeres = False
+        self._lens_data = None
+
+        self.ommatidia = OmmatidiaCollection(self.data, self)
+
+        self.needs_rebuild['direction'] = True
+        self.needs_rebuild['origin'] = True
+        self.rebuild_spatial()
+
+
+##
 
 def estimate_lod(num_ommatidia: int) -> int:
     """

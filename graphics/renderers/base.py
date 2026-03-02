@@ -49,7 +49,7 @@ class BaseInsectEyeRenderer(ABC):
         self.model: CompoundEye = eye_model
         self.scene: Scene
 
-        self.num_ommatidia = self.model.num_ommatidia
+        self.num_ommatidia = self.model.ommatidia_count
         self.ommatidia_input_data = self.model.data
         self._samples_per_ommatidium = nb_samples
         self._time_dithering = time_dithering
