@@ -1,8 +1,10 @@
 #version 430 core
 
-// Simple raytracing for perspective view (no path tracing)
-
+#ifdef PATH_TRACING
+#include "trace_path.glsl"
+#else
 #include "trace_simple.glsl"
+#endif
 
 layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
