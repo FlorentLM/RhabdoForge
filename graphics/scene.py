@@ -24,7 +24,7 @@ from pyglm import glm
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
 from graphics.utils import trimesh_from_arrays, load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, \
     DeltaTimeTransformer
-from graphics.lights import Sun, Light, PointLight, AreaLight
+from graphics.lights import Sun, Light, DirectionalLight, PointLight, AreaLight
 from graphics.movement import TransformMixin
 
 
@@ -38,7 +38,7 @@ class MaterialData:
 
 
 class AssetType(Enum):
-    """ Distinguishes between different types of geometry assets """
+    """Distinguishes between different types of geometry assets."""
     Mesh = auto()
     Points = auto()
 
@@ -76,7 +76,7 @@ class Asset:
     @property
     def texture_image(self) -> Optional[Image.Image]:
         """
-        Returns the texture as a PIL Image lazily.
+        Returns the texture as a PIL Image (lazily).
         Or None if no texture available.
         """
         if self._texture_image is not None:
@@ -434,11 +434,10 @@ class Scene:
 
         self._lights: List[Light] = []
 
-        self._sun = Sun(
-            intensity=1.0,
-            angular_size=0.05
-        )
-        self._sun.from_angles(azimuth=4.84, elevation=39.75)
+        default_sun = Sun(intensity=1.0, angular_size=0.05)
+        default_sun.from_angles(azimuth=4.84, elevation=39.75)
+
+        self._lights.append(default_sun)
 
     def add_instance(self, asset: Union[Asset, str], transform: Optional[Union[glm.mat4, ArrayLike]] = None,
                      **kwargs) -> Instance:
@@ -554,38 +553,40 @@ class Scene:
 
     @property
     def sun(self) -> Optional[Sun]:
-        return self._sun
+        """returns the first Sun in the light list (or None)."""
+        return next((l for l in self._lights if isinstance(l, Sun)), None)
 
     @sun.setter
     def sun(self, value: Optional[Sun]):
-        self._sun = value
+        """Replace the current Sun (if any) in the light list."""
+        self._lights = [l for l in self._lights if not isinstance(l, Sun)]
+        if value is not None:
+            self._lights.insert(0, value)
 
     @property
     def lights(self) -> List[Light]:
         return self._lights
 
     def add_light(self, light: Light):
-        if isinstance(light, Sun):
-            print("[WARN] Use scene.sun = ... to set the sun, not add_light()")
-            self._sun = light
-        else:
-            self._lights.append(light)
+        self._lights.append(light)
 
     def remove_light(self, light: Light):
         if light in self._lights:
             self._lights.remove(light)
-        elif light is self._sun:
-            self._sun = None
 
     def clear_lights(self):
         self._lights.clear()
 
     @property
-    def point_lights(self) -> List['PointLight']:
+    def directional_lights(self) -> List[DirectionalLight]:
+        return [l for l in self._lights if isinstance(l, DirectionalLight)]
+
+    @property
+    def point_lights(self) -> List[PointLight]:
         return [l for l in self._lights if isinstance(l, PointLight)]
 
     @property
-    def area_lights(self) -> List['AreaLight']:
+    def area_lights(self) -> List[AreaLight]:
         return [l for l in self._lights if isinstance(l, AreaLight)]
 
     @property

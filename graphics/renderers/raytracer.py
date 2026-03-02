@@ -2,7 +2,7 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import Tuple, List, Dict, Optional
+from typing import Tuple, List, Dict, Optional, Set
 from enum import IntEnum
 import numpy as np
 from PIL import Image
@@ -13,18 +13,12 @@ from graphics.agent import Agent
 from graphics.renderers.base import BaseInsectEyeRenderer
 from graphics.scene import Scene, AssetType
 from graphics.lights import (
-    Sun, PointLight, AreaLight,
-    point_light_dtype, area_light_dtype, pack_point_light, pack_area_light
+    DirectionalLight, PointLight, AreaLight,
+    directional_light_dtype, point_light_dtype, area_light_dtype,
+    pack_directional_light, pack_point_light, pack_area_light
 )
 from graphics.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
 from graphics.renderers.panoramic import TextureViewer
-
-
-class LightType(IntEnum):
-    """Light type enum matching the shader's primary_light_type uniform."""
-    DIRECTIONAL = 0  # Sun-like directional light
-    POINT = 1        # Point light
-    AREA = 2         # Area light
 
 
 # Custom detailed dtype for the GPU SSBO
@@ -67,6 +61,7 @@ class RaytracingSceneBaker:
         self.instances_info_ssbo, self.tlas_indices_ssbo = 0, 0
 
         # OpenGL handles for lights
+        self.directional_lights_ssbo = 0
         self.point_lights_ssbo = 0
         self.area_lights_ssbo = 0
 
@@ -76,6 +71,7 @@ class RaytracingSceneBaker:
         self.asset_to_blas_map: Dict[int, Dict] = {}
 
         # Light counts (for uniform upload)
+        self.num_directional_lights = 0
         self.num_point_lights = 0
         self.num_area_lights = 0
 
@@ -98,20 +94,42 @@ class RaytracingSceneBaker:
 
         print("Ray-tracing scene baking complete.")
 
+    def _filter_active_lights(self):
+        """Returns active (enabled, intensity > 0) lights grouped by type."""
+        directional = [l for l in self.scene.lights
+                       if isinstance(l, DirectionalLight) and l.enabled and l.intensity > 0]
+
+        point = [l for l in self.scene.lights
+                 if isinstance(l, PointLight) and l.enabled and l.intensity > 0]
+
+        area = [l for l in self.scene.lights
+                if isinstance(l, AreaLight) and l.enabled and l.intensity > 0]
+
+        return directional, point, area
+
     def _pack_lights(self):
-        """Packs all lights from the scene into GPU SSBOs."""
 
-        point_lights = [l for l in self.scene.lights if isinstance(l, PointLight) and l.enabled and l.intensity > 0]
-        area_lights = [l for l in self.scene.lights if isinstance(l, AreaLight) and l.enabled and l.intensity > 0]
+        directional_lights, point_lights, area_lights = self._filter_active_lights()
 
+        self.num_directional_lights = len(directional_lights)
         self.num_point_lights = len(point_lights)
         self.num_area_lights = len(area_lights)
+
+        # Pack directional lights
+        if directional_lights:
+            packed = np.concatenate([pack_directional_light(l) for l in directional_lights])
+        else:
+            packed = np.zeros(1, dtype=directional_light_dtype)
+
+        self.directional_lights_ssbo = glGenBuffers(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.directional_lights_ssbo)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, packed.nbytes, packed, GL_DYNAMIC_DRAW)
 
         # Pack point lights
         if point_lights:
             packed = np.concatenate([pack_point_light(l) for l in point_lights])
         else:
-            packed = np.zeros(1, dtype=point_light_dtype)   # TODO: These should be compile-time omitted instead of dummy
+            packed = np.zeros(1, dtype=point_light_dtype)
 
         self.point_lights_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.point_lights_ssbo)
@@ -129,19 +147,24 @@ class RaytracingSceneBaker:
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
-        if self.num_point_lights > 0 or self.num_area_lights > 0:
-            print(f"Packed {self.num_point_lights} point lights, {self.num_area_lights} area lights")
+        total = self.num_directional_lights + self.num_point_lights + self.num_area_lights
+        if total > 0:
+            print(f"Packed {self.num_directional_lights} directional, "
+                  f"{self.num_point_lights} point, {self.num_area_lights} area lights")
 
     def update_lights(self):
         """Re-packs lights if they have changed."""
 
-        point_lights = [l for l in self.scene.lights
-                        if isinstance(l, PointLight) and l.enabled and l.intensity > 0]
-        area_lights = [l for l in self.scene.lights
-                       if isinstance(l, AreaLight) and l.enabled and l.intensity > 0]
+        directional_lights, point_lights, area_lights = self._filter_active_lights()
 
+        self.num_directional_lights = len(directional_lights)
         self.num_point_lights = len(point_lights)
         self.num_area_lights = len(area_lights)
+
+        if directional_lights:
+            packed = np.concatenate([pack_directional_light(l) for l in directional_lights])
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.directional_lights_ssbo)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, packed.nbytes, packed, GL_DYNAMIC_DRAW)
 
         if point_lights:
             packed = np.concatenate([pack_point_light(l) for l in point_lights])
@@ -438,6 +461,8 @@ class RaytracingSceneBaker:
     def update(self):
         """ Pulls transforms from dynamic scene instances, updates and refits the TLAS, and uploads to GPU """
 
+        self.update_lights()
+
         if not self.dynamic_instance_map or self.TLAS is None:
             return
 
@@ -514,7 +539,7 @@ class RaytracingSceneBaker:
             self.vertices_ssbo, self.indices_ssbo, self.points_ssbo, self.materials_ssbo,
             self.tlas_nodes_ssbo, self.blas_nodes_ssbo, self.instances_info_ssbo,
             self.tlas_indices_ssbo, self.blas_indices_ssbo,
-            self.point_lights_ssbo, self.area_lights_ssbo,
+            self.directional_lights_ssbo, self.point_lights_ssbo, self.area_lights_ssbo,
         ] if b != 0]
 
         if buffers:
@@ -527,12 +552,7 @@ class RaytracingSceneBaker:
 class Raytracer(BaseInsectEyeRenderer):
     """
     Raytracer for compound eye rendering.
-    For path tracing, use PathTracer subclass instead.
     """
-
-    OMMATIDIA_SHADER = 'shaders/ommatidia_raytracing.comp'
-    PANORAMIC_SHADER = 'shaders/panoramic_raytracing.comp'
-    PERSPECTIVE_SHADER = 'shaders/perspective_raytracing.comp'
 
     def __init__(self, eye_model, scene: Scene,
                  time_dithering: bool = True,
@@ -553,6 +573,10 @@ class Raytracer(BaseInsectEyeRenderer):
         self.enable_shadows = enable_shadows
         self.ambient_intensity = 1.0
         self.sky_intensity = 1.0
+
+        # just to keep track of which defines were used for shader compilation
+        # (so we can change and recompile when needed)
+        self._active_light_defines: Set[str] = set()
 
         # super().__init__ *after* baking the scene to estimate VRAM
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
@@ -606,19 +630,68 @@ class Raytracer(BaseInsectEyeRenderer):
         glBufferData(GL_SHADER_STORAGE_BUFFER, required_buffer_size, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
-    def _compile_shaders(self):
-        """Compiles the appropriate shaders based on multi-light mode."""
-        print(f"Compiling {'multi-light' if self.lights_count > 1 else 'single-light'} ray-tracing shaders...")
+    def _get_light_defines(self) -> Set[str]:
+        """
+        Determines which #defines to inject based on the current light counts.
+        """
+        baker = self._scene_baked
+        defines = set()
 
-        shader_path = self.OMMATIDIA_SHADER_ML if self.lights_count > 1 else self.OMMATIDIA_SHADER  # TODO: get rid of the duplicate shaders, inject the define before compile
-        self.raytrace_shader = ShaderProgram(comp_path=shader_path)
+        if baker.num_directional_lights == 1:
+            defines.add('HAS_DIRECTIONAL_LIGHT')
+        elif baker.num_directional_lights > 1:
+            defines.add('HAS_DIRECTIONAL_LIGHT')
+            defines.add('MULTI_DIRECTIONAL')
+
+        if baker.num_point_lights == 1:
+            defines.add('HAS_POINT_LIGHT')
+        elif baker.num_point_lights > 1:
+            defines.add('HAS_POINT_LIGHT')
+            defines.add('MULTI_POINT')
+
+        if baker.num_area_lights == 1:
+            defines.add('HAS_AREA_LIGHT')
+        elif baker.num_area_lights > 1:
+            defines.add('HAS_AREA_LIGHT')
+            defines.add('MULTI_AREA')
+
+        return defines
+
+    def _compile_shaders(self):
+
+        defines = self._get_light_defines()
+        self._active_light_defines = defines
+
+        define_names = sorted(defines) if defines else ['(none)']
+        print(f"Compiling ray-tracing shaders with defines: {', '.join(define_names)}")
+
+        self.raytrace_shader = ShaderProgram(comp_path='shaders/ommatidia_raytracing.comp', defines=defines)
         self.reduction_shader = ShaderProgram(comp_path='shaders/rays_reduction.comp')
+
+    def _check_recompile(self):
+        """Check if light configuration changed and recompile shaders if needed."""
+
+        new_defines = self._get_light_defines()
+        if new_defines != self._active_light_defines:
+            print("Light configuration changed, recompiling shaders...")
+
+            if self.raytrace_shader:
+                self.raytrace_shader.free()
+
+            if self.panoramic_shader:
+                self.panoramic_shader.free()
+                self.panoramic_shader = None
+
+            if self.perspective_shader:
+                self.perspective_shader.free()
+                self.perspective_shader = None
+
+            self._compile_shaders()
 
     @property
     def lights_count(self) -> int:
-        total_lights = (1 if (self.scene.sun and self.scene.sun.enabled and self.scene.sun.intensity > 0) else 0)
-        total_lights += self._scene_baked.num_point_lights + self._scene_baked.num_area_lights
-        return total_lights
+        baker = self._scene_baked
+        return baker.num_directional_lights + baker.num_point_lights + baker.num_area_lights
 
     def estimate_vram_usage(self) -> float:
         """Override base method to provide a more accurate VRAM estimate for the raytracer."""
@@ -643,8 +716,8 @@ class Raytracer(BaseInsectEyeRenderer):
         """Creates all resources needed for the panoramic view."""
 
         if self.panoramic_shader is None:
-            shader_path = self.PANORAMIC_SHADER_ML if self.lights_count > 1 else self.PANORAMIC_SHADER
-            self.panoramic_shader = ShaderProgram(comp_path=shader_path)
+            defines = self._get_light_defines()
+            self.panoramic_shader = ShaderProgram(comp_path='shaders/panoramic_raytracing.comp', defines=defines)
 
         if self._pano_texture_id == 0:
             texture_id = glGenTextures(1)
@@ -665,8 +738,8 @@ class Raytracer(BaseInsectEyeRenderer):
     def _initialize_persp_resources(self):
 
         if self.perspective_shader is None:
-            shader_path = self.PERSPECTIVE_SHADER_ML if self.lights_count > 1 else self.PERSPECTIVE_SHADER
-            self.perspective_shader = ShaderProgram(comp_path=shader_path)
+            defines = self._get_light_defines()
+            self.perspective_shader = ShaderProgram(comp_path='shaders/perspective_raytracing.comp', defines=defines)
 
         if self._persp_res is None:
             viewport = glGetIntegerv(GL_VIEWPORT)
@@ -700,10 +773,10 @@ class Raytracer(BaseInsectEyeRenderer):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, self._scene_baked.tlas_indices_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, self._scene_baked.blas_indices_ssbo)
 
-        # Bindings 11-12 are lights (only in multi-light mode)
-        if self.lights_count > 1:
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, self._scene_baked.point_lights_ssbo)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, self._scene_baked.area_lights_ssbo)
+        # Bindings 11-13 are lights
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, self._scene_baked.directional_lights_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, self._scene_baked.point_lights_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 13, self._scene_baked.area_lights_ssbo)
 
     def _bind_textures(self, shader: ShaderProgram):
         """Binds skybox and material textures."""
@@ -716,27 +789,6 @@ class Raytracer(BaseInsectEyeRenderer):
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, self._scene_baked.tex_array)
         glUniform1i(shader.get_loc('scene_textures'), 1)
-
-    def _get_primary_light(self):
-        """
-        Returns the primary light and its type.
-        Priority: Sun > first PointLight > first AreaLight
-        """
-        sun = self.scene.sun
-        if sun is not None and sun.enabled and sun.intensity > 0:
-            return sun, LightType.DIRECTIONAL
-
-        # Check for point lights
-        for light in self.scene.lights:
-            if isinstance(light, PointLight) and light.enabled and light.intensity > 0:
-                return light, LightType.POINT
-
-        # Check for area lights
-        for light in self.scene.lights:
-            if isinstance(light, AreaLight) and light.enabled and light.intensity > 0:
-                return light, LightType.AREA
-
-        return None, None
 
     def _set_common_uniforms(self, shader: ShaderProgram):
 
@@ -758,58 +810,10 @@ class Raytracer(BaseInsectEyeRenderer):
         glUniform1i(shader.get_loc('enable_shadows'), int(self.enable_shadows))
         glUniform1f(shader.get_loc('ambient_intensity'), self.ambient_intensity)
 
-        # Primary light
-        primary_light, light_type = self._get_primary_light()
-        has_primary = primary_light is not None
-
-        glUniform1i(shader.get_loc('primary_light_enabled'), int(has_primary))
-
-        if has_primary:
-            glUniform1i(shader.get_loc('primary_light_type'), int(light_type))
-            glUniform1i(shader.get_loc('primary_light_shadows'), int(primary_light.cast_shadows))
-
-            if light_type == LightType.DIRECTIONAL:
-                # Sun / directional light
-                sun = primary_light
-                glUniform3f(shader.get_loc('primary_light_dir'), sun.direction.x, sun.direction.y, sun.direction.z)
-                glUniform3f(shader.get_loc('primary_light_pos'), 0.0, 0.0, 0.0)  # unused for directional
-                glUniform3f(shader.get_loc('primary_light_color'), sun.color.x, sun.color.y, sun.color.z)
-                glUniform1f(shader.get_loc('primary_light_intensity'), sun.intensity)
-                glUniform1f(shader.get_loc('primary_light_radius'), sun.angular_radius)
-
-            elif light_type == LightType.POINT:
-                # Point light as primary
-                light = primary_light
-                pos = light.position
-                glUniform3f(shader.get_loc('primary_light_dir'), 0.0, 1.0, 0.0)  # unused for point
-                glUniform3f(shader.get_loc('primary_light_pos'), pos.x, pos.y, pos.z)
-                glUniform3f(shader.get_loc('primary_light_color'), light.color.x, light.color.y, light.color.z)
-                glUniform1f(shader.get_loc('primary_light_intensity'), light.intensity)
-                glUniform1f(shader.get_loc('primary_light_radius'), light.radius)
-
-            elif light_type == LightType.AREA:
-                # Area light as primary
-                light = primary_light
-                pos = light.position
-                glUniform3f(shader.get_loc('primary_light_dir'), light.normal.x, light.normal.y, light.normal.z)
-                glUniform3f(shader.get_loc('primary_light_pos'), pos.x, pos.y, pos.z)
-                glUniform3f(shader.get_loc('primary_light_color'), light.color.x, light.color.y, light.color.z)
-                glUniform1f(shader.get_loc('primary_light_intensity'), light.intensity)
-                glUniform1f(shader.get_loc('primary_light_radius'), 0.0)
-        else:
-            # No primary light, null defaults
-            glUniform1i(shader.get_loc('primary_light_type'), 0)
-            glUniform3f(shader.get_loc('primary_light_dir'), 0.0, 1.0, 0.0)
-            glUniform3f(shader.get_loc('primary_light_pos'), 0.0, 0.0, 0.0)
-            glUniform3f(shader.get_loc('primary_light_color'), 1.0, 1.0, 1.0)
-            glUniform1f(shader.get_loc('primary_light_intensity'), 0.0)
-            glUniform1f(shader.get_loc('primary_light_radius'), 0.0)
-            glUniform1i(shader.get_loc('primary_light_shadows'), 0)
-
-        # Additional lights counts
-        if self.lights_count > 1:
-            glUniform1i(shader.get_loc('num_point_lights'), self._scene_baked.num_point_lights)
-            glUniform1i(shader.get_loc('num_area_lights'), self._scene_baked.num_area_lights)
+        # Light counts
+        glUniform1i(shader.get_loc('directional_lights_count'), self._scene_baked.num_directional_lights)
+        glUniform1i(shader.get_loc('point_lights_count'), self._scene_baked.num_point_lights)
+        glUniform1i(shader.get_loc('area_lights_count'), self._scene_baked.num_area_lights)
 
     def _bind_resources(self, shader: ShaderProgram):
         """
@@ -934,7 +938,7 @@ class Raytracer(BaseInsectEyeRenderer):
         self.reduction_shader.stop()
 
     def _compute_colors(self, agent):
-        """ The core ommatidia rendering logic """
+        """The core ommatidia rendering logic."""
 
         # First refresh the scene for anything that moved / changed
         self._scene_baked.update()
@@ -946,7 +950,7 @@ class Raytracer(BaseInsectEyeRenderer):
         self._reduction()
 
         # Unbind all resources
-        for i in range(13):
+        for i in range(14):
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0)
 
         glActiveTexture(GL_TEXTURE0)
@@ -982,7 +986,7 @@ class Raytracer(BaseInsectEyeRenderer):
             self._draw_eye_model(point_of_view, agent)
 
     def free(self):
-        """Frees all GPU resources, including shaders and all buffers."""
+        """Frees all GPU resources."""
 
         glDeleteBuffers(1, [self.ray_results_ssbo])
         if self.raytrace_shader: self.raytrace_shader.free()
@@ -1004,11 +1008,6 @@ class PathTracer(Raytracer):
     """
     Path tracer: multiple bounces with Monte Carlo integration.
     """
-
-    OMMATIDIA_SHADER = 'shaders/ommatidia_pathtracing.comp'
-    PANORAMIC_SHADER = 'shaders/panoramic_pathtracing.comp'
-    PERSPECTIVE_SHADER = 'shaders/perspective_pathtracing.comp'
-
     def __init__(self, eye_model, scene: Scene,
                  time_dithering: bool = True,
                  nb_samples: int = 256,
@@ -1033,6 +1032,11 @@ class PathTracer(Raytracer):
             enable_ambient=enable_ambient,
             enable_direct=enable_direct
         )
+
+    def _get_light_defines(self) -> Set[str]:
+        defines = super()._get_light_defines()
+        defines.add('PATH_TRACING')
+        return defines
 
     def _set_common_uniforms(self, shader: ShaderProgram):
         super()._set_common_uniforms(shader)
