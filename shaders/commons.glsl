@@ -57,13 +57,12 @@ struct Triangle {
     uint material_idx;     // offset 72, size 4
 }; // total size = 80 bytes
 
-// Single point in the point cloud
 struct Point {
     vec3 position;
     float radius;
     vec3 normal;
     vec3 color;
-    float pad0, pad1;  // two more floats unused
+    float pad0, pad1;
 };
 
 // Simple RNG with temporal dithering
@@ -71,7 +70,7 @@ float rand(vec2 co, float dither){
     return fract(sin(dot(co.xy, vec2(12.9898, 78.233)) + dither) * 43758.5453);
 }
 
-// Generates a sample direction using "true" Gaussian importance sampling
+// Generates a sample direction using 'true' Gaussian importance sampling
 // (as in, the distribution of samples directly matches the Gaussian acceptance function)
 //      - om: The ommatidium data containing H and V acceptance angles
 //      - tangent, bitangent, forward: The basis vectors of the ommatidium's local frame

@@ -560,3 +560,21 @@ class AreaLight(Light):
         data['two_sided'] = 1 if self.two_sided else 0
         return data
 
+
+##
+
+def compute_light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
+
+    center = glm.vec3(scene_center)
+    light_pos = center + light.direction * scene_radius
+
+    up = glm.vec3(0.0, 1.0, 0.0)
+    if abs(glm.dot(glm.normalize(light.direction), up)) > 0.999:
+        up = glm.vec3(0.0, 0.0, 1.0)
+
+    light_view = glm.lookAt(light_pos, center, up)
+    light_proj = glm.ortho(
+        -scene_radius, scene_radius,
+        -scene_radius, scene_radius,
+        0.01, scene_radius * 2.0)
+    return light_proj * light_view
