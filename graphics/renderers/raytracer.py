@@ -3,7 +3,6 @@ OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 from typing import Tuple, List, Dict, Optional, Set
-from enum import IntEnum
 import numpy as np
 from PIL import Image
 from pyglm import glm
@@ -13,9 +12,7 @@ from graphics.agent import Agent
 from graphics.renderers.base import BaseInsectEyeRenderer
 from graphics.scene import Scene, AssetType
 from graphics.lights import (
-    DirectionalLight, PointLight, AreaLight,
-    directional_light_dtype, point_light_dtype, area_light_dtype,
-    pack_directional_light, pack_point_light, pack_area_light
+    DirectionalLight, PointLight, AreaLight, directional_light_dtype, point_light_dtype, area_light_dtype,
 )
 from graphics.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
 from graphics.renderers.panoramic import TextureViewer
@@ -117,7 +114,7 @@ class RaytracingSceneBaker:
 
         # Pack directional lights
         if directional_lights:
-            packed = np.concatenate([pack_directional_light(l) for l in directional_lights])
+            packed = np.concatenate([l.pack() for l in directional_lights])
         else:
             packed = np.zeros(1, dtype=directional_light_dtype)
 
@@ -127,7 +124,7 @@ class RaytracingSceneBaker:
 
         # Pack point lights
         if point_lights:
-            packed = np.concatenate([pack_point_light(l) for l in point_lights])
+            packed = np.concatenate([l.pack() for l in point_lights])
         else:
             packed = np.zeros(1, dtype=point_light_dtype)
 
@@ -137,7 +134,7 @@ class RaytracingSceneBaker:
 
         # Pack area lights
         if area_lights:
-            packed = np.concatenate([pack_area_light(l) for l in area_lights])
+            packed = np.concatenate([l.pack() for l in area_lights])
         else:
             packed = np.zeros(1, dtype=area_light_dtype)
 
@@ -162,17 +159,17 @@ class RaytracingSceneBaker:
         self.num_area_lights = len(area_lights)
 
         if directional_lights:
-            packed = np.concatenate([pack_directional_light(l) for l in directional_lights])
+            packed = np.concatenate([l.pack() for l in directional_lights])
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.directional_lights_ssbo)
             glBufferData(GL_SHADER_STORAGE_BUFFER, packed.nbytes, packed, GL_DYNAMIC_DRAW)
 
         if point_lights:
-            packed = np.concatenate([pack_point_light(l) for l in point_lights])
+            packed = np.concatenate([l.pack() for l in point_lights])
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.point_lights_ssbo)
             glBufferData(GL_SHADER_STORAGE_BUFFER, packed.nbytes, packed, GL_DYNAMIC_DRAW)
 
         if area_lights:
-            packed = np.concatenate([pack_area_light(l) for l in area_lights])
+            packed = np.concatenate([l.pack() for l in area_lights])
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.area_lights_ssbo)
             glBufferData(GL_SHADER_STORAGE_BUFFER, packed.nbytes, packed, GL_DYNAMIC_DRAW)
 

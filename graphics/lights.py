@@ -164,6 +164,15 @@ class DirectionalLight(Light):
     def angular_radius(self, value: float):
         self._angular_radius = max(0.0, value)
 
+    def pack(self) -> np.ndarray:
+        data = np.zeros(1, dtype=directional_light_dtype)
+        data['direction'] = self.direction.x, self.direction.y, self.direction.z
+        data['angular_radius'] = self.angular_radius
+        data['color'] = self.color.x, self.color.y, self.color.z
+        data['intensity'] = self.intensity
+        data['cast_shadows'] = 1 if self.cast_shadows else 0
+        return data
+
 
 class Sun(DirectionalLight):
     """
@@ -415,6 +424,18 @@ class PointLight(Light):
         """Calculate attenuation factor at a given distance."""
         return 1.0 / (self.constant + self.linear * distance + self.quadratic * distance * distance)
 
+    def pack(self) -> np.ndarray:
+        data = np.zeros(1, dtype=point_light_dtype)
+        data['position'] = self.position.x, self.position.y, self.position.z
+        data['radius'] = self.radius
+        data['color'] = self.color.x, self.color.y, self.color.z
+        data['intensity'] = self.intensity
+        data['constant_atten'] = self.constant
+        data['linear_atten'] = self.linear
+        data['quadratic_atten'] = self.quadratic
+        data['cast_shadows'] = 1 if self.cast_shadows else 0
+        return data
+
 
 class AreaLight(Light):
     """
@@ -525,40 +546,17 @@ class AreaLight(Light):
         local_v = (v - 0.5) * self._height
         return self._position + self._tangent * local_u + self._bitangent * local_v
 
+    def pack(self) -> np.ndarray:
+        data = np.zeros(1, dtype=area_light_dtype)
+        data['position'] = self.position.x, self.position.y, self.position.z
+        data['width'] = self.width
+        data['normal'] = self.normal.x, self.normal.y, self.normal.z
+        data['height'] = self.height
+        data['tangent'] = self.tangent.x, self.tangent.y, self.tangent.z
+        data['intensity'] = self.intensity
+        data['bitangent'] = self.bitangent.x, self.bitangent.y, self.bitangent.z
+        data['cast_shadows'] = 1 if self.cast_shadows else 0
+        data['color'] = self.color.x, self.color.y, self.color.z
+        data['two_sided'] = 1 if self.two_sided else 0
+        return data
 
-def pack_directional_light(light: DirectionalLight) -> np.ndarray:
-    data = np.zeros(1, dtype=directional_light_dtype)
-    data['direction'] = light.direction.x, light.direction.y, light.direction.z
-    data['angular_radius'] = light.angular_radius
-    data['color'] = light.color.x, light.color.y, light.color.z
-    data['intensity'] = light.intensity
-    data['cast_shadows'] = 1 if light.cast_shadows else 0
-    return data
-
-
-def pack_point_light(light: PointLight) -> np.ndarray:
-    data = np.zeros(1, dtype=point_light_dtype)
-    data['position'] = light.position.x, light.position.y, light.position.z
-    data['radius'] = light.radius
-    data['color'] = light.color.x, light.color.y, light.color.z
-    data['intensity'] = light.intensity
-    data['constant_atten'] = light.constant
-    data['linear_atten'] = light.linear
-    data['quadratic_atten'] = light.quadratic
-    data['cast_shadows'] = 1 if light.cast_shadows else 0
-    return data
-
-
-def pack_area_light(light: AreaLight) -> np.ndarray:
-    data = np.zeros(1, dtype=area_light_dtype)
-    data['position'] = light.position.x, light.position.y, light.position.z
-    data['width'] = light.width
-    data['normal'] = light.normal.x, light.normal.y, light.normal.z
-    data['height'] = light.height
-    data['tangent'] = light.tangent.x, light.tangent.y, light.tangent.z
-    data['intensity'] = light.intensity
-    data['bitangent'] = light.bitangent.x, light.bitangent.y, light.bitangent.z
-    data['cast_shadows'] = 1 if light.cast_shadows else 0
-    data['color'] = light.color.x, light.color.y, light.color.z
-    data['two_sided'] = 1 if light.two_sided else 0
-    return data
