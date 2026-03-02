@@ -9,6 +9,16 @@ from graphics.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransf
 
 
 # Custom dtypes for the GPU SSBOs
+
+directional_light_dtype = np.dtype([
+    ('direction', np.float32, 3),
+    ('angular_radius', np.float32),
+    ('color', np.float32, 3),
+    ('intensity', np.float32),
+    ('cast_shadows', np.uint32),
+    ('_pad', np.uint32, 3),
+])  # total 48 bytes
+
 point_light_dtype = np.dtype([
     ('position', np.float32, 3),
     ('radius', np.float32),
@@ -32,6 +42,8 @@ area_light_dtype = np.dtype([
     ('color', np.float32, 3),
     ('two_sided', np.uint32),
 ])  # total 64 bytes
+
+# TODO: these three datatypes could be optimised a bit
 
 
 class LightType(Enum):
@@ -90,7 +102,7 @@ class Light(ABC):
 class _LightDeltaTimeTransformer(DeltaTimeTransformer):
     """Delta-time transformer for lights with orbital/positional controls."""
 
-    # TODO: Orbit might make this way into the other classes actually
+    # TODO: Orbit might make its way into the other classes actually
 
     def __init__(self, target: 'Light', delta_time: float):
         super().__init__(target, delta_time)
@@ -116,7 +128,7 @@ class DirectionalLight(Light):
                  **kwargs):
         """
         Args:
-            direction: Direction the light shines FROM (will be normalised)
+            direction: Direction the light shines from (will be normalised)
             color: RGB colour
             intensity: Brightness multiplier
             angular_size: Angular radius in radians (for soft shadows, 0 = hard shadows)
@@ -131,7 +143,7 @@ class DirectionalLight(Light):
 
     @property
     def direction(self) -> glm.vec3:
-        """Normalised direction TO the light source."""
+        """Normalised direction to the light source."""
         return self._direction
 
     @direction.setter
@@ -449,7 +461,7 @@ class AreaLight(Light):
 
     @property
     def position(self) -> glm.vec3:
-        """Center of the light rectangle."""
+        """Centre of the light rectangle."""
         return self._position
 
     @position.setter
@@ -514,8 +526,17 @@ class AreaLight(Light):
         return self._position + self._tangent * local_u + self._bitangent * local_v
 
 
+def pack_directional_light(light: DirectionalLight) -> np.ndarray:
+    data = np.zeros(1, dtype=directional_light_dtype)
+    data['direction'] = light.direction.x, light.direction.y, light.direction.z
+    data['angular_radius'] = light.angular_radius
+    data['color'] = light.color.x, light.color.y, light.color.z
+    data['intensity'] = light.intensity
+    data['cast_shadows'] = 1 if light.cast_shadows else 0
+    return data
+
+
 def pack_point_light(light: PointLight) -> np.ndarray:
-    """Pack a PointLight into a numpy array matching the GPU struct."""
     data = np.zeros(1, dtype=point_light_dtype)
     data['position'] = light.position.x, light.position.y, light.position.z
     data['radius'] = light.radius
@@ -529,7 +550,6 @@ def pack_point_light(light: PointLight) -> np.ndarray:
 
 
 def pack_area_light(light: AreaLight) -> np.ndarray:
-    """Pack an AreaLight into a numpy array matching the GPU struct."""
     data = np.zeros(1, dtype=area_light_dtype)
     data['position'] = light.position.x, light.position.y, light.position.z
     data['width'] = light.width
