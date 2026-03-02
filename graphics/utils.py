@@ -98,6 +98,11 @@ class DeltaTimeTransformer:
 
         return self
 
+    def move_and_slide(self, translation: Union[glm.vec3, ArrayLike]):
+        scaled_translation = glm.vec3(translation) * self._delta_time
+        self._target.move_and_slide(scaled_translation)
+        return self
+
 
 ## Shader compiling functions
 

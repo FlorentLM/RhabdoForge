@@ -234,6 +234,98 @@ class TransformMixin:
         return self
 
 
+class CollisionMixin:
+    """
+    Mixin class for objects that need BVH-based collision detection.
+    Expects the class to also inherit from TransformMixin (or have a .position attribute).
+    """
+
+    @property
+    def collider(self):
+        """The pytinybvh.BVH object (TLAS) used for collisions."""
+        return getattr(self, '_collider_tlas', None)
+
+    @collider.setter
+    def collider(self, tlas):
+        self._collider_tlas = tlas
+
+    @property
+    def collider_radius(self):
+        return getattr(self, '_collider_radius', 0.05)
+
+    @collider_radius.setter
+    def collider_radius(self, radius: float):
+        self._collider_radius = max(0.001, radius)
+
+    def move_and_slide(self, translation: Union[glm.vec3, ArrayLike]):
+        """
+        Attempt to translate the object. If collision detected, slide along the surface.
+        """
+        if self.collider is None:
+            return self.translate(translation)
+
+        new_pos = self.position + glm.vec3(translation)
+
+        # Query closest geometry to the new position
+        hit = self.collider.closest_point(tuple(new_pos))
+
+        if hit is not None and hit['distance'] < self.collider_radius:
+            surface_point = hit['point']
+            new_pos_np = np.array(new_pos, dtype=np.float32)
+
+            push_out_dir = new_pos_np - surface_point
+            norm = np.linalg.norm(push_out_dir)
+
+            if norm > 1e-6:
+                push_out_dir /= norm
+                # Push the agent out to the edge of its radius
+                new_pos_np = surface_point + (push_out_dir * self.collider_radius)
+                new_pos = glm.vec3(*new_pos_np)
+
+        self.position = new_pos
+        return self
+
+    def snap_to_ground(self, down_dir=(0.0, -1.0, 0.0), max_dist=10.0, leg_height=0.02):
+        """
+        Casts a ray downwards and snaps the object on the floor.
+        """
+        if self.collider is None:
+            return self
+
+        from pytinybvh import Ray
+
+        down_vec = glm.normalize(glm.vec3(down_dir))
+
+        # start slightly above current position to avoid starting inside geometry
+        ray_origin = self.position - down_vec * 0.1
+
+        ray = Ray(origin=tuple(ray_origin), direction=tuple(down_vec), t=max_dist)
+        t = self.collider.intersect(ray)
+
+        if ray.prim_id != -1:
+            hit_pos = ray_origin + down_vec * t
+            self.position = hit_pos - down_vec * leg_height
+
+        return self
+
+    def query_whiskers(self, directions, max_dist=0.1):
+        """
+        Casts rays in given directions (e.g. tactile sensing with left/right antennae).
+        Returns list of booleans (True if an obstacle is closer than max_dist).
+        """
+        if self.collider is None:
+            return [False] * len(directions)
+
+        from pytinybvh import Ray
+        results = []
+
+        for d in directions:
+            ray = Ray(origin=tuple(self.position), direction=tuple(glm.normalize(d)), t=max_dist)
+            results.append(self.collider.is_occluded(ray))
+
+        return results
+
+
 class Curve:
     """
     Represents a static 3D path parameterised by arc length.
