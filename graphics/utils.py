@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Union, Sequence, Dict, Optional
+from typing import Any, Union, Sequence, Dict, Optional, Set
 from enum import IntEnum
 from PIL import Image
 import numpy as np
@@ -12,7 +12,6 @@ from trimesh import Trimesh, PointCloud
 from trimesh.visual import TextureVisuals
 from trimesh.visual.material import SimpleMaterial
 
-# World unit vectors
 WORLD_RIGHT = WORLD_X = glm.vec3(1.0, 0.0, 0.0)
 WORLD_UP = WORLD_Y = glm.vec3(0.0, 1.0, 0.0)
 WORLD_FORWARD = WORLD_Z = glm.vec3(0.0, 0.0, -1.0)
@@ -66,11 +65,11 @@ class DeltaTimeTransformer:
 
     def scale(self, scale_factors: Union[glm.vec3, ArrayLike]):
         """
-        Applies scaling over time. A scale factor of 1.1 with dt will scale
-        towards 10% larger, not instantly become 1.1x as large
+        Applies scaling over time (i.e. a factor of 1.1 will scale *towards* 10% larger, not instantly become 1.1x as large).
         """
         scale_vec = glm.vec3(scale_factors)
-        # Interpolate between no-scale (1, 1, 1) and target scale
+
+        # interpolate between no-scale (1, 1, 1) and target scale
         interpolated_scale = glm.mix(glm.vec3(1.0), scale_vec, self._delta_time)
         self._target.scale(interpolated_scale)
         return self
@@ -135,15 +134,13 @@ def _process_shader_includes_recursive(path: Path, include_stack: set):
     return code
 
 
-def compile_single_shader(path, shader_type):
-    """ Compiles a single shader from a file path, processing all nested includes """
+def compile_single_shader(path, shader_type, defines: Optional[Set[str]] = None):
+    """Compiles a single shader from a file path with support for #include and #define directives."""
 
     shader_path = Path(path)
 
-    # Recursively process all includes to get a single string of code
     combined_code = _process_shader_includes_recursive(shader_path, set())
 
-    # Find and manage all #version directives in the combined code
     version_pattern = re.compile(r'^\s*#version\s+.*$', re.MULTILINE)
     matches = version_pattern.findall(combined_code)
 
@@ -151,18 +148,19 @@ def compile_single_shader(path, shader_type):
         raise RuntimeError(f"Shader '{shader_path}' and its includes contain no #version directive.")
 
     if len(matches) > 1:
-        # Create a formatted error message showing the conflicting directives
         conflicts = "\n".join(f"  - {match.strip()}" for match in matches)
         raise RuntimeError(f"Shader '{shader_path}' contains multiple conflicting #version directives:\n{conflicts}")
 
-    # Remove the #version directive from its original position
+    # remove the #version directive from its original position
     version_directive = matches[0]
     code_without_version = version_pattern.sub('', combined_code)
 
-    # SPrepend the single, valid #version directive to the top of the final code
-    final_code = version_directive + '\n' + code_without_version
+    define_block = ''
+    if defines:
+        define_block = '\n'.join(f'#define {d}' for d in sorted(defines)) + '\n'
 
-    # Compile the final, correctly formatted shader code
+    final_code = version_directive + '\n' + define_block + code_without_version
+
     shader = glCreateShader(shader_type)
     glShaderSource(shader, final_code)
     glCompileShader(shader)
@@ -175,35 +173,32 @@ def compile_single_shader(path, shader_type):
     return shader
 
 
-def load_shaders(path_vert, path_frag, path_geom=None):
+def load_shaders(path_vert, path_frag, path_geom=None, defines: Optional[Set[str]] = None):
 
-    # Compile all shaders
-    vertex_shader = compile_single_shader(path_vert, GL_VERTEX_SHADER)
-    fragment_shader = compile_single_shader(path_frag, GL_FRAGMENT_SHADER)
+    vertex_shader = compile_single_shader(path_vert, GL_VERTEX_SHADER, defines)
+    fragment_shader = compile_single_shader(path_frag, GL_FRAGMENT_SHADER, defines)
 
     shaders_to_link = [vertex_shader, fragment_shader]
     if path_geom:
-        geometry_shader = compile_single_shader(path_geom, GL_GEOMETRY_SHADER)
+        geometry_shader = compile_single_shader(path_geom, GL_GEOMETRY_SHADER, defines)
         shaders_to_link.append(geometry_shader)
 
-    # Create and link the program
     program = glCreateProgram()
     for shader in shaders_to_link:
         glAttachShader(program, shader)
 
     glLinkProgram(program)
 
-    # Check for linking errors (this is the crucial and correct check)
+    # Check for linking errors
     if not glGetProgramiv(program, GL_LINK_STATUS):
         error = glGetProgramInfoLog(program).decode()
-        # Clean up shaders and program if linking fails
         for shader in shaders_to_link:
             glDetachShader(program, shader)
             glDeleteShader(shader)
         glDeleteProgram(program)
+
         raise RuntimeError(f"Shader linking error:\n{error}")
 
-    # Detach and delete shaders after a successful link, they are no longer needed.
     for shader in shaders_to_link:
         glDetachShader(program, shader)
         glDeleteShader(shader)
@@ -211,10 +206,10 @@ def load_shaders(path_vert, path_frag, path_geom=None):
     return program
 
 
-def load_compute_shader(path_comp):
-    """ Loads, compiles, and links a single compute shader into a program """
+def load_compute_shader(path_comp, defines: Optional[Set[str]] = None):
+    """Loads, compiles, and links a single compute shader into a program."""
 
-    shader = compile_single_shader(path_comp, GL_COMPUTE_SHADER)
+    shader = compile_single_shader(path_comp, GL_COMPUTE_SHADER, defines)
 
     program = glCreateProgram()
     glAttachShader(program, shader)
@@ -272,38 +267,21 @@ def load_cubemap(folder_path):
     return texture_id
 
 
-def check_MetalGL_context():
-    import ctypes
-
-    # Useful to test if MGL is loaded on macOS
-
-    # Load PyGame's SDL2 library
-    sdl_path = Path().cwd() / ".venv/lib/python3.13/site-packages/pygame/.dylibs/libSDL2-2.0.0.dylib"
-    sdl = ctypes.CDLL(sdl_path.as_posix())
-    sdl.SDL_GL_GetCurrentContext.restype = ctypes.c_void_p
-
-    gl_ctx_ptr = sdl.SDL_GL_GetCurrentContext()
-    print("SDL_GL_GetCurrentContext returned:", gl_ctx_ptr)
-    print("GL version:", glGetString(GL_VERSION).decode())
-    print("Renderer:", glGetString(GL_RENDERER).decode())
-    print("---------------------------------")
-
-
 class ShaderProgram:
-    """ A wrapper for a GLSL shader program and its uniform locations """
+    """A wrapper for a GLSL shader program and its uniform locations."""
 
-    def __init__(self, vert_path=None, frag_path=None, comp_path=None):
+    def __init__(self, vert_path=None, frag_path=None, comp_path=None, defines: Optional[Set[str]] = None):
         if comp_path:
-            self.program_id = load_compute_shader(comp_path)
+            self.program_id = load_compute_shader(comp_path, defines=defines)
         else:
-            self.program_id = load_shaders(vert_path, frag_path)
+            self.program_id = load_shaders(vert_path, frag_path, defines=defines)
         self.locations = {}
         self.use()
         self._cache_all_uniforms()
         self.stop()
 
     def _cache_all_uniforms(self):
-        """ Automatically queries and caches all active uniform locations """
+        """Automatically queries and caches all active uniform locations."""
 
         num_uniforms = glGetProgramiv(self.program_id, GL_ACTIVE_UNIFORMS)
 
@@ -325,24 +303,24 @@ class ShaderProgram:
             self.locations[name] = glGetUniformLocation(self.program_id, name)
 
     def use(self):
-        """ Binds the shader program """
+        """Binds the shader program."""
         glUseProgram(self.program_id)
 
     def stop(self):
-        """ Unbinds the shader program """
+        """Unbinds the shader program."""
         glUseProgram(0)
 
     def get_loc(self, name):
-        """ Gets a cached uniform location """
-        return self.locations.get(name)
+        """Gets a cached uniform location."""
+        return self.locations.get(name, -1)
 
     def free(self):
-        """ Deletes the shader program """
+        """Deletes the shader program."""
         glDeleteProgram(self.program_id)
 
 
 def write_pytinybvh_preamble(preamble: str):
-    """ Writes PyTinyBVH #defines to a shader include that GLSL can #include """
+    """Writes PyTinyBVH #defines to a shader include that GLSL can #include."""
 
     try:
         out_dir = Path('shaders')
@@ -357,7 +335,7 @@ def write_pytinybvh_preamble(preamble: str):
 
 def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fonts', color=(255, 255, 255, 255)):
     """
-    Generates a fonts atlas texture and its corresponding metadata file
+    Generates a fonts atlas texture and its corresponding metadata file.
     """
     from os import environ
     environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
@@ -377,13 +355,11 @@ def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fo
 
     font = pygame.font.SysFont(font_name, font_size)
 
-    # All printable ASCII characters
     chars_to_render = string.printable
     atlas_cols = 16
     atlas_rows = (len(chars_to_render) + atlas_cols - 1) // atlas_cols
     char_data = {}
 
-    # Determine atlas dimensions
     max_w, max_h = 0, 0
     for char in chars_to_render:
         w, h = font.size(char)
@@ -394,12 +370,11 @@ def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fo
     atlas_width = atlas_cols * cell_w
     atlas_height = atlas_rows * cell_h
 
-    # Render characters to a Pygame surface
     atlas_surface = pygame.Surface((atlas_width, atlas_height), pygame.SRCALPHA)
-    atlas_surface.fill((0, 0, 0, 0))  # Transparent background
+    atlas_surface.fill((0, 0, 0, 0))
 
     for i, char in enumerate(chars_to_render):
-        char_surface = font.render(char, True, color)  # White text
+        char_surface = font.render(char, True, color)
         metrics = font.metrics(char)[0]
         advance = metrics[4]
 
@@ -422,7 +397,6 @@ def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fo
             'advance': advance
         }
 
-    # Save the files
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -520,7 +494,7 @@ def trimesh_from_arrays(
 
     Returns:
         trimesh.Trimesh: A trimesh object created from the provided data.
-                         Or None if an error occurs.
+                         (or None if an error occurs)
     """
     if vertices is None or vertices.ndim != 2 or vertices.shape[1] != 3:
         print("Error: 'vertices' must be an N x 3 numpy array.")
