@@ -539,18 +539,18 @@ class Raytracer(BaseInsectEyeRenderer):
                  nb_samples: int = 256,
                  pano_res: Tuple[int, int] = (1024, 512),
                  batch_size: int = 1,
+                 enable_direct: bool = True,
                  enable_shadows: bool = True,
                  enable_ambient: bool = True,
-                 enable_direct: bool = True
-                 ):
+        ):
 
         self.scene = scene  # just for convenience
         self._scene_baked = RaytracingSceneBaker(scene)
 
         # Global lighting controls
-        self.enable_ambient = enable_ambient
         self.enable_direct = enable_direct
         self.enable_shadows = enable_shadows
+        self.enable_ambient = enable_ambient
         self.ambient_intensity = 1.0
         self.sky_intensity = 1.0
 

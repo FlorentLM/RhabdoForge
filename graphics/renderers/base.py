@@ -1,4 +1,7 @@
 import OpenGL
+
+from graphics.scene import Scene
+
 OpenGL.ERROR_CHECKING = False
 
 import random
@@ -36,8 +39,16 @@ class BaseInsectEyeRenderer(ABC):
     Abstract base class for an insect eye model, handling visualisation and common properties
     """
 
-    def __init__(self, eye_model: CompoundEye, time_dithering: bool = True, nb_samples: int = 256, batch_size: int = 1):
-        self.model = eye_model
+    def __init__(self,
+                 eye_model: CompoundEye,
+                 time_dithering: bool = True,
+                 nb_samples: int = 256,
+                 batch_size: int = 1
+        ):
+
+        self.model: CompoundEye = eye_model
+        self.scene: Scene
+
         self.num_ommatidia = self.model.num_ommatidia
         self.ommatidia_input_data = self.model.data
         self._samples_per_ommatidium = nb_samples
@@ -111,17 +122,16 @@ class BaseInsectEyeRenderer(ABC):
 
     @abstractmethod
     def _compute_colors(self, *args, **kwargs):
-        # Each subclass implements its own core rendering logic
+        # Each subclass implements its own rendering logic
         raise NotImplementedError
 
     @abstractmethod
     def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent):
-        # Each subclass implements its own core rendering logic
+        # Each subclass implements its own rendering logic
         raise NotImplementedError
 
     def _allocate_history_buffers(self, requested_frames: int):
 
-        # Smart VRAM Allocation
         bytes_per_frame = self.num_ommatidia * 16  # 16 bytes per vec4 (RGBA float)
         requested_history_size_mb = (bytes_per_frame * requested_frames) / (1024 * 1024)
 

@@ -1,7 +1,7 @@
 import OpenGL
-
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
+
 import numpy as np
 from pyglm import glm
 
@@ -10,11 +10,80 @@ from graphics.agent import Agent
 from graphics.renderers.panoramic import PanoramicEye
 from graphics.renderers.base import BaseInsectEyeRenderer
 from graphics.scene import Scene, Asset, AssetType
+from graphics.lights import compute_light_space_matrix
 from graphics.utils import ShaderProgram, ViewMode
 
 
+class ShadowMapFBO:
+    """Depth-only FBO for directional light shadow mapping."""
+
+    def __init__(self, resolution: int = 2048):
+        self.resolution = resolution
+        self.fbo_id = 0
+        self.depth_texture = 0
+        self._create()
+
+    def _create(self):
+
+        # Depth texture with hardware PCF comparison
+        self.depth_texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self.depth_texture)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F,
+                     self.resolution, self.resolution, 0,
+                     GL_DEPTH_COMPONENT, GL_FLOAT, None)
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL)
+
+        # Outside the shadow frustum = fully lit
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER)
+        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR,
+                         np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32))
+
+        # FBO (depth-only, no colour attachment)
+        self.fbo_id = glGenFramebuffers(1)
+        glBindFramebuffer(GL_FRAMEBUFFER, self.fbo_id)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                               GL_TEXTURE_2D, self.depth_texture, 0)
+        glDrawBuffer(GL_NONE)
+        glReadBuffer(GL_NONE)
+
+        status = glCheckFramebufferStatus(GL_FRAMEBUFFER)
+        if status != GL_FRAMEBUFFER_COMPLETE:
+            raise RuntimeError(f"Shadow map FBO incomplete: {status:#x}")
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        glBindTexture(GL_TEXTURE_2D, 0)
+
+    def bind(self):
+        glViewport(0, 0, self.resolution, self.resolution)
+        glBindFramebuffer(GL_FRAMEBUFFER, self.fbo_id)
+        glClear(GL_DEPTH_BUFFER_BIT)
+
+    def unbind(self):
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+
+    def bind_texture(self, unit: int = 1):
+        """Bind the depth texture for sampling in colour shaders."""
+        glActiveTexture(GL_TEXTURE0 + unit)
+        glBindTexture(GL_TEXTURE_2D, self.depth_texture)
+
+    def free(self):
+
+        if self.fbo_id:
+            glDeleteFramebuffers(1, [self.fbo_id])
+
+        if self.depth_texture:
+            glDeleteTextures(1, [self.depth_texture])
+
+
 class CubemapFBO:
+
     def __init__(self, resolution=256):
+
         self.resolution = resolution
 
         # Create FBO and Color cubemap texture
@@ -78,6 +147,7 @@ class RasterMesh:
     """
 
     def __init__(self, asset: Asset, vert_shader_path, frag_shader_path):
+
         self.source_asset_id = asset.id
 
         self.vertices = asset.vertices
@@ -86,10 +156,12 @@ class RasterMesh:
 
         self.shaders = ShaderProgram(vert_shader_path, frag_shader_path)
 
-        # Handle texture loading - supports path, in-memory image, or no texture
         self.texture = self._load_texture_from_asset(asset)
         self.has_texture = self.texture != 0
-        self.base_color = asset.material.base_color.copy()  # Store base color for fallback
+        self.base_color = asset.material.base_color.copy()  # Store base colour for fallback
+
+        positions = self.vertices[:, :3]
+        self.normals = self._compute_vertex_normals(positions, self.indices)
 
         self.vao = glGenVertexArrays(1)
         glBindVertexArray(self.vao)
@@ -106,29 +178,45 @@ class RasterMesh:
 
         # Vertex attribute pointers
         vertex_size_bytes = self.vertices.itemsize * 5
-
-        pos_loc = glGetAttribLocation(self.shaders.program_id, "position")
-        glEnableVertexAttribArray(pos_loc)
-        glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, vertex_size_bytes, ctypes.c_void_p(0))
-
-        tex_loc = glGetAttribLocation(self.shaders.program_id, "vertTexCoord")
-        glEnableVertexAttribArray(tex_loc)
-        glVertexAttribPointer(tex_loc, 2, GL_FLOAT, False, vertex_size_bytes,
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 3, GL_FLOAT, False, vertex_size_bytes, ctypes.c_void_p(0))
+        glEnableVertexAttribArray(1)
+        glVertexAttribPointer(1, 2, GL_FLOAT, False, vertex_size_bytes,
                               ctypes.c_void_p(self.vertices.itemsize * 3))
+
+        self.nbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self.nbo)
+        glBufferData(GL_ARRAY_BUFFER, self.normals.nbytes, self.normals, GL_STATIC_DRAW)
+        glEnableVertexAttribArray(2)
+        glVertexAttribPointer(2, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
 
         glBindVertexArray(0)
 
-    def _load_texture_from_asset(self, asset: Asset) -> int:
-        """
-        Loads texture from asset, handling path or in-memory image.
-        Returns OpenGL texture ID, or 0 if no texture.
-        """
-        img = asset.texture_image  # lazy-loaded
+    @staticmethod
+    def _compute_vertex_normals(positions, faces):
 
+        normals = np.zeros_like(positions, dtype=np.float32)
+        flat_faces = faces.ravel().reshape(-1, 3) if faces.ndim == 1 else faces
+
+        v0 = positions[flat_faces[:, 0]]
+        v1 = positions[flat_faces[:, 1]]
+        v2 = positions[flat_faces[:, 2]]
+
+        face_normals = np.cross(v1 - v0, v2 - v0).astype(np.float32)
+        for i in range(3):
+            np.add.at(normals, flat_faces[:, i], face_normals)
+
+        lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+        normals /= np.maximum(lengths, 1e-8)
+        return normals.astype(np.float32)
+
+    def _load_texture_from_asset(self, asset):
+
+        img = asset.texture_image
         if img is None:
             return 0
 
-        # Convert to RGBA if needed
+        # Convert to RGBA just to be sure
         img = img.convert("RGBA")
         img_data = img.tobytes()
         width, height = img.size
@@ -150,10 +238,14 @@ class RasterMesh:
         return tex_id
 
     def free(self):
+
         glDeleteVertexArrays(1, [self.vao])
         glDeleteBuffers(1, [self.vbo])
+        glDeleteBuffers(1, [self.nbo])
         glDeleteBuffers(1, [self.ebo])
+
         self.shaders.free()
+
         if self.texture != 0:
             glDeleteTextures(1, [self.texture])
 
@@ -165,6 +257,7 @@ class RasterPoints:
     """
 
     def __init__(self, asset: Asset, vert_shader_path: str, frag_shader_path: str):
+
         self.source_asset_id = asset.id
         self.draw_count = asset._nb_points
 
@@ -172,7 +265,7 @@ class RasterPoints:
         self.vao = glGenVertexArrays(1)
         self.vbo = glGenBuffers(1)
 
-        # Interleave positions, colors, and radii (x, y, z, r, g, b, radius)
+        # Interleave positions, colours, and radii (x, y, z, r, g, b, radius)
         packed_data = np.hstack([asset.points, asset.colors, asset.radii.reshape(-1, 1)]).astype(np.float32)
 
         glBindVertexArray(self.vao)
@@ -205,7 +298,7 @@ class RasterPoints:
 
 
 class RasterInstance:
-    """An instance wrapper for the rasterizer, holding a baked asset and transform."""
+    """Instance wrapper for the rasterizer, holding a baked asset and transform."""
     def __init__(self, asset: RasterMesh | RasterPoints, transform: glm.mat4, properties: dict):
         self.asset = asset
         self.transform = transform
@@ -215,66 +308,112 @@ class RasterInstance:
 class RasterSceneBaker:
     """
     Creates and caches OpenGL vertex arrays (VAOs) for each unique asset in the scene.
-    This baking process happens once upon initialization.
     """
 
-    def __init__(self, scene: Scene):
+    def __init__(self, scene: Scene, enable_shadows: bool = False):
+
         self.scene = scene
+
         self._raster_asset_cache = {}
+
+        self._shadow_mesh_shader = None
+        self._shadow_points_shader = None
+
         self._bake_all_assets()
 
+        if enable_shadows:
+            self._compile_shadow_shaders()
+
     def _bake_all_assets(self):
-        """
-        Iterates through all unique assets in the scene, creates the corresponding
-        OpenGL resources (RasterMesh/RasterPoints) and caches them.
-        """
         print("Baking rasterizer assets...")
+
         for asset in self.scene.assets.values():
+
             if asset.id in self._raster_asset_cache:
                 continue
 
             if asset.asset_type == AssetType.Mesh:
                 self._raster_asset_cache[asset.id] = RasterMesh(
-                    asset, 'shaders/mesh.vert', 'shaders/mesh.frag'
-                )
+                    asset, 'shaders/mesh.vert', 'shaders/mesh.frag')
+
             elif asset.asset_type == AssetType.Points:
                 self._raster_asset_cache[asset.id] = RasterPoints(
-                    asset, 'shaders/pointclouds.vert', 'shaders/pointclouds.frag'
-                )
+                    asset, 'shaders/pointclouds.vert', 'shaders/pointclouds.frag')
+
         print("Rasterizer asset baking complete.")
 
-    def get_renderables(self) -> list[RasterInstance]:
-        """
-        Provides a list of all instances in a format ready for the rasterizer.
-        (uses the pre-baked asset cache)
-        """
+    def _compile_shadow_shaders(self):
+        print("Compiling shadow depth shaders...")
+
+        self._shadow_mesh_shader = ShaderProgram(
+            vert_path='shaders/shadow_depth.vert', frag_path='shaders/shadow_depth.frag')
+
+        self._shadow_points_shader = ShaderProgram(
+            vert_path='shaders/shadow_depth_points.vert', frag_path='shaders/shadow_depth.frag')
+
+    def get_renderables(self):
         renderables = []
+
         for instance in self.scene.instances:
             baked_asset = self._raster_asset_cache.get(instance.asset.id)
+
             if baked_asset:
                 renderables.append(RasterInstance(baked_asset, instance.transform, instance.properties))
+
         return renderables
 
     def free(self):
-        """Frees all cached OpenGL resources."""
-        print("Freeing baked rasterizer assets...")
         for raster_asset in self._raster_asset_cache.values():
             raster_asset.free()
+
         self._raster_asset_cache.clear()
+
+        if self._shadow_mesh_shader:
+            self._shadow_mesh_shader.free()
+
+        if self._shadow_points_shader:
+            self._shadow_points_shader.free()
 
 
 class Rasterizer(BaseInsectEyeRenderer):
+
+    SHADOW_TEX_UNIT = 1
 
     def __init__(self, eye_model: CompoundEye, scene: Scene,
                  time_dithering: bool = False,
                  nb_samples: int = 256,
                  cubemap_res: int = 512,
-                 batch_size: int = 1):
+                 batch_size: int = 1,
+                 enable_direct: bool = False,
+                 enable_shadows: bool = False,
+                 enable_ambient: bool = False,
+                 shadow_resolution: int = 2048,
+                 shadow_radius: float = 50.0
+        ):
 
         self.scene = scene
-        self._scene_baked = RasterSceneBaker(scene)
 
+        # Global lighting controls
+        self.enable_direct = enable_direct
+        self.enable_shadows = enable_shadows
+        self.enable_ambient = enable_ambient
+        self.ambient_intensity = 0.3
+        self.ambient_color = (0.4, 0.45, 0.5)   # TODO: derive ambient from the cubemap instead
+
+        self._scene_baked = RasterSceneBaker(scene, enable_shadows=self.enable_shadows)
         self._cubemap_fbo = CubemapFBO(resolution=cubemap_res)
+
+        self._shadow_map = None
+        self._light_space_matrix = glm.mat4(1.0)
+        self._shadow_radius = shadow_radius
+
+        self.shadow_bias = 0.002
+        self.shadow_darkness = 0.3
+        self.shadow_splat_scale = 1.5
+
+        if self.enable_shadows:
+            self._shadow_map = ShadowMapFBO(resolution=shadow_resolution)
+            print(f"Shadow mapping enabled ({shadow_resolution}x{shadow_resolution}, radius={shadow_radius})")
 
         # super *after* creating the scene for correct VRAM usage computation :)
         super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
@@ -293,24 +432,110 @@ class Rasterizer(BaseInsectEyeRenderer):
     @samples_per_ommatidium.setter
     def samples_per_ommatidium(self, value):
         self._samples_per_ommatidium = int(min(32768, max(1, value)))
-        # no buffers to reallocate
 
-    def estimate_vram_usage(self) -> float:
-        """Override base method to provide a VRAM estimate for the rasterizer."""
+    def estimate_vram_usage(self):
 
         # Cubemap is RGBA8 (4 bytes) * 6 faces
         cubemap_mb = (self._cubemap_fbo.resolution ** 2 * 4 * 6) / (1024 * 1024)
 
+        shadow_mb = 0.0
+        if self._shadow_map:
+            shadow_mb = (self._shadow_map.resolution ** 2 * 4) / (1024 * 1024)
+
         # rough conservative guess for shaders, VAOs, VBOs etc
         scene_assets_mb = 50.0
-        return cubemap_mb + scene_assets_mb
+        return cubemap_mb + shadow_mb + scene_assets_mb
+
+    @property
+    def primary_directional_light(self):
+        for l in self.scene.directional_lights:
+            if l.enabled and l.intensity > 0:
+                return l
+        return None
+
+    def _render_shadow_pass(self, agent):
+
+        light = self.primary_directional_light
+        if light is None:
+            return
+
+        self._light_space_matrix = compute_light_space_matrix(
+            light=light,
+            scene_center=(agent.position.x, agent.position.y, agent.position.z),
+            scene_radius=self._shadow_radius)
+
+        lsm_ptr = glm.value_ptr(self._light_space_matrix)
+        self._shadow_map.bind()
+
+        glEnable(GL_POLYGON_OFFSET_FILL)
+        glPolygonOffset(2.0, 4.0)
+
+        renderables = self._scene_baked.get_renderables()
+
+        # Meshes
+        mesh_shader = self._scene_baked._shadow_mesh_shader
+        mesh_shader.use()
+
+        glUniformMatrix4fv(mesh_shader.get_loc('light_space_matrix'), 1, False, lsm_ptr)
+        glUniform1i(mesh_shader.get_loc('is_point_cloud'), 0)
+
+        for inst in renderables:
+            if not isinstance(inst.asset, RasterMesh):
+                continue
+            glUniformMatrix4fv(mesh_shader.get_loc('model'), 1, False,
+                               glm.value_ptr(inst.transform))
+            glBindVertexArray(inst.asset.vao)
+            glDrawElements(GL_TRIANGLES, inst.asset.draw_count, GL_UNSIGNED_INT, None)
+
+        mesh_shader.stop()
+
+        # Point clouds (splats)
+        pts_shader = self._scene_baked._shadow_points_shader
+        pts_shader.use()
+
+        glUniformMatrix4fv(pts_shader.get_loc('light_space_matrix'), 1, False, lsm_ptr)
+
+        pixel_mult = 25.0
+        glEnable(GL_PROGRAM_POINT_SIZE)
+
+        for inst in renderables:
+            if not isinstance(inst.asset, RasterPoints):
+                continue
+            radius_scale = inst.properties.get('radius_scale', 1.0) * pixel_mult * self.shadow_splat_scale
+            glUniform1f(pts_shader.get_loc('radius_scale'), radius_scale)
+            glUniformMatrix4fv(pts_shader.get_loc('model'), 1, False,
+                               glm.value_ptr(inst.transform))
+            glBindVertexArray(inst.asset.vao)
+            glDrawArrays(GL_POINTS, 0, inst.asset.draw_count)
+
+        glDisable(GL_PROGRAM_POINT_SIZE)
+        pts_shader.stop()
+
+        glDisable(GL_POLYGON_OFFSET_FILL)
+        glBindVertexArray(0)
+
+        self._shadow_map.unbind()
+
+    def _set_shadow_uniforms(self, shader: ShaderProgram):
+        has_shadow = (self.enable_shadows and self._shadow_map
+                      and self.primary_directional_light is not None)
+
+        glUniform1i(shader.get_loc('enable_shadows'), int(has_shadow))
+
+        if has_shadow:
+            glUniform1f(shader.get_loc('shadow_bias'), self.shadow_bias)
+            glUniformMatrix4fv(shader.get_loc('light_space_matrix'), 1, False,
+                               glm.value_ptr(self._light_space_matrix))
+
+            self._shadow_map.bind_texture(unit=self.SHADOW_TEX_UNIT)
+            glUniform1i(shader.get_loc('shadow_map'), self.SHADOW_TEX_UNIT)
 
     def _render_instance(self, instance: RasterInstance, view_matrix, projection_matrix):
         """Renders a single RasterInstance."""
 
         asset = instance.asset
-
         asset.shaders.use()
+
         glBindVertexArray(asset.vao)
 
         cam_mat = projection_matrix * view_matrix
@@ -318,7 +543,27 @@ class Rasterizer(BaseInsectEyeRenderer):
         glUniformMatrix4fv(asset.shaders.get_loc("model"), 1, False, glm.value_ptr(instance.transform))
 
         if isinstance(asset, RasterMesh):
-            # Set whether we have a texture
+
+            # Normal matrix for lighting
+            normal_mat = glm.transpose(glm.inverse(glm.mat3(instance.transform)))
+            normal_np = np.array(normal_mat, dtype=np.float32).reshape(3, 3)
+            glUniformMatrix3fv(asset.shaders.get_loc("normal_matrix"), 1, True, normal_np)
+
+            # Directional light (independent of shadows)
+            light = self.primary_directional_light if self.enable_direct else None
+            glUniform1i(asset.shaders.get_loc("enable_ambient"), int(light is not None))
+
+            if light is not None:
+                glUniform3f(asset.shaders.get_loc("light_direction"),
+                            light.direction.x, light.direction.y, light.direction.z)
+                glUniform3f(asset.shaders.get_loc("light_color"),
+                            light.color.x, light.color.y, light.color.z)
+                glUniform1f(asset.shaders.get_loc("light_intensity"), light.intensity)
+                glUniform3f(asset.shaders.get_loc("ambient_color"), *self.ambient_color)
+                glUniform1f(asset.shaders.get_loc("ambient_intensity"), self.ambient_intensity)
+
+            self._set_shadow_uniforms(asset.shaders)
+
             glUniform1i(asset.shaders.get_loc("has_texture"), int(asset.has_texture))
             glUniform4fv(asset.shaders.get_loc("base_color"), 1, asset.base_color)
 
@@ -338,6 +583,9 @@ class Rasterizer(BaseInsectEyeRenderer):
             radius_scale = instance.properties.get('radius_scale', 1.0) * pixel_mult
             glUniform1f(asset.shaders.get_loc("radius_scale"), radius_scale)
 
+            self._set_shadow_uniforms(asset.shaders)
+            glUniform1f(asset.shaders.get_loc("shadow_darkness"), self.shadow_darkness)
+
             glDrawArrays(GL_POINTS, 0, asset.draw_count)
 
             glDisable(GL_PROGRAM_POINT_SIZE)
@@ -349,6 +597,9 @@ class Rasterizer(BaseInsectEyeRenderer):
         """Pass 1: renders to the cubemap."""
 
         main_viewport = glGetIntegerv(GL_VIEWPORT)
+
+        if self.enable_shadows and self._shadow_map:
+            self._render_shadow_pass(agent)
 
         self._cubemap_fbo.bind()
 
@@ -394,7 +645,6 @@ class Rasterizer(BaseInsectEyeRenderer):
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-            # Generate the specific view matrix for this face
             view = glm.lookAt(
                 glm.vec3(agent.position),
                 glm.vec3(agent.position + look_dirs[i]),  # target point is eye + direction
@@ -423,7 +673,6 @@ class Rasterizer(BaseInsectEyeRenderer):
 
         self._rasterizer_shader.use()
 
-        # Set uniforms for the data pass
         glUniform1i(self._rasterizer_shader.get_loc('nb_ommatidia'), self.num_ommatidia)
         glUniform1i(self._rasterizer_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
         glUniform1f(self._rasterizer_shader.get_loc('time'), float(self._time_counter))
@@ -468,7 +717,10 @@ class Rasterizer(BaseInsectEyeRenderer):
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 
     def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent):
-        """Renders one of the rasterizer's supported views to the screen."""
+
+        if view_mode in (ViewMode.perspective, ViewMode.third_person):
+            if self.enable_shadows and self._shadow_map:
+                self._render_shadow_pass(agent)
 
         if view_mode == ViewMode.compound_eye:
             self._draw_voronoi()
@@ -495,5 +747,8 @@ class Rasterizer(BaseInsectEyeRenderer):
         self._rasterizer_shader.free()
         self._cubemap_fbo.free()
         self._raster_panoramic.free()
+
+        if self._shadow_map:
+            self._shadow_map.free()
 
         super().free()
