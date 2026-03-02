@@ -1,6 +1,6 @@
 import OpenGL
 OpenGL.ERROR_CHECKING = False
-from typing import Dict, List, Optional, Union, Sequence
+from typing import Dict, List, Optional, Union, Sequence, Set
 from numpy.typing import ArrayLike
 from enum import Enum, auto
 from pathlib import Path
@@ -432,12 +432,13 @@ class Scene:
         self._skybox: Optional[Skybox] = None
         self.background_color = background_color
 
-        self._lights: List[Light] = []
+        self._directional_lights: Set[DirectionalLight] = set()
+        self._point_lights: Set[PointLight] = set()
+        self._area_lights: Set[AreaLight] = set()
 
         default_sun = Sun(intensity=1.0, angular_size=0.05)
         default_sun.from_angles(azimuth=4.84, elevation=39.75)
-
-        self._lights.append(default_sun)
+        self.add_light(default_sun)
 
     def add_instance(self, asset: Union[Asset, str], transform: Optional[Union[glm.mat4, ArrayLike]] = None,
                      **kwargs) -> Instance:
@@ -500,7 +501,7 @@ class Scene:
 
         if isinstance(data, trimesh.Scene):
             # Multi-geometry file
-            print(f"Loading Scene '{file_path}' ({len(data.geometry)} geometries)...")
+            # print(f"Loading Scene '{file_path}' ({len(data.geometry)} geometries)")
 
             for geom_name, geom_obj in data.geometry.items():
 
@@ -521,7 +522,7 @@ class Scene:
 
         elif isinstance(data, (Trimesh, PointCloud)):
             # Single-geometry file
-            print(f"Loading single geometry '{file_path}'...")
+            # print(f"Loading single geometry '{file_path}'")
 
             asset_name = name_prefix
 
@@ -537,7 +538,6 @@ class Scene:
         else:
             print(f"Warning: Unsupported data type from '{file_path}': {type(data)}")
 
-        print(f"  Created {len(new_instances)} instance(s)")
         return new_instances
 
     @property
@@ -553,60 +553,65 @@ class Scene:
 
     @property
     def sun(self) -> Optional[Sun]:
-        """returns the first Sun in the light list (or None)."""
-        return next((l for l in self._lights if isinstance(l, Sun)), None)
+        """Returns the first Sun found in the directional lights set."""
+        return next((l for l in self._directional_lights if isinstance(l, Sun)), None)
 
     @sun.setter
     def sun(self, value: Optional[Sun]):
-        """Replace the current Sun (if any) in the light list."""
-        self._lights = [l for l in self._lights if not isinstance(l, Sun)]
+        """Replaces all current Sun instances in the directional lights set."""
+        suns = [l for l in self._directional_lights if isinstance(l, Sun)]
+        for s in suns:
+            self._directional_lights.remove(s)
         if value is not None:
-            self._lights.insert(0, value)
+            self._directional_lights.add(value)
 
     @property
     def lights(self) -> List[Light]:
-        return self._lights
+        return list(self._directional_lights | self._point_lights | self._area_lights)
 
     def add_light(self, light: Light):
-        self._lights.append(light)
+        if isinstance(light, DirectionalLight):
+            self._directional_lights.add(light)
+        elif isinstance(light, PointLight):
+            self._point_lights.add(light)
+        elif isinstance(light, AreaLight):
+            self._area_lights.add(light)
 
     def remove_light(self, light: Light):
-        if light in self._lights:
-            self._lights.remove(light)
+        if isinstance(light, DirectionalLight):
+            self._directional_lights.discard(light)
+        elif isinstance(light, PointLight):
+            self._point_lights.discard(light)
+        elif isinstance(light, AreaLight):
+            self._area_lights.discard(light)
 
     def clear_lights(self):
-        self._lights.clear()
+        self._directional_lights.clear()
+        self._point_lights.clear()
+        self._area_lights.clear()
 
     @property
     def directional_lights(self) -> List[DirectionalLight]:
-        return [l for l in self._lights if isinstance(l, DirectionalLight)]
+        return list(self._directional_lights)
 
     @property
     def point_lights(self) -> List[PointLight]:
-        return [l for l in self._lights if isinstance(l, PointLight)]
+        return list(self._point_lights)
 
     @property
     def area_lights(self) -> List[AreaLight]:
-        return [l for l in self._lights if isinstance(l, AreaLight)]
+        return list(self._area_lights)
 
     @property
     def total_triangles(self) -> int:
-        count = 0
-        for instance in self.instances:
-            if instance.asset.asset_type == AssetType.Mesh:
-                count += instance.asset.nb_triangles
-        return count
+        return sum(inst.asset.nb_triangles for inst in self.instances if inst.asset.asset_type == AssetType.Mesh)
 
     @property
     def total_points(self) -> int:
-        count = 0
-        for instance in self.instances:
-            if instance.asset.asset_type == AssetType.Points:
-                count += instance.asset.nb_points
-        return count
+        return sum(inst.asset.nb_points for inst in self.instances if inst.asset.asset_type == AssetType.Points)
 
     def free(self):
         self.assets.clear()
         self.instances.clear()
-        self._lights.clear()
+        self.clear_lights()
         # Note: GPU resources tied to skybox/assets are freed by the bakers/renderers

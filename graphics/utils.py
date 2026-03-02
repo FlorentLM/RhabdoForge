@@ -111,7 +111,7 @@ def _process_shader_includes_recursive(path: Path, include_stack: set):
     if not path.exists():
         raise FileNotFoundError(f"Cannot find include file: {path}")
 
-    # Add the current file to the stack for the duration of this call
+    # Add the current file to the stack (for the duration of this call)
     include_stack.add(path)
 
     code = ""
@@ -129,12 +129,12 @@ def _process_shader_includes_recursive(path: Path, include_stack: set):
             else:
                 code += line
 
-    # Remove the file from the stack after processing is complete
+    # Remove file from the stack after processing is complete
     include_stack.remove(path)
     return code
 
 
-def compile_single_shader(path, shader_type, defines: Optional[Set[str]] = None):
+def compile_shader(path, shader_type, defines: Optional[Set[str]] = None):
     """Compiles a single shader from a file path with support for #include and #define directives."""
 
     shader_path = Path(path)
@@ -175,12 +175,12 @@ def compile_single_shader(path, shader_type, defines: Optional[Set[str]] = None)
 
 def load_shaders(path_vert, path_frag, path_geom=None, defines: Optional[Set[str]] = None):
 
-    vertex_shader = compile_single_shader(path_vert, GL_VERTEX_SHADER, defines)
-    fragment_shader = compile_single_shader(path_frag, GL_FRAGMENT_SHADER, defines)
+    vertex_shader = compile_shader(path_vert, GL_VERTEX_SHADER, defines)
+    fragment_shader = compile_shader(path_frag, GL_FRAGMENT_SHADER, defines)
 
     shaders_to_link = [vertex_shader, fragment_shader]
     if path_geom:
-        geometry_shader = compile_single_shader(path_geom, GL_GEOMETRY_SHADER, defines)
+        geometry_shader = compile_shader(path_geom, GL_GEOMETRY_SHADER, defines)
         shaders_to_link.append(geometry_shader)
 
     program = glCreateProgram()
@@ -209,7 +209,7 @@ def load_shaders(path_vert, path_frag, path_geom=None, defines: Optional[Set[str
 def load_compute_shader(path_comp, defines: Optional[Set[str]] = None):
     """Loads, compiles, and links a single compute shader into a program."""
 
-    shader = compile_single_shader(path_comp, GL_COMPUTE_SHADER, defines)
+    shader = compile_shader(path_comp, GL_COMPUTE_SHADER, defines)
 
     program = glCreateProgram()
     glAttachShader(program, shader)
