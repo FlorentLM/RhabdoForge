@@ -201,12 +201,19 @@ class BaseInsectEyeRenderer(ABC):
                 glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, bytes_to_read)
 
                 glBindBuffer(GL_PIXEL_PACK_BUFFER, self.sync_pbo)
+
                 ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
                 ctypes.memmove(self.sync_cpu_buffer.ctypes.data, ptr, bytes_to_read)
+
                 glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
                 glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
 
                 return self.sync_cpu_buffer.copy()
+
+                # TODO: this would be true zero-copy. should expose it. (but the buffer needs to be unmapped manually after use of raw_array
+                # raw_array = np.ctypeslib.as_array(ctypes.cast(ptr, ctypes.POINTER(ctypes.c_float)), shape=(self.num_ommatidia, 4))
+                # return raw_array
+
             else:
                 return None
 
@@ -226,6 +233,8 @@ class BaseInsectEyeRenderer(ABC):
 
             # if the batch is not yet full, return None
             return None
+
+        # TODO: add third 'streaming async' mode with dual PBOs (ping pong) and GL sync fences
 
     def flush(self) -> np.ndarray:
         """
