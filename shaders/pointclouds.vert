@@ -6,12 +6,18 @@ layout (location = 2) in float radius;
 
 uniform mat4 camera;
 uniform mat4 model;
+uniform mat4 light_space_matrix;   // light's P * V (for shadow mapping)
 uniform float radius_scale;
 
 out vec3 vertColor;
+out vec4 fragLightSpacePos;
 
 void main() {
-    gl_Position = camera * model * vec4(position, 1.0);
+    vec4 world_pos = model * vec4(position, 1.0);
+
+    gl_Position = camera * world_pos;
     vertColor = color;
     gl_PointSize = radius * radius_scale;
+
+    fragLightSpacePos = light_space_matrix * world_pos;
 }
