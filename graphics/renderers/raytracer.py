@@ -93,14 +93,10 @@ class RaytracingSceneBaker:
 
     def _filter_active_lights(self):
         """Returns active (enabled, intensity > 0) lights grouped by type."""
-        directional = [l for l in self.scene.lights
-                       if isinstance(l, DirectionalLight) and l.enabled and l.intensity > 0]
 
-        point = [l for l in self.scene.lights
-                 if isinstance(l, PointLight) and l.enabled and l.intensity > 0]
-
-        area = [l for l in self.scene.lights
-                if isinstance(l, AreaLight) and l.enabled and l.intensity > 0]
+        directional = [l for l in self.scene.directional_lights if l.enabled and l.intensity > 0]
+        point = [l for l in self.scene.point_lights if l.enabled and l.intensity > 0]
+        area = [l for l in self.scene.area_lights if l.enabled and l.intensity > 0]
 
         return directional, point, area
 
@@ -178,19 +174,18 @@ class RaytracingSceneBaker:
     def _pack_materials(self):
         """Packs material data for all mesh assets into GPU buffers."""
 
-        assets = [inst.asset for inst in self.scene.instances if inst.asset.asset_type == AssetType.Mesh]
-        assets = list(dict.fromkeys(assets))
+        mesh_assets = {inst.asset for inst in self.scene.mesh_instances}
 
-        if not assets:
+        if not mesh_assets:
             return
 
-        self.material_map = {asset.id: i for i, asset in enumerate(assets)}
+        self.material_map = {asset.id: i for i, asset in enumerate(mesh_assets)}
 
         # Collect textures from assets that have them
         texture_images = []
         asset_to_tex_idx = {}
 
-        for asset in assets:
+        for asset in mesh_assets:
             if asset.has_texture:
                 img = asset.texture_image  # lazy loads if needed
                 if img is not None:
@@ -228,9 +223,9 @@ class RaytracingSceneBaker:
             glDeleteTextures(len(tex_ids), tex_ids)
 
         # Pack material buffer
-        mat_data = np.zeros((len(assets), 4), dtype=np.uint32)
+        mat_data = np.zeros((len(mesh_assets), 4), dtype=np.uint32)
 
-        for asset in assets:
+        for asset in mesh_assets:
             idx = self.material_map[asset.id]
             tex_idx = asset_to_tex_idx[asset.id]
 
@@ -251,15 +246,6 @@ class RaytracingSceneBaker:
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     def _build_BLASes(self):
-        """
-        Produces/updates:
-            self.BLASes: List[BVH]
-            self.asset_to_blas_map[asset.id]: {'id', 'prim_offset', 'node_offset', 'prim_index_offset'}
-            self.cpu_AllBLAS_nodes: float32 (N_total_nodes, 8) for Standard layout
-            self.cpu_triangles: packed triangles (if any)
-            self.cpu_points: packed points (if any)
-            self._blas_leaf_id_chunks: list of uint32 leaf_ids per BLAS (concatenated later in _build_TLAS)
-        """
 
         all_vertices, all_indices, all_points, all_blas_nodes = [], [], [], []
         current_vert_offset, current_idx_offset, current_point_offset, current_node_offset = 0, 0, 0, 0
@@ -332,7 +318,6 @@ class RaytracingSceneBaker:
                 current_point_offset += nb_points
 
             else:
-                # Skip unsupported asset types
                 continue
 
             # target_layout = Layout.BVH_GPU
@@ -373,13 +358,14 @@ class RaytracingSceneBaker:
         if not self.BLASes:
             return
 
-        num_instances = len(self.scene.instances)
+        all_instances = self.scene.instances
+        num_instances = len(all_instances)
 
         # pytinybvh input for TLAS build + our GPU-side per-instance struct
         tlas_build_data = np.zeros(num_instances, dtype=instance_dtype)
         self.gpu_instances_info = np.zeros(num_instances, dtype=gpu_instance_dtype)
 
-        for i, inst in enumerate(self.scene.instances):
+        for i, inst in enumerate(all_instances):
             blas_map = self.asset_to_blas_map[inst.asset.id]
             transform = np.asarray(inst.transform, dtype=np.float32)
 
@@ -404,7 +390,7 @@ class RaytracingSceneBaker:
                 self.gpu_instances_info[i]['is_points'] = 1
 
             # Track dynamic instances
-            if getattr(inst, "dynamic", False):
+            if inst.dynamic:
                 self.dynamic_instance_map[inst.id] = i
 
         # Build TLAS from instances and child BLAS list
@@ -463,40 +449,37 @@ class RaytracingSceneBaker:
         if not self.dynamic_instance_map or self.TLAS is None:
             return
 
-        # Find the scene instances that are marked as dynamic
-        dynamic_instances = {inst.id: inst for inst in self.scene.instances if inst.id in self.dynamic_instance_map}
+        updated = False
 
-        if not dynamic_instances:
-            return
+        for inst in self.scene._dynamic_instances:
+            tlas_idx = self.dynamic_instance_map.get(inst.id)
 
-        for inst_id, tlas_idx in self.dynamic_instance_map.items():
-            instance = dynamic_instances.get(inst_id)
-
-            if instance is None:
+            if tlas_idx is None:
                 continue
 
-            transform = np.asarray(instance.transform, dtype=np.float32)
-
+            transform = np.asarray(inst.transform, dtype=np.float32)
             self.TLAS.set_instance_transform(tlas_idx, transform)
 
-            # Update the CPU-side buffer destined for the GPU
+            # Update GPU info
             self.gpu_instances_info[tlas_idx]['transform'] = transform
             self.gpu_instances_info[tlas_idx]['inverse_transform'] = np.asarray(
-                glm.inverse(instance.transform), dtype=np.float32)
+                glm.inverse(inst.transform), dtype=np.float32)
+            updated = True
 
-        # Refit the TLAS in C++ after all transforms are set
-        self.TLAS.refit_tlas()
+        if updated:
+            # Refit the TLAS in C++ after all transforms are set
+            self.TLAS.refit_tlas()
 
-        # Re-upload the updated buffers to the GPU
-        new_tlas_nodes = self.TLAS.get_buffers()['nodes']
+            # Re-upload the updated buffers to the GPU
+            new_tlas_nodes = self.TLAS.get_buffers()['nodes']
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.tlas_nodes_ssbo)
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, new_tlas_nodes.nbytes, new_tlas_nodes)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.tlas_nodes_ssbo)
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, new_tlas_nodes.nbytes, new_tlas_nodes)
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.instances_info_ssbo)
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.gpu_instances_info.nbytes, self.gpu_instances_info)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.instances_info_ssbo)
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.gpu_instances_info.nbytes, self.gpu_instances_info)
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     def _create_texture_array(self, texture_ids):
 

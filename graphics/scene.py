@@ -435,6 +435,7 @@ class Scene:
         self._point_lights: Set[PointLight] = set()
         self._area_lights: Set[AreaLight] = set()
 
+        self._dynamic_instances: Set[Instance] = set()
         self._mesh_instances: Set[Instance] = set()
         self._point_instances: Set[Instance] = set()
 
@@ -477,8 +478,12 @@ class Scene:
 
         if asset_obj.asset_type == AssetType.Mesh:
             self._mesh_instances.add(instance)
+
         elif asset_obj.asset_type == AssetType.Points:
             self._point_instances.add(instance)
+
+        if instance.dynamic:
+            self._dynamic_instances.add(instance)
 
         return instance
 
@@ -497,6 +502,7 @@ class Scene:
     def remove_instance(self, instance: Instance):
         self._mesh_instances.discard(instance)
         self._point_instances.discard(instance)
+        self._dynamic_instances.discard(instance)
 
     def remove_light(self, light: Light):
         if isinstance(light, DirectionalLight):
@@ -512,6 +518,7 @@ class Scene:
     def clear_instances(self):
         self._mesh_instances.clear()
         self._point_instances.clear()
+        self._dynamic_instances.clear()
 
     def clear_lights(self):
         self._directional_lights.clear()
