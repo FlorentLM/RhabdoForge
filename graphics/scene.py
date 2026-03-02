@@ -156,7 +156,7 @@ class Asset:
             if not isinstance(trimesh_model, (Trimesh, PointCloud)):
                 raise ValueError(f"Failed to extract geometry from scene {file_path}")
 
-        instance._process_trimesh_object(trimesh_model, radii, extract_texture=not texture_override)
+        instance.process_trimesh(trimesh_model, radii, extract_texture=not texture_override)
 
         print(f"Created Asset '{instance.name}' ({instance.asset_type.name}) from {file_path}")
         return instance
@@ -189,16 +189,16 @@ class Asset:
         if trimesh_model is None:
             raise ValueError("Failed to create geometry from arrays.")
 
-        instance._process_trimesh_object(trimesh_model, radii, extract_texture=False)
+        instance.process_trimesh(trimesh_model, radii, extract_texture=False)
 
         print(f"Created Asset '{instance.name}' ({instance.asset_type.name}) from arrays")
         return instance
 
-    def _process_trimesh_object(self,
-            trimesh_obj: Union[Trimesh, PointCloud],
-            radii: Optional[Union[float, ArrayLike]],
-            extract_texture: bool = True
-        ):
+    def process_trimesh(self,
+                        trimesh_obj: Union[Trimesh, PointCloud],
+                        radii: Optional[Union[float, ArrayLike]],
+                        extract_texture: bool = True
+                        ):
         """Populates Asset data from a trimesh object."""
 
         if trimesh_obj.is_empty:
@@ -428,20 +428,26 @@ class Scene:
 
     def __init__(self, background_color: Sequence[float] = (0.0, 0.0, 0.0)):
         self.assets: Dict[str, Asset] = {}
-        self.instances: List[Instance] = []
-        self._skybox: Optional[Skybox] = None
         self.background_color = background_color
+        self._skybox: Optional[Skybox] = None
 
         self._directional_lights: Set[DirectionalLight] = set()
         self._point_lights: Set[PointLight] = set()
         self._area_lights: Set[AreaLight] = set()
 
+        self._mesh_instances: Set[Instance] = set()
+        self._point_instances: Set[Instance] = set()
+
         default_sun = Sun(intensity=1.0, angular_size=0.05)
         default_sun.from_angles(azimuth=4.84, elevation=39.75)
+
         self.add_light(default_sun)
 
-    def add_instance(self, asset: Union[Asset, str], transform: Optional[Union[glm.mat4, ArrayLike]] = None,
-                     **kwargs) -> Instance:
+    def add_instance(self,
+        asset: Union[Asset, str],
+        transform: Optional[Union[glm.mat4, ArrayLike]] = None,
+        **kwargs
+    ) -> Instance:
 
         if isinstance(asset, Asset):
             asset_obj = asset
@@ -468,8 +474,49 @@ class Scene:
                 f"Invalid type for asset_or_name. Expected Asset or str, but got {type(asset).__name__}.")
 
         instance = Instance(asset_obj, transform, **kwargs)
-        self.instances.append(instance)
+
+        if asset_obj.asset_type == AssetType.Mesh:
+            self._mesh_instances.add(instance)
+        elif asset_obj.asset_type == AssetType.Points:
+            self._point_instances.add(instance)
+
         return instance
+
+    def add_light(self, light: Light):
+        if isinstance(light, DirectionalLight):
+            self._directional_lights.add(light)
+        elif isinstance(light, PointLight):
+            self._point_lights.add(light)
+        elif isinstance(light, AreaLight):
+            self._area_lights.add(light)
+
+    def add_skybox(self, texture_path: str):
+        """Creates and loads a skybox from a directory of textures."""
+        self._skybox = Skybox(texture_path)
+
+    def remove_instance(self, instance: Instance):
+        self._mesh_instances.discard(instance)
+        self._point_instances.discard(instance)
+
+    def remove_light(self, light: Light):
+        if isinstance(light, DirectionalLight):
+            self._directional_lights.discard(light)
+        elif isinstance(light, PointLight):
+            self._point_lights.discard(light)
+        elif isinstance(light, AreaLight):
+            self._area_lights.discard(light)
+
+    def clear_skybox(self):
+        self._skybox = None
+
+    def clear_instances(self):
+        self._mesh_instances.clear()
+        self._point_instances.clear()
+
+    def clear_lights(self):
+        self._directional_lights.clear()
+        self._point_lights.clear()
+        self._area_lights.clear()
 
     def load(self,
             file_path: Union[str, Path],
@@ -513,7 +560,7 @@ class Scene:
 
                 if asset_name not in self.assets:
                     asset = Asset(asset_name)
-                    asset._process_trimesh_object(geom_obj, radii=kwargs.get('radii'), extract_texture=True)
+                    asset.process_trimesh(geom_obj, radii=kwargs.get('radii'), extract_texture=True)
                     self.assets[asset_name] = asset
 
                 inst = self.add_instance(self.assets[asset_name], transform=final_transform,
@@ -528,7 +575,7 @@ class Scene:
 
             if asset_name not in self.assets:
                 asset = Asset(asset_name)
-                asset._process_trimesh_object(data, radii=kwargs.get('radii'), extract_texture=True)
+                asset.process_trimesh(data, radii=kwargs.get('radii'), extract_texture=True)
                 self.assets[asset_name] = asset
 
             inst = self.add_instance(self.assets[asset_name], transform=user_transform,
@@ -541,15 +588,45 @@ class Scene:
         return new_instances
 
     @property
+    def instances(self) -> List[Instance]:
+        """Returns a combined list of all instances."""
+        return list(self._mesh_instances | self._point_instances)
+
+    @property
+    def mesh_instances(self) -> List[Instance]:
+        return list(self._mesh_instances)
+
+    @property
+    def point_instances(self) -> List[Instance]:
+        return list(self._point_instances)
+
+    @property
+    def lights(self) -> List[Light]:
+        return list(self._directional_lights | self._point_lights | self._area_lights)
+
+    @property
+    def directional_lights(self) -> List[DirectionalLight]:
+        return list(self._directional_lights)
+
+    @property
+    def point_lights(self) -> List[PointLight]:
+        return list(self._point_lights)
+
+    @property
+    def area_lights(self) -> List[AreaLight]:
+        return list(self._area_lights)
+
+    @property
     def skybox(self):
         return self._skybox
 
-    def add_skybox(self, texture_path: str):
-        """Creates and loads a skybox from a directory of textures."""
-        self._skybox = Skybox(texture_path)
+    @property
+    def total_triangles(self) -> int:
+        return sum(inst.asset.nb_triangles for inst in self._mesh_instances)
 
-    def clear_skybox(self):
-        self._skybox = None
+    @property
+    def total_points(self) -> int:
+        return sum(inst.asset.nb_points for inst in self._point_instances)
 
     @property
     def sun(self) -> Optional[Sun]:
@@ -565,53 +642,8 @@ class Scene:
         if value is not None:
             self._directional_lights.add(value)
 
-    @property
-    def lights(self) -> List[Light]:
-        return list(self._directional_lights | self._point_lights | self._area_lights)
-
-    def add_light(self, light: Light):
-        if isinstance(light, DirectionalLight):
-            self._directional_lights.add(light)
-        elif isinstance(light, PointLight):
-            self._point_lights.add(light)
-        elif isinstance(light, AreaLight):
-            self._area_lights.add(light)
-
-    def remove_light(self, light: Light):
-        if isinstance(light, DirectionalLight):
-            self._directional_lights.discard(light)
-        elif isinstance(light, PointLight):
-            self._point_lights.discard(light)
-        elif isinstance(light, AreaLight):
-            self._area_lights.discard(light)
-
-    def clear_lights(self):
-        self._directional_lights.clear()
-        self._point_lights.clear()
-        self._area_lights.clear()
-
-    @property
-    def directional_lights(self) -> List[DirectionalLight]:
-        return list(self._directional_lights)
-
-    @property
-    def point_lights(self) -> List[PointLight]:
-        return list(self._point_lights)
-
-    @property
-    def area_lights(self) -> List[AreaLight]:
-        return list(self._area_lights)
-
-    @property
-    def total_triangles(self) -> int:
-        return sum(inst.asset.nb_triangles for inst in self.instances if inst.asset.asset_type == AssetType.Mesh)
-
-    @property
-    def total_points(self) -> int:
-        return sum(inst.asset.nb_points for inst in self.instances if inst.asset.asset_type == AssetType.Points)
-
     def free(self):
         self.assets.clear()
-        self.instances.clear()
+        self.clear_instances()
         self.clear_lights()
         # Note: GPU resources tied to skybox/assets are freed by the bakers/renderers
