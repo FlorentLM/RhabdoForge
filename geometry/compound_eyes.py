@@ -434,21 +434,21 @@ class CompoundEye:
         self.ommatidia = OmmatidiaCollection(self.data, self)   # temporary proxy for packing metadata
         self.ommatidia.sensitivity = sensitivities if sensitivities is not None else 1.0
 
-        id_arr = np.zeros(self.num_ommatidia, dtype=np.uint32)
+        id_arr = np.zeros(self.ommatidia_count, dtype=np.uint32)
         if eye_id is not None:
             prepared_ids = self._prepare_param(eye_id, "eye_id")
             if np.any(prepared_ids > 7) or np.any(prepared_ids < 0):
                 raise ValueError("Eye ID must be in the range [0, 7].")
             id_arr = prepared_ids.astype(np.uint32)
 
-        types_arr = np.zeros(self.num_ommatidia, dtype=np.uint32)
+        types_arr = np.zeros(self.ommatidia_count, dtype=np.uint32)
         if receptor_types is not None:
             prepared_types = self._prepare_param(receptor_types, "receptor_types")
             if np.any(prepared_types > 15) or np.any(prepared_types < 0):
                 print("Warning: Receptor types should be in [0, 15]. Clamping values.")
             types_arr = prepared_types.astype(np.uint32)
 
-        custom_ids_arr = np.zeros(self.num_ommatidia, dtype=np.uint32)
+        custom_ids_arr = np.zeros(self.ommatidia_count, dtype=np.uint32)
         if custom_ids is not None:
             prepared_custom_ids = self._prepare_param(custom_ids, "custom_ids")
             if np.any(prepared_custom_ids > 65535) or np.any(prepared_custom_ids < 0):
