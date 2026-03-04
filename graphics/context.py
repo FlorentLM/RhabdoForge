@@ -1,20 +1,18 @@
-import time
-from typing import Optional, Tuple
 import OpenGL
-
-from graphics.debug import DebugOverlay
-
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 import glfw
 from pyglm import glm
+import time
+from typing import Optional, Tuple
 
 from graphics.renderers.base import BaseInsectEyeRenderer
 from graphics.scene import Scene
 from graphics.agent import Agent, OrbitCamera
 from graphics.utils import WORLD_UP, WORLD_DOWN, ViewMode, ProjectionMode
 from graphics.interactive.hud import HUD
+from graphics.debug import DebugOverlay
 
 
 class Context:
@@ -306,7 +304,7 @@ class Context:
 
         self.renderer.draw(self.view_mode, pov, self.agent)
 
-        if self.debug is not None and self.view_mode != ViewMode.panoramic:
+        if self.debug is not None and self.view_mode != ViewMode.panoramic: # TODO: debug projection in panoramic mode? idk if useful
             self.debug.draw(view=pov.view, proj=pov.projection)
 
         if self.hud:
