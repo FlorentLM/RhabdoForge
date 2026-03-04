@@ -306,7 +306,7 @@ class Context:
 
         self.renderer.draw(self.view_mode, pov, self.agent)
 
-        if self.debug is not None:
+        if self.debug is not None and self.view_mode != ViewMode.panoramic:
             self.debug.draw(view=pov.view, proj=pov.projection)
 
         if self.hud:

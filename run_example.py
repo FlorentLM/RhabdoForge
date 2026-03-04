@@ -40,14 +40,19 @@ def main():
     crate_asset = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='textures/wood.jpg')
 
     # Add multiple instances of the same asset
-    scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))
-    scene.add_instance(asset=crate_asset, transform=(3.0, 0.0, 0.0))
+    static_crate_1 = scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))
+    static_crate_2 = scene.add_instance(asset=crate_asset, transform=(3.0, 0.0, 0.0))
 
     # A crate that will move
     dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
 
     # Add a skybox
     scene.add_skybox('textures/bright_day_nosun')
+
+    context.debug.add(AxesGizmo(size=0.4))
+    context.debug.add(DebugBox(static_crate_1))
+    context.debug.add(DebugBox(static_crate_2))
+    context.debug.add(DebugBox(dynamic_crate))
 
     # Setup eye model
     # eye_model = CompoundEye(num_ommatidia=1962, force_isotropic=True)
@@ -69,15 +74,15 @@ def main():
                                  batch_size=batch_size,
                                  enable_shadows=ENABLE_SHADOWS)
 
+        for blas in eye_renderer._scene_baked.BLASes:
+            context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
+
     else:
         eye_renderer = Rasterizer(eye_model=eye_model, scene=scene,
                                   nb_samples=NB_SAMPLES,
                                   time_dithering=False,
                                   batch_size=batch_size,
                                   enable_shadows=ENABLE_SHADOWS)
-
-    context.debug.add(AxesGizmo(size=0.4))
-    context.debug.add(DebugBox(eye_renderer._scene_baked.TLAS))
 
     # ================== Example moving ommatidia ==================
 

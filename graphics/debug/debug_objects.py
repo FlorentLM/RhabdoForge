@@ -181,13 +181,13 @@ def _extract_aabb(source) -> tuple[np.ndarray, np.ndarray]:
 
         # Apply transform (from Instance unwrap or from source.transform)
         T = transform if transform is not None else getattr(source, 'transform', None)
+
         if T is not None:
             corners = _aabb_corners(mn, mx)
             transformed = np.array([
                 (T * glm.vec4(float(c[0]), float(c[1]), float(c[2]), 1.0)).xyz
                 for c in corners
             ])
-            transformed = np.array([[v.x, v.y, v.z] for v in transformed])
             mn = transformed.min(axis=0)
             mx = transformed.max(axis=0)
 

@@ -110,7 +110,8 @@ renderer = Raytracer(
 
 context.debug.add(DebugGrid())
 context.debug.add(AxesGizmo(size=0.4))
-context.debug.add(DebugBox(renderer._scene_baked.TLAS))
+for blas in renderer._scene_baked.BLASes:
+    context.debug.add(DebugBox(blas))
 
 
 ##
