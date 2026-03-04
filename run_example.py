@@ -1,7 +1,5 @@
-from pathlib import Path
-
 import numpy as np
-
+from graphics.debug import DebugBox, AxesGizmo
 from graphics.scene import Scene, Asset
 from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
@@ -28,7 +26,7 @@ def main():
     # This needs to be the first thing called
     context = Context()
 
-    scene = Scene()
+    scene = Scene(background_color=(0.15, 0.15, 0.3))
 
     if USE_POINT_CLOUD:
         # Create a point cloud asset from a file
@@ -75,7 +73,11 @@ def main():
         eye_renderer = Rasterizer(eye_model=eye_model, scene=scene,
                                   nb_samples=NB_SAMPLES,
                                   time_dithering=False,
-                                  batch_size=batch_size)
+                                  batch_size=batch_size,
+                                  enable_shadows=ENABLE_SHADOWS)
+
+    context.debug.add(AxesGizmo(size=0.4))
+    context.debug.add(DebugBox(eye_renderer._scene_baked.TLAS))
 
     # ================== Example moving ommatidia ==================
 
@@ -107,7 +109,7 @@ def main():
             # eye_model.ommatidia[foveal_indices].dt(context.delta_time).rotate(yaw_delta=5.0)
 
             # Send the updates to the GPU
-            eye_renderer.update()
+            eye_renderer.update()           # TODO: This could be called unconditionally since it is a no-op when nothing changed
 
             # ================== End example moving ommatidia ==================
 

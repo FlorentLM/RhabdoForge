@@ -1,6 +1,8 @@
 import time
-from typing import Optional
+from typing import Optional, Tuple
 import OpenGL
+
+from graphics.debug import DebugOverlay
 
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
@@ -18,8 +20,8 @@ from graphics.interactive.hud import HUD
 class Context:
 
     def __init__(self,
-                 window_size:
-                 tuple = None,
+                 window_size: tuple = None,
+                 debug_overlay: bool = True,
                  fps_limit: int = None,
                  v_sync: bool = False,
                  invert_mouseY: bool = False
@@ -50,13 +52,15 @@ class Context:
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_FRAMEBUFFER_SRGB)  # we want linear (non-gamma corrected)
 
-        self.agent = None
-        self.renderer = None
-        self.scene = None
-        self.observer = None
-        self.view_mode = None
-        self.hud = None
-        self.last_mouse_pos = None
+        self.agent: Optional[Agent] = None
+        self.renderer: Optional[BaseInsectEyeRenderer] = None
+        self.scene: Optional[Scene] = None
+        self.observer: Optional[OrbitCamera] = None
+        self.view_mode: Optional[ViewMode] = None
+        self.hud: Optional[HUD] = None
+        self.last_mouse_pos: Optional[Tuple[float, float]] = None
+
+        self.debug: Optional[DebugOverlay] = DebugOverlay() if debug_overlay else None
 
         self.last_frame_time: float = 0.0
         self._delta_time: float = 0.0
@@ -108,7 +112,7 @@ class Context:
 
             self.hud = HUD(self)
 
-            # Initialize last_frame_time right before the loop starts to prevent a massive initial delta_time
+            # Initialise last_frame_time right before the loop starts to prevent a massive initial delta_time
             self.last_frame_time = self.current_time
 
             self._interactive_initialised = True
@@ -166,6 +170,10 @@ class Context:
             if key == glfw.KEY_KP_DIVIDE:
                 if hasattr(self.renderer, 'samples_per_pixel'):
                     self.renderer.samples_per_pixel = max(1, self.renderer.samples_per_pixel // 2)
+
+            if key == glfw.KEY_G:
+                if self.debug is not None:
+                    self.debug.enabled = not self.debug.enabled
 
     def input(self):
 
@@ -298,6 +306,9 @@ class Context:
 
         self.renderer.draw(self.view_mode, pov, self.agent)
 
+        if self.debug is not None:
+            self.debug.draw(view=pov.view, proj=pov.projection)
+
         if self.hud:
             self.hud.draw()
 
@@ -312,6 +323,8 @@ class Context:
                 time.sleep(wait_time)
 
     def free(self):
+        if self.debug:
+            self.debug.free()
         if self.hud:
             self.hud.free()
         glfw.terminate()

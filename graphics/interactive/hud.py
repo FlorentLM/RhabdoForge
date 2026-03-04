@@ -15,7 +15,7 @@ from graphics.renderers.raytracer import Raytracer, PathTracer
 
 
 class FontRenderer:
-    """ Renders text on the GPU using a fonts atlas """
+    """Renders text on the GPU using a fonts atlas."""
 
     def __init__(self):
         self.char_data = {}
@@ -34,7 +34,7 @@ class FontRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
 
         # Data is buffered on the fly so just set up attributes here
-        # Each vertex has 4 floats: x, y, u, v
+        # Each vertex has x, y, u, v floats
         glBufferData(GL_ARRAY_BUFFER, 0, None, GL_DYNAMIC_DRAW)
         glEnableVertexAttribArray(0)
         glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), ctypes.c_void_p(0))
@@ -42,7 +42,7 @@ class FontRenderer:
         glBindVertexArray(0)
 
     def _load_atlas_data(self, font_name='freesansbold.ttf'):
-        """ Loads atlas metadata from JSON and the texture from the associated PNG file """
+        """Loads atlas metadata from JSON and the texture from the associated PNG file."""
 
         atlas_dir = Path('graphics/interactive/fonts')
 
@@ -79,16 +79,15 @@ class FontRenderer:
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4)  # Reset to default
 
     def get_text_width(self, text, scale=1.0):
-        """ Calculates the pixel width of a string based on the fonts atlas """
+        """Calculates the pixel width of a string based on the fonts atlas."""
         width = 0
         for char in text:
             if char in self.char_data:
-                # 'advance' metric is the proper way to measure character width
                 width += self.char_data[char]['advance'] * scale
         return width
 
     def generate_text_vertices(self, text, x, y, scale=1.0):
-        """ Generates vertex data for a string and returns it as a list """
+        """Generates vertex data for a string and returns it as a list."""
         vertices = []
         cursor_x = x
         for char in text:
@@ -98,18 +97,18 @@ class FontRenderer:
 
                 u0, v0, u1, v1 = data['uv_rect']
 
-                # Define quad corners
-                bl = (cursor_x, y, u0, v1)          # Bottom-Left
-                br = (cursor_x + w, y, u1, v1)      # Bottom-Right
-                tr = (cursor_x + w, y + h, u1, v0)  # Top-Right
-                tl = (cursor_x, y + h, u0, v0)      # Top-Left
+                # Quad corners
+                bl = (cursor_x, y, u0, v1)          # bottom-Left
+                br = (cursor_x + w, y, u1, v1)      # bottom-Right
+                tr = (cursor_x + w, y + h, u1, v0)  # top-Right
+                tl = (cursor_x, y + h, u0, v0)      # top-Left
 
-                # Triangle 1: bl, br, tr
+                # Triangle 1
                 vertices.extend(bl)
                 vertices.extend(br)
                 vertices.extend(tr)
 
-                # Triangle 2: bl, tr, tl
+                # Triangle 2
                 vertices.extend(bl)
                 vertices.extend(tr)
                 vertices.extend(tl)
@@ -125,7 +124,7 @@ class FontRenderer:
 
 
 class HUD:
-    """ Manages the rendering of all HUD elements """
+    """Manages the rendering of all HUD elements."""
 
     # TODO: Comment this class a bit more
 
@@ -145,11 +144,11 @@ class HUD:
         self.view_modes_names = {0: 'Compound eye', 1: 'Panoramic', 2: 'Third person', 3: 'Perspective'}
         self.proj_modes_names = {0: 'Layout', 1: 'Acceptance'}
 
-        # FPS tracking logic
-        self.frame_times = deque(maxlen=60)  # Store timestamps of last 60 frames
+        # FPS tracking
+        self.frame_times = deque(maxlen=60)
         self.last_fps_update_time = 0
 
-        self.update_interval = 0.25  # update text every 250ms
+        self.update_interval = 0.25  # update text every 250 ms
         self._last_update_time = 0
         self._info_text = ""
         self._controls_text_lines = []
@@ -162,15 +161,29 @@ class HUD:
 
     def _update_controls_text(self):
 
-        # The main renderer (not the debug one) determines the "sample" label
         sample_label = "rays" if self.ctx.renderer and isinstance(self.ctx.renderer, Raytracer) else "samples"
 
-        self._controls_text_lines = [
-            'ESC: Quit', 'H: Show/hide HUD', 'R: Reset rotation', 'O: Teleport to origin', 'X: Dither once',
-            f'+/-: Increase/decrease {sample_label}', 'L: Toggle Sun control', 'T: Toggle time dithering',
-            'V: Toggle Voronoi view', 'P: Projection mode (acceptance / layout)', 'C: Change view',
-            'Ctrl/Space: Down/Up', 'Q/E: Roll', 'Mouse: Yaw & Pitch', 'WASD: Move', '------', 'Controls:'
-        ]
+        self._controls_text_lines = reversed([
+            'Controls:',
+            '------',
+            'WASD: Move',
+            'Mouse: Yaw & Pitch',
+            'Q/E: Roll',
+            'Ctrl/Space: Down/Up',
+            'C: Change view',
+            'P: Projection mode (acceptance / layout)',
+            'G: Toggle debug objects',
+            'V: Toggle Voronoi view',
+            'T: Toggle time dithering',
+            'L: Toggle Sun control',
+            f'+/-: Increase/decrease {sample_label}',
+            'X: Dither once',
+            'O: Teleport to origin',
+            'R: Reset rotation',
+            'H: Show/hide HUD',
+            'ESC: Quit'
+        ])
+
         shadow_verts, fg_verts = [], []
         margin, line_height = 10, self.font_renderer.font_size
 
@@ -224,15 +237,16 @@ class HUD:
 
             proj_mode = self.proj_modes_names[active_renderer.projection_mode]
 
-            self._info_text = (f'FPS: {avg_fps:>4.2f} | '
-                               f'Mode: {render_mode} | '
-                               f'Ommatidia: {nb_om} | '
-                               f'{sample_label}: {nb_om_samples}/om{samples_pp_str} | '
-                               f'XYZ: [ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ] | '
-                               f'View mode: {view_mode} | '
-                               f'Projection mode: {proj_mode}'
-                               # f' | Sun: azm={self.ctx.renderer.sun.azimuth:.2f}, elv={self.ctx.renderer.sun.elevation:.2f}'
-                               )
+            self._info_text = (
+                f'FPS: {avg_fps:>4.2f} | '
+                f'Mode: {render_mode} | '
+                f'Ommatidia: {nb_om} | '
+                f'{sample_label}: {nb_om_samples}/om{samples_pp_str} | '
+                f'XYZ: [ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ] | '
+                f'View mode: {view_mode} | '
+                f'Projection mode: {proj_mode}'
+                # f' | Sun: azm={self.ctx.renderer.sun.azimuth:.2f}, elv={self.ctx.renderer.sun.elevation:.2f}'
+            )
 
             margin, line_height = 10, self.font_renderer.font_size * 1.1
             info_sv = self.font_renderer.generate_text_vertices(self._info_text, margin + 1,
@@ -241,8 +255,7 @@ class HUD:
             self._info_shadow_verts = np.array(info_sv, dtype=np.float32) if info_sv else None
             self._info_fg_verts = np.array(info_fv, dtype=np.float32) if info_fv else None
 
-            # Get scene stats from the renderer's scene data representation
-
+            # Scene stats
             tri_count = self.ctx.scene.total_triangles
             point_count = self.ctx.scene.total_points
 
