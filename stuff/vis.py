@@ -5,8 +5,8 @@ import numpy as np
 def plot_eye_3d(eye_model, glyph_length=0.02, show_origins=False):
 
     # Extract origins and directions from the eye model
-    origins = np.array([om.origin for om in eye_model.ommatidia])
-    directions = np.array([om.direction for om in eye_model.ommatidia])
+    origins = np.copy(eye_model.ommatidia[:].origin)
+    directions = np.copy(eye_model.ommatidia[:].direction)
 
     if np.allclose(origins, 0):
         print("Warning: Eye model has zero radius. Glyphs will all start from the center.")
@@ -15,10 +15,8 @@ def plot_eye_3d(eye_model, glyph_length=0.02, show_origins=False):
         origins = directions * radius  # place origins on the surface
 
     points_polydata = pv.PolyData(origins)
-
     points_polydata['directions'] = -directions
-
-    points_polydata['scale'] = np.full(eye_model.nb_om, glyph_length)
+    points_polydata['scale'] = np.full(eye_model.ommatidia_count, glyph_length)
 
     # "glyph" filter to place a cone at each point
     geom = pv.Cone(radius=0.3, resolution=12)  # radius is a ratio of the length
@@ -39,7 +37,7 @@ def plot_eye_3d(eye_model, glyph_length=0.02, show_origins=False):
             point_size=10
         )
 
-    # plotter.add_mesh(cones, color='red')
+    plotter.add_mesh(cones, color='red')
     plotter.add_axes()
     plotter.show_grid()
 
@@ -49,7 +47,6 @@ def plot_eye_3d(eye_model, glyph_length=0.02, show_origins=False):
     plotter.camera.azimuth = 30
     plotter.camera.zoom(1.5)
 
-    print("Showing 3D eye model plot. Close the window to continue.")
     plotter.show()
 
 
@@ -59,7 +56,5 @@ if __name__ == "__main__":
     # Create an eye with a non-zero radius so the origins are on the surface
     NB_OMMATIDIA_PLOT = 1962
     EYE_RADIUS_PLOT = 1.0
-    eye_for_plot = CompoundEye(num_ommatidia=NB_OMMATIDIA_PLOT, eye_radius=EYE_RADIUS_PLOT)
-
-    # Generate the plot with a sensible glyph length
-    plot_eye_3d(eye_for_plot, glyph_length=EYE_RADIUS_PLOT / 5, show_origins=True)
+    eye = CompoundEye(num_ommatidia=NB_OMMATIDIA_PLOT, eye_radius=EYE_RADIUS_PLOT)
+    plot_eye_3d(eye, glyph_length=EYE_RADIUS_PLOT / 5, show_origins=True)
