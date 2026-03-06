@@ -330,15 +330,15 @@ class DebugGrid(LineObject):
     """XZ ground-plane grid (Blender-style)."""
 
     def __init__(self,
-            size: float = 20.0,
-            divisions: int = 20,
+            size: float = 10.0,
+            step: float = 1.0,
             y: float = 0.0,
             **kwargs
         ):
         kwargs.setdefault('color', (0.30, 0.30, 0.30))
         kwargs.setdefault('alpha', 0.6)
         super().__init__(**kwargs)
-        self._data = dp.make_grid(size=size, divisions=divisions, color=self.color, y=y)
+        self._data = dp.make_grid(size=size, step=step, color=self.color, y=y)
 
     def _build_lines(self):
         return self._data

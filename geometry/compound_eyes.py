@@ -866,7 +866,7 @@ class CompoundEye:
 
     def query_positions_radius(self, center_position: ArrayLike, radius: float) -> np.ndarray:
         """
-        Finds all ommatidia whose origin is within a given radius of a center point.
+        Finds all ommatidia whose origin is within a given radius of a centre point.
         """
         self.rebuild_spatial()
 
@@ -895,7 +895,7 @@ class CompoundEye:
         summary.append(
             f"    Minor: {np.mean(d_phi_minor_deg):.3f}° (mean), {np.min(d_phi_minor_deg):.3f}° (min), {np.max(d_phi_minor_deg):.3f}° (max)")
         summary.append(
-            f"    Major:   {np.mean(d_phi_major_deg):.3f}° (mean), {np.min(d_phi_major_deg):.3f}° (min), {np.max(d_phi_major_deg):.3f}° (max)")
+            f"    Major: {np.mean(d_phi_major_deg):.3f}° (mean), {np.min(d_phi_major_deg):.3f}° (min), {np.max(d_phi_major_deg):.3f}° (max)")
 
         # Acceptance Angles (Δρ)
         angles_deg = np.rad2deg(self.data['acceptance_angles'])

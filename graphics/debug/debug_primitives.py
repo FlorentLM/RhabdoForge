@@ -75,7 +75,7 @@ def make_gizmo(size: float = 0.3, origin: Sequence[float] = (0, 0, 0)) -> Tuple[
 
 def make_grid(
         size: float = 10.0,
-        divisions: int = 10,
+        step: float = 1.0,
         color: Sequence[float] = (0.35, 0.35, 0.35),
         x_col: Sequence[float] = (0.55, 0.2, 0.2),
         z_col: Sequence[float] = (0.2, 0.2, 0.55),
@@ -83,7 +83,7 @@ def make_grid(
     ) -> np.ndarray:
 
     half = size / 2.0
-    step = size / divisions
+    divisions = int(np.ceil(size / step))
 
     lines = []
     for i in range(divisions + 1):
