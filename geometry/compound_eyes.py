@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, Union, Sequence
@@ -343,9 +344,19 @@ class OmmatidiaCollection:
         return f"<OmmatidiaCollection for {self._len} ommatidia>"
 
 
-class CompoundEye:
+class OmmatidialArray:
     """
-    Container for a single eye's ommatidia with spatial query capabilities.
+    Flat structured array of ommatidia for the renderer.
+
+    This is the GPU-facing data container. It holds all ommatidia across all eyes
+    (distinguished by eye_id field, bits 0–2 of packed_data).
+
+    Use .eye(id) to get an Eye view for a specific eye. Eye clas provides spatial queries and
+    directed neighbour lookups.
+
+    The renderer consumes this directly:
+        array = OmmatidialArray.from_file('drosophila.npz', eye_parameter=1.5)
+        renderer = Raytracer(eye_model=array, ...)
     """
 
     def __init__(self,
@@ -362,33 +373,32 @@ class CompoundEye:
                  lens_diameter_nm: Optional[Union[float, Tuple]] = None,
                  rhabdom_diameter_nm: Optional[Union[float, Tuple]] = None,
                  focal_length_nm: Optional[Union[float, Tuple]] = None,
-                 wavelength_nm: float = 500,  # TODO: this is a temporary value, the shaders should eventually compute the 3 channels independently
+                 wavelength_nm: float = 500,  # TODO: temporary value, shaders should compute per-channel
                  eye_radius: float = 0.01,
                  force_isotropic: bool = False
                  ):
         """
-        The primary constructor for creating a Compound Eye.
+        The primary constructor for creating an OmmatidialArray.
 
         Args:
-            directions: An (N, 3) numpy array of ommatidial direction vectors
-            origins: An (N, 3) or (3,) array of ommatidial origin positions
-            num_ommatidia: If directions are not provided, this is used to generate a uniform sphere of directions.
-            acceptance_angles_rad: (Optional) The acceptance angles (Δρ), minor and major axes. Can be an (N, 2) array, a tuple (minor, major),
-                a float, or None to estimate from other parameters.
-            interommatidial_angles_rad: (Optional) The interommatidial angles (Δφ), minor and major axes. Can be an (N, 2) array, a tuple (minor, major),
-                a float, or None to estimate from other parameters.
-            sensitivities: (Optional) A scalar or (N,) array for ommatidial sensitivity. Defaults to 1.0.
-            receptor_types: (Optional) A scalar or (N,) array of integer receptor types. Defaults to 0.
-            eye_id: (Optional) A scalar or (N,) encoding which eye the ommatidium (or ommatidia) belongs to. 0 to 7.
-            custom_ids: (Optional) A scalar or (N,) array of integer custom IDs. Defaults to 0.
-            eye_parameter: (Optional) The eye parameter 'p' value (Δρ / Δφ). Used to estimate acceptance
-                angles if they are not provided directly (defaults to 1.0)
-            eye_radius: (Optional) Physical radius of the eye for setting ommatidial origins on a sphere.
-            force_isotropic: (Optional) If True, ensures acceptance angles are circular.
+            directions: An (N, 3) numpy array of ommatidial direction vectors.
+            origins: An (N, 3) or (3,) array of ommatidial origin positions.
+            num_ommatidia: If directions are not provided, generates a uniform sphere.
+            acceptance_angles_rad: The acceptance angles (Δρ), minor and major axes.
+                Can be (N, 2), a tuple (minor, major), a float, or None to estimate.
+            interommatidial_angles_rad: The interommatidial angles (Δφ).
+                Can be (N, 2), a tuple (minor, major), a float, or None to estimate.
+            sensitivities: Scalar or (N,) array. Defaults to 1.0.
+            receptor_types: Scalar or (N,) array of integer receptor types. Defaults to 0.
+            eye_id: Scalar or (N,) encoding which eye each ommatidium belongs to. 0 to 7.
+            custom_ids: Scalar or (N,) array of integer custom IDs. Defaults to 0.
+            eye_parameter: The eye parameter 'p' (Δρ / Δφ). Defaults to 1.0.
+            eye_radius: Physical radius for placing origins on a sphere.
+            force_isotropic: If True, forces circular acceptance angles.
         """
 
         if directions is None and num_ommatidia is None:
-            raise ValueError("CompoundEye requires either 'directions' or 'num_ommatidia' to be provided.")
+            raise ValueError("OmmatidialArray requires either 'directions' or 'num_ommatidia'.")
 
         # Determine ommatidial directions
         if directions is not None:
@@ -430,16 +440,18 @@ class CompoundEye:
 
             else:
                 raise ValueError(
-                    f"Invalid shape for 'origins': {origins_arr.shape}. Expected ({self.ommatidia_count}, 3) or (3,).")
+                    f"Invalid shape for 'origins': {origins_arr.shape}. "
+                    f"Expected ({self.ommatidia_count}, 3) or (3,).")
         elif eye_radius > 0:
             self.data['origin'][:, :3] = self.data['direction'][:, :3] * eye_radius
 
         self.data['origin'][:, 3] = 1.0  # w=1 for positions
 
-        # Metadata and packing
-        self.ommatidia = OmmatidiaCollection(self.data, self)   # temporary proxy for packing metadata
-        self.ommatidia.sensitivity = sensitivities if sensitivities is not None else 1.0
+        self.data['sensitivity'] = np.asarray(
+            sensitivities if sensitivities is not None else 1.0, dtype=np.float32
+        )
 
+        # Metadata packing
         id_arr = np.zeros(self.ommatidia_count, dtype=np.uint32)
         if eye_id is not None:
             prepared_ids = self._prepare_param(eye_id, "eye_id")
@@ -466,14 +478,16 @@ class CompoundEye:
                       ((custom_ids_arr.astype(np.uint32) & 0xFFFF) << 11)
         self.data['packed_data'] = packed_data
 
-        # Prep spatial queries
         self.dirty_mask = np.zeros(self.ommatidia_count, dtype=bool)
         self.needs_rebuild = {'direction': False, 'origin': True}
         self.kdtree_directions = KDTree(self.data['direction'][:, :3])
         self.kdtree_positions = KDTree(self.data['origin'][:, :3])
 
+        self._eye_cache = {}
+
         # Lattice geometry (Δφ and Tilt)
-        # (check if origins overlap: indicates loading a pre-expanded eye)  # TODO: Too fragile, maybe should just save th flag
+        # (check if origins overlap: indicates loading a pre-expanded eye)
+        # TODO: Too fragile, maybe should just save the flag
         is_pre_expanded = False
         if self.ommatidia_count > 1:
             if np.allclose(self.data['origin'][0], self.data['origin'][1], atol=1e-7):
@@ -504,7 +518,12 @@ class CompoundEye:
             self.data['interommatidial_angles'][:, 0] = est_minor
             self.data['interommatidial_angles'][:, 1] = est_major
             self.data['tilt'] = tilts
-            self.ommatidia.neighbours_count = counts
+
+            # Pack neighbour counts into bits 7-10
+            counts_arr = np.asarray(counts, dtype=np.uint32)
+            cleared = self.data['packed_data'] & _CLEAR_NEIGHBOURS
+            self.data['packed_data'] = cleared | ((counts_arr & 0x0F) << 7)
+
         else:
             # Case C: Pre-expanded (rhabdomeres) eye, read existing data
             print("Detected pre-expanded data. Skipping geometric estimation.")
@@ -534,14 +553,13 @@ class CompoundEye:
             p_min, p_maj = (p, p) if isinstance(p, (int, float)) else p
             estimated_angles = np.vstack([p_min * self.ioa_minor_rad, p_maj * self.ioa_major_rad]).T
 
-        # Apply isotropic constraint if requested
         if force_isotropic:
             mean_angles = np.mean(np.atleast_2d(estimated_angles), axis=1)
             estimated_angles = np.vstack([mean_angles, mean_angles]).T
 
-        # Assign acceptance angles Δρ
+        # Assign acceptance angles
         if estimated_angles is None:
-            raise AttributeError("Warning: No acceptance angles were provided or could be estimated.")
+            raise AttributeError("No acceptance angles were provided or could be estimated.")
 
         angles_arr = np.asarray(estimated_angles, dtype=np.float32)
         if angles_arr.shape == (self.ommatidia_count,):
@@ -549,7 +567,7 @@ class CompoundEye:
         else:
             self.data['acceptance_angles'] = angles_arr
 
-        # Now that Δρ and Δφ are known, calculate the resulting eye parameter p
+        # Eye parameter p = Δρ / Δφ
         with np.errstate(divide='ignore', invalid='ignore'):
             self.eye_parameter_minor = self.data['acceptance_angles'][:, 0] / self.ioa_minor_rad
             self.eye_parameter_major = self.data['acceptance_angles'][:, 1] / self.ioa_major_rad
@@ -562,21 +580,18 @@ class CompoundEye:
         self.ommatidia = OmmatidiaCollection(self.data, self)
 
     def _prepare_param(self, param, name="param"):
-        """
-        Ensures parameter is a numpy array of the correct shape
-        """
+        """Ensures parameter is a numpy array of the correct shape."""
         arr = np.asarray(param, dtype=np.float32)
         if arr.ndim == 0:
             return np.full(self.ommatidia_count, arr.item())
         if arr.ndim == 1 and len(arr) == self.ommatidia_count:
             return arr
         raise ValueError(
-            f"Parameter '{name}' has invalid shape. Must be scalar or 1D array of length {self.ommatidia_count}.")
+            f"Parameter '{name}' has invalid shape. "
+            f"Must be scalar or 1D array of length {self.ommatidia_count}.")
 
     def _unpack(self, param, name="param"):
-        """
-        Unpacks a parameter into minor and major components
-        """
+        """Unpacks a parameter into minor and major components."""
         if isinstance(param, (list, tuple)):
             return self._prepare_param(param[0], f"{name}_minor"), self._prepare_param(param[1], f"{name}_major")
         p_scalar = self._prepare_param(param, name)
@@ -584,25 +599,18 @@ class CompoundEye:
 
     @property
     def interommatidial_angles_rad(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Returns the estimated (minor, major) interommatidial angles (Δφ) in radians.
-        """
+        """Returns the (minor, major) interommatidial angles (Δφ) in radians."""
         return self.ioa_minor_rad, self.ioa_major_rad
 
     @classmethod
     def from_file(cls, file_path: Union[str, Path], **kwargs):
         """
-        Creates an eye model from a .npz archive file.
+        Creates an OmmatidialArray from a .npz archive file.
 
-        The .npz file is expected to contain at least a 'directions' array.
-        It can optionally contain 'origins', 'acceptance_angles_rad', 'interommatidial_angles_rad',
-        'sensitivities', 'receptor_types', 'eye_id', and 'custom_ids'.
-        Any arguments passed via **kwargs will override the data from the file.
-
-        Args:
-            file_path: Path to the .npz file
-            **kwargs: Additional arguments to pass to the CompoundEye constructor,
-                      which will override file data.
+        The .npz file must contain at least a 'directions' array. Optional
+        arrays: 'origins', 'acceptance_angles_rad', 'interommatidial_angles_rad',
+        'sensitivities', 'receptor_types', 'eye_id', 'custom_ids'.
+        Keyword arguments override file data.
         """
         path = Path(file_path)
         if not path.exists():
@@ -637,14 +645,11 @@ class CompoundEye:
         and the number of immediate neighbours.
 
         Args:
-            k (int): Number of neighbours to consider for the analysis.
-            neighbour_dist_factor (float): A factor to determine immediate neighbours. A neighbour is
-                considered "immediate" if its angular separation is less than or equal to
-                (neighbour_dist_factor * angular_separation_to_the_closest_neighbour).
-                A value of 1.5 is generally robust for hexagonal-like lattices.
+            k: Number of neighbours to consider for the analysis.
+            neighbour_dist_factor: Factor for determining immediate neighbours.
 
         Returns:
-            A tuple of numpy arrays: (ioa_minor_rad, ioa_major_rad, tilts_rad, neighbour_counts)
+            (ioa_minor_rad, ioa_major_rad, tilts_rad, neighbour_counts)
         """
         if self.ommatidia_count <= k:
             zeros = np.zeros(self.ommatidia_count, dtype=np.float32)
@@ -669,7 +674,6 @@ class CompoundEye:
         # Convert Euclidean distance on unit sphere to angular separation
         angular_separations = 2.0 * np.arcsin(np.clip(neighbour_distances / 2.0, -1.0, 1.0))
 
-        # Count immediate neighbours
         dist_to_closest = angular_separations[:, 0]
         is_immediate_neighbour = angular_separations <= dist_to_closest[:, np.newaxis] * neighbour_dist_factor
         neighbour_counts = np.sum(is_immediate_neighbour, axis=1)
@@ -694,12 +698,12 @@ class CompoundEye:
         ioa_minor_arr = np.zeros(self.ommatidia_count, dtype=np.float32)
 
         for i in range(self.ommatidia_count):
-            # Use only immediate neighbours for PCA
+
             immediate_mask = is_immediate_neighbour[i]
             points = np.vstack([proj_x[i, immediate_mask], proj_y[i, immediate_mask]]).T
 
-            if points.shape[0] < 2:  # Not enough neighbours for PCA
-                # Fallback to a simple average if PCA is not possible
+            if points.shape[0] < 2:  # not enough neighbours for PCA
+                # Fallback to a simple average
                 avg_angle = np.mean(angular_separations[i, immediate_mask]) if np.any(immediate_mask) else 0.0
                 ioa_major_arr[i], ioa_minor_arr[i], tilts_rad[i] = avg_angle, avg_angle, 0.0
                 continue
@@ -727,7 +731,7 @@ class CompoundEye:
             ioa_major_arr[i] = np.mean(masked_angular_seps[major_indices])
             ioa_minor_arr[i] = np.mean(masked_angular_seps[minor_indices])
 
-        # Ensure minor is always the smaller value for consistency
+        # Ensure minor is always the smaller value
         final_ioa_minor = np.minimum(ioa_minor_arr, ioa_major_arr)
         final_ioa_major = np.maximum(ioa_minor_arr, ioa_major_arr)
 
@@ -736,20 +740,28 @@ class CompoundEye:
     def rebuild_spatial(self):
         """
         Rebuilds the internal KDTrees for positional and directional queries.
-        No-op if rebuild is not needed.
+        Also invalidates Eye caches if needed.
         """
+        rebuilt = False
+
         if self.needs_rebuild['direction']:
             self.kdtree_directions = KDTree(self.data['direction'][:, :3])
             self.needs_rebuild['direction'] = False
+            rebuilt = True
 
         if self.needs_rebuild['origin']:
             self.kdtree_positions = KDTree(self.data['origin'][:, :3])
             self.needs_rebuild['origin'] = False
+            rebuilt = True
+
+        if rebuilt:
+            for eye_view in self._eye_cache.values():
+                eye_view._invalidate()
 
     def max_gap(self):
         """
-        Finds the maximum angular distance between any ommatidium and its
-        single nearest neighbour, which represents the largest "gap" in the eye.
+        Finds the maximum angular gap between any ommatidium and its
+        single nearest neighbour across the entire array.
         """
 
         if self.ommatidia_count == 1:
@@ -768,9 +780,7 @@ class CompoundEye:
             directions: A (3,) vector or an (N, 3) array of direction vectors.
             k: The number of nearest matches to return for each input direction.
 
-        Returns:
-            If input is a single vector: An integer index (if k=1) or a (k,) array of indices.
-            If input is an array: A (N,) array of indices (if k=1) or an (N, k) array.
+        Returns global indices into self.data
         """
         if k < 1:
             raise ValueError("k must be a positive integer.")
@@ -781,7 +791,6 @@ class CompoundEye:
         is_single_query = query_dirs.ndim == 1
         query_dirs_2d = np.atleast_2d(query_dirs)
 
-        # normalise
         norms = np.linalg.norm(query_dirs_2d, axis=-1, keepdims=True)
         np.divide(query_dirs_2d, norms, out=query_dirs_2d, where=norms != 0)
 
@@ -799,9 +808,7 @@ class CompoundEye:
             positions: A (3,) vector or an (N, 3) array of points.
             k: The number of nearest ommatidia to return for each input point.
 
-        Returns:
-            If input is a single point: An integer index (if k=1) or a (k,) array of indices.
-            If input is an array: A (N,) array of indices (if k=1) or an (N, k) array.
+        Returns global indices into self.data
         """
         if k < 1:
             raise ValueError("k must be a positive integer.")
@@ -821,6 +828,7 @@ class CompoundEye:
     def query_lookat(self, targets: ArrayLike, k: int = 1) -> np.ndarray:
         """
         Finds ommatidia whose viewing direction best aligns with one or several target points.
+        Returns global indices into self.data
         """
         if k < 1:
             raise ValueError("k must be a positive integer.")
@@ -831,7 +839,7 @@ class CompoundEye:
         is_single_query = query_targets.ndim == 1
         query_targets_2d = np.atleast_2d(query_targets)
 
-        # Calculate desired direction from each ommatidium to each target
+        # Direction from each ommatidium to each target
         desired_vectors = query_targets_2d[:, np.newaxis, :] - self.data['origin'][:, :3][np.newaxis, :, :]
         norms = np.linalg.norm(desired_vectors, axis=-1, keepdims=True)
         np.divide(desired_vectors, norms, out=desired_vectors, where=norms != 0)
@@ -844,7 +852,7 @@ class CompoundEye:
 
         # Sort (only the top k) indices based on their dot product values
         top_k_dots = np.take_along_axis(dot_products, partition_indices, axis=1)
-        sorted_top_k_indices = np.argsort(top_k_dots, axis=1)[:, ::-1]  # sort descending
+        sorted_top_k_indices = np.argsort(top_k_dots, axis=1)[:, ::-1]
         best_indices = np.take_along_axis(partition_indices, sorted_top_k_indices, axis=1)
 
         if is_single_query and k == 1:
@@ -855,11 +863,11 @@ class CompoundEye:
     def query_directions_angle(self, center_direction: ArrayLike, angle: float, degrees: bool = True) -> np.ndarray:
         """
         Finds all ommatidia whose viewing direction is within a given angle of a center direction.
+        Returns global indices into self.data.
         """
-
         self.rebuild_spatial()
 
-        # Normalize the input direction to be safe
+        # Normalise the input direction to be safe
         center_direction = np.asarray(center_direction, dtype=np.float32)
         center_direction /= np.linalg.norm(center_direction)
 
@@ -873,6 +881,7 @@ class CompoundEye:
     def query_positions_radius(self, center_position: ArrayLike, radius: float) -> np.ndarray:
         """
         Finds all ommatidia whose origin is within a given radius of a centre point.
+        Returns global indices into self.data
         """
         self.rebuild_spatial()
 
@@ -881,18 +890,22 @@ class CompoundEye:
         indices = self.kdtree_positions.query_ball_point(center_position, r=radius)
         return indices
 
+    def __len__(self):
+        return self.ommatidia_count
+
     def __repr__(self):
 
         nb_om = self.ommatidia_count
         nb_rhab = self.receptor_count
 
         if self.is_rhabdomeres:
-
-            summary = [f"<CompoundEye with {nb_om/nb_rhab}x{nb_rhab} rhabdomeres>"]
+            summary = [f"<OmmatidialArray with {nb_om // nb_rhab}x{nb_rhab} rhabdomeres>"]
         else:
-            summary = [f"<CompoundEye with {nb_om} ommatidia>"]
+            summary = [f"<OmmatidialArray with {nb_om} ommatidia>"]
 
-        # TODO: Add orientation?
+        # Eye IDs present
+        unique_eyes = self.eye_ids
+        summary.append(f"  Eyes: {', '.join(str(e) for e in unique_eyes)} ({len(unique_eyes)} total)")
 
         # Interommatidial Angles (Δφ)
         d_phi_minor_deg = np.rad2deg(self.ioa_minor_rad)
@@ -919,17 +932,16 @@ class CompoundEye:
 
         return "\n".join(summary)
 
-    @property
-    def is_rhabdomeres(self) -> bool:
-        return self._is_rhabdomeres
+    def expand_rhabdomeres(self, layout: 'RhabdomereLayout') -> 'OmmatidialArray':
+        """
+        Returns a new OmmatidialArray where each ommatidium has been expanded
+        into R receptors according to the given rhabdomere layout.
 
-    def to_rhabdomeres(self, layout: 'RhabdomereLayout'):
-
-        if self._is_rhabdomeres:
-            return
-
-        # Store original lens lattice for collapse/referencing
-        self._lens_data = self.data.copy()
+        The new array's packed_data encodes:
+          - eye_id: inherited from parent lens
+          - receptor_type: [0 ... R-1] for each rhabdomere
+          - custom_id: index of the parent lens in the original array
+        """
         N = self.ommatidia_count
         R = len(layout.offsets_um)
 
@@ -979,43 +991,83 @@ class CompoundEye:
         new_data['tilt'] = np.repeat(self.data['tilt'], R)
         new_data['acceptance_angles'][:, 0] = np.tile(layout.diameters_um / f, N)
         new_data['acceptance_angles'][:, 1] = np.tile(layout.diameters_um / f, N)
+        new_data['sensitivity'] = np.repeat(self.data['sensitivity'], R)
 
-        eye_ids = np.repeat(self.ommatidia.eye_id, R)
-        receptor_types = np.tile(np.arange(R), N)
-        parent_ids = np.repeat(np.arange(N), R)
+        eye_ids = np.repeat(self.data['packed_data'] & 0x07, R)
+        receptor_types = np.tile(np.arange(R, dtype=np.uint32), N)
+        parent_ids = np.repeat(np.arange(N, dtype=np.uint32), R)
         new_data['packed_data'] = (eye_ids & 0x07) | ((receptor_types & 0x0F) << 3) | ((parent_ids & 0xFFFF) << 11)
 
-        self.data = new_data
-        self.ommatidia_count = N * R    # TODO: maybe this should always store the lens count
-        self.receptor_count = R
-        self._is_rhabdomeres = True
+        # Build the new array from the computed data (bypassing __init__)
+        expanded = object.__new__(OmmatidialArray)
+        expanded.data = new_data
+        expanded.ommatidia_count = N * R
+        expanded.receptor_count = R
+        expanded._is_rhabdomeres = True
+        expanded._lens_data = self.data.copy()  # backref to lens level
 
-        self.ommatidia = OmmatidiaCollection(self.data, self)
+        expanded.ioa_minor_rad = new_data['interommatidial_angles'][:, 0]
+        expanded.ioa_major_rad = new_data['interommatidial_angles'][:, 1]
 
-        self.needs_rebuild['direction'] = True
-        self.needs_rebuild['origin'] = True
-        self.rebuild_spatial()
+        with np.errstate(divide='ignore', invalid='ignore'):
+            expanded.eye_parameter_minor = new_data['acceptance_angles'][:, 0] / expanded.ioa_minor_rad
+            expanded.eye_parameter_major = new_data['acceptance_angles'][:, 1] / expanded.ioa_major_rad
 
-    def from_rhabdomeres(self):
-        """
-        Collapses the receptor array back into a single lens lattice.
-        """
-        if not self._is_rhabdomeres or self._lens_data is None:
-            print("Eye is not in rhabdomere mode.")
-            return
+        np.nan_to_num(expanded.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        np.nan_to_num(expanded.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Restore cached lens lattice
-        self.data = self._lens_data
-        self.ommatidia_count = len(self.data)
-        self.receptor_count = 1
-        self._is_rhabdomeres = False
-        self._lens_data = None
+        expanded.dirty_mask = np.zeros(N * R, dtype=bool)
+        expanded.needs_rebuild = {'direction': False, 'origin': False}
+        expanded.kdtree_directions = KDTree(new_data['direction'][:, :3])
+        expanded.kdtree_positions = KDTree(new_data['origin'][:, :3])
+        expanded._eye_cache = {}
 
-        self.ommatidia = OmmatidiaCollection(self.data, self)
+        return expanded
 
-        self.needs_rebuild['direction'] = True
-        self.needs_rebuild['origin'] = True
-        self.rebuild_spatial()
+    @property
+    def is_rhabdomeres(self) -> bool:
+        return self._is_rhabdomeres
+
+    @property
+    def lens_array(self) -> Optional[np.ndarray]:
+        """If this is a rhabdomere-expanded array, the original lens-level data."""
+        return self._lens_data
+
+
+class _GlobalOmmatidiaView:
+    """
+    backward-compatible global indexing into all ommatidia (regardless of eye_id)
+    Used by OmmatidialArray.ommatidia property
+    """
+
+    def __init__(self, array: OmmatidialArray):
+        self._array = array
+
+    def __getitem__(self, key) -> Ommatidium:
+        return Ommatidium(self._array.data, key, self._array)
+
+    def __len__(self):
+        return self._array.ommatidia_count
+
+    def __repr__(self):
+        return f"<GlobalOmmatidiaView for {len(self)} ommatidia>"
+
+
+class CompoundEye(OmmatidialArray):
+    def __init_subclass__(cls, **kwargs):
+        warnings.warn(
+            "CompoundEye is deprecated. Use OmmatidialArray instead.",
+            DeprecationWarning, stacklevel=2
+        )
+        super().__init_subclass__(**kwargs)
+
+    def __init__(self, *args, **kwargs):
+        warnings.warn(
+            "CompoundEye is deprecated. Use OmmatidialArray instead.",
+            DeprecationWarning, stacklevel=2
+        )
+        super().__init__(*args, **kwargs)
+
 
 
 ##
