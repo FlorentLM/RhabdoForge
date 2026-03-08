@@ -403,6 +403,7 @@ class Eye:
         """Called when the parent array changes. Clears cached structures."""
         self._kdtree_directions = None
         self._kdtree_positions = None
+        self._neighbour_graph = None
 
     def query_directions(self, directions: ArrayLike, k: int = 1) -> np.ndarray:
         """
@@ -523,6 +524,169 @@ class Eye:
         distances, _ = kdtree.query(self.directions, k=2)
         max_dist = np.max(distances[:, 1])
         return float(np.arccos(np.clip(1.0 - (max_dist ** 2) / 2.0, -1.0, 1.0)))
+
+    def _build_neighbour_graph(self, k_search: int = 8):
+        """
+        Precomputes tangent plane projections and neighbour indices
+        for directed_neighbours(). Cached after first call.
+        """
+        N = len(self)
+        if N <= 1:
+            self._neighbour_graph = {
+                'proj_x': np.zeros((N, 0), dtype=np.float32),
+                'proj_y': np.zeros((N, 0), dtype=np.float32),
+                'angular_sep': np.zeros((N, 0), dtype=np.float32),
+                'neighbour_local_indices': np.zeros((N, 0), dtype=np.intp),
+                'k_search': 0
+            }
+            return
+
+        k_eff = min(k_search, N - 1)
+        kdtree = self._ensure_kdtree_directions()
+        dirs = self.directions  # (N, 3)
+
+        distances, kd_indices = kdtree.query(dirs, k=k_eff + 1)
+        nb_indices = kd_indices[:, 1:]  # (N, k_eff) = local indices
+        nb_distances = distances[:, 1:]
+
+        # Angular separations from Euclidean distance on unit sphere
+        angular_sep = 2.0 * np.arcsin(np.clip(nb_distances / 2.0, -1.0, 1.0))
+
+        # Local tangent planes for each omm
+        dot_up = np.abs(dirs @ WORLD_UP)
+        is_polar = dot_up > 0.9999
+        ref_ups = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
+
+        local_y = ref_ups - dirs * np.sum(dirs * ref_ups, axis=1, keepdims=True)
+        local_y /= np.linalg.norm(local_y, axis=1, keepdims=True)
+        local_x = np.cross(local_y, dirs)
+
+        # Project neighbour vectors onto tangent planes
+        nb_dirs = dirs[nb_indices]  # (N, k_eff, 3)
+        delta = nb_dirs - dirs[:, np.newaxis, :]  # (N, k_eff, 3)
+        proj_x = np.sum(delta * local_x[:, np.newaxis, :], axis=2)  # (N, k_eff)
+        proj_y = np.sum(delta * local_y[:, np.newaxis, :], axis=2)  # (N, k_eff)
+
+        self._neighbour_graph = {
+            'proj_x': proj_x,
+            'proj_y': proj_y,
+            'angular_sep': angular_sep,
+            'neighbour_local_indices': nb_indices,
+            'k_search': k_eff
+        }
+
+    def directed_neighbours(
+            self,
+            direction: ArrayLike,
+            k: int = 1,
+            coordinate: str = 'spherical'
+    ) -> np.ndarray:
+        """
+        For every ommatidium in this eye, find the k nearest neighbours
+        along the specified direction on the eye surface.
+
+        Args:
+            direction: The search direction.
+                If coordinate='spherical': (delta_azimuth, delta_elevation) in radians.
+                    Positive azimuth = towards positive X (rightward/posterior
+                    when the agent faces -Z). Positive elevation = upward.
+                    e.g. (pi/18, 0) means "neighbour ~10° more posterior, same elevation".
+                If coordinate='cartesian': a 3D unit vector in agent space.
+            k: Number of neighbours to return along that direction.
+            coordinate: 'spherical' or 'cartesian'.
+
+        Returns:
+            (N,) array of local target indices when k=1, or (N, k) array when k>1.
+            Each value is the local index (within this eye) of the best-matching
+            neighbour along the given direction.
+        """
+        if self._neighbour_graph is None:
+            self._build_neighbour_graph()
+
+        graph = self._neighbour_graph
+        N = len(self)
+
+        if N <= 1 or graph['k_search'] == 0:
+            return np.zeros(N, dtype=np.intp) if k == 1 else np.zeros((N, k), dtype=np.intp)
+
+        # Tangent plane convention is:
+        # x = local_x (cross(local_y, dir))
+        # y = local_y (projection of WORLD_UP onto tangent plane)
+        direction = np.asarray(direction, dtype=np.float32)
+
+        if coordinate == 'spherical':
+            # (delta_azimuth, delta_elevation) = tangent-plane (dx, dy)
+            d_az, d_el = direction[0], direction[1]
+            target_dx = np.sin(d_az)  # azimuth maps to local_x
+            target_dy = np.sin(d_el)  # elevation maps to local_y
+
+        elif coordinate == 'cartesian':
+            # average viewing direction to define a single tangent plane
+            # Approximate (but fast), 'spherical' is more accurate
+            dirs = self.directions
+            mean_dir = dirs.mean(axis=0)
+            mean_dir /= np.linalg.norm(mean_dir)
+
+            dot_up = abs(mean_dir @ WORLD_UP)
+            ref_up = WORLD_RIGHT if dot_up > 0.9999 else WORLD_UP
+            local_y = ref_up - mean_dir * (mean_dir @ ref_up)
+            local_y /= np.linalg.norm(local_y)
+            local_x = np.cross(local_y, mean_dir)
+
+            target_dx = float(direction @ local_x)
+            target_dy = float(direction @ local_y)
+
+        else:
+            raise ValueError(f"Unknown coordinate system: '{coordinate}'. Use 'spherical' or 'cartesian'.")
+
+        # Normalise to unit direction on tangent plane
+        norm = np.sqrt(target_dx ** 2 + target_dy ** 2)
+        if norm < 1e-12:
+            # Zero direction: return self for every ommatidium
+            self_idx = np.arange(N, dtype=np.intp)
+            return self_idx if k == 1 else np.tile(self_idx[:, np.newaxis], (1, k))
+
+        target_dx /= norm
+        target_dy /= norm
+
+        # Score each candidate by alignment with the target dir
+        proj_x = graph['proj_x']  # (N, k_search)
+        proj_y = graph['proj_y']  # (N, k_search)
+
+        # Angle of each neighbour on the tangent plane
+        nb_angles = np.arctan2(proj_y, proj_x)  # (N, k_search)
+        target_angle = np.arctan2(target_dy, target_dx)  # scalar
+
+        # Angular deviation from targt direction
+        angle_diff = nb_angles - target_angle
+        angle_diff = (angle_diff + np.pi) % (2 * np.pi) - np.pi  # (N, k_search)
+
+        # Neighbours behind (|diff| > pi/2) -> large penalty
+        score = np.abs(angle_diff)
+        behind_mask = score > (np.pi / 2.0)
+        score[behind_mask] = 1e6
+
+        nb_local = graph['neighbour_local_indices']  # (N, k_search)
+
+        if k == 1:
+            best = np.argmin(score, axis=1)  # (N,)
+            return nb_local[np.arange(N), best]
+        else:
+            # Get top-k by smallest score
+            k_eff = min(k, score.shape[1])
+            top_k = np.argpartition(score, k_eff, axis=1)[:, :k_eff]
+            top_k_scores = np.take_along_axis(score, top_k, axis=1)
+            sorted_order = np.argsort(top_k_scores, axis=1)
+            top_k_sorted = np.take_along_axis(top_k, sorted_order, axis=1)
+
+            result = nb_local[np.arange(N)[:, np.newaxis], top_k_sorted]
+
+            # Pad if k > k_search
+            if k > k_eff:
+                pad = np.zeros((N, k - k_eff), dtype=np.intp)
+                result = np.hstack([result, pad])
+
+            return result
 
 
 class OmmatidialArray:
