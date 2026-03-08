@@ -26,6 +26,11 @@ GPU_OMMATIDIUM_DTYPE = np.dtype([
 # - bits 11-26: custom ID (0-65535)
 # - bits 27-31: padding
 
+# Clear masks for packed_data fields
+_CLEAR_EYE_ID = np.uint32(0xFFFFFFF8)  # clears bits 0-2
+_CLEAR_RECEPTOR_TYPE = np.uint32(0xFFFFFF87)  # clears bits 3-6
+_CLEAR_NEIGHBOURS = np.uint32(0xFFFFF87F)  # clears bits 7-10
+_CLEAR_CUSTOM_ID = np.uint32(0xF80007FF)  # clears bits 11-26
 
 DEFAULT_ANGLE = 'deg'
 # DEFAULT_ANGLE = 'rad'
@@ -87,7 +92,7 @@ class Ommatidium:
     def __init__(self, data_array: np.ndarray, item, parent_eye: 'CompoundEye'):
         self._data = data_array
         self._item = item
-        self._parent_eye = parent_eye
+        self._parent = parent_eye
 
     @property
     def origin(self) -> np.ndarray:
@@ -97,8 +102,8 @@ class Ommatidium:
     def origin(self, value: Union[float, ArrayLike]):
         self._data['origin'][self._item, :3] = np.asarray(value, dtype=np.float32)
         self._data['origin'][self._item, 3] = 1.0  # The w component for origins should be 1.0
-        self._parent_eye.dirty_mask[self._item] = True
-        self._parent_eye.needs_rebuild['origin'] = True
+        self._parent.dirty_mask[self._item] = True
+        self._parent.needs_rebuild['origin'] = True
 
     @property
     def direction(self) -> np.ndarray:
@@ -112,10 +117,10 @@ class Ommatidium:
         normalized_dirs = np.divide(new_dirs, norms, out=new_dirs, where=norms != 0)
 
         self._data['direction'][self._item, :3] = normalized_dirs
-        self._data['direction'][self._item, 3] = 0.0   # The w component for a direction vector should be 0.0
+        self._data['direction'][self._item, 3] = 0.0  # The w component for a direction vector should be 0.0
 
-        self._parent_eye.dirty_mask[self._item] = True
-        self._parent_eye.needs_rebuild['direction'] = True
+        self._parent.dirty_mask[self._item] = True
+        self._parent.needs_rebuild['direction'] = True
 
     def dt(self, delta_time: float) -> DeltaTimeTransformer:
         """
@@ -123,7 +128,8 @@ class Ommatidium:
         """
         return DeltaTimeTransformer(self, delta_time)
 
-    def rotate(self, yaw_delta: Union[float, ArrayLike] = 0.0, pitch_delta: Union[float, ArrayLike] = 0.0, roll_delta : Union[float, ArrayLike] = 0.0, degrees: bool = True):
+    def rotate(self, yaw_delta: Union[float, ArrayLike] = 0.0, pitch_delta: Union[float, ArrayLike] = 0.0,
+               roll_delta: Union[float, ArrayLike] = 0.0, degrees: bool = True):
         """
         Rotates the ommatidium's direction in its local tangent space.
         - 'yaw_delta' rotates horizontally (accepts scalar or array).
@@ -181,11 +187,11 @@ class Ommatidium:
         value_arr = np.asarray(value, dtype=np.uint32)
 
         current_data = self._data['packed_data'][self._item]
-        cleared_data = current_data & ~0x07
+        cleared_data = current_data & _CLEAR_EYE_ID
         new_data = cleared_data | (value_arr & 0x07)
 
         self._data['packed_data'][self._item] = new_data
-        self._parent_eye.dirty_mask[self._item] = True
+        self._parent.dirty_mask[self._item] = True
 
     @property
     def acceptance_major(self) -> np.ndarray:
@@ -194,7 +200,7 @@ class Ommatidium:
     @acceptance_major.setter
     def acceptance_major(self, value: Union[float, ArrayLike]):
         self._data['acceptance_angles'][self._item, 0] = value
-        self._parent_eye.dirty_mask[self._item] = True
+        self._parent.dirty_mask[self._item] = True
 
     @property
     def acceptance_minor(self) -> np.ndarray:
@@ -203,7 +209,7 @@ class Ommatidium:
     @acceptance_minor.setter
     def acceptance_minor(self, value: Union[float, ArrayLike]):
         self._data['acceptance_angles'][self._item, 1] = value
-        self._parent_eye.dirty_mask[self._item] = True
+        self._parent.dirty_mask[self._item] = True
 
     @property
     def acceptance_rad(self) -> np.ndarray:
@@ -212,7 +218,7 @@ class Ommatidium:
     @acceptance_rad.setter
     def acceptance_rad(self, values: Union[float, ArrayLike]):
         self._data['acceptance_angles'][self._item] = values
-        self._parent_eye.dirty_mask[self._item] = True
+        self._parent.dirty_mask[self._item] = True
 
     @property
     def acceptance_deg(self) -> np.ndarray:
@@ -229,7 +235,7 @@ class Ommatidium:
     @sensitivity.setter
     def sensitivity(self, value: Union[float, ArrayLike]):
         self._data['sensitivity'][self._item] = np.asarray(value, dtype=np.float32)
-        self._parent_eye.dirty_mask[self._item] = True
+        self._parent.dirty_mask[self._item] = True
 
     @property
     def receptor_type(self) -> np.ndarray:
@@ -242,11 +248,11 @@ class Ommatidium:
         value_arr = np.asarray(value, dtype=np.uint32)
 
         current_data = self._data['packed_data'][self._item]
-        cleared_data = current_data & ~(0x0F << 3)
+        cleared_data = current_data & _CLEAR_RECEPTOR_TYPE
         new_data = cleared_data | ((value_arr & 0x0F) << 3)
 
         self._data['packed_data'][self._item] = new_data
-        self._parent_eye.dirty_mask[self._item] = True
+        self._parent.dirty_mask[self._item] = True
 
     @property
     def neighbours_count(self) -> np.ndarray:
@@ -259,11 +265,11 @@ class Ommatidium:
         value_arr = np.asarray(value, dtype=np.uint32)
 
         current_data = self._data['packed_data'][self._item]
-        cleared_data = current_data & ~(0x0F << 7)
+        cleared_data = current_data & _CLEAR_NEIGHBOURS
         new_data = cleared_data | ((value_arr & 0x0F) << 7)
 
         self._data['packed_data'][self._item] = new_data
-        self._parent_eye.dirty_mask[self._item] = True
+        self._parent.dirty_mask[self._item] = True
 
     @property
     def custom_id(self) -> np.ndarray:
@@ -276,11 +282,11 @@ class Ommatidium:
         value_arr = np.asarray(value, dtype=np.uint32)
 
         current_data = self._data['packed_data'][self._item]
-        cleared_data = current_data & ~(0xFFFF << 11)
+        cleared_data = current_data & _CLEAR_CUSTOM_ID
         new_data = cleared_data | ((value_arr & 0xFFFF) << 11)
 
         self._data['packed_data'][self._item] = new_data
-        self._parent_eye.dirty_mask[self._item] = True
+        self._parent.dirty_mask[self._item] = True
 
     @property
     def azimuth_rad(self) -> np.ndarray:
