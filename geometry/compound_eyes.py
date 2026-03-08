@@ -1,7 +1,7 @@
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple, Union, Sequence
+from typing import Optional, Tuple, Union
 import numpy as np
 
 from numpy.typing import ArrayLike
@@ -87,13 +87,13 @@ def rotate_vectors(vectors: np.ndarray, axes: np.ndarray, angles: np.ndarray, de
 
 class Ommatidium:
     """
-    A proxy that provides a view into the CompoundEye ommatidia data array.
+    A proxy that provides a view into the OmmatidialArray data.
     """
 
-    def __init__(self, data_array: np.ndarray, item, parent_eye: 'CompoundEye'):
+    def __init__(self, data_array: np.ndarray, item, parent_array: 'OmmatidialArray'):
         self._data = data_array
         self._item = item
-        self._parent = parent_eye
+        self._parent = parent_array
 
     @property
     def origin(self) -> np.ndarray:
@@ -324,24 +324,205 @@ class Ommatidium:
             return f"<OmmatidiumProxy(key={self._item}, count={len(self)})>"
 
 
-class OmmatidiaCollection:
+class Eye:
+    """
+    A view into an OmmatidialArray for a single eye_id (0–7).
 
-    def __init__(self, data_array: np.ndarray, parent_eye: 'CompoundEye'):
-        self._data = data_array
-        self._parent_eye = parent_eye
-        self._len = len(self._data)
+    Provides indexing to Ommatidium proxies, spatial queries scoped to this eye,
+    and directed neighbour lookups for neuromorphic models access (e.g. EMDs).
 
-    def __getitem__(self, key: Union[int, slice, Sequence[int]]):
-        if isinstance(key, (int, np.int_, slice, list, tuple, np.ndarray)):
-            return Ommatidium(self._data, key, self._parent_eye)
-        else:
-            raise IndexError("Ommatidia indices must be integers, slices, or lists.")
+    Indexing is *local* to this eye (0 to len-1). Use .global_indices to
+    map back to positions in the parent OmmatidialArray / renderer output.
+    """
 
-    def __len__(self):
-        return self._len
+    def __init__(self, array: 'OmmatidialArray', eye_id: int):
+        self._array = array
+        self._eye_id = eye_id
+
+        # Boolean mask and integer indices into the parent array
+        all_eye_ids = array.data['packed_data'] & 0x07
+        self._mask = all_eye_ids == eye_id
+        self._indices = np.where(self._mask)[0]
+
+        # spatial structures are lazy
+        self._kdtree_directions = None
+        self._kdtree_positions = None
+        self._neighbour_graph = None
+
+    @property
+    def eye_id(self) -> int:
+        return self._eye_id
+
+    def __getitem__(self, key) -> Ommatidium:
+        """
+        Index *locally*, into this eye's ommatidia (0 to len-1).
+        Returns an Ommatidium proxy backed by the parent array's data.
+        """
+        global_key = self._indices[key]
+        return Ommatidium(self._array.data, global_key, self._array)
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
 
     def __repr__(self):
-        return f"<OmmatidiaCollection for {self._len} ommatidia>"
+        return f"<Eye(id={self._eye_id}, ommatidia={len(self)})>"
+
+    @property
+    def directions(self) -> np.ndarray:
+        """(N, 3) direction vectors for all ommatidia in this eye."""
+        return self._array.data['direction'][self._indices, :3]
+
+    @property
+    def origins(self) -> np.ndarray:
+        """(N, 3) origin positions for all ommatidia in this eye."""
+        return self._array.data['origin'][self._indices, :3]
+
+    @property
+    def global_indices(self) -> np.ndarray:
+        """Maps local eye indices to global array indices (for renderer output)."""
+        return self._indices
+
+    def _ensure_kdtree_directions(self):
+        # Rebuild if the parent array was modified
+        if self._kdtree_directions is None or self._array.needs_rebuild.get('direction', False):
+            self._array.rebuild_spatial()
+            self._kdtree_directions = KDTree(self.directions)
+        return self._kdtree_directions
+
+    def _ensure_kdtree_positions(self):
+        if self._kdtree_positions is None or self._array.needs_rebuild.get('origin', False):
+            self._array.rebuild_spatial()
+            self._kdtree_positions = KDTree(self.origins)
+        return self._kdtree_positions
+
+    def _invalidate(self):
+        """Called when the parent array changes. Clears cached structures."""
+        self._kdtree_directions = None
+        self._kdtree_positions = None
+
+    def query_directions(self, directions: ArrayLike, k: int = 1) -> np.ndarray:
+        """
+        Finds ommatidia in this eye whose viewing direction is closest to the
+        given direction vector(s).
+
+        Args:
+            directions: A (3,) vector or an (N, 3) array of direction vectors.
+            k: The number of nearest matches to return per query.
+
+        Returns:
+            Local indices into this eye.
+            Single vector + k=1: an integer. Otherwise: array of shape (N,) or (N, k).
+        """
+        if k < 1:
+            raise ValueError("k must be a positive integer.")
+
+        kdtree = self._ensure_kdtree_directions()
+
+        query_dirs = np.asarray(directions, dtype=np.float32)
+        is_single = query_dirs.ndim == 1
+        query_dirs = np.atleast_2d(query_dirs)
+
+        norms = np.linalg.norm(query_dirs, axis=-1, keepdims=True)
+        np.divide(query_dirs, norms, out=query_dirs, where=norms != 0)
+
+        distances, indices = kdtree.query(query_dirs, k=k)
+
+        if is_single and k == 1:
+            return indices.item()
+        return indices.squeeze()
+
+    def query_position(self, positions: ArrayLike, k: int = 1) -> np.ndarray:
+        """
+        Finds ommatidia in this eye whose origin is closest to the given point(s).
+
+        Args:
+            positions: A (3,) vector or an (N, 3) array of points.
+            k: The number of nearest matches to return per query.
+
+        Returns local indices into this eye.
+        """
+        if k < 1:
+            raise ValueError("k must be a positive integer.")
+
+        kdtree = self._ensure_kdtree_positions()
+
+        query_pos = np.asarray(positions, dtype=np.float32)
+        is_single = query_pos.ndim == 1
+        query_pos = np.atleast_2d(query_pos)
+
+        distances, indices = kdtree.query(query_pos, k=k)
+
+        if is_single and k == 1:
+            return indices.item()
+        return indices.squeeze()
+
+    def query_lookat(self, targets: ArrayLike, k: int = 1) -> np.ndarray:
+        """
+        Finds ommatidia in this eye whose viewing direction best aligns with
+        one or several target points in world space.
+
+        Returns local indices into this eye.
+        """
+        if k < 1:
+            raise ValueError("k must be a positive integer.")
+
+        query_targets = np.asarray(targets, dtype=np.float32)
+        is_single = query_targets.ndim == 1
+        query_targets = np.atleast_2d(query_targets)
+
+        eye_origins = self.origins
+        eye_dirs = self.directions
+
+        # Desired direction from each ommatidium to each target
+        desired = query_targets[:, np.newaxis, :] - eye_origins[np.newaxis, :, :]
+        norms = np.linalg.norm(desired, axis=-1, keepdims=True)
+        np.divide(desired, norms, out=desired, where=norms != 0)
+
+        # Higher dot product == better alignment
+        dots = np.einsum('jk,ijk->ij', eye_dirs, desired)
+
+        partition_indices = np.argpartition(dots, -k, axis=1)[:, -k:]
+        top_k_dots = np.take_along_axis(dots, partition_indices, axis=1)
+        sorted_indices = np.argsort(top_k_dots, axis=1)[:, ::-1]
+        best = np.take_along_axis(partition_indices, sorted_indices, axis=1)
+
+        if is_single and k == 1:
+            return best.item()
+        return best.squeeze()
+
+    def query_cone(self, center_direction: ArrayLike, angle: float, degrees: bool = True) -> np.ndarray:
+        """
+        Finds all ommatidia in this eye whose viewing direction is within
+        a given angle of a center direction.
+
+        Returns local indices into this eye.
+        """
+        kdtree = self._ensure_kdtree_directions()
+
+        center = np.asarray(center_direction, dtype=np.float32)
+        center = center / np.linalg.norm(center)
+
+        angle_rad = np.deg2rad(angle) if degrees else angle
+        radius = 2.0 * np.sin(angle_rad / 2.0)
+
+        return kdtree.query_ball_point(center, r=radius)
+
+    def max_gap(self) -> float:
+        """
+        Largest angular gap between any ommatidium and its nearest
+        neighbour within the eye.
+        """
+        if len(self) <= 1:
+            return 0.0
+
+        kdtree = self._ensure_kdtree_directions()
+        distances, _ = kdtree.query(self.directions, k=2)
+        max_dist = np.max(distances[:, 1])
+        return float(np.arccos(np.clip(1.0 - (max_dist ** 2) / 2.0, -1.0, 1.0)))
 
 
 class OmmatidialArray:
@@ -576,8 +757,42 @@ class OmmatidialArray:
         np.nan_to_num(self.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         np.nan_to_num(self.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Final refresh of the proxy to ensure it captures everythign
-        self.ommatidia = OmmatidiaCollection(self.data, self)
+    def eye(self, eye_id: int) -> Eye:
+        """
+        Returns an Eye view for the given eye_id (0–7).
+
+        The Eye provides scoped spatial queries, directed neighbour lookups,
+        and direct indexing into this eye's ommatidia.
+        """
+        if eye_id not in self._eye_cache:
+            self._eye_cache[eye_id] = Eye(self, eye_id)
+        return self._eye_cache[eye_id]
+
+    @property
+    def eyes(self) -> list:
+        """
+        Returns a list of Eye views for all eye_ids present in this array.
+        """
+        unique_ids = np.unique(self.data['packed_data'] & 0x07)
+        return [self.eye(int(eid)) for eid in unique_ids]
+
+    @property
+    def eye_ids(self) -> np.ndarray:
+        """Returns the unique eye IDs present in this array."""
+        return np.unique(self.data['packed_data'] & 0x07)
+
+    @property
+    def ommatidia(self) -> Eye:
+        """
+        Access to all ommatidia as a single collection.
+
+        Prefer .eye(id) for scoped access. This returns an Eye-like view
+        that spans all eye_ids (equivalent to global indexing).
+
+        .. deprecated::
+            Use .eye(id) for per-eye access.
+        """
+        return _GlobalOmmatidiaView(self)
 
     def _prepare_param(self, param, name="param"):
         """Ensures parameter is a numpy array of the correct shape."""
@@ -772,6 +987,8 @@ class OmmatidialArray:
         term = 1.0 - (max_euclidean_dist ** 2) / 2.0
         return np.arccos(np.clip(term, -1.0, 1.0))
 
+    # Global spatial queries: These operate across all ommatidia regardless of eye_id and return global indices into self.data
+    # For per-eye queries, use .eye(id).query_*() instead
     def query_directions(self, directions: ArrayLike, k: int = 1) -> np.ndarray:
         """
         Finds ommatidia whose viewing direction is closest to the given direction vector(s).
@@ -890,48 +1107,6 @@ class OmmatidialArray:
         indices = self.kdtree_positions.query_ball_point(center_position, r=radius)
         return indices
 
-    def __len__(self):
-        return self.ommatidia_count
-
-    def __repr__(self):
-
-        nb_om = self.ommatidia_count
-        nb_rhab = self.receptor_count
-
-        if self.is_rhabdomeres:
-            summary = [f"<OmmatidialArray with {nb_om // nb_rhab}x{nb_rhab} rhabdomeres>"]
-        else:
-            summary = [f"<OmmatidialArray with {nb_om} ommatidia>"]
-
-        # Eye IDs present
-        unique_eyes = self.eye_ids
-        summary.append(f"  Eyes: {', '.join(str(e) for e in unique_eyes)} ({len(unique_eyes)} total)")
-
-        # Interommatidial Angles (Δφ)
-        d_phi_minor_deg = np.rad2deg(self.ioa_minor_rad)
-        d_phi_major_deg = np.rad2deg(self.ioa_major_rad)
-        summary.append("  Interommatidial Angles (Δφ):")
-        summary.append(
-            f"    Minor: {np.mean(d_phi_minor_deg):.3f}° (mean), {np.min(d_phi_minor_deg):.3f}° (min), {np.max(d_phi_minor_deg):.3f}° (max)")
-        summary.append(
-            f"    Major: {np.mean(d_phi_major_deg):.3f}° (mean), {np.min(d_phi_major_deg):.3f}° (min), {np.max(d_phi_major_deg):.3f}° (max)")
-
-        # Acceptance Angles (Δρ)
-        angles_deg = np.rad2deg(self.data['acceptance_angles'])
-        means = np.mean(angles_deg, axis=0)
-        mins = np.min(angles_deg, axis=0)
-        maxs = np.max(angles_deg, axis=0)
-        summary.append("  Acceptance Angles (Δρ):")
-        summary.append(f"    Minor: {means[0]:.3f}° (mean), {mins[0]:.3f}° (min), {maxs[0]:.3f}° (max)")
-        summary.append(f"    Major:   {means[1]:.3f}° (mean), {mins[1]:.3f}° (min), {maxs[1]:.3f}° (max)")
-
-        # Eye Parameter (p)
-        summary.append("  Eye Parameter (p = Δρ/Δφ):")
-        summary.append(f"    Minor: {np.mean(self.eye_parameter_minor):.2f} (mean)")
-        summary.append(f"    Major:   {np.mean(self.eye_parameter_major):.2f} (mean)")
-
-        return "\n".join(summary)
-
     def expand_rhabdomeres(self, layout: 'RhabdomereLayout') -> 'OmmatidialArray':
         """
         Returns a new OmmatidialArray where each ommatidium has been expanded
@@ -998,7 +1173,7 @@ class OmmatidialArray:
         parent_ids = np.repeat(np.arange(N, dtype=np.uint32), R)
         new_data['packed_data'] = (eye_ids & 0x07) | ((receptor_types & 0x0F) << 3) | ((parent_ids & 0xFFFF) << 11)
 
-        # Build the new array from the computed data (bypassing __init__)
+        # Build the new array directly from the computed data, bypassing __init__
         expanded = object.__new__(OmmatidialArray)
         expanded.data = new_data
         expanded.ommatidia_count = N * R
