@@ -572,6 +572,8 @@ class Eye:
             'proj_y': proj_y,
             'angular_sep': angular_sep,
             'neighbour_local_indices': nb_indices,
+            'local_x': local_x,  # (N, 3) tangent plane bases
+            'local_y': local_y,  # (N, 3) tangent plane bases
             'k_search': k_eff
         }
 
@@ -609,45 +611,55 @@ class Eye:
         if N <= 1 or graph['k_search'] == 0:
             return np.zeros(N, dtype=np.intp) if k == 1 else np.zeros((N, k), dtype=np.intp)
 
-        # Tangent plane convention is:
-        # x = local_x (cross(local_y, dir))
-        # y = local_y (projection of WORLD_UP onto tangent plane)
-        direction = np.asarray(direction, dtype=np.float32)
+        direction = np.asarray(direction, dtype=np.float64)
+
+        local_x_bases = graph['local_x']  # (N, 3)
+        local_y_bases = graph['local_y']  # (N, 3)
 
         if coordinate == 'spherical':
-            # (delta_azimuth, delta_elevation) = tangent-plane (dx, dy)
-            d_az, d_el = direction[0], direction[1]
-            target_dx = np.sin(d_az)  # azimuth maps to local_x
-            target_dy = np.sin(d_el)  # elevation maps to local_y
+            d_az, d_el = float(direction[0]), float(direction[1])
+
+            dirs = self.directions.astype(np.float64)
+            az = np.arctan2(dirs[:, 0], -dirs[:, 2])
+            el = np.arcsin(np.clip(dirs[:, 1], -1.0, 1.0))
+
+            cos_az, sin_az = np.cos(az), np.sin(az)
+            cos_el, sin_el = np.cos(el), np.sin(el)
+
+            # dir of increasing azimuth at each point
+            az_grad = np.column_stack([cos_az * cos_el,
+                                       np.zeros(N),
+                                       sin_az * cos_el])
+
+            # dir of increasing elevation at each point
+            el_grad = np.column_stack([-sin_az * sin_el,
+                                       cos_el,
+                                       cos_az * sin_el])
+
+            # World-space displacement vector for each omm
+            target_world = d_az * az_grad + d_el * el_grad
+
+            # Project onto each tangent plane
+            target_dx = np.sum(target_world * local_x_bases, axis=1)
+            target_dy = np.sum(target_world * local_y_bases, axis=1)
 
         elif coordinate == 'cartesian':
-            # average viewing direction to define a single tangent plane
-            # Approximate (but fast), 'spherical' is more accurate
-            dirs = self.directions
-            mean_dir = dirs.mean(axis=0)
-            mean_dir /= np.linalg.norm(mean_dir)
-
-            dot_up = abs(mean_dir @ WORLD_UP)
-            ref_up = WORLD_RIGHT if dot_up > 0.9999 else WORLD_UP
-            local_y = ref_up - mean_dir * (mean_dir @ ref_up)
-            local_y /= np.linalg.norm(local_y)
-            local_x = np.cross(local_y, mean_dir)
-
-            target_dx = float(direction @ local_x)
-            target_dy = float(direction @ local_y)
+            # Single 3D direction in agent space: project onto each tangent plane
+            target_dx = local_x_bases @ direction  # (N,)
+            target_dy = local_y_bases @ direction  # (N,)
 
         else:
             raise ValueError(f"Unknown coordinate system: '{coordinate}'. Use 'spherical' or 'cartesian'.")
 
-        # Normalise to unit direction on tangent plane
-        norm = np.sqrt(target_dx ** 2 + target_dy ** 2)
-        if norm < 1e-12:
-            # Zero direction: return self for every ommatidium
-            self_idx = np.arange(N, dtype=np.intp)
-            return self_idx if k == 1 else np.tile(self_idx[:, np.newaxis], (1, k))
+        # Per-ommatidium target angle on tangent plane
+        target_norms = np.sqrt(target_dx ** 2 + target_dy ** 2)
+        zero_mask = target_norms < 1e-12
 
-        target_dx /= norm
-        target_dy /= norm
+        # For zero-length targets (e.g. azimuth query at the pole) return self for every om
+        target_dx = np.where(zero_mask, 1.0, target_dx / np.where(zero_mask, 1.0, target_norms))
+        target_dy = np.where(zero_mask, 0.0, target_dy / np.where(zero_mask, 1.0, target_norms))
+
+        target_angle = np.arctan2(target_dy, target_dx)  # (N,)
 
         # Score each candidate by alignment with the target dir
         proj_x = graph['proj_x']  # (N, k_search)
@@ -655,11 +667,10 @@ class Eye:
 
         # Angle of each neighbour on the tangent plane
         nb_angles = np.arctan2(proj_y, proj_x)  # (N, k_search)
-        target_angle = np.arctan2(target_dy, target_dx)  # scalar
 
         # Angular deviation from targt direction
-        angle_diff = nb_angles - target_angle
-        angle_diff = (angle_diff + np.pi) % (2 * np.pi) - np.pi  # (N, k_search)
+        angle_diff = nb_angles - target_angle[:, np.newaxis]  # (N, k_search)
+        angle_diff = (angle_diff + np.pi) % (2 * np.pi) - np.pi
 
         # Neighbours behind (|diff| > pi/2) -> large penalty
         score = np.abs(angle_diff)
