@@ -174,13 +174,14 @@ class HUD:
             'P: Projection mode (acceptance / layout)',
             'G: Toggle debug objects',
             'V: Toggle Voronoi view',
+            'H: Toggle Heatmap mode',
             'T: Toggle time dithering',
             'L: Toggle Sun control',
             f'+/-: Increase/decrease {sample_label}',
             'X: Dither once',
             'O: Teleport to origin',
             'R: Reset rotation',
-            'H: Show/hide HUD',
+            'I: Show/hide HUD',
             'ESC: Quit'
         ])
 

@@ -132,14 +132,21 @@ class Context:
 
         if action == glfw.PRESS:
 
-            if key == glfw.KEY_C: self.view_mode = (self.view_mode + 1) % 3
+            if key == glfw.KEY_C:
+                self.view_mode = (self.view_mode + 1) % 3
 
-            if key == glfw.KEY_V: self.renderer.tiled_mode = not self.renderer.tiled_mode
+            if key == glfw.KEY_V:
+                self.renderer.tiled_mode = not self.renderer.tiled_mode
 
-            if key == glfw.KEY_P: self.renderer.projection_mode = ProjectionMode.Physical if self.renderer.projection_mode == ProjectionMode.Acceptance else ProjectionMode.Acceptance
+            if key == glfw.KEY_P:
+                self.renderer.projection_mode = ProjectionMode.Physical if self.renderer.projection_mode == ProjectionMode.Acceptance else ProjectionMode.Acceptance
+
+            if key == glfw.KEY_I:
+                if self.hud:
+                    self.hud.show = not self.hud.show
 
             if key == glfw.KEY_H:
-                if self.hud: self.hud.show = not self.hud.show
+                self.renderer.heatmap_enabled = not self.renderer.heatmap_enabled
 
             if key == glfw.KEY_L:
                 self.sun_control_mode = not self.sun_control_mode
