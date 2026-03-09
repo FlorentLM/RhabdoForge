@@ -782,7 +782,7 @@ class Raytracer(BaseInsectEyeRenderer):
         glUniform1f(shader.get_loc('sky_intensity'), self.sky_intensity)
 
         # Time (for RNG seeding)
-        glUniform1f(shader.get_loc('time'), float(self._time_counter))
+        glUniform1ui(shader.get_loc('time'), int(self._time_counter))
 
         # Global lighting controls
         glUniform1i(shader.get_loc('enable_ambient'), int(self.enable_ambient))

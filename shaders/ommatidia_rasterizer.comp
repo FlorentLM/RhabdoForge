@@ -20,7 +20,7 @@ layout(binding = 0) uniform samplerCube scene_cubemap;
 // Uniforms
 uniform int nb_ommatidia;
 uniform int nb_samples;
-uniform float time; // For temporal dithering
+uniform float time; // for temporal dithering
 uniform int frame_index;  // current frame number
 
 void main()

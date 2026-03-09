@@ -12,7 +12,7 @@ layout (local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(binding = 0, rgba32f) uniform writeonly image2D output_image;
 
 // Uniforms
-uniform float time;
+uniform uint time;
 uniform mat4 cam_to_world;     // view-space -> world-space
 uniform mat4 inv_projection;   // clip-space -> view-space
 uniform int nb_samples;
@@ -24,7 +24,7 @@ void main() {
     // Guard for oversized dispatch
     if (pixel_coords.x >= dims.x || pixel_coords.y >= dims.y) return;
 
-    uint base_seed = uint(pixel_coords.x) * 1973u + uint(pixel_coords.y) * 9277u + uint(time * 26699.0);
+    uint base_seed = uint(pixel_coords.x) * 1973u + uint(pixel_coords.y) * 9277u + time * 26699u;
     vec3 accumulated_color = vec3(0.0);
 
     for (int s = 0; s < nb_samples; s++) {
