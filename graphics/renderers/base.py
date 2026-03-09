@@ -1,11 +1,9 @@
 import OpenGL
-
-from graphics.scene import Scene
-
 OpenGL.ERROR_CHECKING = False
 
 import random
 from abc import ABC, abstractmethod
+from enum import IntEnum
 from typing import Optional
 import numpy as np
 from pyglm import glm
@@ -13,6 +11,7 @@ from pyglm import glm
 from OpenGL.GL import *
 from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
 
+from graphics.scene import Scene
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CONE_VERTICES, SPHERE_VERTICES
 from graphics.utils import ShaderProgram, ViewMode, ProjectionMode
@@ -26,17 +25,22 @@ def query_max_SSBO_size() -> int:
 
 
 def query_available_VRAM() -> int:
-    """ Checks for NVIDIA extension to query available VRAM. Returns 0 if not supported. """
-
+    """Checks for NVIDIA extension to query available VRAM. Returns 0 if not supported."""
     if b'GL_NVX_gpu_memory_info' in glGetString(GL_EXTENSIONS):
-        # Value is in KB, convert to MB
         return glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX) // 1024
     return 0
 
 
+class Colormap(IntEnum):
+    """Colormaps for the heatmap visualisation mode."""
+    DIVERGING = 0   # Blue -> white -> red  (signed and centred on zero)
+    SEQUENTIAL = 1  # Viridis-like          (positive magnitude)
+    THERMAL = 2     # Black -> red -> white (positive magnitude)
+
+
 class BaseInsectEyeRenderer(ABC):
     """
-    Abstract base class for an insect eye model, handling visualisation and common properties
+    Abstract base class for an insect eye model.
     """
 
     def __init__(self,
@@ -69,14 +73,22 @@ class BaseInsectEyeRenderer(ABC):
 
         # Visualization resources (lazy-loaded)
         self._voronoi_shader = None     # first person view
-        self._eye_model_shader = None       # third person view
+        self._eye_model_shader = None   # third person view
+        self._heatmap_shader = None     # heatmap mode
 
-        # Cone-specific resources
+        # Heatmap stuff
+        self.heatmap_enabled = False
+        self._heatmap_ssbo = 0
+        self._heatmap_ssbo_capacity = 0
+        self._heatmap_colormap = Colormap.THERMAL
+        self._heatmap_range = (0.0, 1.0)
+        self._heatmap_compression = 1.0          # power exponent for dynamic range compression
+                                                 # 1.0 = linear, 0.5 = sqrt, lower = more contrast
+        self._heatmap_auto_range_percentile = 98 # percentile to reject outliers
+
         self._cones_vao = None
         self._cones_vbo = None
         self._nb_cone_vertices = 0
-
-        # Hemisphere-specific resources
         self._hemispheres_vao = None
         self._hemispheres_vbo = None
         self._nb_hemisphere_vertices = 0
@@ -84,7 +96,7 @@ class BaseInsectEyeRenderer(ABC):
         self.receptive_field_scale = 1.0 / (2.0 * np.pi)
 
         # first-person specific stuff
-        self.tiled_mode = False
+        self.tiled_mode = True
         self.projection_mode: ProjectionMode = ProjectionMode.Physical
 
         # History buffer state
@@ -92,7 +104,7 @@ class BaseInsectEyeRenderer(ABC):
         self._current_frame_index = 0
         self.history_ssbo = None
 
-        # PBOs for the synchronous path
+        # PBO for the synchronous path
         self.sync_pbo = None
         self.sync_cpu_buffer = None
 
@@ -319,6 +331,111 @@ class BaseInsectEyeRenderer(ABC):
         return self._voronoi_shader
 
     @property
+    def heatmap_shader(self):
+        if self._heatmap_shader is None:
+            self._heatmap_shader = ShaderProgram(
+                vert_path='shaders/voronoi_heatmap.vert',
+                frag_path='shaders/voronoi_heatmap.frag',
+            )
+        return self._heatmap_shader
+
+    # TODO: These two methods might be replaced / reworked. They will do for now
+    def set_heatmap_data(
+        self,
+        values: np.ndarray,
+        range: tuple = None,
+        colormap: 'Colormap' = Colormap.THERMAL,
+        compression: float = 0.5,
+    ):
+        """
+        Upload per-ommatidium scalar data for heatmap visualisation.
+
+        Args:
+            values: (num_ommatidia,) float array in global array order.
+                         For per-eye data, use set_heatmap_eyes() instead.
+            range: (min, max) bounds for the colourmap.
+                        None = auto-normalise using a rolling window over recent
+                        frames, which adapts smoothly without manual tuning.
+            colormap: Which colourmap to use (Colormap enum).
+            compression: Power exponent for dynamic range compression.
+                         1.0 = linear, 0.5 = sqrt, lower = brings out detail
+        """
+
+        buf = np.ascontiguousarray(values, dtype=np.float32).ravel()
+
+        if len(buf) != self.num_ommatidia:
+            raise ValueError(
+                f"scalar_data has {len(buf)} elements, expected {self.num_ommatidia}."
+            )
+
+        # (Re)allocate SSBO if needed
+        if self._heatmap_ssbo == 0:
+            self._heatmap_ssbo = glGenBuffers(1)
+
+        if self._heatmap_ssbo_capacity != self.num_ommatidia:
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._heatmap_ssbo)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, self.num_ommatidia * 4, None, GL_DYNAMIC_DRAW)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            self._heatmap_ssbo_capacity = self.num_ommatidia
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._heatmap_ssbo)
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, buf.nbytes, buf)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
+        # Range
+        if range is not None:
+            self._heatmap_range = (float(range[0]), float(range[1]))
+        else:
+            # Auto-normalise: track per-frame peak absolute value
+            frame_peak = float(np.percentile(np.abs(buf), self._heatmap_auto_range_percentile))
+
+            # Exponential Moving Average for colormap scaling
+            if not hasattr(self, '_heatmap_current_range'):
+                self._heatmap_current_range = frame_peak
+            else:
+                if frame_peak > self._heatmap_current_range:
+                    # Rise fast to sudden large motion
+                    self._heatmap_current_range = 0.5 * self._heatmap_current_range + 0.5 * frame_peak
+                else:
+                    # Decay slowly
+                    self._heatmap_current_range = 0.98 * self._heatmap_current_range + 0.02 * frame_peak
+
+            range_bound = max(self._heatmap_current_range, 1e-6)
+
+            if colormap == Colormap.DIVERGING:
+                self._heatmap_range = (-range_bound, range_bound)
+            else:
+                self._heatmap_range = (0.0, range_bound)
+
+        self._heatmap_colormap = colormap
+        self._heatmap_compression = compression
+
+    def set_heatmap_eyes(
+        self,
+        values_dict: dict,
+        range: tuple = None,
+        colormap: 'Colormap' = Colormap.THERMAL,
+        compression: float = 0.5,
+    ):
+        """
+        Convenience: merge per-eye scalar arrays and upload.
+
+        Args:
+            values_dict: dict mapping Eye -> array of per-ommatidium scalars.
+                      e.g. {left_eye: left_motion, right_eye: right_motion}
+            range: (min, max) for the colourmap. Auto if None.
+            colormap: Which colourmap to use.
+            compression: Power exponent (see set_heatmap_data).
+        """
+
+        merged = np.zeros(self.num_ommatidia, dtype=np.float32)
+
+        for eye, data in values_dict.items():
+            merged[eye.global_indices] = data
+
+        self.set_heatmap_data(merged, range=range, colormap=colormap, compression=compression)
+
+    @property
     def cones_vao(self):
 
         if self._cones_vao is None or self._cones_vbo is None:
@@ -355,7 +472,11 @@ class BaseInsectEyeRenderer(ABC):
         return self._hemispheres_vao
 
     def _draw_voronoi(self):
-        """ Draws the Voronoi visualization using the computed colors """
+        """Draws the compound-eye view using final ommatidia colours."""
+
+        if self.heatmap_enabled and self._heatmap_ssbo != 0:
+            self._draw_heatmap()
+            return
 
         self.voronoi_shader.use()
 
@@ -368,10 +489,8 @@ class BaseInsectEyeRenderer(ABC):
 
         # glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), 1.0)
         glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), aspect_ratio)
-
         glUniform1i(self.voronoi_shader.get_loc('tiled_mode'), self.tiled_mode)
         glUniform1i(self.voronoi_shader.get_loc('projection_mode'), self.projection_mode)
-
         glUniform1f(self.voronoi_shader.get_loc('receptive_field_scale'), self.receptive_field_scale)
 
         # Binding 0: Ommatidia geometry (directions, origins, etc)
@@ -389,6 +508,42 @@ class BaseInsectEyeRenderer(ABC):
         glDisable(GL_DEPTH_TEST)
 
         self.voronoi_shader.stop()
+
+    def _draw_heatmap(self):
+        """Draws the compound-eye view with scalar data mapped to a colormap."""
+
+        shader = self.heatmap_shader
+        shader.use()
+
+        glEnable(GL_DEPTH_TEST)
+
+        viewport = glGetIntegerv(GL_VIEWPORT)
+        aspect_ratio = viewport[2] / viewport[3] if viewport[3] > 0 else 1.0
+
+        glUniform1f(shader.get_loc('aspect_ratio'), aspect_ratio)
+        glUniform1i(shader.get_loc('tiled_mode'), self.tiled_mode)
+        glUniform1i(shader.get_loc('projection_mode'), self.projection_mode)
+        glUniform1f(shader.get_loc('receptive_field_scale'), self.receptive_field_scale)
+
+        glUniform1f(shader.get_loc('data_min'), self._heatmap_range[0])
+        glUniform1f(shader.get_loc('data_max'), self._heatmap_range[1])
+        glUniform1i(shader.get_loc('colormap'), int(self._heatmap_colormap))
+        glUniform1f(shader.get_loc('compression'), self._heatmap_compression)
+
+        # Binding 0: Ommatidia geometry (for positioning)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
+        # Binding 1: Scalar data (replaces the colour buffer)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self._heatmap_ssbo)
+
+        glBindVertexArray(self.cones_vao)
+        glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.num_ommatidia)
+
+        glBindVertexArray(0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
+        glDisable(GL_DEPTH_TEST)
+
+        shader.stop()
 
     def _draw_eye_model(self, observer_camera, agent):
 
@@ -454,7 +609,7 @@ class BaseInsectEyeRenderer(ABC):
         self.eye_model_shader.stop()
 
     def free(self):
-        """ Free GPU resources """
+        """Free GPU resources."""
 
         glDeleteBuffers(1, [self.input_om_ssbo])
         if self.history_ssbo:
@@ -462,6 +617,9 @@ class BaseInsectEyeRenderer(ABC):
 
         if self._voronoi_shader:
             self._voronoi_shader.free()
+
+        if self._heatmap_shader:
+            self._heatmap_shader.free()
 
         if self._eye_model_shader:
             self._eye_model_shader.free()
@@ -475,3 +633,6 @@ class BaseInsectEyeRenderer(ABC):
             glDeleteVertexArrays(1, [self._hemispheres_vao])
         if self._hemispheres_vbo:
             glDeleteBuffers(1, [self._hemispheres_vbo])
+
+        if self._heatmap_ssbo:
+            glDeleteBuffers(1, [self._heatmap_ssbo])
