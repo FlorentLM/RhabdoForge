@@ -29,7 +29,8 @@ void main() {
 
     Ommatidium om = ommatidia_data[ommatidium_idx];
 
-    uint rng_state = pcg_hash(global_id ^ time);
+    uint base_seed = ommatidium_idx * 1973u + time * 26699u;
+    uint rng_state = pcg_hash(base_seed + sample_idx * 749u);
 
     // Generate ray direction
     vec3 om_world_dir = (cam_to_world * om.direction).xyz;
