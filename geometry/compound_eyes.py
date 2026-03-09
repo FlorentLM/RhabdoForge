@@ -581,7 +581,8 @@ class Eye:
             self,
             direction: ArrayLike,
             k: int = 1,
-            coordinate: str = 'spherical'
+            coordinate: str = 'spherical',
+            return_weights: bool = False
     ) -> np.ndarray:
         """
         For every ommatidium in this eye, find the k nearest neighbours
@@ -680,8 +681,8 @@ class Eye:
         nb_local = graph['neighbour_local_indices']  # (N, k_search)
 
         if k == 1:
-            best = np.argmin(score, axis=1)  # (N,)
-            return nb_local[np.arange(N), best]
+            best = np.argmin(score, axis=1)
+            indices = nb_local[np.arange(N), best]
         else:
             # Get top-k by smallest score
             k_eff = min(k, score.shape[1])
@@ -690,14 +691,18 @@ class Eye:
             sorted_order = np.argsort(top_k_scores, axis=1)
             top_k_sorted = np.take_along_axis(top_k, sorted_order, axis=1)
 
-            result = nb_local[np.arange(N)[:, np.newaxis], top_k_sorted]
+            indices  = nb_local[np.arange(N)[:, np.newaxis], top_k_sorted]
 
             # Pad if k > k_search
             if k > k_eff:
                 pad = np.zeros((N, k - k_eff), dtype=np.intp)
-                result = np.hstack([result, pad])
+                indices = np.hstack([indices, pad])
 
-            return result
+        if return_weights:
+            weights = target_norms if k == 1 else np.tile(target_norms[:, np.newaxis], (1, k))
+            return indices, weights
+
+        return indices
 
 
 class OmmatidialArray:
@@ -716,23 +721,24 @@ class OmmatidialArray:
     """
 
     def __init__(self,
-                 directions: Optional[ArrayLike] = None,
-                 origins: Optional[ArrayLike] = None,
-                 num_ommatidia: Optional[int] = None,
-                 acceptance_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
-                 interommatidial_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
-                 sensitivities: Optional[Union[ArrayLike, float]] = None,
-                 receptor_types: Optional[Union[ArrayLike, int]] = None,
-                 eye_id: Optional[Union[int, ArrayLike]] = None,
-                 custom_ids: Optional[Union[ArrayLike, int]] = None,
-                 eye_parameter: Optional[Union[float, Tuple]] = None,
-                 lens_diameter_nm: Optional[Union[float, Tuple]] = None,
-                 rhabdom_diameter_nm: Optional[Union[float, Tuple]] = None,
-                 focal_length_nm: Optional[Union[float, Tuple]] = None,
-                 wavelength_nm: float = 500,  # TODO: temporary value, shaders should compute per-channel
-                 eye_radius: float = 0.01,
-                 force_isotropic: bool = False
-                 ):
+            directions: Optional[ArrayLike] = None,
+            origins: Optional[ArrayLike] = None,
+            num_ommatidia: Optional[int] = None,
+            acceptance_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
+            interommatidial_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
+            sensitivities: Optional[Union[ArrayLike, float]] = None,
+            receptor_types: Optional[Union[ArrayLike, int]] = None,
+            eye_id: Optional[Union[int, ArrayLike]] = None,
+            custom_ids: Optional[Union[ArrayLike, int]] = None,
+            eye_parameter: Optional[Union[float, Tuple]] = None,
+            lens_diameter_nm: Optional[Union[float, Tuple]] = None,
+            rhabdom_diameter_nm: Optional[Union[float, Tuple]] = None,
+            focal_length_nm: Optional[Union[float, Tuple]] = None,
+            wavelength_nm: float = 500,  # TODO: temporary value, shaders should compute per-channel
+            eye_radius: float = 0.01,
+            force_isotropic: bool = False,
+            icosphere_method: bool = True,
+        ):
         """
         The primary constructor for creating an OmmatidialArray.
 
@@ -751,6 +757,7 @@ class OmmatidialArray:
             eye_parameter: The eye parameter 'p' (Δρ / Δφ). Defaults to 1.0.
             eye_radius: Physical radius for placing origins on a sphere.
             force_isotropic: If True, forces circular acceptance angles.
+            icosphere_method: If True, the icosphere method is used for uniform eyes. Otherwise, the fibonacci method is used.
         """
 
         if directions is None and num_ommatidia is None:
@@ -765,12 +772,16 @@ class OmmatidialArray:
 
         else:
             # Priority 2: Generate directions from ommatidia_count
-            print(f"Generating uniform direction vectors for approx. {num_ommatidia} ommatidia.")
-            lod = estimate_lod(num_ommatidia)
-            directions = subdivide_icosahedron(lod)
-            nb_effective_dirs = len(directions)
-            if abs(num_ommatidia - nb_effective_dirs) > 1:
-                print(f"Note: Using {nb_effective_dirs} ommatidia to match subdivision level {lod}.")
+            print(f"Generating uniform direction vectors for {num_ommatidia} ommatidia.")
+            if icosphere_method:
+                lod = estimate_lod(num_ommatidia)
+                directions = subdivide_icosahedron(lod)
+                nb_effective_dirs = len(directions)
+                if abs(num_ommatidia - nb_effective_dirs) > 1:
+                    print(f"Note: Using {nb_effective_dirs} ommatidia to match subdivision level {lod}.")
+            else:
+                directions = fibonacci_sphere(num_ommatidia)
+                nb_effective_dirs = len(directions)
 
         self.ommatidia_count = nb_effective_dirs
         self.data = np.zeros(self.ommatidia_count, dtype=GPU_OMMATIDIUM_DTYPE)
@@ -1511,3 +1522,16 @@ def subdivide_icosahedron(n_subdiv: int) -> np.ndarray:
     _, iunique = np.unique(np.round(all_new_verts, 6), axis=0, return_index=True)
 
     return all_new_verts[iunique].astype(np.float32)
+
+
+def fibonacci_sphere(samples: int):
+    """Generate uniform points on a unit sphere with the Fibonacci method."""
+
+    phi = np.pi * (3. - np.sqrt(5.))  # golden angle
+    i = np.arange(samples)
+    y = 1 - (i / float(samples - 1)) * 2  # y goes from 1 to -1
+    radius = np.sqrt(1 - y * y)  # radius at y
+    theta = phi * i  # golden angle increment
+    x = np.cos(theta) * radius
+    z = np.sin(theta) * radius
+    return np.column_stack((x, y, z))
