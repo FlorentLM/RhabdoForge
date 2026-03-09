@@ -322,73 +322,72 @@ bool test_shadow(vec3 hit_pos, vec3 normal, vec3 light_dir, float max_dist) {
 // ===================================== Direct lighting ===========================================
 
 vec3 calculate_direct_lighting(vec3 hp, vec3 N, inout uint rng) {
+    int total_lights = directional_lights_count + point_lights_count + area_lights_count;
+
+    if (total_lights == 0) return vec3(0.0);
+
+    // Pick random light uniformly
+    int pick = int(random_float(rng) * float(total_lights));
+    pick = clamp(pick, 0, total_lights - 1); // safety clamp
+
+    float pdf = 1.0 / float(total_lights);     // probability of picking this light
     vec3 result = vec3(0.0);
 
 #ifdef HAS_DIRECTIONAL_LIGHT
-    #ifdef MULTI_DIRECTIONAL
-    for (int i = 0; i < min(directional_lights_count, MAX_LIGHTS_PER_PASS); i++) {
-        DirectionalLightData dl = directional_lights[i];
-    #else
-    {   DirectionalLightData dl = directional_lights[0];
-    #endif
+    if (pick < directional_lights_count) {
+        DirectionalLightData dl = directional_lights[pick];
         if (dl.intensity > 0.0) {
-            vec3 ld = sample_disk_direction(dl.direction, dl.angular_radius,
-                                            random_float(rng), random_float(rng));
+            vec3 ld = sample_disk_direction(dl.direction, dl.angular_radius, random_float(rng), random_float(rng));
             float NdL = max(dot(N, ld), 0.0);
             if (NdL > 0.0) {
-                bool sh = dl.cast_shadows!=0u && test_shadow(hp, N, ld, 1e10);
-                if (!sh) result += dl.color * dl.intensity * NdL;
+                bool sh = dl.cast_shadows != 0u && test_shadow(hp, N, ld, 1e10);
+                if (!sh) result = dl.color * dl.intensity * NdL;
             }
         }
+        return result / pdf; // weight by inverse proba
     }
+    pick -= directional_lights_count;
 #endif
 
 #ifdef HAS_POINT_LIGHT
-    #ifdef MULTI_POINT
-    for (int i = 0; i < min(point_lights_count, MAX_LIGHTS_PER_PASS); i++) {
-        PointLightData pl = point_lights[i];
-    #else
-    {   PointLightData pl = point_lights[0];
-    #endif
+    if (pick < point_lights_count) {
+        PointLightData pl = point_lights[pick];
         if (pl.intensity > 0.0) {
             float dist;
-            vec3 ld = sample_point_light_direction(pl, hp,
-                        random_float(rng), random_float(rng), dist);
+            vec3 ld = sample_point_light_direction(pl, hp, random_float(rng), random_float(rng), dist);
             float NdL = max(dot(N, ld), 0.0);
             if (NdL > 0.0) {
-                bool sh = pl.cast_shadows!=0u && test_shadow(hp, N, ld, dist-0.002);
-                if (!sh) result += pl.color * pl.intensity * NdL
-                                 * point_light_attenuation(pl, dist);
+                bool sh = pl.cast_shadows != 0u && test_shadow(hp, N, ld, dist - 0.002);
+                if (!sh) result = pl.color * pl.intensity * NdL * point_light_attenuation(pl, dist);
             }
         }
+        return result / pdf;
     }
+    pick -= point_lights_count;
 #endif
 
 #ifdef HAS_AREA_LIGHT
-    #ifdef MULTI_AREA
-    for (int i = 0; i < min(area_lights_count, MAX_LIGHTS_PER_PASS); i++) {
-        AreaLightData al = area_lights[i];
-    #else
-    {   AreaLightData al = area_lights[0];
-    #endif
+    if (pick < area_lights_count) {
+        AreaLightData al = area_lights[pick];
         if (al.intensity > 0.0) {
             vec3 sp = sample_area_light_point(al, random_float(rng), random_float(rng));
             vec3 tl = sp - hp;
             float dist = length(tl);
             vec3 ld = tl / dist;
             float NdL = max(dot(N, ld), 0.0);
-            float lcos = al.two_sided!=0u ? abs(dot(al.normal,ld))
-                                          : max(-dot(al.normal,ld), 0.0);
+            float lcos = al.two_sided != 0u ? abs(dot(al.normal, ld)) : max(-dot(al.normal, ld), 0.0);
+
             if (NdL > 0.0 && lcos > 0.0) {
-                bool sh = al.cast_shadows!=0u && test_shadow(hp, N, ld, dist-0.002);
-                if (!sh) result += al.color * al.intensity
-                                 * (NdL * lcos * al.width * al.height) / (dist*dist);
+                bool sh = al.cast_shadows != 0u && test_shadow(hp, N, ld, dist - 0.002);
+                float surface_area = al.width * al.height;
+                if (!sh) result = al.color * al.intensity * (NdL * lcos * surface_area) / (dist * dist);
             }
         }
+        return result / pdf;
     }
 #endif
 
-    return result;
+    return vec3(0.0);
 }
 
 #endif // LIGHTING_GLSL
