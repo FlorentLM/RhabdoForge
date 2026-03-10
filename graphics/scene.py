@@ -499,10 +499,41 @@ class Scene:
         """Creates and loads a skybox from a directory of textures."""
         self._skybox = Skybox(texture_path)
 
-    def remove_instance(self, instance: Instance):
+    def remove_instance(self, instance: Instance, prune_asset: bool = False):
         self._mesh_instances.discard(instance)
         self._point_instances.discard(instance)
         self._dynamic_instances.discard(instance)
+
+        if prune_asset:
+            # Remove the asset from the registry if no remaining instances reference it
+            asset = instance.asset
+            still_used = any(
+                inst.asset.id == asset.id
+                for inst in self._mesh_instances | self._point_instances
+            )
+            if not still_used and asset.name in self.assets:
+                del self.assets[asset.name]
+
+    def remove_asset(self, asset: Union[Asset, str]):
+        """
+        Removes an asset and all of its instances from the scene.
+        """
+        if isinstance(asset, str):
+            if asset not in self.assets:
+                return
+            asset_obj = self.assets[asset]
+        elif isinstance(asset, Asset):
+            asset_obj = asset
+        else:
+            raise TypeError(
+                f"Expected Asset or str, got {type(asset).__name__}."
+            )
+
+        # Remove every instance that references this asset
+        for pool in (self._mesh_instances, self._point_instances, self._dynamic_instances):
+            pool -= {inst for inst in pool if inst.asset.id == asset_obj.id}
+
+        self.assets.pop(asset_obj.name, None)
 
     def remove_light(self, light: Light):
         if isinstance(light, DirectionalLight):
@@ -515,10 +546,13 @@ class Scene:
     def clear_skybox(self):
         self._skybox = None
 
-    def clear_instances(self):
+    def clear_instances(self, prune_assets: bool = False):
         self._mesh_instances.clear()
         self._point_instances.clear()
         self._dynamic_instances.clear()
+
+        if prune_assets:
+            self.assets.clear()
 
     def clear_lights(self):
         self._directional_lights.clear()
