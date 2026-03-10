@@ -215,6 +215,7 @@ scene.add_instance(top_wall)
 ##
 
 eye_array = OmmatidialArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+eye_array.scale(0.01)
 
 left_eye = eye_array.eye(0)
 right_eye = eye_array.eye(1)
@@ -243,7 +244,7 @@ for blas in renderer._scene_baked.BLASes:
 
 ##
 
-test_direction = (0.0, 0.0, -1.0)  # front to back
+test_direction = (0.0, 0.0, 1.0)  # front to back
 saved_runs: Dict[str, RunLog] = {}
 modes = ["Non-holonomic (yaw steering)", "Holonomic (lateral shift)"]
 

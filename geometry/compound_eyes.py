@@ -1394,6 +1394,25 @@ class OmmatidialArray:
         """If this is a rhabdomere-expanded array, the original lens-level data."""
         return self._lens_data
 
+    # These are likely the only two operations we want, so no mixin
+    def scale(self, factor: float):
+        """
+        Scales the entire array of ommatidia origins by a factor (i.e. for unit conversion).
+        """
+        self.data['origin'][:, :3] *= factor
+        self.needs_rebuild['origin'] = True
+        self.rebuild_spatial()
+        return self
+
+    def translate(self, vector: ArrayLike):
+        """
+        Translates the entire array of ommatidia origins by a vector.
+        """
+        v = np.asarray(vector, dtype=np.float32)
+        self.data['origin'][:, :3] += v
+        self.needs_rebuild['origin'] = True
+        self.rebuild_spatial()
+        return self
 
 class _GlobalOmmatidiaView:
     """

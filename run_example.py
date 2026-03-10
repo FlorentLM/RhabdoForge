@@ -59,7 +59,7 @@ def main():
     eye_model = CompoundEye.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
     # eye_model = CompoundEye.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
     # eye_model = CompoundEye.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
-
+    eye_model.scale(0.01)
 
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))
