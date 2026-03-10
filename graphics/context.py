@@ -5,7 +5,7 @@ from OpenGL.GL import *
 import glfw
 from pyglm import glm
 import time
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Callable, Dict, List, Union
 
 from graphics.renderers.base import BaseInsectEyeRenderer
 from graphics.scene import Scene
@@ -72,9 +72,88 @@ class Context:
         self.sun_control_mode: bool = False
         self.sun_orbit_sensitivity: float = 0.2
 
+        # Key bindings: (glfw_key, glfw_action) -> [callbacks]
+        self._key_bindings: Dict[Tuple[int, int], List[Callable]] = {}
+
+    @staticmethod
+    def _resolve_key(key: Union[int, str]) -> int:
+
+        if isinstance(key, int):
+            return key
+
+        attr = f"KEY_{key.upper()}"
+        code = getattr(glfw, attr, None)
+
+        if code is None:
+            raise ValueError(
+                f"Unknown key '{key}' (tried glfw.{attr}).  "
+                f"Use a GLFW constant like glfw.KEY_M, or a string like 'm', "
+                f"'space', 'left_shift', 'f1', 'kp_add', etc."
+            )
+        return code
+
+    def bind_key(self, key: Union[int, str], callback: Callable, action: int = None):
+        """
+        Register a callback for a key event.
+
+        Args:
+            key: The key to bind (string or GLFW key constant)
+            callback: A (no-argument) callable invoked when the key event triggers
+            action: The key event type to bind (`glfw.PRESS` (default), `glfw.RELEASE`, or `glfw.REPEAT`)
+
+        Example:
+            context.bind_key('m', lambda: print("M pressed"))
+            context.bind_key('f1', on_help)
+            context.bind_key(glfw.KEY_SPACE, on_jump, action=glfw.RELEASE)
+        """
+        key = self._resolve_key(key)
+
+        if action is None:
+            action = glfw.PRESS
+
+        binding = (key, action)
+        if binding not in self._key_bindings:
+            self._key_bindings[binding] = []
+
+        if callback not in self._key_bindings[binding]:
+            self._key_bindings[binding].append(callback)
+
+    def unbind_key(self, key: Union[int, str], callback: Callable = None, action: int = None):
+        """
+        Remove one or all callbacks for a key event.
+
+        Args:
+            key: The key to unbind (string or GLFW key constant)
+            callback: The callable to remove, or None to fully unbind the action on that key
+            action: The key event type to unbind (`glfw.PRESS` (default), `glfw.RELEASE`, or `glfw.REPEAT`)
+        """
+        key = self._resolve_key(key)
+
+        if action is None:
+            action = glfw.PRESS
+
+        binding = (key, action)
+
+        if binding not in self._key_bindings:
+            return
+
+        if callback is None:
+            del self._key_bindings[binding]
+        else:
+            try:
+                self._key_bindings[binding].remove(callback)
+            except ValueError:
+                pass
+            if not self._key_bindings[binding]:
+                del self._key_bindings[binding]
+
+    @property
+    def bound_keys(self) -> dict:
+        return dict(self._key_bindings)
+
     def run_interactive(self, agent: Agent, scene: Scene, renderer: BaseInsectEyeRenderer,
                         window_size=None, fps_limit=None, v_sync=None, invert_mouseY=None):
-        """ On first call, initialises and shows the window. Then checks if the interactive loop should continue. """
+        """On first call, initialises and shows the window. Then checks if the interactive loop should continue."""
 
         if not self._interactive_initialised:
 
@@ -179,6 +258,10 @@ class Context:
             if key == glfw.KEY_G:
                 if self.debug is not None:
                     self.debug.enabled = not self.debug.enabled
+
+        binding = (key, action)
+        for callback in self._key_bindings.get(binding, ()):
+            callback()
 
     def input(self):
 
