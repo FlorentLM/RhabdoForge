@@ -61,7 +61,7 @@ class Context:
         self.debug: Optional[DebugOverlay] = DebugOverlay() if debug_overlay else None
 
         self.last_frame_time: float = 0.0
-        self._delta_time: float = 0.0
+        self._delta_time: float = 1e-12
 
         self.move_speed: float = 3.0
         self.keyboard_turn_speed: float = 1.0
@@ -74,6 +74,25 @@ class Context:
 
         # Key bindings: (glfw_key, glfw_action) -> [callbacks]
         self._key_bindings: Dict[Tuple[int, int], List[Callable]] = {}
+
+    def update_dt(self):
+        """Update delta time based on the real-world clock."""
+        current_time = self.current_time
+        self._delta_time = current_time - self.last_frame_time
+        self.last_frame_time = current_time
+
+    def reset_time(self):
+        """Initialise last_frame_time right before a loop starts."""
+        self.last_frame_time = self.current_time
+
+    @property
+    def delta_time(self) -> float:
+        return self._delta_time
+
+    @delta_time.setter
+    def delta_time(self, value: float):
+        """Allow manually setting the delta time for fixed-step headless simulations."""
+        self._delta_time = value#
 
     @staticmethod
     def _resolve_key(key: Union[int, str]) -> int:
@@ -194,6 +213,8 @@ class Context:
 
             self._interactive_initialised = True
 
+        self.update_dt()
+
         return not glfw.window_should_close(self.window)
 
     def scroll_callback(self, window, xoffset, yoffset):
@@ -268,10 +289,6 @@ class Context:
         if not self._interactive_initialised:
             return
 
-        current_time = self.current_time
-        self._delta_time = current_time - self.last_frame_time
-        self.last_frame_time = current_time
-
         glfw.poll_events()
 
         if glfw.get_key(self.window, glfw.KEY_ESCAPE) == glfw.PRESS:
@@ -302,7 +319,6 @@ class Context:
             if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS: move_direction += self.agent.left
             if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS: move_direction += self.agent.right
 
-        # Apply translation
         if glm.length(move_direction) > 0:
             self.agent.dt(self._delta_time).translate(glm.normalize(move_direction) * self.move_speed)
 
@@ -345,7 +361,6 @@ class Context:
             mouse_yaw_delta = dx * self.mouse_sensitivity * -1
             mouse_pitch_delta = dy * self.mouse_sensitivity * self.mouse_y_dir
 
-            # Apply rotation
             if self.view_mode == ViewMode.third_person:
                 # Mouse pans the camera
                 self.observer.pan(azimuth_delta=mouse_yaw_delta * 0.5,
@@ -420,10 +435,6 @@ class Context:
     @property
     def current_time(self) -> float:
         return glfw.get_time()
-
-    @property
-    def delta_time(self) -> float:
-        return self._delta_time
 
     @property
     def window_size(self) -> tuple:
