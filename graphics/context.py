@@ -192,11 +192,6 @@ class Context:
 
             glfw.show_window(self.window)
 
-            self.agent = agent
-            self.scene = scene
-            self.renderer = renderer
-            renderer.runs_interactive = True
-
             self.observer = OrbitCamera(target=agent, distance=1.5, ratio=self._window_size[0] / self._window_size[1])
 
             glfw.set_key_callback(self.window, self.key_callback)
@@ -212,6 +207,16 @@ class Context:
             self.last_frame_time = self.current_time
 
             self._interactive_initialised = True
+
+        # Check if these changed during the runtime and update if needed
+        if renderer is not self.renderer:
+            self.renderer = renderer
+            renderer.runs_interactive = True
+        if agent is not self.agent:
+            self.agent = agent
+            self.observer = OrbitCamera(target=agent, distance=1.5, ratio=self._window_size[0] / self._window_size[1])
+        if scene is not self.scene:
+            self.scene = scene
 
         self.update_dt()
 
