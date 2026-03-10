@@ -367,14 +367,21 @@ class RaytracingSceneBaker:
 
         for i, inst in enumerate(all_instances):
             blas_map = self.asset_to_blas_map[inst.asset.id]
-            transform = np.asarray(inst.transform, dtype=np.float32)
+
+            if inst.visible:
+                transform = np.asarray(inst.transform, dtype=np.float32)
+                inv_transform = np.asarray(glm.inverse(inst.transform), dtype=np.float32)
+            else:
+                hidden = glm.translate(glm.mat4(1.0), glm.vec3(1e6, 1e6, 1e6))
+                transform = np.asarray(hidden, dtype=np.float32)
+                inv_transform = np.asarray(glm.inverse(hidden), dtype=np.float32)
 
             tlas_build_data[i]['transform'] = transform
             tlas_build_data[i]['blas_id'] = blas_map['id']
             tlas_build_data[i]['mask'] = 0xFFFFFFFF
 
             self.gpu_instances_info[i]['transform'] = transform
-            self.gpu_instances_info[i]['inverse_transform'] = np.asarray(glm.inverse(inst.transform), dtype=np.float32)
+            self.gpu_instances_info[i]['inverse_transform'] = inv_transform
             self.gpu_instances_info[i]['blas_node_offset'] = blas_map['node_offset']
             self.gpu_instances_info[i]['prim_index_offset'] = blas_map['prim_index_offset']
 
@@ -457,13 +464,19 @@ class RaytracingSceneBaker:
             if tlas_idx is None:
                 continue
 
-            transform = np.asarray(inst.transform, dtype=np.float32)
+            if inst.visible:
+                transform = np.asarray(inst.transform, dtype=np.float32)
+                inv_transform = np.asarray(glm.inverse(inst.transform), dtype=np.float32)
+            else:
+                hidden = glm.translate(glm.mat4(1.0), glm.vec3(1e6, 1e6, 1e6))
+                transform = np.asarray(hidden, dtype=np.float32)
+                inv_transform = np.asarray(glm.inverse(hidden), dtype=np.float32)
+
             self.TLAS.set_instance_transform(tlas_idx, transform)
 
             # Update GPU info
             self.gpu_instances_info[tlas_idx]['transform'] = transform
-            self.gpu_instances_info[tlas_idx]['inverse_transform'] = np.asarray(
-                glm.inverse(inst.transform), dtype=np.float32)
+            self.gpu_instances_info[tlas_idx]['inverse_transform'] = inv_transform
             updated = True
 
         if updated:

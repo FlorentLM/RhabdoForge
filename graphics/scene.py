@@ -320,11 +320,13 @@ class Instance(TransformMixin):
                  asset: Asset,
                  transform: Optional[Union[glm.mat4, ArrayLike]] = None,
                  dynamic: bool = False,
+                 visible: bool = True,
                  **kwargs):
 
         self.id = id(self)
         self.asset = asset
         self.dynamic = dynamic
+        self._visible = visible
         self.properties = kwargs
 
         if transform is None:
@@ -343,6 +345,19 @@ class Instance(TransformMixin):
                     f"Unsupported shape for transform: {transform_np.shape}. "
                     "Expected a (4, 4) matrix or a (3,) position vector."
                 )
+
+    @property
+    def visible(self) -> bool:
+        """
+        Whether this instance is included in ray intersection tests.
+        (toggling at runtime requires `dynamic=True` so TLAS can refit)
+        """
+        # TODO: This will eventually be replaced by the visibility masks
+        return self._visible
+
+    @visible.setter
+    def visible(self, value: bool):
+        self._visible = bool(value)
 
     def dt(self, delta_time: float) -> DeltaTimeTransformer:
         """
