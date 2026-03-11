@@ -29,102 +29,63 @@ def create_plane(v0, v1, v2, v3):
     return vertices, uv_coords, indices
 
 
-
 class HassensteinReichardtEMD:
     """
     Elementary Motion Detector based on Hassenstein-Reichardt correlator.
 
-    For each ommatidium A, a neighbour B is selected along a specified direction on the eye surface.
-    The detector computes:
-        R = A(t) * LP[B(t)] − B(t) * LP[A(t)]
-    where LP is a first-order low-pass filter
-
-    For a static scene both arms are equal, so R = 0
-    Motion in the preferred direction: R > 0
-    Motion in the anti-preferred direction: R < 0
-
-    All temporal parameters are specified in Hz
+    - GPU temporal accumulation: Photoreceptors (R1-R6) - low-pass integration
+    - Python high-pass: Lamina monopolar cells (L1/L2) - Luminance adaptation
+    - Python delay/correlator: Medulla (e.g., Mi1/Tm3 to T4/T5) - Delay and multiplication
     """
 
     def __init__(self,
             eye: Eye, direction: Tuple[float, float, float],
-            delay_hz: float = 8.0,  # TODO: check if ~8 Hz is typical for Drosophila L1/L2 delay filters
-            prefilter_hz: float = 5.0
+            delay_hz: float = 8.0,
+            highpass_hz: float = 2.0
         ):
-        """
-        Args:
-            eye: An Eye view from an OmmatidialArray.
-            direction: (delta_azimuth, delta_elevation) in radians.
-            delay_hz: Cutoff frequency (Hz) for the correlator delay arm.
-                      This controls the temporal frequency tuning of the detector.
-                      (lower = tuned to slower motion, higher = tuned to faster motion)
-            prefilter_hz: Cutoff frequency (Hz) for the luminance pre-filter.
-                          Smooths Monte Carlo sampling noise before it reaches the
-                          correlator. Should be above delay_hz to pass the motion
-                          signal, but low enough to reject rendering noise.
-                          Set to 0 to disable.
-        """
         self.eye = eye
 
         # Convert Hz to time constants
-        self.tau = 1.0 / (2.0 * np.pi * delay_hz)
-        self.tau_pre = 1.0 / (2.0 * np.pi * prefilter_hz) if prefilter_hz > 0 else 0.0
-        self.tau_hp = 1.0 / (2.0 * np.pi * 2.0)  # ~2 Hz high-pass cutoff
-        self._mean_lum = None
+        self.tau_delay = 1.0 / (2.0 * np.pi * delay_hz)
+        self.tau_hp = 1.0 / (2.0 * np.pi * highpass_hz)
 
         self.targets, self.weights = eye.directed_neighbours(
             direction=direction, k=1, coordinate='cartesian', return_weights=True
         )
 
-        self._filtered_lum = None  # pre-filtered luminance
+        self._mean_lum = None   # For high-pass L1/L2 adaptation
         self._delayed_A = None  # LP[A(t)] (correlator)
         self._delayed_B = None  # LP[B(t)] (correlator)
 
     def process(self, ommatidia_data: np.ndarray, dt: float) -> np.ndarray:
-        """
-        Compute per-ommatidium motion signal for one frame.
-        """
+        # GPU output (must be already R1-R6 low-pass filtered)
         eye_data = ommatidia_data[self.eye.global_indices]
-        raw_luminance = eye_data[:, :3].mean(axis=1)
+        luminance = eye_data[:, :3].mean(axis=1)
 
-        # Pre-filter: smooth rendering noise
-        if self.tau_pre > 0:
-            alpha_pre = dt / (self.tau_pre + dt)
-
-            if self._filtered_lum is None:
-                self._filtered_lum = raw_luminance.copy()
-            else:
-                self._filtered_lum += alpha_pre * (raw_luminance - self._filtered_lum)
-
-            luminance = self._filtered_lum
-        else:
-            luminance = raw_luminance
-
-        # Luminance adaptation (high-pass / Weber contrast)
+        # Lamina L1/L2 high-pass equivalent (luminance adaptation / contrast)
         alpha_hp = dt / (self.tau_hp + dt)
         if self._mean_lum is None:
             self._mean_lum = luminance.copy()
         else:
             self._mean_lum += alpha_hp * (luminance - self._mean_lum)
 
-        # Convert to contrast: removes DC, normalises by local mean
-        luminance = (luminance - self._mean_lum) / (self._mean_lum + 1e-6)
+        # Convert to contrast (removes DC, normalises by local mean)
+        contrast = (luminance - self._mean_lum) / (self._mean_lum + 1e-6)
 
-        # Correlator
-        alpha = dt / (self.tau + dt)
+        # Medulla delay lines
+        alpha_delay = dt / (self.tau_delay + dt)
 
-        signal_A = luminance  # direct channel (source)
-        signal_B = luminance[self.targets]  # neighbour channel (target)
+        signal_A = contrast  # direct channel
+        signal_B = contrast[self.targets]  # neighbour channel
 
         if self._delayed_A is None:
-            # First frame: initialise both delay lines
             self._delayed_A = signal_A.copy()
             self._delayed_B = signal_B.copy()
             return np.zeros(len(self.eye), dtype=np.float32)
 
-        # Update both low-pass filters
-        self._delayed_A += alpha * (signal_A - self._delayed_A)
-        self._delayed_B += alpha * (signal_B - self._delayed_B)
+        # Update delay lines
+        self._delayed_A += alpha_delay * (signal_A - self._delayed_A)
+        self._delayed_B += alpha_delay * (signal_B - self._delayed_B)
 
         # Correlator: preferred arm - anti-preferred arm
         motion = signal_B * self._delayed_A - signal_A * self._delayed_B
@@ -148,7 +109,7 @@ class RunLog:
 context = Context(window_size=(1280, 720), fps_limit=None, v_sync=False)
 scene = Scene(background_color=(0.15, 0.15, 0.3))
 
-# scene.add_skybox('textures/bright_day_nosun')
+scene.add_skybox('textures/bright_day_nosun')
 
 w, h, l = 5.0, 5.0, 150.0
 
@@ -160,7 +121,7 @@ texture_res = 512, 15360
 v_left, uv_left, idx_left = create_plane(
     [-w/2.0, 0.0, -l], [-w/2.0,  h, -l], [-w/2.0,  h, 0.0], [-w/2.0, 0.0, 0.0]
 )
-left_pattern = checkerboard_texture(*texture_res, block_size=block_size * 4, ratio=checkerboard_ratio)
+left_pattern = checkerboard_texture(*texture_res, block_size=block_size, ratio=checkerboard_ratio)
 left_wall = Asset.from_arrays(
     name='left_wall',
     vertices=v_left,
@@ -220,18 +181,21 @@ eye_array.scale(0.01)
 left_eye = eye_array.eye(0)
 right_eye = eye_array.eye(1)
 
-start_x = (np.random.rand() - 0.5) * w
-# start_y = np.random.rand() * h
-start_y = h / 2.0
 
-start_position = (start_x, start_y, 0.0)
+def random_tunnel_start(tunnel_width: float, tunnel_height: float, randomise_height=False):
+    start_x = (np.random.rand() - 0.5) * tunnel_width
+    start_y = np.random.rand() * tunnel_height if randomise_height else tunnel_height / 2.0
+    return start_x, start_y, 0.0
 
-agent = Agent(position=start_position)
+
+agent = Agent()
 
 renderer = Raytracer(
     eye_model=eye_array, scene=scene,
     nb_samples=512,
+    time_accumulation=0.012,
     time_dithering=True,
+    quasi_random=True,
     enable_shadows=False
 )
 renderer.heatmap_enabled = True
@@ -255,7 +219,7 @@ for mode in modes:
 
     print(f"Run: {mode}")
 
-    agent.position = start_position
+    agent.position = random_tunnel_start(w, h, randomise_height=True)
     agent.yaw = 0.0
     agent.pitch = 0.0
     agent.roll = 0.0
@@ -273,8 +237,7 @@ for mode in modes:
 
         context.input()
 
-        # dt = context.delta_time
-        dt = 1/50.0
+        dt = 1/200.0
         sim_time += dt
 
         ommatidia_data = renderer.get_ommatidia_data(agent)
@@ -325,7 +288,7 @@ for mode in modes:
 
         renderer.set_heatmap_eyes(
             {left_eye: left_motion, right_eye: right_motion},
-            colormap=Colormap.DIVERGING, compression=0.5
+            colormap=Colormap.DIVERGING, compression=1.0
         )
 
         context.draw()
@@ -398,6 +361,7 @@ for row, (run_name, log) in enumerate(saved_runs.items()):
     ax_yaw.axhline(0, color='k', ls='--', lw=0.5)
     ax_yaw.set_xlabel("Time (s)")
     ax_yaw.set_ylabel("Yaw (°)")
+    ax_yaw.set_ylim(-90, 90)
     ax_yaw.set_title("Heading angle")
 
 plt.show()
