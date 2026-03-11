@@ -15,7 +15,7 @@ layout(std430, binding = 2) buffer PhotoreceptorState { vec4 receptor_state[]; }
 // Uniforms
 uniform int nb_samples;
 uniform int nb_ommatidia;
-uniform int frame_index;
+uniform int frame_offset;
 uniform float dt;           // seconds since last frame
 uniform float receptor_tau; // ~ 0.01 to 0.015 (10-15 ms)
 
@@ -48,6 +48,6 @@ void main() {
     }
 
     // Write final color to the output SSBO at the correct frame index
-    uint output_index = (frame_index * nb_ommatidia) + ommatidium_idx;
+    uint output_index = (frame_offset * nb_ommatidia) + ommatidium_idx;
     history_data[output_index] = vec4(output_color, 1.0);
 }

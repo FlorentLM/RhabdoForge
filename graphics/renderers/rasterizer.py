@@ -381,7 +381,9 @@ class Rasterizer(BaseInsectEyeRenderer):
 
     def __init__(self, eye_model: CompoundEye, scene: Scene,
                  time_dithering: bool = False,
+                 time_accumulation: float = 0.0,
                  nb_samples: int = 256,
+                 quasi_random: bool = False,
                  cubemap_res: int = 512,
                  batch_size: int = 1,
                  enable_direct: bool = False,
@@ -416,7 +418,14 @@ class Rasterizer(BaseInsectEyeRenderer):
             print(f"Shadow mapping enabled ({shadow_resolution}x{shadow_resolution}, radius={shadow_radius})")
 
         # super *after* creating the scene for correct VRAM usage computation :)
-        super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
+        super().__init__(
+            eye_model,
+            time_dithering=time_dithering,
+            time_accumulation=time_accumulation,
+            nb_samples=nb_samples,
+            quasi_random=quasi_random,
+            batch_size=batch_size,
+        )
 
         self._rasterizer_shader = ShaderProgram(comp_path='shaders/ommatidia_rasterizer.comp')
 
@@ -675,10 +684,17 @@ class Rasterizer(BaseInsectEyeRenderer):
 
         glUniform1i(self._rasterizer_shader.get_loc('nb_ommatidia'), self.num_ommatidia)
         glUniform1i(self._rasterizer_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
-        glUniform1f(self._rasterizer_shader.get_loc('time'), float(self._time_counter))
+        glUniform1f(self._rasterizer_shader.get_loc('time'), float(self._dither_counter))
+
+        # Quasi-random sampling
+        glUniform1i(self._rasterizer_shader.get_loc('use_quasi_random'), int(self._quasi_random))
+
+        # Photoreceptor temporal integration
+        glUniform1f(self._rasterizer_shader.get_loc('receptor_tau'), self.receptor_tau)
+        glUniform1f(self._rasterizer_shader.get_loc('dt'), self._dt)
 
         # Write into the history buffer circularly
-        frame_offset = self._current_frame_index % self._batch_size
+        frame_offset = self._frame_index % self._batch_size
         glUniform1i(self._rasterizer_shader.get_loc('frame_index'), frame_offset)
 
         # Bind input cubemap (texture unit 0)
@@ -690,6 +706,8 @@ class Rasterizer(BaseInsectEyeRenderer):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
         # Bind colors SSBO to binding point 1 (for writing)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
+        # Binding 2: persistent photoreceptor state for temporal integration
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self.receptor_state_ssbo)
 
         # Dispatch the compute shader
         # Divide the total number of ommatidia by the workgroup size (64)
@@ -704,6 +722,8 @@ class Rasterizer(BaseInsectEyeRenderer):
     def _compute_colors(self, agent):
         """The core ommatidia rendering logic."""
 
+        self._tick()
+
         # Pass 1: Render to cubemap
         self._render_to_cubemap(agent)
 
@@ -713,6 +733,7 @@ class Rasterizer(BaseInsectEyeRenderer):
         # Unbind resources
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, 0)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 

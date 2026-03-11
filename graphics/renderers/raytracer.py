@@ -574,7 +574,14 @@ class Raytracer(BaseInsectEyeRenderer):
         self._active_light_defines: Set[str] = set()
 
         # super().__init__ *after* baking the scene to estimate VRAM
-        super().__init__(eye_model, time_dithering=time_dithering, nb_samples=nb_samples, batch_size=batch_size)
+        super().__init__(
+            eye_model,
+            time_dithering=time_dithering,
+            time_accumulation=time_accumulation,
+            nb_samples=nb_samples,
+            quasi_random=quasi_random,
+            batch_size=batch_size
+        )
 
         self._compile_shaders()
 
@@ -595,18 +602,6 @@ class Raytracer(BaseInsectEyeRenderer):
         # Default number of samples
         self._samples_per_ommatidium = 0
         self.samples_per_ommatidium = nb_samples  # via the setter to allocate the SSBO
-
-        self.receptor_tau: float = time_accumulation
-
-        # Photoreceptor temporal integration (one vec4 per ommatidium)
-        self.receptor_state_ssbo = glGenBuffers(1)
-        receptor_buf_size = self.num_ommatidia * 16  # vec4 = 16 bytes
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptor_state_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, receptor_buf_size, None, GL_DYNAMIC_DRAW)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-
-        # Quasi-random (Halton) sampling for direction generation
-        self.quasi_random = quasi_random
 
     @property
     def samples_per_ommatidium(self):
@@ -808,8 +803,8 @@ class Raytracer(BaseInsectEyeRenderer):
         glUniform3f(shader.get_loc('background_color'), bg[0], bg[1], bg[2])
         glUniform1f(shader.get_loc('sky_intensity'), self.sky_intensity)
 
-        # Time (for RNG seeding)
-        glUniform1ui(shader.get_loc('time'), int(self._time_counter))
+        # Dither counter (for RNG seeding)
+        glUniform1ui(shader.get_loc('dither_counter'), int(self._dither_counter))
 
         # Global lighting controls
         glUniform1i(shader.get_loc('enable_ambient'), int(self.enable_ambient))
@@ -902,7 +897,7 @@ class Raytracer(BaseInsectEyeRenderer):
         glUniform1i(self.raytrace_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
 
         # Halton sampling
-        glUniform1i(self.raytrace_shader.get_loc('use_quasi_random'), int(self.quasi_random))
+        glUniform1i(self.raytrace_shader.get_loc('use_quasi_random'), int(self._quasi_random))
 
         # Camera uniforms for transforming rays into world space
         c2w_mat = glm.inverse(agent.view)
@@ -938,8 +933,8 @@ class Raytracer(BaseInsectEyeRenderer):
         glUniform1f(self.reduction_shader.get_loc('dt'), self._dt)
 
         # Write into the history buffer circularly
-        frame_offset = self._current_frame_index % self._batch_size
-        glUniform1i(self.reduction_shader.get_loc('frame_index'), frame_offset)
+        frame_offset = self._frame_index % self._batch_size
+        glUniform1i(self.reduction_shader.get_loc('frame_offset'), frame_offset)
 
         # Dispatch compute shader
         workgroup_size = 64  # TODO: maybe tweak workgroup size
@@ -1004,8 +999,7 @@ class Raytracer(BaseInsectEyeRenderer):
     def free(self):
         """Frees all GPU resources."""
 
-        glDeleteBuffers(1, [self.ray_results_ssbo])
-        glDeleteBuffers(1, [self.receptor_state_ssbo])
+        if self.ray_results_ssbo: glDeleteBuffers(1, [self.ray_results_ssbo])
         if self.raytrace_shader: self.raytrace_shader.free()
         if self.reduction_shader: self.reduction_shader.free()
 

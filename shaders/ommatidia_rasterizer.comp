@@ -14,14 +14,20 @@ layout(std430, binding = 1) writeonly buffer OmmatidiaHistory {
    vec4 history_data[];
 };
 
+// Input / Output: Persistent photoreceptor state for temporal accumulation
+layout(std430, binding = 2) buffer PhotoreceptorState { vec4 receptor_state[]; };
+
 // Input: scene rendered to a cubemap
 layout(binding = 0) uniform samplerCube scene_cubemap;
 
 // Uniforms
 uniform int nb_ommatidia;
 uniform int nb_samples;
-uniform float time; // for temporal dithering
+uniform float dither_counter; // for temporal dithering
 uniform int frame_index;  // current frame number
+uniform bool use_quasi_random;
+uniform float dt;           // seconds since last frame
+uniform float receptor_tau; // ~ 0.01 to 0.015 (10-15 ms)
 
 void main()
 {
@@ -46,12 +52,30 @@ void main()
     vec3 tangent = normalize(cross(up, om_dir));
     vec3 bitangent = cross(om_dir, tangent);
 
+    // Pre-compute per-ommatidium offsets for quasi-random mode
+    float offset1, offset2;
+    if (use_quasi_random) {
+        offset1 = rand(vec2(float(om_id), 0.0), 0.0);
+        offset2 = rand(vec2(float(om_id), 1.0), 0.0);
+    }
+
     // Monte Carlo sampling within a cone
     for (int i = 0; i < nb_samples; i++) {
 
-        // Generate two random numbers
-        float r1 = rand(vec2(om_id, i), time);
-        float r2 = rand(vec2(om_id, i) + 0.5, time);
+        float r1, r2;
+        if (use_quasi_random) {
+            // Halton sequence
+            uint halton_idx = uint(dither_counter) * uint(nb_samples) + uint(i) + 1u;
+            float h1 = halton_sequence(halton_idx, 2u);
+            float h2 = halton_sequence(halton_idx, 3u);
+
+            r1 = clamp(fract(h1 + offset1), 1e-6, 1.0);  // log(0) in sampledir
+            r2 = fract(h2 + offset2);
+        } else {
+            // Regular randomness
+            r1 = rand(vec2(om_id, i), dither_counter);
+            r2 = rand(vec2(om_id, i) + 0.5, dither_counter);
+        }
 
         vec3 sample_dir = sampledir(om, tangent, bitangent, om_dir, r1, r2);
 
@@ -66,7 +90,18 @@ void main()
         total_color /= float(nb_samples);
     }
 
+    vec3 output_color;
+    if (receptor_tau > 0.0) {
+        // Exponential moving average (first-order low-pass)
+        float alpha = dt / (receptor_tau + dt);
+        vec3 prev = receptor_state[om_id].rgb;
+        output_color = prev + alpha * (total_color - prev);
+        receptor_state[om_id] = vec4(output_color, 1.0);
+    } else {
+        output_color = total_color;
+    }
+
     // Write the final color to the output SSBO at the correct index
     uint output_index = (frame_index * nb_ommatidia) + om_id;
-    history_data[output_index] = vec4(total_color, 1.0);
+    history_data[output_index] = vec4(output_color, 1.0);
 }

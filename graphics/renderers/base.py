@@ -47,7 +47,9 @@ class BaseInsectEyeRenderer(ABC):
     def __init__(self,
                  eye_model: CompoundEye,
                  time_dithering: bool = True,
+                 time_accumulation: float = 0.0,
                  nb_samples: int = 256,
+                 quasi_random: bool = False,
                  batch_size: int = 1
         ):
 
@@ -57,14 +59,17 @@ class BaseInsectEyeRenderer(ABC):
         self.num_ommatidia = self.model.ommatidia_count
         self.ommatidia_input_data = self.model.data
         self._samples_per_ommatidium = nb_samples
+
+        self._quasi_random = quasi_random   # Halton sampling for direction generation
         self._time_dithering = time_dithering
-        self._time_counter = 0
 
         self.runs_interactive = False
 
         # Time keeping
-        self._last_render_time = 0.0
-        self._dt = 0.0
+        self._dither_counter: int = 0   # only advanced when time dithering is on
+        self._frame_index: int = 0      # advanced at each new rendered frame
+        self._last_render_time: float = 0.0
+        self._dt = 0.0      # elapsed time (in seconds) since last render
 
         # Hardware queries
         self._max_ssbo_size_bytes = query_max_SSBO_size()
@@ -76,7 +81,7 @@ class BaseInsectEyeRenderer(ABC):
                      GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
-        # Visualization resources (lazy-loaded)
+        # Visualisation resources (lazy-loaded)
         self._voronoi_shader = None     # first person view
         self._eye_model_shader = None   # third person view
         self._heatmap_shader = None     # heatmap mode
@@ -106,7 +111,6 @@ class BaseInsectEyeRenderer(ABC):
 
         # History buffer state
         self._batch_size = max(1, batch_size)
-        self._current_frame_index = 0
         self.history_ssbo = None
 
         # PBO for the synchronous path
@@ -114,6 +118,15 @@ class BaseInsectEyeRenderer(ABC):
         self.sync_cpu_buffer = None
 
         self._allocate_history_buffers(self._batch_size)
+
+        # Photoreceptor temporal integration
+        self.receptor_tau: float = time_accumulation
+
+        self.receptor_state_ssbo = glGenBuffers(1)
+        receptor_buf_size = self.num_ommatidia * 16  # vec4 = 16 bytes
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptor_state_ssbo)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, receptor_buf_size, None, GL_DYNAMIC_DRAW)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     def _tick(self):
         now = time.perf_counter()
@@ -139,8 +152,18 @@ class BaseInsectEyeRenderer(ABC):
         self._time_dithering = bool(value)
         print(f"Time dithering {'ENABLED' if self._time_dithering else 'DISABLED'}.")
 
+    @property
+    def quasi_random(self):
+        return self._quasi_random
+
+    @quasi_random.setter
+    def quasi_random(self, value: bool):
+        self._quasi_random = bool(value)
+        print(f"Quasi-random {'ENABLED' if self._quasi_random else 'DISABLED'}.")
+
     def dither(self):
-        self._time_counter = random.randint(0, 1024)
+        """Dither once (reshuffle the dither counter"""
+        self._dither_counter = random.randint(0, 1024)
 
     @abstractmethod
     def _compute_colors(self, *args, **kwargs):
@@ -215,7 +238,7 @@ class BaseInsectEyeRenderer(ABC):
         is_sync_mode = getattr(self, 'is_interactive', False) or self._batch_size == 1
 
         if self._time_dithering:
-            self._time_counter += 1
+            self._dither_counter += 1
 
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
@@ -254,10 +277,10 @@ class BaseInsectEyeRenderer(ABC):
 
             # Submit work for the current frame
             self._compute_colors(agent)
-            self._current_frame_index += 1
+            self._frame_index += 1
 
             # Check if this frame just completed a batch
-            if self._current_frame_index >= self._batch_size:
+            if self._frame_index >= self._batch_size:
                 # The buffer is full: block, download, and return the data
                 print(f"  > GPU batch is full. Flushing {self._batch_size} frames...")
 
@@ -274,12 +297,12 @@ class BaseInsectEyeRenderer(ABC):
         This is used to retrieve a full batch, or the final partial batch at the end of a simulation.
         """
 
-        if self._current_frame_index == 0:
+        if self._frame_index == 0:
             return np.array([])
 
         glFinish()  # Block until all rendering commands are complete
 
-        num_frames_to_read = self._current_frame_index
+        num_frames_to_read = self._frame_index
         bytes_to_read = self.num_ommatidia * 16 * num_frames_to_read
 
         # For simplicity and robustness, a direct synchronous download is best here
@@ -289,7 +312,7 @@ class BaseInsectEyeRenderer(ABC):
         data_np = np.frombuffer(data_bytes, dtype=np.float32)
 
         # Reset the counter for the next batch
-        self._current_frame_index = 0
+        self._frame_index = 0
 
         return data_np.reshape(num_frames_to_read, self.num_ommatidia, 4)
 
@@ -621,9 +644,14 @@ class BaseInsectEyeRenderer(ABC):
     def free(self):
         """Free GPU resources."""
 
-        glDeleteBuffers(1, [self.input_om_ssbo])
+        if self.input_om_ssbo:
+            glDeleteBuffers(1, [self.input_om_ssbo])
+
         if self.history_ssbo:
             glDeleteBuffers(1, [self.history_ssbo])
+
+        if self.receptor_state_ssbo:
+            glDeleteBuffers(1, [self.receptor_state_ssbo])
 
         if self._voronoi_shader:
             self._voronoi_shader.free()
