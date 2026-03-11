@@ -9,10 +9,15 @@ layout(std430, binding = 0) readonly buffer RayResults { vec4 ray_results[]; };
 // Output: Final averaged colors
 layout(std430, binding = 1) writeonly buffer OmmatidiaHistory { vec4 history_data[]; };
 
-//Uniforms queried by name
+// Input / Output: Persistent photoreceptor state for temporal accumulation
+layout(std430, binding = 2) buffer PhotoreceptorState { vec4 receptor_state[]; };
+
+// Uniforms
 uniform int nb_samples;
 uniform int nb_ommatidia;
 uniform int frame_index;
+uniform float dt;           // seconds since last frame
+uniform float receptor_tau; // ~ 0.01 to 0.015 (10-15 ms)
 
 void main() {
     uint ommatidium_idx = gl_GlobalInvocationID.x;
@@ -31,7 +36,18 @@ void main() {
         total_color /= float(nb_samples);
     }
 
-    // Write the final color to the output SSBO at the correct frame index
+    vec3 output_color;
+    if (receptor_tau > 0.0) {
+        // Exponential moving average (first-order low-pass)
+        float alpha = dt / (receptor_tau + dt);
+        vec3 prev = receptor_state[ommatidium_idx].rgb;
+        output_color = prev + alpha * (total_color - prev);
+        receptor_state[ommatidium_idx] = vec4(output_color, 1.0);
+    } else {
+        output_color = total_color;
+    }
+
+    // Write final color to the output SSBO at the correct frame index
     uint output_index = (frame_index * nb_ommatidia) + ommatidium_idx;
-    history_data[output_index] = vec4(total_color, 1.0);
+    history_data[output_index] = vec4(output_color, 1.0);
 }

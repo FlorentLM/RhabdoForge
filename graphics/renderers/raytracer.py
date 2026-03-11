@@ -549,6 +549,7 @@ class Raytracer(BaseInsectEyeRenderer):
 
     def __init__(self, eye_model, scene: Scene,
                  time_dithering: bool = True,
+                 time_accumulation: float = 0.0,
                  nb_samples: int = 256,
                  pano_res: Tuple[int, int] = (1024, 512),
                  batch_size: int = 1,
@@ -593,6 +594,15 @@ class Raytracer(BaseInsectEyeRenderer):
         # Default number of samples
         self._samples_per_ommatidium = 0
         self.samples_per_ommatidium = nb_samples  # via the setter to allocate the SSBO
+
+        self.receptor_tau: float = time_accumulation
+
+        # Photoreceptor temporal integration (one vec4 per ommatidium)
+        self.receptor_state_ssbo = glGenBuffers(1)
+        receptor_buf_size = self.num_ommatidia * 16  # vec4 = 16 bytes
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptor_state_ssbo)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, receptor_buf_size, None, GL_DYNAMIC_DRAW)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     @property
     def samples_per_ommatidium(self):
@@ -911,10 +921,14 @@ class Raytracer(BaseInsectEyeRenderer):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.ray_results_ssbo)
         # Binding 1: output for this pass (final averaged colour for each ommatidium)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
+        # Binding 2: persistent photoreceptor state for temporal integration
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self.receptor_state_ssbo)
 
         # Set uniforms
         glUniform1i(self.reduction_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
         glUniform1i(self.reduction_shader.get_loc('nb_ommatidia'), self.num_ommatidia)
+        glUniform1f(self.reduction_shader.get_loc('receptor_tau'), self.receptor_tau)
+        glUniform1f(self.reduction_shader.get_loc('dt'), self._dt)
 
         # Write into the history buffer circularly
         frame_offset = self._current_frame_index % self._batch_size
@@ -932,6 +946,8 @@ class Raytracer(BaseInsectEyeRenderer):
 
     def _compute_colors(self, agent):
         """The core ommatidia rendering logic."""
+
+        self._tick()
 
         # First refresh the scene for anything that moved / changed
         self._scene_baked.update()
@@ -982,6 +998,7 @@ class Raytracer(BaseInsectEyeRenderer):
         """Frees all GPU resources."""
 
         glDeleteBuffers(1, [self.ray_results_ssbo])
+        glDeleteBuffers(1, [self.receptor_state_ssbo])
         if self.raytrace_shader: self.raytrace_shader.free()
         if self.reduction_shader: self.reduction_shader.free()
 

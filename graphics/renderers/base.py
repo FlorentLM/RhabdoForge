@@ -1,6 +1,7 @@
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 
+import time
 import random
 from abc import ABC, abstractmethod
 from enum import IntEnum
@@ -61,6 +62,10 @@ class BaseInsectEyeRenderer(ABC):
 
         self.runs_interactive = False
 
+        # Time keeping
+        self._last_render_time = 0.0
+        self._dt = 0.0
+
         # Hardware queries
         self._max_ssbo_size_bytes = query_max_SSBO_size()
 
@@ -109,6 +114,11 @@ class BaseInsectEyeRenderer(ABC):
         self.sync_cpu_buffer = None
 
         self._allocate_history_buffers(self._batch_size)
+
+    def _tick(self):
+        now = time.perf_counter()
+        self._dt = (now - self._last_render_time) if self._last_render_time > 0.0 else 0.0
+        self._last_render_time = now
 
     @property
     def samples_per_ommatidium(self):

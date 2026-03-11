@@ -59,6 +59,7 @@ def main():
     eye_model = CompoundEye.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
     # eye_model = CompoundEye.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
     # eye_model = CompoundEye.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
+
     eye_model.scale(0.01)
 
     # Setup Agent
@@ -71,6 +72,7 @@ def main():
         eye_renderer = Raytracer(eye_model=eye_model, scene=scene,
                                  nb_samples=NB_SAMPLES,
                                  time_dithering=False,
+                                 time_accumulation=0.012,  # 12 ms
                                  batch_size=batch_size,
                                  enable_shadows=ENABLE_SHADOWS)
 
