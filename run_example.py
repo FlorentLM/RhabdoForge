@@ -69,7 +69,7 @@ def main():
     batch_size = BATCH_SIZE if (HEADLESS and USE_ASYNC_BATCHING) else 1
 
     if USE_RAYTRACER:
-        eye_renderer = Pathtracer(eye_model=eye_model, scene=scene,
+        eye_renderer = Raytracer(eye_model=eye_model, scene=scene,
                                   nb_samples=NB_SAMPLES,
                                   time_dithering=False,
                                   # time_accumulation=0.012,  # 12 ms
