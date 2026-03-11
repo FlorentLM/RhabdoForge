@@ -1015,13 +1015,15 @@ class Raytracer(BaseInsectEyeRenderer):
         super().free()
 
 
-class PathTracer(Raytracer):
+class Pathtracer(Raytracer):
     """
     Path tracer: multiple bounces with Monte Carlo integration.
     """
     def __init__(self, eye_model, scene: Scene,
                  time_dithering: bool = True,
+                 time_accumulation: float = 0.0,
                  nb_samples: int = 256,
+                 quasi_random: bool = False,
                  pano_res: Tuple[int, int] = (1024, 512),
                  batch_size: int = 1,
                  enable_shadows: bool = True,
@@ -1036,7 +1038,9 @@ class PathTracer(Raytracer):
             eye_model=eye_model,
             scene=scene,
             time_dithering=time_dithering,
+            time_accumulation=time_accumulation,
             nb_samples=nb_samples,
+            quasi_random=quasi_random,
             pano_res=pano_res,
             batch_size=batch_size,
             enable_shadows=enable_shadows,

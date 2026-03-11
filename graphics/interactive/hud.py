@@ -11,7 +11,7 @@ from OpenGL.GL import *
 from pyglm import glm
 
 from graphics.utils import load_shaders, generate_font_atlas
-from graphics.renderers.raytracer import Raytracer, PathTracer
+from graphics.renderers.raytracer import Raytracer, Pathtracer
 
 
 class FontRenderer:
@@ -216,7 +216,7 @@ class HUD:
 
             is_ray_based = isinstance(active_renderer, Raytracer)
 
-            if is_ray_based and isinstance(active_renderer, PathTracer):
+            if is_ray_based and isinstance(active_renderer, Pathtracer):
                 render_mode = "Path-tracer"
             elif is_ray_based:
                 render_mode = "Ray-tracer"

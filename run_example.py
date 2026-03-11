@@ -5,7 +5,7 @@ from graphics.agent import Agent
 from geometry.compound_eyes import CompoundEye
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
 from graphics.renderers.rasterizer import Rasterizer
-from graphics.renderers.raytracer import Raytracer
+from graphics.renderers.raytracer import Raytracer, Pathtracer
 from graphics.context import Context
 
 
@@ -69,12 +69,12 @@ def main():
     batch_size = BATCH_SIZE if (HEADLESS and USE_ASYNC_BATCHING) else 1
 
     if USE_RAYTRACER:
-        eye_renderer = Raytracer(eye_model=eye_model, scene=scene,
-                                 nb_samples=NB_SAMPLES,
-                                 time_dithering=False,
-                                 # time_accumulation=0.012,  # 12 ms
-                                 quasi_random=False,
-                                 enable_shadows=ENABLE_SHADOWS)
+        eye_renderer = Pathtracer(eye_model=eye_model, scene=scene,
+                                  nb_samples=NB_SAMPLES,
+                                  time_dithering=False,
+                                  # time_accumulation=0.012,  # 12 ms
+                                  quasi_random=False,
+                                  enable_shadows=ENABLE_SHADOWS)
 
         for blas in eye_renderer._scene_baked.BLASes:
             context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
