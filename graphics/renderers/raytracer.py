@@ -551,6 +551,7 @@ class Raytracer(BaseInsectEyeRenderer):
                  time_dithering: bool = True,
                  time_accumulation: float = 0.0,
                  nb_samples: int = 256,
+                 quasi_random: bool = False,
                  pano_res: Tuple[int, int] = (1024, 512),
                  batch_size: int = 1,
                  enable_direct: bool = True,
@@ -603,6 +604,9 @@ class Raytracer(BaseInsectEyeRenderer):
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptor_state_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, receptor_buf_size, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
+        # Quasi-random (Halton) sampling for direction generation
+        self.quasi_random = quasi_random
 
     @property
     def samples_per_ommatidium(self):
@@ -896,6 +900,9 @@ class Raytracer(BaseInsectEyeRenderer):
 
         # Ommatidia-specific uniforms
         glUniform1i(self.raytrace_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
+
+        # Halton sampling
+        glUniform1i(self.raytrace_shader.get_loc('use_quasi_random'), int(self.quasi_random))
 
         # Camera uniforms for transforming rays into world space
         c2w_mat = glm.inverse(agent.view)

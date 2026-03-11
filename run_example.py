@@ -72,8 +72,8 @@ def main():
         eye_renderer = Raytracer(eye_model=eye_model, scene=scene,
                                  nb_samples=NB_SAMPLES,
                                  time_dithering=False,
-                                 time_accumulation=0.012,  # 12 ms
-                                 batch_size=batch_size,
+                                 # time_accumulation=0.012,  # 12 ms
+                                 quasi_random=True,
                                  enable_shadows=ENABLE_SHADOWS)
 
         for blas in eye_renderer._scene_baked.BLASes:
@@ -85,6 +85,13 @@ def main():
                                   time_dithering=False,
                                   batch_size=batch_size,
                                   enable_shadows=ENABLE_SHADOWS)
+
+    # Example custom key binding:
+    def toggle_halton():
+        eye_renderer.quasi_random = not eye_renderer.quasi_random
+        print(f'Quasi-random sampling: {eye_renderer.quasi_random}')
+
+    context.bind_key('m', toggle_halton)
 
     # ================== Example moving ommatidia ==================
 

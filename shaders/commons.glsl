@@ -70,6 +70,20 @@ float rand(vec2 co, float dither){
     return fract(sin(dot(co.xy, vec2(12.9898, 78.233)) + dither) * 43758.5453);
 }
 
+// Radical-inverse Halton sequence (low-discrepancy quasi-random)
+// (as in https://en.wikipedia.org/wiki/Halton_sequence#Implementation)
+float halton_sequence(uint index, uint base) {
+    float f = 1.0;
+    float r = 0.0;
+    uint i = index;
+    while (i > 0u) {
+        f /= float(base);
+        r += f * float(i % base);
+        i /= base;
+    }
+    return r;
+}
+
 // Generates a sample direction using 'true' Gaussian importance sampling
 // (as in, the distribution of samples directly matches the Gaussian acceptance function)
 //      - om: The ommatidium data containing H and V acceptance angles

@@ -16,6 +16,7 @@ layout(std430, binding = 1) writeonly buffer RayResultBuffer { vec4 ray_results[
 uniform uint time;
 uniform mat4 cam_to_world;
 uniform int nb_samples;
+uniform bool use_quasi_random;
 
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
@@ -39,8 +40,25 @@ void main() {
     vec3 tangent = normalize(cross(up, om_world_dir));
     vec3 bitangent = cross(om_world_dir, tangent);
 
-    float r1 = random_float(rng_state);
-    float r2 = random_float(rng_state);
+    float r1, r2;
+    if (use_quasi_random) {
+        // Halton sequence
+        uint halton_idx = time * uint(nb_samples) + sample_idx + 1u;
+        float h1 = halton_sequence(halton_idx, 2u);
+        float h2 = halton_sequence(halton_idx, 3u);
+
+        // Per-ommatidium random offset to decorrelate spatial sampling
+        uint om_hash = pcg_hash(ommatidium_idx * 1973u);
+        float offset1 = float(om_hash & 0xFFFFu) / 65535.0;
+        float offset2 = float((om_hash >> 16u) & 0xFFFFu) / 65535.0;
+
+        r1 = clamp(fract(h1 + offset1), 1e-6, 1.0);  //log(0) in sampledir
+        r2 = fract(h2 + offset2);
+    } else {
+        // Regular randomness
+        r1 = random_float(rng_state);
+        r2 = random_float(rng_state);
+    }
     vec3 direction = sampledir(om, tangent, bitangent, om_world_dir, r1, r2);
 
     // Setup Ray
