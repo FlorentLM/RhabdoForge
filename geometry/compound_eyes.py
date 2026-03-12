@@ -44,23 +44,58 @@ class RhabdomereLayout:
     offsets_um: np.ndarray  # X and Y offsets in micrometres, shape (R, 2)
     focal_length_um: float  # focal length (micrometres)
     diameters_um: Optional[np.ndarray]  # diameter of each receptor, shape (R,)
+    saccade_axis: float     # microsaccade axis delta (relative to the bundle's main axis) in degrees
+
+    @property
+    def center(self):
+        return self.offsets_um[6]
+
+    @property
+    def main_axis(self):
+        delta_r3_r6 = self.offsets_um[5] - self.offsets_um[2]
+        return np.degrees(np.arctan2(delta_r3_r6[1], delta_r3_r6[0]))
+
+    def plot(self):
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+
+        for R, pos in enumerate(self.offsets_um):
+            col = plt.cm.tab10(R / 8)
+            txt = "R7/R8" if R == 6 else f"R{R + 1}"
+            circle = plt.Circle(pos, self.diameters_um[R] / 2, alpha=0.3, color=col, label=txt)
+            ax.add_patch(circle)
+            ax.scatter(*pos, color=col, s=10)
+
+        microsaccade_angle = np.radians(self.main_axis + self.saccade_axis)
+
+        dx, dy = np.cos(microsaccade_angle), np.sin(microsaccade_angle)
+        ax.axline(self.center, slope=dy / dx, color='black', linestyle='--', alpha=0.7, label="Microsaccade axis")
+
+        ax.set_aspect('equal')
+        ax.set_title(f'Rhabdomere layout ({self.name})')
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.grid(True, linestyle=':', alpha=0.5)
+        plt.tight_layout()
+        plt.show()
 
 
-# # Data from Juusola et al. (Drosophila)
-# DROSOPHILA_RHABDOMERES = RhabdomereLayout(
-#     name="Drosophila_R1_R7",
-#     focal_length_um=21.0,
-#     offsets_um=np.array([
-#         [-1.6881, 1.0273],  # R1
-#         [-1.8046, -0.9934],  # R2
-#         [-1.7111, -2.9717],  # R3
-#         [-0.0025, -1.9261],  # R4
-#         [1.6690, -0.9493],  # R5
-#         [1.6567, 0.9762],  # R6
-#         [0.0045, -0.0113]  # R7/8 (Central)
-#     ]),
-#     diameters_um=np.array([1.86, 1.86, 1.86, 1.86, 1.86, 1.86, 1.57])
-# )
+# Data from Juusola et al. (Drosophila)
+DROSOPHILA_RHABDOMERES = RhabdomereLayout(
+    name="Drosophila",
+    focal_length_um=21.0,
+    offsets_um=np.array([
+        [-1.6881,  1.0273],  # R1
+        [-1.8046, -0.9934],  # R2
+        [-1.7111, -2.9717],  # R3
+        [-0.0025, -1.9261],  # R4
+        [ 1.6690, -0.9493],  # R5
+        [ 1.6567,  0.9762],  # R6
+        [ 0.0045, -0.0113]   # R7/8 (central)
+    ]),
+    diameters_um=np.array([1.8627, 1.8627, 1.8627, 1.8627, 1.8627, 1.8627, 1.5743]),
+    saccade_axis=28.6   # degrees
+)
 
 
 def rotate_vectors(vectors: np.ndarray, axes: np.ndarray, angles: np.ndarray, degrees: bool = True) -> np.ndarray:
