@@ -8,11 +8,14 @@ from insectvision.engine.scene import Scene, Asset
 from insectvision.engine.agent import Agent
 from insectvision.engine.context import Context
 
-from insectvision.geometry.compound_eyes import ReceptorArray, Eye
+from insectvision.geometry.compound_eyes.proxies import Eye
+from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
 from insectvision.renderers.raytracer import Raytracer
 from insectvision.renderers.commons import Colormap
 from insectvision.debug import AxesGizmo, DebugGrid, DebugBox
 
+
+# TODO: These should go to the geometry submodule
 
 def checkerboard_texture(width, height, block_size=1, ratio=0.5):
     low_res_w = width // block_size

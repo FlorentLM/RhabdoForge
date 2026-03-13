@@ -5,10 +5,10 @@ from insectvision.engine.agent import Agent
 from insectvision.engine.context import Context
 
 from insectvision.geometry.primitives import CUBE_VERTICES, CUBE_INDICES
-from insectvision.geometry.compound_eyes import ReceptorArray
+from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
 
 from insectvision.renderers.rasterizer import Rasterizer
-from insectvision.renderers.raytracer import Raytracer, Pathtracer
+from insectvision.renderers.raytracer import Raytracer
 from insectvision.debug import DebugBox, AxesGizmo
 
 

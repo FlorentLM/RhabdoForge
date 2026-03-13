@@ -9,7 +9,7 @@ from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import compute_light_space_matrix
 from insectvision.engine.utils import ShaderProgram, ViewMode
-from insectvision.geometry.compound_eyes import ReceptorArray
+from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
 from insectvision.renderers.commons import BaseRenderer
 
 

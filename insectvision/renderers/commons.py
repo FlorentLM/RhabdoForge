@@ -11,7 +11,8 @@ import numpy as np
 from pyglm import glm
 
 from insectvision.geometry.primitives import CONE_VERTICES, SPHERE_VERTICES
-from insectvision.geometry.compound_eyes import ReceptorArray, VisualOutput
+from insectvision.geometry.compound_eyes.compound_eyes import VisualOutput
+from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
 
 from insectvision.engine.scene import Scene
 from insectvision.engine.utils import ShaderProgram, ViewMode, ProjectionMode

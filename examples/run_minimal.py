@@ -6,7 +6,7 @@ from insectvision.engine.context import Context
 from insectvision.engine.movement import Curve, Trajectory
 from insectvision.engine.utils import extract_obj_curves
 
-from insectvision.geometry.compound_eyes import ReceptorArray
+from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
 from insectvision.renderers.raytracer import Raytracer
 
 

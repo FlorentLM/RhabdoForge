@@ -8,12 +8,15 @@ from insectvision.engine.scene import Scene, Asset
 from insectvision.engine.agent import Agent
 from insectvision.engine.context import Context
 
-from insectvision.geometry.compound_eyes import ReceptorArray, Eye
+from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
+from insectvision.geometry.compound_eyes.proxies import Eye
 from insectvision.renderers.raytracer import Raytracer
 from insectvision.renderers.commons import Colormap
 
 from insectvision.debug import AxesGizmo, DebugGrid, DebugBox
 
+
+# TODO: These should go to the geometry submodule
 
 def inwards_cylinder(radius, height, segments=64):
     """Generate upright cylinder mesh facing inwards."""
