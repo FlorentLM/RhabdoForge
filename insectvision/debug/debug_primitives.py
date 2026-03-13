@@ -2,6 +2,9 @@ import numpy as np
 from typing import Sequence, Tuple
 
 
+# TODO: these are very suboptimal, rendering them is slow af (arrow especially)
+# TODO: Will eventually be merged with geometry primitives
+
 def _arrow_basis(direction):
 
     d = np.asarray(direction, dtype=np.float32)
