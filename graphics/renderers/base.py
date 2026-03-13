@@ -13,7 +13,7 @@ from OpenGL.GL import *
 from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
 
 from graphics.scene import Scene
-from geometry.compound_eyes import CompoundEye
+from geometry.compound_eyes import ReceptorArray
 from geometry.primitives import CONE_VERTICES, SPHERE_VERTICES
 from graphics.utils import ShaderProgram, ViewMode, ProjectionMode
 from graphics.agent import Agent
@@ -39,26 +39,25 @@ class Colormap(IntEnum):
     THERMAL = 2     # Black -> red -> white (positive magnitude)
 
 
-class BaseInsectEyeRenderer(ABC):
+class BaseRenderer(ABC):
     """
     Abstract base class for an insect eye model.
     """
 
     def __init__(self,
-                 eye_model: CompoundEye,
+                 receptor_array: ReceptorArray,
                  time_dithering: bool = True,
                  time_accumulation: float = 0.0,
                  nb_samples: int = 256,
                  quasi_random: bool = False,
                  batch_size: int = 1
-        ):
+                 ):
 
-        self.model: CompoundEye = eye_model
+        self.receptor_array: ReceptorArray = receptor_array
         self.scene: Scene
 
-        self.num_ommatidia = self.model.ommatidia_count
-        self.ommatidia_input_data = self.model.data
-        self._samples_per_ommatidium = nb_samples
+        self.total_receptors = len(self.receptor_array)
+        self._samples_per_receptor = nb_samples
 
         self._quasi_random = quasi_random   # Halton sampling for direction generation
         self._time_dithering = time_dithering
@@ -74,10 +73,10 @@ class BaseInsectEyeRenderer(ABC):
         # Hardware queries
         self._max_ssbo_size_bytes = query_max_SSBO_size()
 
-        # Input ommatidia SSBO
-        self.input_om_ssbo = glGenBuffers(1)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.input_om_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, self.ommatidia_input_data.nbytes, self.ommatidia_input_data,
+        # Input receptors SSBO
+        self.receptors_input_ssbo = glGenBuffers(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptors_input_ssbo)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, self.receptor_array.data.nbytes, self.receptor_array.data,
                      GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
@@ -92,8 +91,7 @@ class BaseInsectEyeRenderer(ABC):
         self._heatmap_ssbo_capacity = 0
         self._heatmap_colormap = Colormap.THERMAL
         self._heatmap_range = (0.0, 1.0)
-        self._heatmap_compression = 1.0          # power exponent for dynamic range compression
-                                                 # 1.0 = linear, 0.5 = sqrt, lower = more contrast
+        self._heatmap_compression = 1.0  # power exponent for dynamic range compression (1.0 = linear, 0.5 = sqrt, lower = more contrast)
         self._heatmap_auto_range_percentile = 98 # percentile to reject outliers
 
         self._cones_vao = None
@@ -120,10 +118,10 @@ class BaseInsectEyeRenderer(ABC):
         self._allocate_history_buffers(self._batch_size)
 
         # Photoreceptor temporal integration
-        self.receptor_tau: float = time_accumulation
+        self.receptor_tau: float = time_accumulation    # TODO: mode this into the receptor dtype
 
         self.receptor_state_ssbo = glGenBuffers(1)
-        receptor_buf_size = self.num_ommatidia * 16  # vec4 = 16 bytes
+        receptor_buf_size = self.total_receptors * 16  # vec4 = 16 bytes
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptor_state_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, receptor_buf_size, None, GL_DYNAMIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
@@ -134,12 +132,12 @@ class BaseInsectEyeRenderer(ABC):
         self._last_render_time = now
 
     @property
-    def samples_per_ommatidium(self):
-        return self._samples_per_ommatidium
+    def samples_per_receptor(self):
+        return self._samples_per_receptor
 
-    @samples_per_ommatidium.setter
+    @samples_per_receptor.setter
     @abstractmethod
-    def samples_per_ommatidium(self, value):
+    def samples_per_receptor(self, value):
         # Subclasses may need to re-allocate buffers when this changes
         raise NotImplementedError
 
@@ -177,7 +175,7 @@ class BaseInsectEyeRenderer(ABC):
 
     def _allocate_history_buffers(self, requested_frames: int):
 
-        bytes_per_frame = self.num_ommatidia * 16  # 16 bytes per vec4 (RGBA float)
+        bytes_per_frame = self.total_receptors * 16  # 16 bytes per vec4 (RGBA float)
         requested_history_size_mb = (bytes_per_frame * requested_frames) / (1024 * 1024)
 
         # Estimate other VRAM usage (this is a rough estimate, subclasses can override)
@@ -202,7 +200,7 @@ class BaseInsectEyeRenderer(ABC):
             print("WARNING: Could not query available VRAM. Assuming enough memory is available.")
 
         self._batch_size = max(1, safe_frames)
-        total_buffer_size = self.num_ommatidia * 16 * self._batch_size
+        total_buffer_size = self.total_receptors * 16 * self._batch_size
 
         # GPU-side history buffer (SSBO)
         if self.history_ssbo: glDeleteBuffers(1, [self.history_ssbo])
@@ -219,7 +217,7 @@ class BaseInsectEyeRenderer(ABC):
         glBindBuffer(GL_PIXEL_PACK_BUFFER, self.sync_pbo)
         glBufferData(GL_PIXEL_PACK_BUFFER, bytes_per_frame, None, GL_STREAM_READ)
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
-        self.sync_cpu_buffer = np.zeros((self.num_ommatidia, 4), dtype=np.float32)
+        self.sync_cpu_buffer = np.zeros((self.total_receptors, 4), dtype=np.float32)
 
     def estimate_vram_usage(self) -> float:
         """
@@ -250,7 +248,7 @@ class BaseInsectEyeRenderer(ABC):
             if readback:
                 glFinish()
 
-                bytes_to_read = self.num_ommatidia * 16
+                bytes_to_read = self.total_receptors * 16
                 glBindBuffer(GL_COPY_READ_BUFFER, self.history_ssbo)
                 glBindBuffer(GL_COPY_WRITE_BUFFER, self.sync_pbo)
                 glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, bytes_to_read)
@@ -303,7 +301,7 @@ class BaseInsectEyeRenderer(ABC):
         glFinish()  # Block until all rendering commands are complete
 
         num_frames_to_read = self._frame_index
-        bytes_to_read = self.num_ommatidia * 16 * num_frames_to_read
+        bytes_to_read = self.total_receptors * 16 * num_frames_to_read
 
         # For simplicity and robustness, a direct synchronous download is best here
         # PBOs are most effective when overlapping computation, which isn't happening during a final flush
@@ -314,28 +312,28 @@ class BaseInsectEyeRenderer(ABC):
         # Reset the counter for the next batch
         self._frame_index = 0
 
-        return data_np.reshape(num_frames_to_read, self.num_ommatidia, 4)
+        return data_np.reshape(num_frames_to_read, self.total_receptors, 4)
 
     def update(self, force_all=False):
         """
         Finds contiguous blocks of changed ommatidia and uploads each block in a single GPU call.
         """
 
-        dirty_indices = np.where(self.model.dirty_mask)[0]
+        dirty_indices = np.where(self.receptor_array.dirty_mask)[0]
         if dirty_indices.size == 0:
             return
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.input_om_ssbo)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptors_input_ssbo)
 
         if force_all:
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.model.data.nbytes, self.model.data)
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.receptor_array.data.nbytes, self.receptor_array.data)
 
         else:
             # Find contiguous blocks of updated indices
             jumps = np.where(np.diff(dirty_indices) != 1)[0] + 1
             contiguous_blocks = np.split(dirty_indices, jumps)
 
-            item_size = self.model.data.itemsize  # 48 bytes
+            item_size = self.receptor_array.data.itemsize  # 48 bytes
 
             for block in contiguous_blocks:
                 nb_items = block.size
@@ -344,12 +342,12 @@ class BaseInsectEyeRenderer(ABC):
 
                 # indexing like this instead of fancy indexing (using [block] directly) avoids a copy
                 start_index = block[0]
-                data_view = self.model.data[start_index: start_index + nb_items]
+                data_view = self.receptor_array.data[start_index: start_index + nb_items]
 
                 glBufferSubData(GL_SHADER_STORAGE_BUFFER, start_index * item_size, data_view.nbytes, data_view)
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-        self.model.dirty_mask.fill(False)
+        self.receptor_array.dirty_mask.fill(False)
 
     @property
     def eye_model_shader(self):
@@ -396,20 +394,20 @@ class BaseInsectEyeRenderer(ABC):
 
         buf = np.ascontiguousarray(values, dtype=np.float32).ravel()
 
-        if len(buf) != self.num_ommatidia:
+        if len(buf) != self.total_receptors:
             raise ValueError(
-                f"scalar_data has {len(buf)} elements, expected {self.num_ommatidia}."
+                f"scalar_data has {len(buf)} elements, expected {self.total_receptors}."
             )
 
         # (Re)allocate SSBO if needed
         if self._heatmap_ssbo == 0:
             self._heatmap_ssbo = glGenBuffers(1)
 
-        if self._heatmap_ssbo_capacity != self.num_ommatidia:
+        if self._heatmap_ssbo_capacity != self.total_receptors:
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._heatmap_ssbo)
-            glBufferData(GL_SHADER_STORAGE_BUFFER, self.num_ommatidia * 4, None, GL_DYNAMIC_DRAW)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, self.total_receptors * 4, None, GL_DYNAMIC_DRAW)
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-            self._heatmap_ssbo_capacity = self.num_ommatidia
+            self._heatmap_ssbo_capacity = self.total_receptors
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._heatmap_ssbo)
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, buf.nbytes, buf)
@@ -461,7 +459,7 @@ class BaseInsectEyeRenderer(ABC):
             compression: Power exponent (see set_heatmap_data).
         """
 
-        merged = np.zeros(self.num_ommatidia, dtype=np.float32)
+        merged = np.zeros(self.total_receptors, dtype=np.float32)
 
         for eye, data in values_dict.items():
             merged[eye.global_indices] = data
@@ -527,12 +525,12 @@ class BaseInsectEyeRenderer(ABC):
         glUniform1f(self.voronoi_shader.get_loc('receptive_field_scale'), self.receptive_field_scale)
 
         # Binding 0: Ommatidia geometry (directions, origins, etc)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.receptors_input_ssbo)
         # Binding 1: Final computed colors (from subclass computation)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
 
         glBindVertexArray(self.cones_vao)
-        glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.num_ommatidia)
+        glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.total_receptors)
 
         # Unbind everyone
         glBindVertexArray(0)
@@ -564,12 +562,12 @@ class BaseInsectEyeRenderer(ABC):
         glUniform1f(shader.get_loc('compression'), self._heatmap_compression)
 
         # Binding 0: Ommatidia geometry (for positioning)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.receptors_input_ssbo)
         # Binding 1: Scalar data (replaces the colour buffer)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self._heatmap_ssbo)
 
         glBindVertexArray(self.cones_vao)
-        glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.num_ommatidia)
+        glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.total_receptors)
 
         glBindVertexArray(0)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
@@ -604,7 +602,7 @@ class BaseInsectEyeRenderer(ABC):
         # glUniform3fv(self.eye_model_shader.get_loc('light_dir'), 1, glm.value_ptr(light_dir))
 
         # Compute nice-looking cone length for acceptance angles
-        avg_radius = np.mean(np.linalg.norm(self.model.data['origin'][:, :3], axis=1))
+        avg_radius = np.mean(np.linalg.norm(self.receptor_array.data['origin'][:, :3], axis=1))
         if avg_radius < 1e-6:
             avg_radius = 0.01
 
@@ -617,17 +615,17 @@ class BaseInsectEyeRenderer(ABC):
         glUniform1f(self.eye_model_shader.get_loc("cone_length"), cone_length)
         glUniform1f(self.eye_model_shader.get_loc("visualisation_scale"), visualisation_scale)
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.receptors_input_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
 
         if self.projection_mode == ProjectionMode.Physical:
             # Physical layout mode: hemispheres to avoid Z-fighting
             glBindVertexArray(self.hemispheres_vao)
-            glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_hemisphere_vertices, self.num_ommatidia)
+            glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_hemisphere_vertices, self.total_receptors)
         else:
             # Acceptance angle mode: cones
             glBindVertexArray(self.cones_vao)
-            glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.num_ommatidia)
+            glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.total_receptors)
 
         # Unbind everyone
         glBindVertexArray(0)
@@ -644,8 +642,8 @@ class BaseInsectEyeRenderer(ABC):
     def free(self):
         """Free GPU resources."""
 
-        if self.input_om_ssbo:
-            glDeleteBuffers(1, [self.input_om_ssbo])
+        if self.receptors_input_ssbo:
+            glDeleteBuffers(1, [self.receptors_input_ssbo])
 
         if self.history_ssbo:
             glDeleteBuffers(1, [self.history_ssbo])

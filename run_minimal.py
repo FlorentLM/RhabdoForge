@@ -1,7 +1,7 @@
 from pathlib import Path
 from graphics.scene import Scene
 from graphics.agent import Agent
-from geometry.compound_eyes import CompoundEye
+from geometry.compound_eyes import ReceptorArray
 from graphics.renderers.raytracer import Raytracer
 from graphics.context import Context
 from graphics.movement import Curve, Trajectory
@@ -18,15 +18,17 @@ def main():
 
     scene.add_skybox('textures/bright_day_nosun')
 
-    # eye_model = CompoundEye(num_ommatidia=1962, force_isotropic=True)
-    # eye_model = CompoundEye.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
-    # eye_model = CompoundEye.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
-    eye_model = CompoundEye.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
+    # eye_model = ReceptorArray(num_ommatidia=1962, force_isotropic=True)
+    # eye_model = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+    # eye_model = ReceptorArray.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
+    eye_model = ReceptorArray.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
+
+    eye_model.scale(0.01)
 
     agent = Agent(position=(0.0, 0.0, 4.0))
 
     eye_renderer = Raytracer(
-        eye_model=eye_model, scene=scene,
+        receptor_array=eye_model, scene=scene,
         nb_samples=16,
         time_dithering=False,
         enable_shadows=True

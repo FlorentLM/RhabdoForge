@@ -1,75 +1,99 @@
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Sequence, List
 import numpy as np
 
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
-from graphics.utils import WORLD_UP, WORLD_RIGHT, DeltaTimeTransformer
+from graphics.utils import WORLD_UP, WORLD_RIGHT
 
 
-GPU_OMMATIDIUM_DTYPE = np.dtype([
-    ('origin', np.float32, 4),                  # 16 bytes (4 * float32): x, y, z coords and w for homogeneous
-    ('direction', np.float32, 4),               # 16 bytes (4 * float32): x, y, z coords and w for homogeneous
-    ('acceptance_angles', np.float32, 2),       #  8 bytes (2 * float32): minor and major axes
-    ('interommatidial_angles', np.float32, 2),  #  8 bytes (2 * float32): minor and major axes
-    ('tilt', np.float32),                       #  4 bytes (1 * float32): ellipse tilt
-    ('sensitivity', np.float32),                #  4 bytes (1 * float32): receptor sensitivity
-    ('packed_data', np.uint32),                 #  4 bytes (1 * uint32): Packed additional data, see below
-    ('padding', np.uint32)                      #  4 bytes padding
+GPU_RECEPTOR_DTYPE = np.dtype([
+    ('origin', np.float32, 4),                  # 16 bytes: x, y, z, w=1
+    ('direction', np.float32, 4),               # 16 bytes: x, y, z, w=0
+    ('acceptance_angles', np.float32, 2),       #  8 bytes: minor, major
+    ('interommatidial_angles', np.float32, 2),  #  8 bytes: minor, major (from parent lens)
+    ('tilt', np.float32),                       #  4 bytes: ellipse tilt (lattice geometry)
+    ('sensitivity', np.float32),                #  4 bytes: receptor sensitivity
+    ('packed_data', np.uint32),                 #  4 bytes: see below
+    ('padding', np.uint32)                      #  4 bytes
 ])  # total = 64 bytes
 
 # packed_data layout:
-# - bits 0-2: eye ID (0-7)
-# - bits 3-6: receptor type (0-15)
-# - bits 7-10: number of immediate neighbours (0-15)
-# - bits 11-26: custom ID (0-65535)
-# - bits 27-31: padding
+# bits 0-2: eye ID (0-7)
+# bits 3-6: receptor type (0-15) R1=0, R2=1, ...
+# bits 7-10: neighbour count (0-15)
+# bits 11-26: lens index (0-65535) parent ommatidium
+# bits 27-31: unused for now
 
-# Clear masks for packed_data fields
-_CLEAR_EYE_ID = np.uint32(0xFFFFFFF8)  # clears bits 0-2
-_CLEAR_RECEPTOR_TYPE = np.uint32(0xFFFFFF87)  # clears bits 3-6
-_CLEAR_NEIGHBOURS = np.uint32(0xFFFFF87F)  # clears bits 7-10
-_CLEAR_CUSTOM_ID = np.uint32(0xF80007FF)  # clears bits 11-26
+# TODO: Receptor dtype coul dbe 48 bytes if IOA and tilt were a separate Lens struct
 
-DEFAULT_ANGLE = 'deg'
-# DEFAULT_ANGLE = 'rad'
+
+_CLEAR_EYE_ID = np.uint32(0xFFFFFFF8)
+_CLEAR_RECEPTOR_TYPE = np.uint32(0xFFFFFF87)
+_CLEAR_NEIGHBOURS = np.uint32(0xFFFFF87F)
+_CLEAR_LENS_INDEX = np.uint32(0xF80007FF)
+
+DEFAULT_ANGLE = 'deg'   # TODO: get rid of this, and ensure unit consistency everywhere
 
 
 @dataclass
-class RhabdomereLayout:
-    """Configuration for a specific biological rhabdomere layout."""
+class RhabdomereKernel:
+    """
+    Model of thr rhabdomere bundle inside a single ommatidium.
+
+    The offsets describe each rhabdomere's position behind the lens in the focal plane (micrometres).
+
+    - `nodal_distance_um`: physical distance from the lens inner surface (nodal point) to the rhabdomere tips (at rest).
+        This is the lever arm that converts a lateral displacement (μm) into an angular shift
+        For Drosophila this is ~20-21 μm (Kemppainen et al. 2022, 10.1073/pnas.2109717119; Stavenga 2003, 10.1007/s00359-002-0370-2)
+        https://github.com/JuusolaLab/Hyperacute_Stereopsis_paper/blob/main/CG-Compound-Eye/model_init.py#L213
+    - `main_axis` is the main axis of the bundle, defined as the R3-R6 axis
+    - `saccade_axis_deg`: angular offset (from the main axis) of the microsaccade actuation direction
+        In world space the full actuation angle is `chi + main_axis + saccade_axis_deg`
+    """
     name: str
-    offsets_um: np.ndarray  # X and Y offsets in micrometres, shape (R, 2)
-    focal_length_um: float  # focal length (micrometres)
-    diameters_um: Optional[np.ndarray]  # diameter of each receptor, shape (R,)
-    saccade_axis: float     # microsaccade axis delta (relative to the bundle's main axis) in degrees
+    offsets_um: np.ndarray          # (R, 2) XY in focal plane
+    nodal_distance_um: float        # lens to rhabdomere tip distance (at rest)
+    diameters_um: np.ndarray        # (R,) waveguide diameter
+    lens_diameter_um: float         # facet lens diameter (for diffraction term)
+    saccade_axis_deg: float = 0.0   # microsaccade axis delta (relative to main_axis)
 
     @property
-    def center(self):
+    def count(self) -> int:
+        return len(self.offsets_um)
+
+    @property
+    def center(self) -> np.ndarray:
+        """Central rhabdomere position (R7/R8)."""
         return self.offsets_um[6]
 
     @property
-    def main_axis(self):
-        delta_r3_r6 = self.offsets_um[5] - self.offsets_um[2]
-        return np.degrees(np.arctan2(delta_r3_r6[1], delta_r3_r6[0]))
+    def main_axis_deg(self) -> float:
+        """Bundle axis angle (R3->R6 line) in degrees."""
+        delta = self.offsets_um[5] - self.offsets_um[2]
+        return float(np.degrees(np.arctan2(delta[1], delta[0])))
+
+    @property
+    def actuation_angle_deg(self) -> float:
+        """Full actuation angle in the kernel's local frame (degrees)."""
+        return self.main_axis_deg + self.saccade_axis_deg
 
     def plot(self):
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots(1, 1, figsize=(6, 6))
-
-        for R, pos in enumerate(self.offsets_um):
-            col = plt.cm.tab10(R / 8)
-            txt = "R7/R8" if R == 6 else f"R{R + 1}"
-            circle = plt.Circle(pos, self.diameters_um[R] / 2, alpha=0.3, color=col, label=txt)
+        for r, pos in enumerate(self.offsets_um):
+            col = plt.cm.tab10(r / 8)
+            txt = "R7/R8" if r == 6 else f"R{r + 1}"
+            circle = plt.Circle(pos, self.diameters_um[r] / 2,
+                                alpha=0.3, color=col, label=txt)
             ax.add_patch(circle)
             ax.scatter(*pos, color=col, s=10)
 
-        microsaccade_angle = np.radians(self.main_axis + self.saccade_axis)
-
-        dx, dy = np.cos(microsaccade_angle), np.sin(microsaccade_angle)
+        angle_rad = np.radians(self.actuation_angle_deg)
+        dx, dy = np.cos(angle_rad), np.sin(angle_rad)
         ax.axline(self.center, slope=dy / dx, color='black', linestyle='--', alpha=0.7, label="Microsaccade axis")
 
         ax.set_aspect('equal')
@@ -79,29 +103,10 @@ class RhabdomereLayout:
         plt.tight_layout()
         plt.show()
 
-
-# Data from Juusola et al. (Drosophila)
-DROSOPHILA_RHABDOMERES = RhabdomereLayout(
-    name="Drosophila",
-    focal_length_um=21.0,
-    offsets_um=np.array([
-        [-1.6881,  1.0273],  # R1
-        [-1.8046, -0.9934],  # R2
-        [-1.7111, -2.9717],  # R3
-        [-0.0025, -1.9261],  # R4
-        [ 1.6690, -0.9493],  # R5
-        [ 1.6567,  0.9762],  # R6
-        [ 0.0045, -0.0113]   # R7/8 (central)
-    ]),
-    diameters_um=np.array([1.8627, 1.8627, 1.8627, 1.8627, 1.8627, 1.8627, 1.5743]),
-    saccade_axis=28.6   # degrees
-)
-
+## Move this to math utils
 
 def rotate_vectors(vectors: np.ndarray, axes: np.ndarray, angles: np.ndarray, degrees: bool = True) -> np.ndarray:
-    """
-    Rotates batches of vectors around corresponding axes using Rodrigues' formula.
-    """
+    """Rotate vectors around axes (Rodrigues formula)."""
 
     angles_arr = np.asarray(angles)
     angles_rad = np.deg2rad(angles_arr) if degrees else angles_arr
@@ -113,22 +118,147 @@ def rotate_vectors(vectors: np.ndarray, axes: np.ndarray, angles: np.ndarray, de
         cos_a = np.cos(angles_rad)[:, np.newaxis]
         sin_a = np.sin(angles_rad)[:, np.newaxis]
 
-    term1 = vectors * cos_a
-    term2 = np.cross(axes, vectors) * sin_a
-    term3 = axes * np.sum(axes * vectors, axis=1, keepdims=True) * (1 - cos_a)
+    rotated = (
+            vectors * cos_a
+            + np.cross(axes, vectors) * sin_a
+            + axes * np.sum(axes * vectors, axis=1, keepdims=True) * (1 - cos_a)
+    )
+    return rotated
 
-    return term1 + term2 + term3
+##
+# TODO: Move these to a geometric utils module
 
+# Lattice property estimation (used by both construction paths)
 
-class Ommatidium:
+def _compute_lattice_properties(
+        directions: np.ndarray,
+        origins: np.ndarray,
+        k: int = 8,
+        neighbour_dist_factor: float = 1.5
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    A proxy that provides a view into the OmmatidialArray data.
+    Estimate local lattice properties from lens positions.
     """
 
-    def __init__(self, data_array: np.ndarray, item, parent_array: 'OmmatidialArray'):
+    N = len(directions)
+    if N <= k:
+        z = np.zeros(N, dtype=np.float32)
+        return z, z, z, np.zeros(N, dtype=np.uint32)
+
+    # Physical direction vectors from common centre
+    eye_center = np.mean(origins, axis=0)
+    phys_dirs = origins - eye_center
+    norms = np.linalg.norm(phys_dirs, axis=1, keepdims=True)
+    np.divide(phys_dirs, norms, out=phys_dirs, where=norms != 0)
+
+    phys_kdtree = KDTree(phys_dirs)
+    distances, indices = phys_kdtree.query(phys_dirs, k=k + 1)
+    nb_indices = indices[:, 1:]
+    nb_distances = distances[:, 1:]
+
+    if nb_indices.size == 0:
+        z = np.zeros(N, dtype=np.float32)
+        return z, z, z, np.zeros(N, dtype=np.uint32)
+
+    angular_sep = 2.0 * np.arcsin(np.clip(nb_distances / 2.0, -1.0, 1.0))
+    dist_to_closest = angular_sep[:, 0]
+    is_immediate = angular_sep <= dist_to_closest[:, np.newaxis] * neighbour_dist_factor
+    nb_counts = np.sum(is_immediate, axis=1)
+
+    # Local tangent planes
+    dot_up = np.abs(phys_dirs @ WORLD_UP)
+    is_polar = dot_up > 0.9999
+    ref_ups = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
+
+    local_y = ref_ups - phys_dirs * np.sum(phys_dirs * ref_ups, axis=1, keepdims=True)
+    local_y /= np.linalg.norm(local_y, axis=1, keepdims=True)
+    local_x = np.cross(local_y, phys_dirs)
+
+    nb_phys = phys_dirs[nb_indices]
+    delta = nb_phys - phys_dirs[:, np.newaxis, :]
+
+    proj_x = np.sum(delta * local_x[:, np.newaxis, :], axis=2)
+    proj_y = np.sum(delta * local_y[:, np.newaxis, :], axis=2)
+
+    tilts = np.zeros(N, dtype=np.float32)
+    ioa_major = np.zeros(N, dtype=np.float32)
+    ioa_minor = np.zeros(N, dtype=np.float32)
+
+    for i in range(N):
+
+        mask = is_immediate[i]
+        pts = np.column_stack([proj_x[i, mask], proj_y[i, mask]])
+
+        if pts.shape[0] < 2:
+            avg = np.mean(angular_sep[i, mask]) if np.any(mask) else 0.0
+            ioa_major[i], ioa_minor[i], tilts[i] = avg, avg, 0.0
+            continue
+
+        cov = np.cov(pts, rowvar=False)
+        evals, evecs = np.linalg.eigh(cov)
+        primary = evecs[:, np.argmax(evals)]
+        tilts[i] = np.arctan2(primary[1], primary[0])
+
+        ct, st = np.cos(-tilts[i]), np.sin(-tilts[i])
+        ax = proj_x[i, mask] * ct - proj_y[i, mask] * st
+        ay = proj_x[i, mask] * st + proj_y[i, mask] * ct
+        angles_aligned = np.arctan2(ay, ax)
+
+        sep = angular_sep[i, mask]
+
+        maj_idx = np.argsort(np.abs(np.sin(angles_aligned)))[:2]
+        min_idx = np.argsort(np.abs(np.cos(angles_aligned)))[:2]
+
+        ioa_major[i] = np.mean(sep[maj_idx])
+        ioa_minor[i] = np.mean(sep[min_idx])
+
+    final_minor = np.minimum(ioa_minor, ioa_major)
+    final_major = np.maximum(ioa_minor, ioa_major)
+
+    return final_minor, final_major, tilts, nb_counts.astype(np.uint32)
+
+
+# Tangent frame computation (shared by from_build and actuate)
+
+def _compute_tangent_frames(forward: np.ndarray):
+    """
+    Compute per-lens orthonormal tangent frames.
+    """
+    # TODO: Can this gimbal lock??
+
+    dots = np.abs(forward @ WORLD_UP)
+    ref_ups = np.where(dots[:, np.newaxis] > 0.9999, WORLD_RIGHT, WORLD_UP)
+    local_right = np.cross(forward, ref_ups)
+    local_right /= np.linalg.norm(local_right, axis=1, keepdims=True)
+    local_up = np.cross(local_right, forward)
+    return local_right, local_up
+
+
+##
+
+# Proxy interfaces
+
+class Receptor:
+    """
+    View into one or more elements of a ReceptorArray.
+    """
+
+    def __init__(self, data_array: np.ndarray, item, parent_array: 'ReceptorArray'):
         self._data = data_array
         self._item = item
         self._parent = parent_array
+
+    def __len__(self):
+        return 1 if self._data[self._item].ndim == 0 else self._data[self._item].shape[0]
+
+    def __repr__(self):
+        if isinstance(self._item, (int, np.int_)):
+            o = np.array2string(self.origin, precision=3, suppress_small=True)
+            d = np.array2string(self.direction, precision=3, suppress_small=True)
+            return f"<Receptor(idx={int(self._item)}, origin={o}, direction={d})>"
+        return f"<Receptors(key={self._item}, count={len(self)})>"
+
+    # Spatial properties
 
     @property
     def origin(self) -> np.ndarray:
@@ -136,10 +266,12 @@ class Ommatidium:
 
     @origin.setter
     def origin(self, value: Union[float, ArrayLike]):
+
         self._data['origin'][self._item, :3] = np.asarray(value, dtype=np.float32)
-        self._data['origin'][self._item, 3] = 1.0  # The w component for origins should be 1.0
+        self._data['origin'][self._item, 3] = 1.0
+
         self._parent.dirty_mask[self._item] = True
-        self._parent.needs_rebuild['origin'] = True
+        self._parent._stale_receptor_spatial = True
 
     @property
     def direction(self) -> np.ndarray:
@@ -150,84 +282,15 @@ class Ommatidium:
 
         new_dirs = np.atleast_2d(value)
         norms = np.linalg.norm(new_dirs, axis=-1, keepdims=True)
-        normalized_dirs = np.divide(new_dirs, norms, out=new_dirs, where=norms != 0)
+        np.divide(new_dirs, norms, out=new_dirs, where=norms != 0)
 
-        self._data['direction'][self._item, :3] = normalized_dirs
-        self._data['direction'][self._item, 3] = 0.0  # The w component for a direction vector should be 0.0
+        self._data['direction'][self._item, :3] = new_dirs
+        self._data['direction'][self._item, 3] = 0.0
 
         self._parent.dirty_mask[self._item] = True
-        self._parent.needs_rebuild['direction'] = True
+        self._parent._stale_receptor_spatial = True
 
-    def dt(self, delta_time: float) -> DeltaTimeTransformer:
-        """
-        Enables framerate-independent transformations for a chain of method calls
-        """
-        return DeltaTimeTransformer(self, delta_time)
-
-    def rotate(self, yaw_delta: Union[float, ArrayLike] = 0.0, pitch_delta: Union[float, ArrayLike] = 0.0,
-               roll_delta: Union[float, ArrayLike] = 0.0, degrees: bool = True):
-        """
-        Rotates the ommatidium's direction in its local tangent space.
-        - 'yaw_delta' rotates horizontally (accepts scalar or array).
-        - 'pitch_delta' rotates vertically (accepts scalar or array).
-        - 'roll_delta' is ignored.
-        """
-        current_dirs = np.atleast_2d(self._data[self._item]['direction'][..., :3])
-
-        dots = np.abs(current_dirs @ WORLD_UP)
-        is_polar = dots > 0.9999
-        reference_ups = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
-
-        local_tangents = np.cross(current_dirs, reference_ups)
-        norms_t = np.linalg.norm(local_tangents, axis=1, keepdims=True)
-        np.divide(local_tangents, norms_t, out=local_tangents, where=norms_t != 0)
-
-        local_bitangents = np.cross(local_tangents, current_dirs)
-        rotated_dirs = current_dirs
-
-        yaw_delta_arr = np.asarray(yaw_delta)
-        pitch_delta_arr = np.asarray(pitch_delta)
-
-        if np.any(yaw_delta_arr != 0.0):
-            rotated_dirs = rotate_vectors(rotated_dirs, local_bitangents, yaw_delta_arr, degrees=degrees)
-
-        if np.any(pitch_delta_arr != 0.0):
-            rotated_dirs = rotate_vectors(rotated_dirs, local_tangents, pitch_delta_arr, degrees=degrees)
-
-        self.direction = rotated_dirs
-        return self
-
-    def translate(self, distance: Union[float, ArrayLike]):
-        """
-        Moves the ommatidium's origin along its own direction vector.
-        """
-
-        current_origins = self._data[self._item]['origin'][..., :3]
-        current_dirs = self._data[self._item]['direction'][..., :3]
-
-        distances_arr = np.asarray(distance, dtype=np.float32)
-        if distances_arr.ndim == 1:
-            distances_arr = distances_arr[:, np.newaxis]
-
-        self.origin = current_origins + current_dirs * distances_arr
-        return self
-
-    @property
-    def eye_id(self) -> np.ndarray:
-        """ Unpacks eye ID from bits 0-2 """
-        return self._data[self._item]['packed_data'] & 0x07
-
-    @eye_id.setter
-    def eye_id(self, value: Union[int, ArrayLike]):
-        """ Packs eye ID into bits 0-2 """
-        value_arr = np.asarray(value, dtype=np.uint32)
-
-        current_data = self._data['packed_data'][self._item]
-        cleared_data = current_data & _CLEAR_EYE_ID
-        new_data = cleared_data | (value_arr & 0x07)
-
-        self._data['packed_data'][self._item] = new_data
-        self._parent.dirty_mask[self._item] = True
+    # Acceptance / sensitivity
 
     @property
     def acceptance_major(self) -> np.ndarray:
@@ -273,56 +336,54 @@ class Ommatidium:
         self._data['sensitivity'][self._item] = np.asarray(value, dtype=np.float32)
         self._parent.dirty_mask[self._item] = True
 
+    # Metadata
+
+    @property
+    def eye_id(self) -> np.ndarray:
+        return self._data[self._item]['packed_data'] & 0x07
+
+    @eye_id.setter
+    def eye_id(self, value: Union[int, ArrayLike]):
+        v = np.asarray(value, dtype=np.uint32)
+        cur = self._data['packed_data'][self._item]
+        self._data['packed_data'][self._item] = (cur & _CLEAR_EYE_ID) | (v & 0x07)
+        self._parent.dirty_mask[self._item] = True
+
     @property
     def receptor_type(self) -> np.ndarray:
-        """ Unpacks receptor type from bits 3-6 """
         return (self._data[self._item]['packed_data'] >> 3) & 0x0F
 
     @receptor_type.setter
     def receptor_type(self, value: Union[int, ArrayLike]):
-        """ Packs receptor type into bits 3-6 """
-        value_arr = np.asarray(value, dtype=np.uint32)
-
-        current_data = self._data['packed_data'][self._item]
-        cleared_data = current_data & _CLEAR_RECEPTOR_TYPE
-        new_data = cleared_data | ((value_arr & 0x0F) << 3)
-
-        self._data['packed_data'][self._item] = new_data
+        v = np.asarray(value, dtype=np.uint32)
+        cur = self._data['packed_data'][self._item]
+        self._data['packed_data'][self._item] = (cur & _CLEAR_RECEPTOR_TYPE) | ((v & 0x0F) << 3)
         self._parent.dirty_mask[self._item] = True
 
     @property
     def neighbours_count(self) -> np.ndarray:
-        """ Unpacks number of neighbours from bits 7-10 """
         return (self._data[self._item]['packed_data'] >> 7) & 0x0F
 
     @neighbours_count.setter
     def neighbours_count(self, value: Union[int, ArrayLike]):
-        """ Packs number of neighbours into bits 7-10 """
-        value_arr = np.asarray(value, dtype=np.uint32)
-
-        current_data = self._data['packed_data'][self._item]
-        cleared_data = current_data & _CLEAR_NEIGHBOURS
-        new_data = cleared_data | ((value_arr & 0x0F) << 7)
-
-        self._data['packed_data'][self._item] = new_data
+        v = np.asarray(value, dtype=np.uint32)
+        cur = self._data['packed_data'][self._item]
+        self._data['packed_data'][self._item] = (cur & _CLEAR_NEIGHBOURS) | ((v & 0x0F) << 7)
         self._parent.dirty_mask[self._item] = True
 
     @property
-    def custom_id(self) -> np.ndarray:
-        """ Unpacks custom ID from bits 11-26 """
+    def lens_index(self) -> np.ndarray:
+        """Index of the parent ommatidium in the lens-level array."""
         return (self._data[self._item]['packed_data'] >> 11) & 0xFFFF
 
-    @custom_id.setter
-    def custom_id(self, value: Union[int, ArrayLike]):
-        """ Packs custom ID into bits 11-26 """
-        value_arr = np.asarray(value, dtype=np.uint32)
-
-        current_data = self._data['packed_data'][self._item]
-        cleared_data = current_data & _CLEAR_CUSTOM_ID
-        new_data = cleared_data | ((value_arr & 0xFFFF) << 11)
-
-        self._data['packed_data'][self._item] = new_data
+    @lens_index.setter
+    def lens_index(self, value: Union[int, ArrayLike]):
+        v = np.asarray(value, dtype=np.uint32)
+        cur = self._data['packed_data'][self._item]
+        self._data['packed_data'][self._item] = (cur & _CLEAR_LENS_INDEX) | ((v & 0xFFFF) << 11)
         self._parent.dirty_mask[self._item] = True
+
+    # Convenience angular accessors
 
     @property
     def azimuth_rad(self) -> np.ndarray:
@@ -340,46 +401,150 @@ class Ommatidium:
     def elevation_deg(self) -> np.ndarray:
         return np.rad2deg(self.elevation_rad)
 
-    # And some more aliases
     lon = longitude = azimuth = azimuth_rad if DEFAULT_ANGLE == 'rad' else azimuth_deg
     lat = latitude = elevation = elevation_rad if DEFAULT_ANGLE == 'rad' else elevation_deg
     rho = acceptance = acceptance_rad if DEFAULT_ANGLE == 'rad' else acceptance_deg
     rho_minor = acceptance_minor
     rho_major = acceptance_major
 
-    def __len__(self):
-        return 1 if self._data[self._item].ndim == 0 else self._data[self._item].shape[0]
+
+class Ommatidium:
+    """
+    Grouping of the R receptors behind a single lens.
+    """
+
+    def __init__(self, array: 'ReceptorArray', lens_index: int):
+        self._array = array
+        self._lens_index = int(lens_index)
+
+        R = array.receptor_count
+
+        self._start = self._lens_index * R
+        self._stop = self._start + R
+        self._slice = slice(self._start, self._stop)
+
+    def __getitem__(self, receptor_idx) -> Receptor:
+        """``omm[r]`` returns the Receptor proxy for receptor type r"""
+
+        if isinstance(receptor_idx, (int, np.integer)):
+            return Receptor(self._array.data,
+                            self._start + int(receptor_idx),
+                            self._array)
+
+        indices = np.arange(self._start, self._stop)[receptor_idx]
+        return Receptor(self._array.data, indices, self._array)
+
+    def __len__(self) -> int:
+        return self._array.receptor_count
+
+    def __iter__(self):
+        for k in range(len(self)):
+            yield self[k]
 
     def __repr__(self):
-        if isinstance(self._item, (int, np.int_)):
-            origin_str = np.array2string(self.origin, precision=3, suppress_small=True)
-            direction_str = np.array2string(self.direction, precision=3, suppress_small=True)
-            return f"<Ommatidium(id={int(self._item)}, origin={origin_str}, direction={direction_str})>"
-        else:
-            return f"<OmmatidiumProxy(key={self._item}, count={len(self)})>"
+        return (f"<Ommatidium(eye={self.eye_id}, lens={self._lens_index}, {len(self)} receptors)>")
+
+    @property
+    def optical_axis(self) -> np.ndarray:
+        """Unit direction of the lens (R7/R8 axis)."""
+        return self._array._lens_directions[self._lens_index]
+
+    @property
+    def position(self) -> np.ndarray:
+        """Lens centre position."""
+        return self._array._lens_positions[self._lens_index]
+
+    @property
+    def eye_id(self) -> int:
+        return int(self._array.data['packed_data'][self._start] & 0x07)
+
+    @property
+    def bundle_orientation(self) -> float:
+        """Rotation of rhabdomere bundle in tangent plane (radians).""" # TODO: maybe return degrees instead?
+        return float(self._array._bundle_orientation[self._lens_index])
+
+    @property
+    def receptors(self) -> Receptor:
+        """Proxy spanning all R receptors of this ommatidium."""
+        return Receptor(self._array.data, self._slice, self._array)
+
+    def actuate(self, displacement_um: float, axial_um: float = 0.0):
+        """
+        Displace all receptors via microsaccade actuation.
+
+        Args:
+            displacement_um: lateral shift in focal plane (um), absolute from rest.
+            axial_um: axial contraction toward lens (um), positive.
+        """
+        self._array.actuate(
+            np.float32(displacement_um),
+            axial_um=np.float32(axial_um),
+            lens_mask=np.array([self._lens_index])
+        )
+
+
+class Cartridge:
+    """
+    Neural superposition unit: The 6 outer receptors (R1-R6) from 6 different ommatidia
+    that converge onto one lamina column.
+    """
+
+    def __init__(self, array: 'ReceptorArray', lens_index: int):
+        self._array = array
+        self._lens_index = int(lens_index)
+
+        if array._cartridge_map is None:
+            raise RuntimeError("Cartridge map not built. Call array.build_cartridge_map() first.")  # TODO: may eventually be done automatically
+
+    def __getitem__(self, receptor_type: int) -> Receptor:
+        """``cartridge[k]`` returns the Receptor R{k+1} from the appropriate ommatidium."""
+        source_lens = self._array._cartridge_map[self._lens_index, receptor_type]
+        global_idx = source_lens * self._array.receptor_count + receptor_type
+        return Receptor(self._array.data, global_idx, self._array)
+
+    @property
+    def receptor_indices(self) -> np.ndarray:
+        """Global indices into ReceptorArray.data"""
+        sources = self._array._cartridge_map[self._lens_index]
+        R = self._array.receptor_count
+        return sources * R + np.arange(min(6, R))
+
+    @property
+    def optical_axis(self) -> np.ndarray:
+        return self._array._lens_directions[self._lens_index]
+
+    def __len__(self) -> int:
+        return min(6, self._array.receptor_count)
+
+    def __repr__(self):
+        return f"<Cartridge(lens={self._lens_index}, inputs={len(self)})>"
 
 
 class Eye:
     """
-    A view into an OmmatidialArray for a single eye_id (0–7).
+    View into a ReceptorArray scoped to a a single eye_id.
 
-    Provides indexing to Ommatidium proxies, spatial queries scoped to this eye,
-    and directed neighbour lookups for neuromorphic models access (e.g. EMDs).
-
-    Indexing is *local* to this eye (0 to len-1). Use .global_indices to
-    map back to positions in the parent OmmatidialArray / renderer output.
+    Spatial queries operate at the **lens** level and return **lens-local** indices (0 ... len-1).
+    Use `.global_lens_indices` to map back to the parent ReceptorArray's lens numbering.
     """
 
-    def __init__(self, array: 'OmmatidialArray', eye_id: int):
+    def __init__(self, array: 'ReceptorArray', eye_id: int):
         self._array = array
         self._eye_id = eye_id
+        R = array.receptor_count
 
-        # Boolean mask and integer indices into the parent array
-        all_eye_ids = array.data['packed_data'] & 0x07
-        self._mask = all_eye_ids == eye_id
-        self._indices = np.where(self._mask)[0]
+        # lenses belonging to this eye
+        first_ids = array.data['packed_data'][::R] & 0x07
+        self._lens_mask = first_ids == eye_id
+        self._lens_indices = np.where(self._lens_mask)[0]  # global lens indices
 
-        # spatial structures are lazy
+        # All receptor indices for this eye
+        li = self._lens_indices
+        self._receptor_indices = (
+            li[:, np.newaxis] * R + np.arange(R)[np.newaxis, :]
+        ).ravel()
+
+        # Spatial structures are lazy
         self._kdtree_directions = None
         self._kdtree_positions = None
         self._neighbour_graph = None
@@ -388,676 +553,733 @@ class Eye:
     def eye_id(self) -> int:
         return self._eye_id
 
-    def __getitem__(self, key) -> Ommatidium:
-        """
-        Index *locally*, into this eye's ommatidia (0 to len-1).
-        Returns an Ommatidium proxy backed by the parent array's data.
-        """
-        global_key = self._indices[key]
-        return Ommatidium(self._array.data, global_key, self._array)
-
     def __len__(self) -> int:
-        return len(self._indices)
-
-    def __iter__(self):
-        for i in range(len(self)):
-            yield self[i]
+        """Number of ommatidia (lenses) in this eye."""
+        return len(self._lens_indices)
 
     def __repr__(self):
         return f"<Eye(id={self._eye_id}, ommatidia={len(self)})>"
 
-    @property
-    def directions(self) -> np.ndarray:
-        """(N, 3) direction vectors for all ommatidia in this eye."""
-        return self._array.data['direction'][self._indices, :3]
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self.ommatidium(i)
 
-    @property
-    def origins(self) -> np.ndarray:
-        """(N, 3) origin positions for all ommatidia in this eye."""
-        return self._array.data['origin'][self._indices, :3]
+    def __getitem__(self, key) -> Union[Ommatidium, List[Ommatidium]]:
+        """
+        Index by lens-local index. Returns an Ommatidium group view.
+        `eye[i]` -> the i-th ommatidium in this eye.
+        """
 
-    @property
-    def global_indices(self) -> np.ndarray:
-        """Maps local eye indices to global array indices (for renderer output)."""
-        return self._indices
+        if isinstance(key, (int, np.integer)):
+            return Ommatidium(self._array, int(self._lens_indices[key]))
+
+        # Slice returns list of Ommatidium  # TODO: maybe returning a list is a bit dumb
+        indices = self._lens_indices[key]
+        return [Ommatidium(self._array, int(li)) for li in indices]
+
+    def ommatidium(self, local_index: int) -> Ommatidium:
+        """Explicit access: Lens-local index -> Ommatidium group."""
+        return Ommatidium(self._array, int(self._lens_indices[local_index]))
+
+    def cartridge(self, local_index: int) -> Cartridge:
+        """Explicit access: Lens-local index -> Cartridge (neural superposition unit)."""
+        return Cartridge(self._array, int(self._lens_indices[local_index]))
+
+    # Spatial struct helpers
 
     def _ensure_kdtree_directions(self):
-        # Rebuild if the parent array was modified
-        if self._kdtree_directions is None or self._array.needs_rebuild.get('direction', False):
-            self._array.rebuild_spatial()
+        if self._kdtree_directions is None or self._array._stale_lens_spatial:
+            self._array._resolve_lens_spatial()
             self._kdtree_directions = KDTree(self.directions)
         return self._kdtree_directions
 
     def _ensure_kdtree_positions(self):
-        if self._kdtree_positions is None or self._array.needs_rebuild.get('origin', False):
-            self._array.rebuild_spatial()
-            self._kdtree_positions = KDTree(self.origins)
+        if self._kdtree_positions is None or self._array._stale_lens_spatial:
+            self._array._resolve_lens_spatial()
+            self._kdtree_positions = KDTree(self.positions)
         return self._kdtree_positions
 
     def _invalidate(self):
-        """Called when the parent array changes. Clears cached structures."""
         self._kdtree_directions = None
         self._kdtree_positions = None
         self._neighbour_graph = None
 
+    # Bulk data views
+
+    @property
+    def directions(self) -> np.ndarray:
+        """Optical axes for all lenses in this eye."""
+        return self._array._lens_directions[self._lens_indices]
+
+    @property
+    def positions(self) -> np.ndarray:
+        """Lens positions for all lenses in this eye."""
+        return self._array._lens_positions[self._lens_indices]
+
+    @property
+    def global_lens_indices(self) -> np.ndarray:
+        """Maps lens-local indices to global lens indices."""
+        return self._lens_indices
+
+    @property
+    def global_indices(self) -> np.ndarray:
+        """Maps to global receptor indices in ReceptorArray.data"""
+        return self._receptor_indices
+
+    @property
+    def bundle_orientations(self) -> np.ndarray:
+        """Receptors bundle orientations (chi) for each ommatidium in this eye."""
+        return self._array._bundle_orientation[self._lens_indices]
+
+    # Spatial queries (lens-level, return lens-local indices)
+    # TODO: These are duplicated, could be taken out as pure functions
+
     def query_directions(self, directions: ArrayLike, k: int = 1) -> np.ndarray:
         """
-        Finds ommatidia in this eye whose viewing direction is closest to the
-        given direction vector(s).
-
-        Args:
-            directions: A (3,) vector or an (N, 3) array of direction vectors.
-            k: The number of nearest matches to return per query.
-
-        Returns:
-            Local indices into this eye.
-            Single vector + k=1: an integer. Otherwise: array of shape (N,) or (N, k).
+        Find lenses with optical axis best aligned with some directions. Lens-local indices.
         """
+
         if k < 1:
-            raise ValueError("k must be a positive integer.")
+            raise ValueError("k must be >= 1")
 
-        kdtree = self._ensure_kdtree_directions()
+        kd = self._ensure_kdtree_directions()
+        q = np.atleast_2d(np.asarray(directions, dtype=np.float32))
 
-        query_dirs = np.asarray(directions, dtype=np.float32)
-        is_single = query_dirs.ndim == 1
-        query_dirs = np.atleast_2d(query_dirs)
+        norms = np.linalg.norm(q, axis=-1, keepdims=True)
+        np.divide(q, norms, out=q, where=norms != 0)
 
-        norms = np.linalg.norm(query_dirs, axis=-1, keepdims=True)
-        np.divide(query_dirs, norms, out=query_dirs, where=norms != 0)
-
-        distances, indices = kdtree.query(query_dirs, k=k)
+        is_single = np.asarray(directions).ndim == 1
+        _, idx = kd.query(q, k=k)
 
         if is_single and k == 1:
-            return indices.item()
-        return indices.squeeze()
+            return idx.item()
+
+        return idx.squeeze()
 
     def query_position(self, positions: ArrayLike, k: int = 1) -> np.ndarray:
         """
-        Finds ommatidia in this eye whose origin is closest to the given point(s).
-
-        Args:
-            positions: A (3,) vector or an (N, 3) array of points.
-            k: The number of nearest matches to return per query.
-
-        Returns local indices into this eye.
+        Find lenses closest to some positions (on the eye surface). Lens-local indices.
         """
+
         if k < 1:
-            raise ValueError("k must be a positive integer.")
+            raise ValueError("k must be >= 1")
 
-        kdtree = self._ensure_kdtree_positions()
+        kd = self._ensure_kdtree_positions()
+        q = np.atleast_2d(np.asarray(positions, dtype=np.float32))
 
-        query_pos = np.asarray(positions, dtype=np.float32)
-        is_single = query_pos.ndim == 1
-        query_pos = np.atleast_2d(query_pos)
-
-        distances, indices = kdtree.query(query_pos, k=k)
+        is_single = np.asarray(positions).ndim == 1
+        _, idx = kd.query(q, k=k)
 
         if is_single and k == 1:
-            return indices.item()
-        return indices.squeeze()
+            return idx.item()
+
+        return idx.squeeze()
 
     def query_lookat(self, targets: ArrayLike, k: int = 1) -> np.ndarray:
         """
-        Finds ommatidia in this eye whose viewing direction best aligns with
-        one or several target points in world space.
-
-        Returns local indices into this eye.
+        Find lenses looking at some target points (world-space). Lens-local indices.
         """
+
         if k < 1:
-            raise ValueError("k must be a positive integer.")
+            raise ValueError("k must be >= 1")
 
-        query_targets = np.asarray(targets, dtype=np.float32)
-        is_single = query_targets.ndim == 1
-        query_targets = np.atleast_2d(query_targets)
+        q = np.atleast_2d(np.asarray(targets, dtype=np.float32))
+        is_single = np.asarray(targets).ndim == 1
 
-        eye_origins = self.origins
-        eye_dirs = self.directions
+        dirs = self.directions
+        origs = self.positions
 
-        # Desired direction from each ommatidium to each target
-        desired = query_targets[:, np.newaxis, :] - eye_origins[np.newaxis, :, :]
+        desired = q[:, np.newaxis, :] - origs[np.newaxis, :, :]
         norms = np.linalg.norm(desired, axis=-1, keepdims=True)
         np.divide(desired, norms, out=desired, where=norms != 0)
 
-        # Higher dot product == better alignment
-        dots = np.einsum('jk,ijk->ij', eye_dirs, desired)
+        dots = np.einsum('jk,ijk->ij', dirs, desired)
 
-        partition_indices = np.argpartition(dots, -k, axis=1)[:, -k:]
-        top_k_dots = np.take_along_axis(dots, partition_indices, axis=1)
-        sorted_indices = np.argsort(top_k_dots, axis=1)[:, ::-1]
-        best = np.take_along_axis(partition_indices, sorted_indices, axis=1)
+        part = np.argpartition(dots, -k, axis=1)[:, -k:]
+        top = np.take_along_axis(dots, part, axis=1)
+
+        order = np.argsort(top, axis=1)[:, ::-1]
+        best = np.take_along_axis(part, order, axis=1)
 
         if is_single and k == 1:
             return best.item()
+
         return best.squeeze()
 
     def query_cone(self, center_direction: ArrayLike, angle: float, degrees: bool = True) -> np.ndarray:
         """
-        Finds all ommatidia in this eye whose viewing direction is within
-        a given angle of a center direction.
-
-        Returns local indices into this eye.
+        Find all lenses within angle of a center direction. Lens-local indices.
         """
-        kdtree = self._ensure_kdtree_directions()
 
-        center = np.asarray(center_direction, dtype=np.float32)
-        center = center / np.linalg.norm(center)
-
-        angle_rad = np.deg2rad(angle) if degrees else angle
-        radius = 2.0 * np.sin(angle_rad / 2.0)
-
-        return kdtree.query_ball_point(center, r=radius)
+        kd = self._ensure_kdtree_directions()
+        c = np.asarray(center_direction, dtype=np.float32)
+        c = c / np.linalg.norm(c)
+        a = np.deg2rad(angle) if degrees else angle
+        return kd.query_ball_point(c, r=2.0 * np.sin(a / 2.0))
 
     def max_gap(self) -> float:
         """
-        Largest angular gap between any ommatidium and its nearest
-        neighbour within the eye.
+        Largest angular gap between any lens and its nearest neighbour.
         """
+
         if len(self) <= 1:
             return 0.0
+        kd = self._ensure_kdtree_directions()
+        d, _ = kd.query(self.directions, k=2)
+        return float(np.arccos(np.clip(1.0 - (np.max(d[:, 1]) ** 2) / 2.0, -1, 1)))
 
-        kdtree = self._ensure_kdtree_directions()
-        distances, _ = kdtree.query(self.directions, k=2)
-        max_dist = np.max(distances[:, 1])
-        return float(np.arccos(np.clip(1.0 - (max_dist ** 2) / 2.0, -1.0, 1.0)))
+    # Directed neighbours graph (lens-level)
 
     def _build_neighbour_graph(self, k_search: int = 8):
-        """
-        Precomputes tangent plane projections and neighbour indices
-        for directed_neighbours(). Cached after first call.
-        """
         N = len(self)
         if N <= 1:
             self._neighbour_graph = {
-                'proj_x': np.zeros((N, 0), dtype=np.float32),
-                'proj_y': np.zeros((N, 0), dtype=np.float32),
-                'angular_sep': np.zeros((N, 0), dtype=np.float32),
-                'neighbour_local_indices': np.zeros((N, 0), dtype=np.intp),
+                'proj_x': np.zeros((N, 0), np.float32),
+                'proj_y': np.zeros((N, 0), np.float32),
+                'angular_sep': np.zeros((N, 0), np.float32),
+                'neighbour_local_indices': np.zeros((N, 0), np.intp),
+                'local_x': np.zeros((N, 3), np.float32),
+                'local_y': np.zeros((N, 3), np.float32),
                 'k_search': 0
             }
             return
 
         k_eff = min(k_search, N - 1)
-        kdtree = self._ensure_kdtree_directions()
-        dirs = self.directions  # (N, 3)
+        kd = self._ensure_kdtree_directions()
+        dirs = self.directions
 
-        distances, kd_indices = kdtree.query(dirs, k=k_eff + 1)
-        nb_indices = kd_indices[:, 1:]  # (N, k_eff) = local indices
-        nb_distances = distances[:, 1:]
+        dists, kd_idx = kd.query(dirs, k=k_eff + 1)
+        nb_idx = kd_idx[:, 1:]
+        nb_dist = dists[:, 1:]
+        angular_sep = 2.0 * np.arcsin(np.clip(nb_dist / 2.0, -1.0, 1.0))
 
-        # Angular separations from Euclidean distance on unit sphere
-        angular_sep = 2.0 * np.arcsin(np.clip(nb_distances / 2.0, -1.0, 1.0))
-
-        # Local tangent planes for each omm
         dot_up = np.abs(dirs @ WORLD_UP)
         is_polar = dot_up > 0.9999
         ref_ups = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
-
         local_y = ref_ups - dirs * np.sum(dirs * ref_ups, axis=1, keepdims=True)
         local_y /= np.linalg.norm(local_y, axis=1, keepdims=True)
         local_x = np.cross(local_y, dirs)
 
-        # Project neighbour vectors onto tangent planes
-        nb_dirs = dirs[nb_indices]  # (N, k_eff, 3)
-        delta = nb_dirs - dirs[:, np.newaxis, :]  # (N, k_eff, 3)
-        proj_x = np.sum(delta * local_x[:, np.newaxis, :], axis=2)  # (N, k_eff)
-        proj_y = np.sum(delta * local_y[:, np.newaxis, :], axis=2)  # (N, k_eff)
+        nb_dirs = dirs[nb_idx]
+        delta = nb_dirs - dirs[:, np.newaxis, :]
+        proj_x = np.sum(delta * local_x[:, np.newaxis, :], axis=2)
+        proj_y = np.sum(delta * local_y[:, np.newaxis, :], axis=2)
 
         self._neighbour_graph = {
-            'proj_x': proj_x,
-            'proj_y': proj_y,
+            'proj_x': proj_x, 'proj_y': proj_y,
             'angular_sep': angular_sep,
-            'neighbour_local_indices': nb_indices,
-            'local_x': local_x,  # (N, 3) tangent plane bases
-            'local_y': local_y,  # (N, 3) tangent plane bases
+            'neighbour_local_indices': nb_idx,
+            'local_x': local_x, 'local_y': local_y,
             'k_search': k_eff
         }
 
-    def directed_neighbours(
-            self,
+    def directed_neighbours(self,
             direction: ArrayLike,
             k: int = 1,
             coordinate: str = 'spherical',
             return_weights: bool = False
-    ) -> np.ndarray:
+        ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
-        For every ommatidium in this eye, find the k nearest neighbours
-        along the specified direction on the eye surface.
-
-        Args:
-            direction: The search direction.
-                If coordinate='spherical': (delta_azimuth, delta_elevation) in radians.
-                    Positive azimuth = towards positive X (rightward/posterior
-                    when the agent faces -Z). Positive elevation = upward.
-                    e.g. (pi/18, 0) means "neighbour ~10° more posterior, same elevation".
-                If coordinate='cartesian': a 3D unit vector in agent space.
-            k: Number of neighbours to return along that direction.
-            coordinate: 'spherical' or 'cartesian'.
-
-        Returns:
-            (N,) array of local target indices when k=1, or (N, k) array when k>1.
-            Each value is the local index (within this eye) of the best-matching
-            neighbour along the given direction.
+        For every lens in this eye, find k nearest neighbours along a *direction*.
+        Returns (N,) of lens-local indices when k=1, otherwise returns (N, k).
         """
+
         if self._neighbour_graph is None:
             self._build_neighbour_graph()
 
         graph = self._neighbour_graph
         N = len(self)
-
         if N <= 1 or graph['k_search'] == 0:
             return np.zeros(N, dtype=np.intp) if k == 1 else np.zeros((N, k), dtype=np.intp)
 
-        direction = np.asarray(direction, dtype=np.float64)
-
-        local_x_bases = graph['local_x']  # (N, 3)
-        local_y_bases = graph['local_y']  # (N, 3)
+        direction = np.asarray(direction, dtype=np.float32)
+        local_x_bases = graph['local_x']
+        local_y_bases = graph['local_y']
 
         if coordinate == 'spherical':
-            d_az, d_el = float(direction[0]), float(direction[1])
+            d_az, d_el = direction[0], direction[1]
+            dirs = self.directions.astype(np.float32)
 
-            dirs = self.directions.astype(np.float64)
             az = np.arctan2(dirs[:, 0], -dirs[:, 2])
             el = np.arcsin(np.clip(dirs[:, 1], -1.0, 1.0))
-
             cos_az, sin_az = np.cos(az), np.sin(az)
             cos_el, sin_el = np.cos(el), np.sin(el)
 
-            # dir of increasing azimuth at each point
-            az_grad = np.column_stack([cos_az * cos_el,
-                                       np.zeros(N),
-                                       sin_az * cos_el])
+            az_grad = np.column_stack([cos_az * cos_el, np.zeros(N), sin_az * cos_el])
+            el_grad = np.column_stack([-sin_az * sin_el, cos_el, cos_az * sin_el])
 
-            # dir of increasing elevation at each point
-            el_grad = np.column_stack([-sin_az * sin_el,
-                                       cos_el,
-                                       cos_az * sin_el])
-
-            # World-space displacement vector for each omm
             target_world = d_az * az_grad + d_el * el_grad
-
-            # Project onto each tangent plane
             target_dx = np.sum(target_world * local_x_bases, axis=1)
             target_dy = np.sum(target_world * local_y_bases, axis=1)
 
         elif coordinate == 'cartesian':
-            # Single 3D direction in agent space: project onto each tangent plane
-            target_dx = local_x_bases @ direction  # (N,)
-            target_dy = local_y_bases @ direction  # (N,)
+            target_dx = local_x_bases @ direction
+            target_dy = local_y_bases @ direction
 
         else:
-            raise ValueError(f"Unknown coordinate system: '{coordinate}'. Use 'spherical' or 'cartesian'.")
+            raise ValueError(f"Unknown coordinate '{coordinate}'. Use 'spherical' or 'cartesian'.")
 
-        # Per-ommatidium target angle on tangent plane
         target_norms = np.sqrt(target_dx ** 2 + target_dy ** 2)
-        zero_mask = target_norms < 1e-12
+        zero = target_norms < 1e-12
 
-        # For zero-length targets (e.g. azimuth query at the pole) return self for every om
-        target_dx = np.where(zero_mask, 1.0, target_dx / np.where(zero_mask, 1.0, target_norms))
-        target_dy = np.where(zero_mask, 0.0, target_dy / np.where(zero_mask, 1.0, target_norms))
+        target_dx = np.where(zero, 1.0, target_dx / np.where(zero, 1.0, target_norms))
+        target_dy = np.where(zero, 0.0, target_dy / np.where(zero, 1.0, target_norms))
+        target_angle = np.arctan2(target_dy, target_dx)
 
-        target_angle = np.arctan2(target_dy, target_dx)  # (N,)
+        nb_angles = np.arctan2(graph['proj_y'], graph['proj_x'])
+        angle_diff = (nb_angles - target_angle[:, np.newaxis] + np.pi) % (2 * np.pi) - np.pi
 
-        # Score each candidate by alignment with the target dir
-        proj_x = graph['proj_x']  # (N, k_search)
-        proj_y = graph['proj_y']  # (N, k_search)
-
-        # Angle of each neighbour on the tangent plane
-        nb_angles = np.arctan2(proj_y, proj_x)  # (N, k_search)
-
-        # Angular deviation from targt direction
-        angle_diff = nb_angles - target_angle[:, np.newaxis]  # (N, k_search)
-        angle_diff = (angle_diff + np.pi) % (2 * np.pi) - np.pi
-
-        # Neighbours behind (|diff| > pi/2) -> large penalty
         score = np.abs(angle_diff)
-        behind_mask = score > (np.pi / 2.0)
-        score[behind_mask] = 1e6
+        score[score > (np.pi / 2.0)] = 1e6
 
-        nb_local = graph['neighbour_local_indices']  # (N, k_search)
-
+        nb_local = graph['neighbour_local_indices']
         if k == 1:
             best = np.argmin(score, axis=1)
             indices = nb_local[np.arange(N), best]
         else:
-            # Get top-k by smallest score
             k_eff = min(k, score.shape[1])
             top_k = np.argpartition(score, k_eff, axis=1)[:, :k_eff]
-            top_k_scores = np.take_along_axis(score, top_k, axis=1)
-            sorted_order = np.argsort(top_k_scores, axis=1)
-            top_k_sorted = np.take_along_axis(top_k, sorted_order, axis=1)
+            top_scores = np.take_along_axis(score, top_k, axis=1)
+            order = np.argsort(top_scores, axis=1)
+            top_k_sorted = np.take_along_axis(top_k, order, axis=1)
+            indices = nb_local[np.arange(N)[:, np.newaxis], top_k_sorted]
 
-            indices  = nb_local[np.arange(N)[:, np.newaxis], top_k_sorted]
-
-            # Pad if k > k_search
             if k > k_eff:
-                pad = np.zeros((N, k - k_eff), dtype=np.intp)
-                indices = np.hstack([indices, pad])
+                indices = np.hstack([indices, np.zeros((N, k - k_eff), dtype=np.intp)])
 
         if return_weights:
-            weights = target_norms if k == 1 else np.tile(target_norms[:, np.newaxis], (1, k))
-            return indices, weights
+            w = target_norms if k == 1 else np.tile(target_norms[:, None], (1, k))
+            return indices, w
 
         return indices
 
-
-class OmmatidialArray:
-    """
-    Flat structured array of ommatidia for the renderer.
-
-    This is the GPU-facing data container. It holds all ommatidia across all eyes
-    (distinguished by eye_id field, bits 0–2 of packed_data).
-
-    Use .eye(id) to get an Eye view for a specific eye. Eye clas provides spatial queries and
-    directed neighbour lookups.
-
-    The renderer consumes this directly:
-        array = OmmatidialArray.from_file('drosophila.npz', eye_parameter=1.5)
-        renderer = Raytracer(eye_model=array, ...)
-    """
-
-    def __init__(self,
-            directions: Optional[ArrayLike] = None,
-            origins: Optional[ArrayLike] = None,
-            num_ommatidia: Optional[int] = None,
-            acceptance_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
-            interommatidial_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
-            sensitivities: Optional[Union[ArrayLike, float]] = None,
-            receptor_types: Optional[Union[ArrayLike, int]] = None,
-            eye_id: Optional[Union[int, ArrayLike]] = None,
-            custom_ids: Optional[Union[ArrayLike, int]] = None,
-            eye_parameter: Optional[Union[float, Tuple]] = None,
-            lens_diameter_nm: Optional[Union[float, Tuple]] = None,
-            rhabdom_diameter_nm: Optional[Union[float, Tuple]] = None,
-            focal_length_nm: Optional[Union[float, Tuple]] = None,
-            wavelength_nm: float = 500,  # TODO: temporary value, shaders should compute per-channel
-            eye_radius: float = 0.01,
-            force_isotropic: bool = False,
-            icosphere_method: bool = True,
-        ):
+    def actuate(self, displacement_um: Union[float, ArrayLike],
+                axial_um: Union[float, ArrayLike] = 0.0):
         """
-        The primary constructor for creating an OmmatidialArray.
+        Displace rhabdomeres for all ommatidia in this eye.
 
         Args:
-            directions: An (N, 3) numpy array of ommatidial direction vectors.
-            origins: An (N, 3) or (3,) array of ommatidial origin positions.
-            num_ommatidia: If directions are not provided, generates a uniform sphere.
-            acceptance_angles_rad: The acceptance angles (Δρ), minor and major axes.
-                Can be (N, 2), a tuple (minor, major), a float, or None to estimate.
-            interommatidial_angles_rad: The interommatidial angles (Δφ).
-                Can be (N, 2), a tuple (minor, major), a float, or None to estimate.
-            sensitivities: Scalar or (N,) array. Defaults to 1.0.
-            receptor_types: Scalar or (N,) array of integer receptor types. Defaults to 0.
-            eye_id: Scalar or (N,) encoding which eye each ommatidium belongs to. 0 to 7.
-            custom_ids: Scalar or (N,) array of integer custom IDs. Defaults to 0.
-            eye_parameter: The eye parameter 'p' (Δρ / Δφ). Defaults to 1.0.
-            eye_radius: Physical radius for placing origins on a sphere.
-            force_isotropic: If True, forces circular acceptance angles.
-            icosphere_method: If True, the icosphere method is used for uniform eyes. Otherwise, the fibonacci method is used.
+            displacement_um: scalar or (N_eye,) lateral shift (um)
+            axial_um: scalar or (N_eye,) axial contraction (um)
+        """
+        self._array.actuate(displacement_um, axial_um=axial_um,
+                            lens_mask=self._lens_indices)
+
+##
+
+class ReceptorArray:
+    """
+    Flat (GPU-friendly) structured array of receptors for the renderer.
+    Every element is one rhabdomere. The GPU traces rays for `len(data)` receptors.
+
+    Construction modes:
+    # TODO: This will probably change
+
+    *Full model (R receptors per lens):
+        array = ReceptorArray.from_build(directions=dirs,
+                                        origins=origins,
+                                        kernel=DROSOPHILA_KERNEL,
+                                        bundle_orientation=chi, ...)
+
+    *Simplified (1 receptor per lens, more or less just R7/8):
+        array = ReceptorArray(directions=dirs, origins=origins, ...)
+    """
+
+    @classmethod
+    def from_build(cls,
+                   directions: ArrayLike,
+                   origins: ArrayLike,
+                   kernel: RhabdomereKernel,
+                   bundle_orientation: ArrayLike,
+                   eye_ids: Optional[ArrayLike] = None,
+                   eye_parameter: Optional[Union[float, Tuple]] = None,
+                   interommatidial_angles_rad: Optional[ArrayLike] = None,
+                   sensitivities: Optional[Union[ArrayLike, float]] = None,
+                   wavelength_nm: float = 500.0,
+                   ) -> 'ReceptorArray':
+        """
+        Construct a full receptor array from lens-level geometry and a rhabdomere kernel.
+
+        Each of the *N* lenses contains *R* receptors whose world-space directions are
+        determined by the kernel offsets and rotated by the per-lens bundle orientation (chi).
+
+        Acceptance angles are computed from the full optical model (Snyder 1979):
+
+            Δρ = sqrt( (λ/D)² + (d_rhab/f)² )
+
+        where λ = wavelength_nm, D = kernel.lens_diameter_um, d_rhab = kernel.diameters_um, f = kernel.nodal_distance_um
+
+        This can be overridden with `eye_parameter`: p = delta_rho / delta_phi
+
+        Args:
+            directions: (N, 3) lens optical axes
+            origins: (N, 3) lens positions in head space
+            kernel: Species-level rhabdomere geometry
+            bundle_orientation: (N,) chi per lens (radians in tangent plane)
+            eye_ids: (N,) integer eye id per lens, 0-7
+            eye_parameter: Optional p = delta_rho / delta_phi override
+                Bypasses the optical formula and computes acceptance as p * IOA (as in the simplified path)
+            interommatidial_angles_rad: (N,) or (N,2) if known, otherwise estimated
+            sensitivities: scalar or (N,) per lens (tiled to receptors) # TODO: maybe this should be a receptor-level prop?
+            wavelength_nm: light wavelength for diffraction term (default 500)
+        """
+
+        dirs = np.asarray(directions, dtype=np.float32)
+        origs = np.asarray(origins, dtype=np.float32)
+        chi = np.asarray(bundle_orientation, dtype=np.float32)
+        N = len(dirs)
+        R = kernel.count
+        M = N * R
+        d = kernel.nodal_distance_um  # lens to rhabdomere tips (at rest) = lever arm
+
+        # Normalise lens directions
+        norms = np.linalg.norm(dirs, axis=1, keepdims=True)
+        lens_dirs = dirs / norms
+        lens_origins = origs
+
+        # Lens-level lattice properties
+        if interommatidial_angles_rad is not None:
+            ioa_arr = np.asarray(interommatidial_angles_rad, dtype=np.float32)
+            if ioa_arr.ndim == 1:
+                ioa_minor = ioa_arr
+                ioa_major = ioa_arr
+            else:
+                ioa_minor = np.minimum(ioa_arr[:, 0], ioa_arr[:, 1])
+                ioa_major = np.maximum(ioa_arr[:, 0], ioa_arr[:, 1])
+            lattice_tilts = np.zeros(N, dtype=np.float32)
+            nb_counts = np.zeros(N, dtype=np.uint32)
+        else:
+            ioa_minor, ioa_major, lattice_tilts, nb_counts = \
+                _compute_lattice_properties(lens_dirs, lens_origins)
+
+        # Tangent frames
+        local_right, local_up = _compute_tangent_frames(lens_dirs)
+
+        # Rotate kernel offsets by chi (that is per lens)
+        cos_chi = np.cos(chi)[:, np.newaxis]  # (N, 1)
+        sin_chi = np.sin(chi)[:, np.newaxis]
+
+        dx = kernel.offsets_um[:, 0]  # (R,)
+        dy = kernel.offsets_um[:, 1]
+
+        rot_dx = cos_chi * dx[np.newaxis, :] - sin_chi * dy[np.newaxis, :]  # (N, R)
+        rot_dy = sin_chi * dx[np.newaxis, :] + cos_chi * dy[np.newaxis, :]
+
+        # Local tip vectors in lens frame: (N, R, 3) as [right, up, fwd]
+        local_tip = np.stack([rot_dx, rot_dy,
+                              np.full((N, R), -d, dtype=np.float32)], axis=-1)
+
+        world_tip = (
+            local_tip[..., 0:1] * local_right[:, np.newaxis, :] +
+            local_tip[..., 1:2] * local_up[:, np.newaxis, :] +
+            local_tip[..., 2:3] * lens_dirs[:, np.newaxis, :]
+        ).reshape(M, 3)
+
+        # Receptor direction: from tip through lens centre = -world_tip
+        rec_dirs = -world_tip
+        rec_dirs /= np.linalg.norm(rec_dirs, axis=1, keepdims=True)
+
+        # Receptor position: lens + tip offset
+        rec_positions = np.repeat(lens_origins, R, axis=0) + world_tip
+
+        data = np.zeros(M, dtype=GPU_RECEPTOR_DTYPE)
+        data['origin'][:, :3] = rec_positions
+        data['origin'][:, 3] = 1.0
+        data['direction'][:, :3] = rec_dirs
+        data['direction'][:, 3] = 0.0
+
+        wavelength_um = wavelength_nm * 1e-3
+        diffraction = wavelength_um / kernel.lens_diameter_um     # λ/D (scalar)
+        geometric = kernel.diameters_um / d                       # d_rhab/f (R,)
+        full_acceptance = np.sqrt(diffraction**2 + geometric**2)  # (R,)
+
+        if eye_parameter is not None:
+            p_min, p_maj = (eye_parameter, eye_parameter) if isinstance(eye_parameter, (float, int, np.number)) else eye_parameter
+            data['acceptance_angles'][:, 0] = np.repeat(p_min * ioa_minor, R)
+            data['acceptance_angles'][:, 1] = np.repeat(p_maj * ioa_major, R)
+
+        else:
+            data['acceptance_angles'][:, 0] = np.tile(full_acceptance, N)
+            data['acceptance_angles'][:, 1] = np.tile(full_acceptance, N)
+
+        data['interommatidial_angles'][:, 0] = np.repeat(ioa_minor, R)
+        data['interommatidial_angles'][:, 1] = np.repeat(ioa_major, R)
+        data['tilt'] = np.repeat(lattice_tilts, R)
+
+        sens = 1.0 if sensitivities is None else sensitivities
+        data['sensitivity'] = np.repeat(
+            np.broadcast_to(np.float32(sens), N), R
+        )
+
+        # Packed metadata
+        if eye_ids is not None:
+            eid = np.repeat(np.asarray(eye_ids, dtype=np.uint32), R)
+        else:
+            eid = np.zeros(M, dtype=np.uint32)
+
+        rtypes = np.tile(np.arange(R, dtype=np.uint32), N)
+        lindex = np.repeat(np.arange(N, dtype=np.uint32), R)
+
+        data['packed_data'] = (
+            (eid & 0x07) |
+            ((rtypes & 0x0F) << 3) |
+            ((np.repeat(nb_counts, R) & 0x0F) << 7) |
+            ((lindex & 0xFFFF) << 11)
+        )
+
+        # assemble object
+        obj = object.__new__(cls)
+        obj.data = data
+        obj.lens_count = N
+        obj.receptor_count = R
+
+        obj._kernel = kernel
+        obj._bundle_orientation = chi.copy()
+        obj._lens_directions = lens_dirs.copy()
+        obj._lens_positions = lens_origins.copy()
+        obj._actuation_state = np.zeros(N, dtype=np.float32)
+        obj._wavelength_nm = wavelength_nm
+
+        obj._ioa_minor_rad = ioa_minor
+        obj._ioa_major_rad = ioa_major
+        obj._lattice_tilts = lattice_tilts
+
+        obj._local_right = local_right
+        obj._local_up = local_up
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            obj.eye_parameter_minor = data['acceptance_angles'][:, 0] / np.repeat(ioa_minor, R)
+            obj.eye_parameter_major = data['acceptance_angles'][:, 1] / np.repeat(ioa_major, R)
+
+        np.nan_to_num(obj.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        np.nan_to_num(obj.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+
+        obj.dirty_mask = np.zeros(M, dtype=bool)
+        obj._stale_receptor_spatial = False
+        obj._stale_lens_spatial = False
+        obj._kdtree_directions = None   # lazy
+        obj._kdtree_positions = None    # also lazy
+        obj._eye_cache = {}
+        obj._cartridge_map = None
+
+        return obj
+
+    # Single-receptor constructor
+
+    def __init__(self,
+                 directions: Optional[ArrayLike] = None,
+                 origins: Optional[ArrayLike] = None,
+                 num_ommatidia: Optional[int] = None,
+                 acceptance_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
+                 interommatidial_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
+                 sensitivities: Optional[Union[ArrayLike, float]] = None,
+                 receptor_types: Optional[Union[ArrayLike, int]] = None,
+                 eye_id: Optional[Union[int, ArrayLike]] = None,
+                 eye_parameter: Optional[Union[float, Tuple]] = None,
+                 lens_diameter_nm: Optional[Union[float, Tuple]] = None,
+                 rhabdom_diameter_nm: Optional[Union[float, Tuple]] = None,
+                 focal_length_nm: Optional[Union[float, Tuple]] = None,
+                 wavelength_nm: float = 500,
+                 eye_radius: float = 0.01,
+                 force_isotropic: bool = False,
+                 icosphere_method: bool = True,
+                 ):
+        """
+        Simplified construction (single receptor per lens).
         """
 
         if directions is None and num_ommatidia is None:
-            raise ValueError("OmmatidialArray requires either 'directions' or 'num_ommatidia'.")
+            raise ValueError("Requires either 'directions' or 'num_ommatidia'.")
 
-        # Determine ommatidial directions
         if directions is not None:
-            # Priority 1: directions are provided
-            print("Using provided direction vectors.")
             directions = np.asarray(directions, dtype=np.float32)
-            nb_effective_dirs = len(directions)
-
+            N = len(directions)
         else:
-            # Priority 2: Generate directions from ommatidia_count
-            print(f"Generating uniform direction vectors for {num_ommatidia} ommatidia.")
             if icosphere_method:
                 lod = estimate_lod(num_ommatidia)
                 directions = subdivide_icosahedron(lod)
-                nb_effective_dirs = len(directions)
-                if abs(num_ommatidia - nb_effective_dirs) > 1:
-                    print(f"Note: Using {nb_effective_dirs} ommatidia to match subdivision level {lod}.")
+                N = len(directions)
+                if abs(num_ommatidia - N) > 1:
+                    print(f"Note: {N} ommatidia for subdivision level {lod}.")
             else:
                 directions = fibonacci_sphere(num_ommatidia)
-                nb_effective_dirs = len(directions)
+                N = len(directions)
 
-        self.ommatidia_count = nb_effective_dirs
-        self.data = np.zeros(self.ommatidia_count, dtype=GPU_OMMATIDIUM_DTYPE)
-
-        self._is_rhabdomeres = False
-        self._lens_data = None
+        self.lens_count = N
         self.receptor_count = 1
+        self.data = np.zeros(N, dtype=GPU_RECEPTOR_DTYPE)
+
+        self._kernel = None
+        self._cartridge_map = None
+        self._wavelength_nm = wavelength_nm
 
         # Directions
         norms = np.linalg.norm(directions, axis=1, keepdims=True)
         self.data['direction'][:, :3] = directions / norms
-        self.data['direction'][:, 3] = 0.0  # w=0 for directions
+        self.data['direction'][:, 3] = 0.0
 
         # Origins
         if origins is not None:
             origins_arr = np.asarray(origins, dtype=np.float32)
+
             if origins_arr.ndim == 1 and origins_arr.shape[0] == 3:
-                print(f"Using a single origin {origins_arr} for all {self.ommatidia_count} ommatidia.")
                 self.data['origin'][:, :3] = origins_arr
-
-            elif origins_arr.shape == (self.ommatidia_count, 3):
+            elif origins_arr.shape == (N, 3):
                 self.data['origin'][:, :3] = origins_arr
-
             else:
-                raise ValueError(
-                    f"Invalid shape for 'origins': {origins_arr.shape}. "
-                    f"Expected ({self.ommatidia_count}, 3) or (3,).")
+                raise ValueError(f"Invalid 'origins' shape {origins_arr.shape}. Expected ({N}, 3) or (3,).")
+
         elif eye_radius > 0:
             self.data['origin'][:, :3] = self.data['direction'][:, :3] * eye_radius
 
-        self.data['origin'][:, 3] = 1.0  # w=1 for positions
+        self.data['origin'][:, 3] = 1.0
 
         self.data['sensitivity'] = np.asarray(
-            sensitivities if sensitivities is not None else 1.0, dtype=np.float32
+            sensitivities if sensitivities is not None else 1.0, dtype=np.float32)
+
+        # Packed metadata
+        id_arr = np.zeros(N, dtype=np.uint32)
+        if eye_id is not None:
+            prepared = self._prepare_param(eye_id, "eye_id")
+            if np.any(prepared > 7) or np.any(prepared < 0):
+                raise ValueError("eye_id must be in [0, 7].")
+            id_arr = prepared.astype(np.uint32)
+
+        types_arr = np.zeros(N, dtype=np.uint32)
+        if receptor_types is not None:
+            prepared = self._prepare_param(receptor_types, "receptor_types")
+            types_arr = np.clip(prepared, 0, 15).astype(np.uint32)
+
+        lens_idx_arr = np.arange(N, dtype=np.uint32)
+
+        self.data['packed_data'] = (
+            (id_arr & 0x07) |
+            ((types_arr & 0x0F) << 3) |
+            ((lens_idx_arr & 0xFFFF) << 11)
         )
 
-        # Metadata packing
-        id_arr = np.zeros(self.ommatidia_count, dtype=np.uint32)
-        if eye_id is not None:
-            prepared_ids = self._prepare_param(eye_id, "eye_id")
-            if np.any(prepared_ids > 7) or np.any(prepared_ids < 0):
-                raise ValueError("Eye ID must be in the range [0, 7].")
-            id_arr = prepared_ids.astype(np.uint32)
+        self.dirty_mask = np.zeros(N, dtype=bool)
+        self._stale_receptor_spatial = False
+        self._stale_lens_spatial = False
 
-        types_arr = np.zeros(self.ommatidia_count, dtype=np.uint32)
-        if receptor_types is not None:
-            prepared_types = self._prepare_param(receptor_types, "receptor_types")
-            if np.any(prepared_types > 15) or np.any(prepared_types < 0):
-                print("Warning: Receptor types should be in [0, 15]. Clamping values.")
-            types_arr = prepared_types.astype(np.uint32)
-
-        custom_ids_arr = np.zeros(self.ommatidia_count, dtype=np.uint32)
-        if custom_ids is not None:
-            prepared_custom_ids = self._prepare_param(custom_ids, "custom_ids")
-            if np.any(prepared_custom_ids > 65535) or np.any(prepared_custom_ids < 0):
-                raise ValueError("Custom IDs must be in the range [0, 65535].")
-            custom_ids_arr = prepared_custom_ids.astype(np.uint32)
-
-        packed_data = (id_arr.astype(np.uint32) & 0x07) | \
-                      ((types_arr.astype(np.uint32) & 0x0F) << 3) | \
-                      ((custom_ids_arr.astype(np.uint32) & 0xFFFF) << 11)
-        self.data['packed_data'] = packed_data
-
-        self.dirty_mask = np.zeros(self.ommatidia_count, dtype=bool)
-        self.needs_rebuild = {'direction': False, 'origin': True}
-        self.kdtree_directions = KDTree(self.data['direction'][:, :3])
-        self.kdtree_positions = KDTree(self.data['origin'][:, :3])
-
+        # Can eagerly build since receptor=lens, it's cheap
+        self._kdtree_directions = KDTree(self.data['direction'][:, :3])
+        self._kdtree_positions = KDTree(self.data['origin'][:, :3])
         self._eye_cache = {}
 
-        # Lattice geometry (Δφ and Tilt)
-        # (check if origins overlap: indicates loading a pre-expanded eye)
-        # TODO: Too fragile, maybe should just save the flag
+        # Lattice properties
         is_pre_expanded = False
-        if self.ommatidia_count > 1:
+        if N > 1:
             if np.allclose(self.data['origin'][0], self.data['origin'][1], atol=1e-7):
                 is_pre_expanded = True
 
         if interommatidial_angles_rad is not None:
-            # Case A: User provided ground-truth angles
-            print("Using provided interommatidial angles.")
             angles_arr = np.asarray(interommatidial_angles_rad, dtype=np.float32)
 
-            if angles_arr.shape == (self.ommatidia_count,):
-                self.ioa_minor_rad = angles_arr
-                self.ioa_major_rad = angles_arr
+            if angles_arr.shape == (N,):
+                ioa_min = angles_arr
+                ioa_maj = angles_arr
             else:
-                angles_broadcast = np.broadcast_to(angles_arr, (self.ommatidia_count, 2))
-                self.ioa_minor_rad = np.minimum(angles_broadcast[:, 0], angles_broadcast[:, 1])
-                self.ioa_major_rad = np.maximum(angles_broadcast[:, 0], angles_broadcast[:, 1])
+                broad = np.broadcast_to(angles_arr, (N, 2))
+                ioa_min = np.minimum(broad[:, 0], broad[:, 1])
+                ioa_maj = np.maximum(broad[:, 0], broad[:, 1])
 
-            self.data['interommatidial_angles'][:, 0] = self.ioa_minor_rad
-            self.data['interommatidial_angles'][:, 1] = self.ioa_major_rad
+            self.data['interommatidial_angles'][:, 0] = ioa_min
+            self.data['interommatidial_angles'][:, 1] = ioa_maj
+
+            self._ioa_minor_rad = ioa_min
+            self._ioa_major_rad = ioa_maj
+            self._lattice_tilts = np.zeros(N, dtype=np.float32)
 
         elif not is_pre_expanded:
-            # Case B: Standard lens eye, run estimation
-            print("Estimating lattice properties (tilt, neighbours, IOA) from ommatidia origins...")
-            est_minor, est_major, tilts, counts = self._compute_lattice_properties()
+            ioa_min, ioa_maj, tilts, counts = _compute_lattice_properties(
+                self.data['direction'][:, :3],
+                self.data['origin'][:, :3]
+            )
 
-            self.ioa_minor_rad, self.ioa_major_rad = est_minor, est_major
-            self.data['interommatidial_angles'][:, 0] = est_minor
-            self.data['interommatidial_angles'][:, 1] = est_major
+            self._ioa_minor_rad = ioa_min
+            self._ioa_major_rad = ioa_maj
+            self._lattice_tilts = tilts
+
+            self.data['interommatidial_angles'][:, 0] = ioa_min
+            self.data['interommatidial_angles'][:, 1] = ioa_maj
             self.data['tilt'] = tilts
 
-            # Pack neighbour counts into bits 7-10
-            counts_arr = np.asarray(counts, dtype=np.uint32)
             cleared = self.data['packed_data'] & _CLEAR_NEIGHBOURS
-            self.data['packed_data'] = cleared | ((counts_arr & 0x0F) << 7)
-
+            self.data['packed_data'] = cleared | ((counts & 0x0F) << 7)
         else:
-            # Case C: Pre-expanded (rhabdomeres) eye, read existing data
-            print("Detected pre-expanded data. Skipping geometric estimation.")
-            self.ioa_minor_rad = self.data['interommatidial_angles'][:, 0]
-            self.ioa_major_rad = self.data['interommatidial_angles'][:, 1]
+            self._ioa_minor_rad = self.data['interommatidial_angles'][:, 0]
+            self._ioa_major_rad = self.data['interommatidial_angles'][:, 1]
+            self._lattice_tilts = self.data['tilt'].copy()
 
-        # Acceptance angles (Δρ)
+        # Bundle orientation: in single receptor mode this defaults to lattice tilt
+        # TODO: This is probably not the best approximation
+
+        self._bundle_orientation = self._lattice_tilts.copy()
+        self._lens_directions = self.data['direction'][:, :3].copy()
+        self._lens_positions = self.data['origin'][:, :3].copy()
+        self._actuation_state = np.zeros(N, dtype=np.float32)
+        self._local_right = None
+        self._local_up = None
+
+        # Acceptance angles
         if acceptance_angles_rad is not None:
-            # Priority 1: Direct acceptance angles are provided
-            print("Using provided acceptance angles (Δρ).")
             estimated_angles = acceptance_angles_rad
 
         elif all(p is not None for p in [lens_diameter_nm, rhabdom_diameter_nm, focal_length_nm]):
-            # Priority 2: Estimate from optical parameters
-            print("Calculating acceptance angles (Δρ) from physical optical parameters.")
-            D_minor, D_major = self._unpack(lens_diameter_nm, "lens_diameter")
-            d_minor, d_major = self._unpack(rhabdom_diameter_nm, "rhabdom_diameter")
-            f_minor, f_major = self._unpack(focal_length_nm, "focal_length")
 
-            acc_min = np.sqrt((wavelength_nm / D_minor) ** 2 + (d_minor / f_minor) ** 2)
-            acc_maj = np.sqrt((wavelength_nm / D_major) ** 2 + (d_major / f_major) ** 2)
+            D_min, D_maj = self._unpack(lens_diameter_nm, "lens_diameter")
+            d_min, d_maj = self._unpack(rhabdom_diameter_nm, "rhabdom_diameter")
+            f_min, f_maj = self._unpack(focal_length_nm, "focal_length")
+
+            acc_min = np.sqrt((wavelength_nm / D_min) ** 2 + (d_min / f_min) ** 2)
+            acc_maj = np.sqrt((wavelength_nm / D_maj) ** 2 + (d_maj / f_maj) ** 2)
             estimated_angles = np.vstack([acc_min, acc_maj]).T
+
         else:
-            # Priority 3: Estimate from geometry using eye parameter 'p'
             p = eye_parameter if eye_parameter is not None else 1.0
-            print(f"Estimating acceptance angles (Δρ) from interommatidial angles (Δφ) with eye parameter p={p}.")
             p_min, p_maj = (p, p) if isinstance(p, (int, float)) else p
-            estimated_angles = np.vstack([p_min * self.ioa_minor_rad, p_maj * self.ioa_major_rad]).T
+
+            estimated_angles = np.vstack([
+                p_min * self._ioa_minor_rad,
+                p_maj * self._ioa_major_rad
+            ]).T
 
         if force_isotropic:
-            mean_angles = np.mean(np.atleast_2d(estimated_angles), axis=1)
-            estimated_angles = np.vstack([mean_angles, mean_angles]).T
-
-        # Assign acceptance angles
-        if estimated_angles is None:
-            raise AttributeError("No acceptance angles were provided or could be estimated.")
+            mean_a = np.mean(np.atleast_2d(estimated_angles), axis=1)
+            estimated_angles = np.vstack([mean_a, mean_a]).T
 
         angles_arr = np.asarray(estimated_angles, dtype=np.float32)
-        if angles_arr.shape == (self.ommatidia_count,):
+
+        if angles_arr.shape == (N,):
             self.data['acceptance_angles'] = angles_arr[:, np.newaxis]
         else:
             self.data['acceptance_angles'] = angles_arr
 
-        # Eye parameter p = Δρ / Δφ
         with np.errstate(divide='ignore', invalid='ignore'):
-            self.eye_parameter_minor = self.data['acceptance_angles'][:, 0] / self.ioa_minor_rad
-            self.eye_parameter_major = self.data['acceptance_angles'][:, 1] / self.ioa_major_rad
+            self.eye_parameter_minor = self.data['acceptance_angles'][:, 0] / self._ioa_minor_rad
+            self.eye_parameter_major = self.data['acceptance_angles'][:, 1] / self._ioa_major_rad
 
-        # clean non-finite values
         np.nan_to_num(self.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         np.nan_to_num(self.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-
-    def eye(self, eye_id: int) -> Eye:
-        """
-        Returns an Eye view for the given eye_id (0–7).
-
-        The Eye provides scoped spatial queries, directed neighbour lookups,
-        and direct indexing into this eye's ommatidia.
-        """
-        if eye_id not in self._eye_cache:
-            self._eye_cache[eye_id] = Eye(self, eye_id)
-        return self._eye_cache[eye_id]
-
-    @property
-    def eyes(self) -> list:
-        """
-        Returns a list of Eye views for all eye_ids present in this array.
-        """
-        unique_ids = np.unique(self.data['packed_data'] & 0x07)
-        return [self.eye(int(eid)) for eid in unique_ids]
-
-    @property
-    def eye_ids(self) -> np.ndarray:
-        """Returns the unique eye IDs present in this array."""
-        return np.unique(self.data['packed_data'] & 0x07)
-
-    @property
-    def ommatidia(self) -> Eye:
-        """
-        Access to all ommatidia as a single collection.
-
-        Prefer .eye(id) for scoped access. This returns an Eye-like view
-        that spans all eye_ids (equivalent to global indexing).
-
-        .. deprecated::
-            Use .eye(id) for per-eye access.
-        """
-        return _GlobalOmmatidiaView(self)
-
-    def _prepare_param(self, param, name="param"):
-        """Ensures parameter is a numpy array of the correct shape."""
-        arr = np.asarray(param, dtype=np.float32)
-        if arr.ndim == 0:
-            return np.full(self.ommatidia_count, arr.item())
-        if arr.ndim == 1 and len(arr) == self.ommatidia_count:
-            return arr
-        raise ValueError(
-            f"Parameter '{name}' has invalid shape. "
-            f"Must be scalar or 1D array of length {self.ommatidia_count}.")
-
-    def _unpack(self, param, name="param"):
-        """Unpacks a parameter into minor and major components."""
-        if isinstance(param, (list, tuple)):
-            return self._prepare_param(param[0], f"{name}_minor"), self._prepare_param(param[1], f"{name}_major")
-        p_scalar = self._prepare_param(param, name)
-        return p_scalar, p_scalar
-
-    @property
-    def interommatidial_angles_rad(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Returns the (minor, major) interommatidial angles (Δφ) in radians."""
-        return self.ioa_minor_rad, self.ioa_major_rad
 
     @classmethod
     def from_file(cls, file_path: Union[str, Path], **kwargs):
         """
-        Creates an OmmatidialArray from a .npz archive file.
-
-        The .npz file must contain at least a 'directions' array. Optional
-        arrays: 'origins', 'acceptance_angles_rad', 'interommatidial_angles_rad',
-        'sensitivities', 'receptor_types', 'eye_id', 'custom_ids'.
-        Keyword arguments override file data.
+        Load (a R=1 simple) model from .npz archive.
         """
+        # TODO: This should also load a full model
+
         path = Path(file_path)
+
         if not path.exists():
-            raise FileNotFoundError(f"Cannot find eye data file: {path}")
+            raise FileNotFoundError(f"Cannot find: {path}")
 
         data = np.load(path)
-
         if 'directions' not in data:
-            raise ValueError(f"Eye data file '{path}' is missing the required 'directions' array.")
+            raise ValueError(f"'{path}' missing required 'directions' array.")
 
-        constructor_args = {
+        args = {
             'directions': data['directions'],
             'origins': data.get('origins'),
             'acceptance_angles_rad': data.get('acceptance_angles_rad'),
@@ -1065,527 +1287,504 @@ class OmmatidialArray:
             'sensitivities': data.get('sensitivities'),
             'receptor_types': data.get('receptor_types'),
             'eye_id': data.get('eye_id'),
-            'custom_ids': data.get('custom_ids'),
         }
+        args.update(kwargs)
+        return cls(**args)
 
-        constructor_args.update(kwargs)
+    # Overrides and internal helpers
 
-        print(f"Loaded eye model from '{path}'.")
-        return cls(**constructor_args)
+    def __len__(self):
+        return len(self.data)
 
-    def _compute_lattice_properties(self, k: int = 8, neighbour_dist_factor: float = 1.5) -> Tuple[
-        np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def __repr__(self):
+        return f"<ReceptorArray(lenses={self.lens_count}, R={self.receptor_count}, total={len(self.data)})>"
+
+    def _prepare_param(self, param, name="param"):
+        arr = np.asarray(param, dtype=np.float32)
+        if arr.ndim == 0:
+            return np.full(self.lens_count, arr.item())
+        if arr.ndim == 1 and len(arr) == self.lens_count:
+            return arr
+        raise ValueError(
+            f"'{name}' shape invalid. Need scalar or length-{self.lens_count}.")
+
+    def _unpack(self, param, name="param"):
+        if isinstance(param, Sequence):
+            return self._prepare_param(param[0], f"{name}_min"), self._prepare_param(param[1], f"{name}_maj")
+        p = self._prepare_param(param, name)
+        return p, p
+
+    # Eye / Ommatidium / Cartridge access
+
+    def eye(self, eye_id: int) -> Eye:
+        """Eye view for eye_id (0-7)."""
+        if eye_id not in self._eye_cache:
+            self._eye_cache[eye_id] = Eye(self, eye_id)
+        return self._eye_cache[eye_id]
+
+    @property
+    def eyes(self) -> list:
+        """List of Eye views for all eye_ids present."""
+        unique = np.unique(self.data['packed_data'][::self.receptor_count] & 0x07)
+        return [self.eye(int(eid)) for eid in unique]
+
+    @property
+    def eye_ids(self) -> np.ndarray:
+        return np.unique(self.data['packed_data'][::self.receptor_count] & 0x07)
+
+    def ommatidium(self, lens_index: int) -> Ommatidium:
+        """Global lens index -> Ommatidium group view."""
+        return Ommatidium(self, lens_index)
+
+    def cartridge(self, lens_index: int) -> Cartridge:
+        """Global lens index -> Cartridge (neural superposition unit)."""
+        return Cartridge(self, lens_index)
+
+    @property
+    def kernel(self) -> Optional[RhabdomereKernel]:
+        return self._kernel
+
+    @property
+    def bundle_orientation(self) -> np.ndarray:
+        """Bundle orientation (chi), per lens."""
+        return self._bundle_orientation
+
+    @property
+    def is_full_model(self) -> bool:
+        """True if built with a rhabdomere kernel (R > 1)."""
+        return self._kernel is not None
+
+    @property
+    def interommatidial_angles_rad(self) -> Tuple[np.ndarray, np.ndarray]:
+        return self._ioa_minor_rad, self._ioa_major_rad
+
+    # Neural superposition wiring
+
+    def build_cartridge_map(self) -> np.ndarray:
         """
-        Estimates local lattice properties for each ommatidium using its nearest neighbours.
-        This includes interommatidial angles (minor and major axes), the lattice tilt angle,
-        and the number of immediate neighbours.
+        For each lens, compute which neighbour's receptor points at this lens's optical axis.
+        Returns (N, R_outer) array of global lens indices, where R_outer = min(receptor_count, 6) (R1-R6 only)
+        """
+
+        if self.receptor_count < 2:
+            warnings.warn("Cartridge map requires a full model (R > 1).")
+            return np.zeros((self.lens_count, 0), dtype=np.intp)
+
+        N = self.lens_count
+        R = self.receptor_count
+        R_outer = min(R, 6)
+        lens_dirs = self._lens_directions
+
+        cartridge = np.zeros((N, R_outer), dtype=np.intp)
+
+        for k in range(R_outer):
+            # Directions of receptor type k across all lenses
+            type_k_dirs = self.data['direction'][k::R, :3]
+            tree = KDTree(type_k_dirs)
+            _, indices = tree.query(lens_dirs)
+            cartridge[:, k] = indices
+
+        self._cartridge_map = cartridge
+        return cartridge
+
+    # Actuation
+
+    def actuate(self, displacement_um: Union[float, ArrayLike],
+                axial_um: Union[float, ArrayLike] = 0.0,
+                lens_mask: Optional[ArrayLike] = None):
+        """
+        Displace rhabdomeres via microsaccades.
+
+        Models the two components of rhabdomere actuation observed in vivo:
+        (Juusola et al. 2017, 10.7554/eLife.26117; Kemppainen et al. 2022, 10.1073/pnas.2109717119)
+
+        * Lateral: rhabdomere tips move sideways in the focal plane along
+            the actuation axis (chi + kernel.actuation_angle_deg).
+            Shifts the sampling direction.
+            Typical range: 0.0 to ~1.7 μm in Drosophila
+
+        * Axial: rhabdomeres contract away from the lens.
+            This narrows the acceptance angle and widens the angular subtense of lateral offsets.
+            Typical range: from ~8.1° to ~4.0° in Drosophila
+
+        The rhabdomeres are mechanically coupled, activating one receptor likely contracts and tilts its neighbours.
+
+        Both parameters are absolute from rest: calling `actuate(0.0, 0.0)` resets to the rest configuration.
 
         Args:
-            k: Number of neighbours to consider for the analysis.
-            neighbour_dist_factor: Factor for determining immediate neighbours.
-
-        Returns:
-            (ioa_minor_rad, ioa_major_rad, tilts_rad, neighbour_counts)
-        """
-        if self.ommatidia_count <= k:
-            zeros = np.zeros(self.ommatidia_count, dtype=np.float32)
-            return zeros, zeros, zeros, np.zeros(self.ommatidia_count, dtype=np.uint32)
-
-        # Calculate physical direction vectors from a common center
-        all_origins = self.data['origin'][:, :3]
-        eye_center = np.mean(all_origins, axis=0)
-        phys_dirs = all_origins - eye_center
-        phys_dirs /= np.linalg.norm(phys_dirs, axis=1, keepdims=True)
-
-        # Query for k+1 neighbours (point itself is the first)
-        phys_kdtree = KDTree(phys_dirs)
-        distances, indices = phys_kdtree.query(phys_dirs, k=k + 1)
-        neighbour_indices = indices[:, 1:]
-        neighbour_distances = distances[:, 1:]
-
-        if neighbour_indices.size == 0:
-            zeros = np.zeros(self.ommatidia_count, dtype=np.float32)
-            return zeros, zeros, zeros, np.zeros(self.ommatidia_count, dtype=np.uint32)
-
-        # Convert Euclidean distance on unit sphere to angular separation
-        angular_separations = 2.0 * np.arcsin(np.clip(neighbour_distances / 2.0, -1.0, 1.0))
-
-        dist_to_closest = angular_separations[:, 0]
-        is_immediate_neighbour = angular_separations <= dist_to_closest[:, np.newaxis] * neighbour_dist_factor
-        neighbour_counts = np.sum(is_immediate_neighbour, axis=1)
-
-        # Determine tilt and minor/major IOA
-        # Define local coordinate systems (tangent planes) for each ommatidium
-        dot_products = np.abs(np.dot(phys_dirs, WORLD_UP))
-        is_polar = dot_products > 0.9999
-        ref_up_vectors = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
-        local_y_axes = ref_up_vectors - phys_dirs * np.sum(phys_dirs * ref_up_vectors, axis=1, keepdims=True)
-        local_y_axes /= np.linalg.norm(local_y_axes, axis=1, keepdims=True)
-        local_x_axes = np.cross(local_y_axes, phys_dirs)
-
-        # Project neighbour vectors onto the local tangent planes
-        neighbour_phys_dirs = phys_dirs[neighbour_indices]
-        delta_vectors = neighbour_phys_dirs - phys_dirs[:, np.newaxis, :]
-        proj_x = np.sum(delta_vectors * local_x_axes[:, np.newaxis, :], axis=2)
-        proj_y = np.sum(delta_vectors * local_y_axes[:, np.newaxis, :], axis=2)
-
-        tilts_rad = np.zeros(self.ommatidia_count, dtype=np.float32)
-        ioa_major_arr = np.zeros(self.ommatidia_count, dtype=np.float32)
-        ioa_minor_arr = np.zeros(self.ommatidia_count, dtype=np.float32)
-
-        for i in range(self.ommatidia_count):
-
-            immediate_mask = is_immediate_neighbour[i]
-            points = np.vstack([proj_x[i, immediate_mask], proj_y[i, immediate_mask]]).T
-
-            if points.shape[0] < 2:  # not enough neighbours for PCA
-                # Fallback to a simple average
-                avg_angle = np.mean(angular_separations[i, immediate_mask]) if np.any(immediate_mask) else 0.0
-                ioa_major_arr[i], ioa_minor_arr[i], tilts_rad[i] = avg_angle, avg_angle, 0.0
-                continue
-
-            # Compute covariance and find the principal axis
-            cov_matrix = np.cov(points, rowvar=False)
-            eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
-            primary_axis_vector = eigenvectors[:, np.argmax(eigenvalues)]
-
-            # The tilt is the angle of this principal axis
-            tilts_rad[i] = np.arctan2(primary_axis_vector[1], primary_axis_vector[0])
-
-            # Rotate projected points to align with the new principal axes
-            cos_tilt, sin_tilt = np.cos(-tilts_rad[i]), np.sin(-tilts_rad[i])
-            aligned_proj_x = proj_x[i, immediate_mask] * cos_tilt - proj_y[i, immediate_mask] * sin_tilt
-            aligned_proj_y = proj_x[i, immediate_mask] * sin_tilt + proj_y[i, immediate_mask] * cos_tilt
-            neighbour_angles_aligned = np.arctan2(aligned_proj_y, aligned_proj_x)
-
-            # Find neighbours closest to the new major (aligned x) and minor (aligned y) axes
-            masked_angular_seps = angular_separations[i, immediate_mask]
-            major_indices = np.argsort(np.abs(np.sin(neighbour_angles_aligned)))[:2]
-            minor_indices = np.argsort(np.abs(np.cos(neighbour_angles_aligned)))[:2]
-
-            # Average the angles of the two best-matching neighbours for each axis
-            ioa_major_arr[i] = np.mean(masked_angular_seps[major_indices])
-            ioa_minor_arr[i] = np.mean(masked_angular_seps[minor_indices])
-
-        # Ensure minor is always the smaller value
-        final_ioa_minor = np.minimum(ioa_minor_arr, ioa_major_arr)
-        final_ioa_major = np.maximum(ioa_minor_arr, ioa_major_arr)
-
-        return final_ioa_minor, final_ioa_major, tilts_rad, neighbour_counts.astype(np.uint32)
-
-    def rebuild_spatial(self):
-        """
-        Rebuilds the internal KDTrees for positional and directional queries.
-        Also invalidates Eye caches if needed.
-        """
-        rebuilt = False
-
-        if self.needs_rebuild['direction']:
-            self.kdtree_directions = KDTree(self.data['direction'][:, :3])
-            self.needs_rebuild['direction'] = False
-            rebuilt = True
-
-        if self.needs_rebuild['origin']:
-            self.kdtree_positions = KDTree(self.data['origin'][:, :3])
-            self.needs_rebuild['origin'] = False
-            rebuilt = True
-
-        if rebuilt:
-            for eye_view in self._eye_cache.values():
-                eye_view._invalidate()
-
-    def max_gap(self):
-        """
-        Finds the maximum angular gap between any ommatidium and its
-        single nearest neighbour across the entire array.
+            displacement_um: Lateral focal-plane displacement (μm).
+                Scalar for uniform, or (n_mask,) per-lens.
+            axial_um: Axial contraction toward lens (μm), positive.
+                Scalar for uniform, or (n_mask,) per-lens.
+                Default 0 (lateral only).
+            lens_mask: Global lens indices to actuate. None = all.
         """
 
-        if self.ommatidia_count == 1:
-            return 0.0
+        if self._kernel is None:
+            raise RuntimeError("Actuation requires a full model (use from_build).")
 
-        distances, _ = self.kdtree_directions.query(self.data['direction'][:, :3], k=2)
-        max_euclidean_dist = np.max(distances[:, 1])
-        term = 1.0 - (max_euclidean_dist ** 2) / 2.0
-        return np.arccos(np.clip(term, -1.0, 1.0))
+        kernel = self._kernel
+        R = self.receptor_count
+        d_rest = kernel.nodal_distance_um  # nodal distance at rest
 
-    # Global spatial queries: These operate across all ommatidia regardless of eye_id and return global indices into self.data
-    # For per-eye queries, use .eye(id).query_*() instead
+        dx = kernel.offsets_um[:, 0]
+        dy = kernel.offsets_um[:, 1]
+
+        if lens_mask is None:
+            lens_mask = np.arange(self.lens_count)
+
+        lens_mask = np.asarray(lens_mask)
+        n_act = len(lens_mask)
+
+        lat = np.broadcast_to(np.float32(displacement_um), n_act).copy()
+        axi = np.broadcast_to(np.float32(axial_um), n_act).copy()
+        self._actuation_state[lens_mask] = lat
+
+        chi = self._bundle_orientation[lens_mask]
+        cos_chi = np.cos(chi)[:, np.newaxis]
+        sin_chi = np.sin(chi)[:, np.newaxis]
+
+        # Actuation direction: chi + kernel intrinsic angle (main_axis + saccade offset)
+        act_angle = chi + np.radians(kernel.actuation_angle_deg)
+        cos_act = np.cos(act_angle)[:, np.newaxis]
+        sin_act = np.sin(act_angle)[:, np.newaxis]
+
+        # Effective nodal distance after axial contraction
+        d_eff = d_rest - axi  # (n_act,)
+        d_eff = np.maximum(d_eff, 1.0)  # clamp to 1 μm minimum
+
+        # Rotate kernel offsets by chi then add lateral displacement along actuation axis
+        rot_dx = cos_chi * dx[np.newaxis, :] - sin_chi * dy[np.newaxis, :]
+        rot_dy = sin_chi * dx[np.newaxis, :] + cos_chi * dy[np.newaxis, :]
+        rot_dx += lat[:, np.newaxis] * cos_act
+        rot_dy += lat[:, np.newaxis] * sin_act
+
+        if self._local_right is None:
+            self._local_right, self._local_up = _compute_tangent_frames(self._lens_directions)
+
+        lr = self._local_right[lens_mask]
+        lu = self._local_up[lens_mask]
+        fwd = self._lens_directions[lens_mask]
+
+        # tip vectors (using per-lens effective nodal distance)
+        local_tip = np.stack([
+            rot_dx,
+            rot_dy,
+            np.broadcast_to(-d_eff[:, np.newaxis], (n_act, R)).copy()
+        ], axis=-1)
+
+        world_tip = (
+            local_tip[..., 0:1] * lr[:, np.newaxis, :] +
+            local_tip[..., 1:2] * lu[:, np.newaxis, :] +
+            local_tip[..., 2:3] * fwd[:, np.newaxis, :]
+        )  # (n_act, R, 3)
+
+        new_dirs = -world_tip
+        norms = np.linalg.norm(new_dirs, axis=-1, keepdims=True)
+        new_dirs /= norms
+
+        new_origins = self._lens_positions[lens_mask, np.newaxis, :] + world_tip
+
+        # build global receptor indices for all affected lenses
+        receptor_indices = (
+            lens_mask[:, np.newaxis] * R + np.arange(R)[np.newaxis, :]
+        ).ravel()  # (n_act * R,)
+
+        self.data['direction'][receptor_indices, :3] = new_dirs.reshape(-1, 3)
+        self.data['direction'][receptor_indices, 3] = 0.0
+        self.data['origin'][receptor_indices, :3] = new_origins.reshape(-1, 3)
+        self.data['origin'][receptor_indices, 3] = 1.0
+
+        # Also change acceptance angles for any with axial displacement
+        has_axial = np.any(axi != 0.0)
+
+        if has_axial:
+            wavelength_um = self._wavelength_nm * 1e-3
+            diffraction = wavelength_um / kernel.lens_diameter_um
+            geometric = kernel.diameters_um[np.newaxis, :] / d_eff[:, np.newaxis]
+            new_acc = np.sqrt(diffraction ** 2 + geometric ** 2)  # (n_act, R)
+
+            self.data['acceptance_angles'][receptor_indices, 0] = new_acc.ravel()
+            self.data['acceptance_angles'][receptor_indices, 1] = new_acc.ravel()
+
+        self.dirty_mask[receptor_indices] = True
+
+        self._stale_receptor_spatial = True
+
+    # Spatial structures: 2 levels tracked independently
+    #
+    # Lens-level (_stale_lens_spatial):
+    #   - Eye KDTrees (built from _lens_directions / _lens_origins)
+    #   - Eye neighbour graphs
+    #   - Only invalidated by scale(), translate(), or direct lens mutation
+    #   - Not invalidated by actuate() (lens axes are immutable after construction)
+    #
+    # Receptor-level (_stale_receptor_spatial):
+    #   - Global receptor KDTrees (built lazily from data['direction'] / data['origin'])
+    #   - Invalidated by actuate(), Receptor property setters, scale(), translate()
+    #   - Built lazily
+
+    def _resolve_lens_spatial(self):
+        """Clear lens-stale flag and invalidate Eye caches."""
+
+        if self._stale_lens_spatial:
+            self._stale_lens_spatial = False
+
+            for ev in self._eye_cache.values():
+                ev._invalidate()
+
+    def _ensure_global_kdtree_directions(self):
+        """Lazy build of receptor-level direction KDTree."""
+
+        if self._stale_receptor_spatial or self._kdtree_directions is None:
+            self._kdtree_directions = KDTree(self.data['direction'][:, :3])
+            self._stale_receptor_spatial = False  # directions rebuilt
+
+        return self._kdtree_directions
+
+    def _ensure_global_kdtree_positions(self):
+        """Lazy build of receptor-level position KDTree."""
+
+        if self._stale_receptor_spatial or self._kdtree_positions is None:
+            self._kdtree_positions = KDTree(self.data['origin'][:, :3])
+
+        return self._kdtree_positions
+
+    @property
+    def kdtree_directions(self):
+        """Global (receptor-level) direction KDTree (lazy)."""
+        return self._ensure_global_kdtree_directions()
+
+    @property
+    def kdtree_positions(self):
+        """Global (receptor-level) position KDTree (lazy)."""
+        return self._ensure_global_kdtree_positions()
+
+    # Global spatial queries (receptor-level, return global data indices)
+    # TODO: These are duplicated, could be taken out as pure functions
+    #
+    #   These search over all receptors (N*R elements).
+    #   In the full model (R>1), Eye-level queries (which operate on lens optical axes) should be preferred.
+
     def query_directions(self, directions: ArrayLike, k: int = 1) -> np.ndarray:
         """
-        Finds ommatidia whose viewing direction is closest to the given direction vector(s).
-
-        Args:
-            directions: A (3,) vector or an (N, 3) array of direction vectors.
-            k: The number of nearest matches to return for each input direction.
-
-        Returns global indices into self.data
+        Find receptors with optical axis best aligned with some directions. Global indices.
         """
+
         if k < 1:
-            raise ValueError("k must be a positive integer.")
-
-        self.rebuild_spatial()
-
-        query_dirs = np.asarray(directions, dtype=np.float32)
-        is_single_query = query_dirs.ndim == 1
-        query_dirs_2d = np.atleast_2d(query_dirs)
-
-        norms = np.linalg.norm(query_dirs_2d, axis=-1, keepdims=True)
-        np.divide(query_dirs_2d, norms, out=query_dirs_2d, where=norms != 0)
-
-        distances, indices = self.kdtree_directions.query(query_dirs_2d, k=k)
-
-        if is_single_query and k == 1:
-            return indices.item()
-        return indices.squeeze()
+            raise ValueError("k must be >= 1")
+        kd = self._ensure_global_kdtree_directions()
+        q = np.atleast_2d(np.asarray(directions, dtype=np.float32))
+        norms = np.linalg.norm(q, axis=-1, keepdims=True)
+        np.divide(q, norms, out=q, where=norms != 0)
+        is_single = np.asarray(directions).ndim == 1
+        _, idx = kd.query(q, k=k)
+        if is_single and k == 1:
+            return idx.item()
+        return idx.squeeze()
 
     def query_position(self, positions: ArrayLike, k: int = 1) -> np.ndarray:
         """
-        Finds ommatidia whose origin is closest to the given point(s) in space.
-
-        Args:
-            positions: A (3,) vector or an (N, 3) array of points.
-            k: The number of nearest ommatidia to return for each input point.
-
-        Returns global indices into self.data
+        Find receptors closest to some positions (on the eye surface). Global indices.
         """
+
         if k < 1:
-            raise ValueError("k must be a positive integer.")
+            raise ValueError("k must be >= 1")
 
-        self.rebuild_spatial()
+        kd = self._ensure_global_kdtree_positions()
+        q = np.atleast_2d(np.asarray(positions, dtype=np.float32))
+        is_single = np.asarray(positions).ndim == 1
+        _, idx = kd.query(q, k=k)
 
-        query_pos = np.asarray(positions, dtype=np.float32)
-        is_single_query = query_pos.ndim == 1
-        query_pos_2d = np.atleast_2d(query_pos)
+        if is_single and k == 1:
+            return idx.item()
 
-        distances, indices = self.kdtree_positions.query(query_pos_2d, k=k)
-
-        if is_single_query and k == 1:
-            return indices.item()
-        return indices.squeeze()
+        return idx.squeeze()
 
     def query_lookat(self, targets: ArrayLike, k: int = 1) -> np.ndarray:
         """
-        Finds ommatidia whose viewing direction best aligns with one or several target points.
-        Returns global indices into self.data
+        Find receptors looking at some target points (world-space). Global indices.
         """
+
         if k < 1:
-            raise ValueError("k must be a positive integer.")
+            raise ValueError("k must be >= 1")
 
-        self.rebuild_spatial()
+        q = np.atleast_2d(np.asarray(targets, dtype=np.float32))
+        is_single = np.asarray(targets).ndim == 1
 
-        query_targets = np.asarray(targets, dtype=np.float32)
-        is_single_query = query_targets.ndim == 1
-        query_targets_2d = np.atleast_2d(query_targets)
+        desired = q[:, np.newaxis, :] - self.data['origin'][:, :3][np.newaxis, :, :]
 
-        # Direction from each ommatidium to each target
-        desired_vectors = query_targets_2d[:, np.newaxis, :] - self.data['origin'][:, :3][np.newaxis, :, :]
-        norms = np.linalg.norm(desired_vectors, axis=-1, keepdims=True)
-        np.divide(desired_vectors, norms, out=desired_vectors, where=norms != 0)
+        norms = np.linalg.norm(desired, axis=-1, keepdims=True)
+        np.divide(desired, norms, out=desired, where=norms != 0)
+        dots = np.einsum('jk,ijk->ij', self.data['direction'][:, :3], desired)
 
-        # higher dot product == smaller angle == better alignment
-        dot_products = np.einsum('jk,ijk->ij', self.data['direction'][:, :3], desired_vectors)
+        part = np.argpartition(dots, -k, axis=1)[:, -k:]
+        top = np.take_along_axis(dots, part, axis=1)
 
-        # Get top k indices for each target (each row)
-        partition_indices = np.argpartition(dot_products, -k, axis=1)[:, -k:]
+        order = np.argsort(top, axis=1)[:, ::-1]
+        best = np.take_along_axis(part, order, axis=1)
 
-        # Sort (only the top k) indices based on their dot product values
-        top_k_dots = np.take_along_axis(dot_products, partition_indices, axis=1)
-        sorted_top_k_indices = np.argsort(top_k_dots, axis=1)[:, ::-1]
-        best_indices = np.take_along_axis(partition_indices, sorted_top_k_indices, axis=1)
+        if is_single and k == 1:
+            return best.item()
 
-        if is_single_query and k == 1:
-            return best_indices.item()
+        return best.squeeze()
 
-        return best_indices.squeeze()
-
-    def query_directions_angle(self, center_direction: ArrayLike, angle: float, degrees: bool = True) -> np.ndarray:
+    def query_cone(self, center_direction: ArrayLike, angle: float, degrees: bool = True) -> np.ndarray:
         """
-        Finds all ommatidia whose viewing direction is within a given angle of a center direction.
-        Returns global indices into self.data.
+        Find all receptors within angle of a center direction. Global indices.
         """
-        self.rebuild_spatial()
 
-        # Normalise the input direction to be safe
-        center_direction = np.asarray(center_direction, dtype=np.float32)
-        center_direction /= np.linalg.norm(center_direction)
+        kd = self._ensure_global_kdtree_directions()
+        c = np.asarray(center_direction, dtype=np.float32)
+        c /= np.linalg.norm(c)
+        a = np.deg2rad(angle) if degrees else angle
 
-        # Convert the search angle (cone radius) to a Euclidean distance (chord length) on the unit sphere
-        angle_rad = np.deg2rad(angle) if degrees else angle
-        radius = 2.0 * np.sin(angle_rad / 2.0)
+        return kd.query_ball_point(c, r=2.0 * np.sin(a / 2.0))
 
-        indices = self.kdtree_directions.query_ball_point(center_direction, r=radius)
-        return indices
-
-    def query_positions_radius(self, center_position: ArrayLike, radius: float) -> np.ndarray:
+    def query_ball(self, center_position: ArrayLike, radius: float) -> np.ndarray:
         """
-        Finds all ommatidia whose origin is within a given radius of a centre point.
-        Returns global indices into self.data
+        Find all receptors within radius of a center position. Global indices.
         """
-        self.rebuild_spatial()
 
-        center_position = np.asarray(center_position, dtype=np.float32)
+        kd = self._ensure_global_kdtree_positions()
+        c = np.asarray(center_position, dtype=np.float32)
+        return kd.query_ball_point(c, r=radius)
 
-        indices = self.kdtree_positions.query_ball_point(center_position, r=radius)
-        return indices
-
-    def expand_rhabdomeres(self, layout: 'RhabdomereLayout') -> 'OmmatidialArray':
+    def max_gap(self) -> float:
         """
-        Returns a new OmmatidialArray where each ommatidium has been expanded
-        into R receptors according to the given rhabdomere layout.
-
-        The new array's packed_data encodes:
-          - eye_id: inherited from parent lens
-          - receptor_type: [0 ... R-1] for each rhabdomere
-          - custom_id: index of the parent lens in the original array
+        Largest angular gap between any receptor and its nearest neighbour.
         """
-        N = self.ommatidia_count
-        R = len(layout.offsets_um)
 
-        new_data = np.zeros(N * R, dtype=GPU_OMMATIDIUM_DTYPE)
+        if len(self.data) <= 1:
+            return 0.0
 
-        lens_fwd = self.data['direction'][:, :3]
-        lens_pos = self.data['origin'][:, :3]
+        kd = self._ensure_global_kdtree_directions()
+        d, _ = kd.query(self.data['direction'][:, :3], k=2)
+        return float(np.arccos(np.clip(1.0 - (np.max(d[:, 1]) ** 2) / 2.0, -1, 1)))
 
-        # tangent space
-        dots = np.abs(lens_fwd @ WORLD_UP)
-        ref_ups = np.where(dots[:, np.newaxis] > 0.9999, WORLD_RIGHT, WORLD_UP)
-        local_right = np.cross(lens_fwd, ref_ups)
-        local_right /= np.linalg.norm(local_right, axis=1, keepdims=True)
-        local_up = np.cross(local_right, lens_fwd)
+    # Whole-array transforms (initial unit scaling, agent setup, etc)
 
-        # dx, dy = physical micrometres behind the lens
-        dx = layout.offsets_um[:, 0]
-        dy = layout.offsets_um[:, 1]
-        f = layout.focal_length_um
-
-        is_ventral = lens_pos[:, 1] < 0 # TODO: This should be a property maybe?
-
-        # Local vectors (from lens centre to receptor tip)
-        local_tip_offsets = np.tile(np.column_stack([dx, dy, np.full(R, -f)]), (N, 1, 1))
-        local_tip_offsets[is_ventral, :, 1] *= -1  # equator flip
-
-        # to world space
-        world_tip_offsets = (
-                local_tip_offsets[..., 0:1] * local_right[:, None, :] +
-                local_tip_offsets[..., 1:2] * local_up[:, None, :] +
-                local_tip_offsets[..., 2:3] * lens_fwd[:, None, :]
-        ).reshape(-1, 3)
-
-        # Origin is receptor tip
-        new_data['origin'][:, :3] = np.repeat(lens_pos, R, axis=0) + world_tip_offsets
-        new_data['origin'][:, 3] = 1.0
-
-        # Direction is the vector from the tip through the lens centre
-        # (which is -world_tip_offsets normalised)
-        new_dirs = -world_tip_offsets
-        new_dirs /= np.linalg.norm(new_dirs, axis=1, keepdims=True)
-        new_data['direction'][:, :3] = new_dirs
-
-        # inherit the Δφ and Tilt from the parent lens lattice
-        # (allows the L-cell neurons to know the lens spacing even in rhabdomere mode)
-        new_data['interommatidial_angles'] = np.repeat(self.data['interommatidial_angles'], R, axis=0)
-        new_data['tilt'] = np.repeat(self.data['tilt'], R)
-        new_data['acceptance_angles'][:, 0] = np.tile(layout.diameters_um / f, N)
-        new_data['acceptance_angles'][:, 1] = np.tile(layout.diameters_um / f, N)
-        new_data['sensitivity'] = np.repeat(self.data['sensitivity'], R)
-
-        eye_ids = np.repeat(self.data['packed_data'] & 0x07, R)
-        receptor_types = np.tile(np.arange(R, dtype=np.uint32), N)
-        parent_ids = np.repeat(np.arange(N, dtype=np.uint32), R)
-        new_data['packed_data'] = (eye_ids & 0x07) | ((receptor_types & 0x0F) << 3) | ((parent_ids & 0xFFFF) << 11)
-
-        # Build the new array directly from the computed data, bypassing __init__
-        expanded = object.__new__(OmmatidialArray)
-        expanded.data = new_data
-        expanded.ommatidia_count = N * R
-        expanded.receptor_count = R
-        expanded._is_rhabdomeres = True
-        expanded._lens_data = self.data.copy()  # backref to lens level
-
-        expanded.ioa_minor_rad = new_data['interommatidial_angles'][:, 0]
-        expanded.ioa_major_rad = new_data['interommatidial_angles'][:, 1]
-
-        with np.errstate(divide='ignore', invalid='ignore'):
-            expanded.eye_parameter_minor = new_data['acceptance_angles'][:, 0] / expanded.ioa_minor_rad
-            expanded.eye_parameter_major = new_data['acceptance_angles'][:, 1] / expanded.ioa_major_rad
-
-        np.nan_to_num(expanded.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-        np.nan_to_num(expanded.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-
-        expanded.dirty_mask = np.zeros(N * R, dtype=bool)
-        expanded.needs_rebuild = {'direction': False, 'origin': False}
-        expanded.kdtree_directions = KDTree(new_data['direction'][:, :3])
-        expanded.kdtree_positions = KDTree(new_data['origin'][:, :3])
-        expanded._eye_cache = {}
-
-        return expanded
-
-    @property
-    def is_rhabdomeres(self) -> bool:
-        return self._is_rhabdomeres
-
-    @property
-    def lens_array(self) -> Optional[np.ndarray]:
-        """If this is a rhabdomere-expanded array, the original lens-level data."""
-        return self._lens_data
-
-    # These are likely the only two operations we want, so no mixin
     def scale(self, factor: float):
         """
-        Scales the entire array of ommatidia origins by a factor (i.e. for unit conversion).
+        Scale all receptor origins by a factor.
         """
+
         self.data['origin'][:, :3] *= factor
-        self.needs_rebuild['origin'] = True
-        self.rebuild_spatial()
+        self._lens_positions *= factor
+
+        # both levels stale: lens positions changed, receptor positions changed
+        self._stale_receptor_spatial = True
+        self._stale_lens_spatial = True
+        self._kdtree_directions = None
+        self._kdtree_positions = None
+        self._resolve_lens_spatial()
+
         return self
 
     def translate(self, vector: ArrayLike):
         """
-        Translates the entire array of ommatidia origins by a vector.
+        Translate all receptor origins by a vector.
         """
         v = np.asarray(vector, dtype=np.float32)
+
         self.data['origin'][:, :3] += v
-        self.needs_rebuild['origin'] = True
-        self.rebuild_spatial()
+
+        self._lens_positions += v
+        self._stale_receptor_spatial = True
+        self._stale_lens_spatial = True
+        self._kdtree_directions = None
+        self._kdtree_positions = None
+        self._resolve_lens_spatial()
+
         return self
 
-class _GlobalOmmatidiaView:
+
+## TODO: Move these to geometry utils module
+
+def estimate_lod(n_vertices: int) -> int:
     """
-    backward-compatible global indexing into all ommatidia (regardless of eye_id)
-    Used by OmmatidialArray.ommatidia property
+    LoD for icosphere subdivision to approximate `nb_vertices`.
     """
-
-    def __init__(self, array: OmmatidialArray):
-        self._array = array
-
-    def __getitem__(self, key) -> Ommatidium:
-        return Ommatidium(self._array.data, key, self._array)
-
-    def __len__(self):
-        return self._array.ommatidia_count
-
-    def __repr__(self):
-        return f"<GlobalOmmatidiaView for {len(self)} ommatidia>"
-
-
-class CompoundEye(OmmatidialArray):
-    def __init_subclass__(cls, **kwargs):
-        warnings.warn(
-            "CompoundEye is deprecated. Use OmmatidialArray instead.",
-            DeprecationWarning, stacklevel=2
-        )
-        super().__init_subclass__(**kwargs)
-
-    def __init__(self, *args, **kwargs):
-        warnings.warn(
-            "CompoundEye is deprecated. Use OmmatidialArray instead.",
-            DeprecationWarning, stacklevel=2
-        )
-        super().__init__(*args, **kwargs)
-
-
-
-##
-
-def estimate_lod(num_ommatidia: int) -> int:
-    """
-    Calculates the Level of Division (LoD) needed to produce a number of ommatidia.
-    """
-    if num_ommatidia < 12:
+    if n_vertices < 12:
         return 1
-
-    # LoD: y = 10 * n^2 + 2 for n
-    n = np.sqrt((num_ommatidia - 2) / 10.0)
-    return int(np.round(n))
+    return int(np.round(np.sqrt((n_vertices - 2) / 10.0)))
 
 
 def icosahedron_faces() -> np.ndarray:
     """
-    Defines the base (z-axis aligned) icosahedron and returns the vertices for the 20 triangular faces.
+    Base z-axis-aligned icosahedron.
+    Returns (20, 3, 3) face vertices.
     """
-    # TODO: Move this to the primitives file maybe?
 
-    # Golden ratio
     G = (1 + np.sqrt(5)) / 2.0
 
-    # Three mutually perpendicular golden ratio rectangles make the icosahedron's vertices :)
     p = np.array([
-        [G, -G, -G, G, 1.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, G, -G, -G, G, 1.0, 1.0, -1.0, -1.0],
-        [1.0, 1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 0.0, G, -G, -G, G]
-    ]).T
-    # Rotate top point to the z-axis
+        [G, -G, -G, G, 1, 1, -1, -1, 0, 0, 0, 0],
+        [0, 0, 0, 0, G, -G, -G, G, 1, 1, -1, -1],
+        [1, 1, -1, -1, 0, 0, 0, 0, G, -G, -G, G]
+    ], dtype=np.float32).T
+
     p /= np.linalg.norm(p[0])
     ang = np.arctan(p[0, 0] / p[0, 2])
+
     ca, sa = np.cos(ang), np.sin(ang)
-    rotation = np.array([[ca, 0.0, -sa], [0.0, 1.0, 0.0], [sa, 0.0, ca]])
-    p = np.inner(rotation, p).T
+    rot = np.array([[ca, 0, -sa], [0, 1, 0], [sa, 0, ca]])
+    p = np.inner(rot, p).T
+    p = p[[0, 3, 4, 8, -1, 5, -2, -3, 7, 1, 6, 2]]
 
-    # Reorder in a downward spiral
-    reorder_index = [0, 3, 4, 8, -1, 5, -2, -3, 7, 1, 6, 2]
-    p = p[reorder_index]
-
-    # 20 triangular faces
-    tri_indices = np.array([
+    tri = np.array([
         [1, 2, 3, 4, 5, 6, 2, 7, 2, 8, 3, 9, 10, 10, 6, 6, 7, 8, 9, 10],
         [2, 3, 4, 5, 1, 7, 1, 8, 8, 9, 9, 10, 5, 6, 1, 11, 11, 11, 11, 11],
         [0, 0, 0, 0, 0, 1, 7, 2, 3, 3, 4, 4, 4, 5, 5, 7, 8, 9, 10, 6]
     ]).T
-    return p[tri_indices]
+    return p[tri]
 
 
 def barycentric_coords(n_subdiv: int) -> np.ndarray:
     """
-    Generates a matrix of barycentric coordinates (u, v, w)
-    inside a reference triangle where u + v + w = 1
+    Barycentric coordinates for subdivided reference triangle.
     """
 
     vals = np.linspace(0, 1, n_subdiv + 1)
+    num = int((n_subdiv + 1) * (n_subdiv + 2) / 2)
+    bc = np.zeros((num, 3))
 
-    # Total number of points in a triangle subdivided n times
-    num_points = int((n_subdiv + 1) * (n_subdiv + 2) / 2)
-    bcmat = np.zeros((num_points, 3))
-
-    # Builds the points 'row by row' inside the ref triangle
     shifts = np.arange(n_subdiv + 1, 0, -1)
     starts = np.zeros(n_subdiv + 1, dtype=int)
     starts[1:] = np.cumsum(shifts[:-1])
     stops = starts + shifts
 
-    # along each row: u decreases, v increases, w stays constant
-    for i, (start, stop, shift) in enumerate(zip(starts, stops, shifts)):
-        bcmat[start:stop, 0] = vals[shift - 1::-1]
-        bcmat[start:stop, 1] = vals[:shift]
-        bcmat[start:stop, 2] = vals[i]
-
-    return bcmat
+    for i, (s, e, sh) in enumerate(zip(starts, stops, shifts)):
+        bc[s:e, 0] = vals[sh - 1::-1]
+        bc[s:e, 1] = vals[:sh]
+        bc[s:e, 2] = vals[i]
+    return bc
 
 
 def subdivide_icosahedron(n_subdiv: int) -> np.ndarray:
-    """Subdivides icosahedron using barycentric coordinates."""
+    """
+    Subdivide icosahedron via barycentric interpolation onto unit sphere.
+    """
 
     verts = icosahedron_faces()
     bary = barycentric_coords(n_subdiv)
 
-    # Barycentric interpolation to each of the 20 triangles
-    # 'ij,kjl->kil': i=bary_idx, j=bary_coord, k=tri_idx, l=vertex_coord
-    all_new_verts = np.einsum('ij,kjl->kil', bary, verts)
-    # Normalize to unit sphere and find unique vertices
-    all_new_verts = all_new_verts.reshape(-1, 3)
-    all_new_verts /= np.linalg.norm(all_new_verts, axis=1)[:, np.newaxis]
-    _, iunique = np.unique(np.round(all_new_verts, 6), axis=0, return_index=True)
+    all_v = np.einsum('ij,kjl->kil', bary, verts).reshape(-1, 3)
+    all_v /= np.linalg.norm(all_v, axis=1)[:, np.newaxis]
+    _, iu = np.unique(np.round(all_v, 6), axis=0, return_index=True)
 
-    return all_new_verts[iunique].astype(np.float32)
+    return all_v[iu].astype(np.float32)
 
 
-def fibonacci_sphere(samples: int):
-    """Generate uniform points on a unit sphere with the Fibonacci method."""
+def fibonacci_sphere(samples: int) -> np.ndarray:
+    """
+    Uniform points on unit sphere (Fibonacci method).
+    """
 
-    phi = np.pi * (3. - np.sqrt(5.))  # golden angle
+    phi = np.pi * (3.0 - np.sqrt(5.0))
     i = np.arange(samples)
-    y = 1 - (i / float(samples - 1)) * 2  # y goes from 1 to -1
-    radius = np.sqrt(1 - y * y)  # radius at y
-    theta = phi * i  # golden angle increment
-    x = np.cos(theta) * radius
-    z = np.sin(theta) * radius
-    return np.column_stack((x, y, z))
+    y = 1 - (i / float(samples - 1)) * 2
+    r = np.sqrt(1 - y * y)
+    theta = phi * i
+
+    return np.column_stack([np.cos(theta) * r, y, np.sin(theta) * r])

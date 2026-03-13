@@ -4,8 +4,8 @@
 
 layout (location = 0) in vec3 cone_vertex;
 
-layout(std430, binding = 0) readonly buffer OmmatidiaInputBlock {
-   Ommatidium ommatidia_data[];
+layout(std430, binding = 0) readonly buffer ReceptorsInputBlock {
+   Receptor receptors_data[];
 };
 
 layout(std430, binding = 1) readonly buffer ScalarDataBlock {
@@ -26,9 +26,9 @@ layout (location = 0) out float v_scalar;   // normalised [0, 1]
 
 void main() {
     int instance_id = gl_InstanceID;
-    Ommatidium om = ommatidia_data[instance_id];
+    Receptor rcpt = receptors_data[instance_id];
 
-    vec3 projection_vector = (projection_mode == 1) ? om.direction.xyz: normalize(om.origin.xyz);
+    vec3 projection_vector = (projection_mode == 1) ? rcpt.direction.xyz: normalize(rcpt.origin.xyz);
 
     float longitude = atan(projection_vector.x, -projection_vector.z);
     float latitude  = asin(projection_vector.y);
@@ -36,13 +36,13 @@ void main() {
 
     vec2 base_ellipse_shape;
     if (tiled_mode) {
-        base_ellipse_shape = cone_vertex.xy * om.interommatidial_angles;
+        base_ellipse_shape = cone_vertex.xy * rcpt.interommatidial_angles;
     } else {
-        base_ellipse_shape = cone_vertex.xy * om.acceptance_angles;
+        base_ellipse_shape = cone_vertex.xy * rcpt.acceptance_angles;
     }
 
-    float s = sin(om.tilt);
-    float c = cos(om.tilt);
+    float s = sin(rcpt.tilt);
+    float c = cos(rcpt.tilt);
     mat2 rotation_matrix = mat2(c, -s, s, c);
     vec2 rotated_ellipse_xy = rotation_matrix * base_ellipse_shape;
 

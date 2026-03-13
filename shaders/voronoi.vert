@@ -6,12 +6,12 @@
 layout (location = 0) in vec3 cone_vertex;
 
 // Bindings
-layout(std430, binding = 0) readonly buffer OmmatidiaInputBlock {
-   Ommatidium ommatidia_data[];
+layout(std430, binding = 0) readonly buffer ReceptorsInputBlock {
+   Receptor receptors_data[];
 };
 
 layout(std430, binding = 1) readonly buffer ColorDataBlock {
-   vec4 ommatidia_colors[];
+   vec4 receptors_colors[];
 };
 
 // Uniforms
@@ -28,15 +28,15 @@ layout (location = 0) out vec3 v_color;
 void main() {
     // Get the data for this instance
     int instance_id = gl_InstanceID;
-    Ommatidium om = ommatidia_data[instance_id];
+    Receptor rcpt = receptors_data[instance_id];
 
-    float tilt_angle = om.tilt;
-    vec3 instance_color = ommatidia_colors[instance_id].rgb;
+    float tilt_angle = rcpt.tilt;
+    vec3 instance_color = receptors_colors[instance_id].rgb;
 
     // Determine projection vector based on mode
     vec3 projection_vector = (projection_mode == 1)
-        ? om.direction.xyz
-        : normalize(om.origin.xyz);
+        ? rcpt.direction.xyz
+        : normalize(rcpt.origin.xyz);
 
     // Apply spherical projection to get screen position
     float longitude = atan(projection_vector.x, -projection_vector.z);
@@ -46,9 +46,9 @@ void main() {
     // ellipse shape is determined by acceptance angles or interommatidial angles depending on the mode
     vec2 base_ellipse_shape;
     if (tiled_mode) {
-        base_ellipse_shape = cone_vertex.xy * om.interommatidial_angles;
+        base_ellipse_shape = cone_vertex.xy * rcpt.interommatidial_angles;
     } else {
-        base_ellipse_shape = cone_vertex.xy * om.acceptance_angles;
+        base_ellipse_shape = cone_vertex.xy * rcpt.acceptance_angles;
     }
 
     // Orient the ellipse

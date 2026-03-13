@@ -14,7 +14,7 @@ struct Material {
     uint pad0, pad1;
 };
 
-struct Ommatidium {
+struct Receptor {
     vec4 origin;
     vec4 direction;
     vec2 acceptance_angles;       // .x = minor axis, .y = major axis
@@ -35,20 +35,20 @@ vec4 unpack_color(uint packed_color) {
     return vec4(r, g, b, a);
 }
 
-uint unpack_eye_id(Ommatidium om) {
-    return om.packed_data & 7u;
+uint unpack_eye_id(Receptor rcpt) {
+    return rcpt.packed_data & 7u; // bits 0-2
 }
 
-uint unpack_receptor_type(Ommatidium om) {
-    return om.packed_data & 0x0Fu;
+uint unpack_receptor_type(Receptor rcpt) {
+    return (rcpt.packed_data >> 3u) & 15u; // bits 3-6
 }
 
-uint unpack_neighbours_count(Ommatidium om) {
-    return (om.packed_data >> 4) & 0x0Fu;
+uint unpack_neighbours_count(Receptor rcpt) {
+    return (rcpt.packed_data >> 7u) & 15u; // bits 7-10
 }
 
-uint unpack_custom_id(Ommatidium om) {
-    return (om.packed_data >> 8) & 0xFFFFu;
+uint unpack_lens_index(Receptor rcpt) {
+    return (rcpt.packed_data >> 11u) & 65535u; // bits 11-26
 }
 
 struct Triangle {
@@ -86,11 +86,11 @@ float halton_sequence(uint index, uint base) {
 
 // Generates a sample direction using 'true' Gaussian importance sampling
 // (as in, the distribution of samples directly matches the Gaussian acceptance function)
-//      - om: The ommatidium data containing H and V acceptance angles
-//      - tangent, bitangent, forward: The basis vectors of the ommatidium's local frame
+//      - rcpt: The receptor data containing H and V acceptance angles
+//      - tangent, bitangent, forward: The basis vectors of the receptor's local frame
 //      - u1, u2: Two uniform random numbers in the range [0, 1]
 vec3 sampledir(
-    in Ommatidium om,
+    in Receptor rcpt,
     in vec3 tangent,
     in vec3 bitangent,
     in vec3 forward,
@@ -102,8 +102,8 @@ vec3 sampledir(
 
     // Importance sample the polar angle theta for each axis (minor and major)
     // using the inverse CDF of the Gaussian distribution
-    float angle_minor = om.acceptance_angles.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);
-    float angle_major = om.acceptance_angles.y * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    float angle_minor = rcpt.acceptance_angles.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    float angle_major = rcpt.acceptance_angles.y * sqrt(-log(u1) / GAUSS_CONSTANT_K);
 
     // Using the same random number u1 for both maintains correlation and correctly
     // forms an elliptical distribution from a circular one
@@ -113,9 +113,9 @@ vec3 sampledir(
     point_on_ellipse.x = tan(angle_minor) * cos(phi);
     point_on_ellipse.y = tan(angle_major) * sin(phi);
 
-    // Rotate this 2D point by the ommatidium's elliptic tilt
-    float s = sin(om.tilt);
-    float c = cos(om.tilt);
+    // Rotate this 2D point by the receptor's elliptic tilt
+    float s = sin(rcpt.tilt);
+    float c = cos(rcpt.tilt);
     mat2 rotation_matrix = mat2(c, -s, s, c);
     vec2 tilted_point = rotation_matrix * point_on_ellipse;
 

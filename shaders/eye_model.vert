@@ -4,8 +4,8 @@
 
 layout(location = 0) in vec3 model_vertex;
 
-layout(std430, binding = 0) readonly buffer OmmatidiaInputBlock {
-   Ommatidium ommatidia_data[];
+layout(std430, binding = 0) readonly buffer ReceptorsInputBlock {
+   Receptor receptor_data[];
 };
 
 uniform mat4 view;
@@ -29,24 +29,24 @@ mat3 rmatFromDir(vec3 z) {
 
 void main() {
     int i = gl_InstanceID;
-    Ommatidium om = ommatidia_data[i];
+    Receptor rcpt = receptor_data[i];
 
     v_mode = projection_mode;
-    v_eye_id = unpack_eye_id(om);
+    v_eye_id = unpack_eye_id(rcpt);
 
-    vec3 O_world = (eye_to_world * vec4(om.origin.xyz * visualisation_scale, 1.0)).xyz;
-    vec3 D_world = normalize((eye_to_world * vec4(om.direction.xyz, 0.0)).xyz);
+    vec3 O_world = (eye_to_world * vec4(rcpt.origin.xyz * visualisation_scale, 1.0)).xyz;
+    vec3 D_world = normalize((eye_to_world * vec4(rcpt.direction.xyz, 0.0)).xyz);
 
     mat3 R_world = rmatFromDir(D_world);
-    float tilt = om.tilt;
+    float tilt = rcpt.tilt;
     mat3 R_tilt = mat3(cos(tilt), -sin(tilt), 0,
                        sin(tilt),  cos(tilt), 0,
                        0,          0,         1);
     mat3 S;
 
     if (projection_mode == 1) {
-        float half_acceptance_minor = 0.5 * om.acceptance_angles.x;
-        float half_acceptance_major = 0.5 * om.acceptance_angles.y;
+        float half_acceptance_minor = 0.5 * rcpt.acceptance_angles.x;
+        float half_acceptance_major = 0.5 * rcpt.acceptance_angles.y;
         float radius_minor = cone_length * tan(half_acceptance_minor);
         float radius_major = cone_length * tan(half_acceptance_major);
 
@@ -58,11 +58,11 @@ void main() {
 
     }
     else {
-        float eye_radius_world = length(om.origin.xyz) * visualisation_scale;
+        float eye_radius_world = length(rcpt.origin.xyz) * visualisation_scale;
         if (eye_radius_world < 0.001) eye_radius_world = 0.01 * visualisation_scale;
 
-        float half_inter_angle_minor = 0.5 * om.interommatidial_angles.x;
-        float half_inter_angle_major = 0.5 * om.interommatidial_angles.y;
+        float half_inter_angle_minor = 0.5 * rcpt.interommatidial_angles.x;
+        float half_inter_angle_major = 0.5 * rcpt.interommatidial_angles.y;
         float radius_minor = eye_radius_world * sin(half_inter_angle_minor);
         float radius_major = eye_radius_world * sin(half_inter_angle_major);
 

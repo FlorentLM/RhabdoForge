@@ -9,7 +9,7 @@ from graphics.agent import Agent
 from graphics.renderers.raytracer import Raytracer
 from graphics.renderers.base import Colormap
 from graphics.context import Context
-from geometry.compound_eyes import OmmatidialArray, Eye
+from geometry.compound_eyes import ReceptorArray, Eye
 from graphics.debug import AxesGizmo, DebugGrid, DebugBox
 
 
@@ -175,7 +175,7 @@ scene.add_instance(top_wall)
 
 ##
 
-eye_array = OmmatidialArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+eye_array = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
 eye_array.scale(0.01)
 
 left_eye = eye_array.eye(0)
@@ -191,7 +191,7 @@ def random_tunnel_start(tunnel_width: float, tunnel_height: float, randomise_hei
 agent = Agent()
 
 renderer = Raytracer(
-    eye_model=eye_array, scene=scene,
+    receptor_array=eye_array, scene=scene,
     nb_samples=512,
     time_accumulation=0.012,
     time_dithering=True,

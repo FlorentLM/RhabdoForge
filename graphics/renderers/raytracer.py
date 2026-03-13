@@ -9,7 +9,7 @@ from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from graphics.agent import Agent
-from graphics.renderers.base import BaseInsectEyeRenderer
+from graphics.renderers.base import BaseRenderer
 from graphics.scene import Scene, AssetType
 from graphics.lights import (
     DirectionalLight, PointLight, AreaLight, directional_light_dtype, point_light_dtype, area_light_dtype,
@@ -542,12 +542,12 @@ class RaytracingSceneBaker:
             glDeleteTextures(1, [self.tex_array])
 
 
-class Raytracer(BaseInsectEyeRenderer):
+class Raytracer(BaseRenderer):
     """
     Raytracer for compound eye rendering.
     """
 
-    def __init__(self, eye_model, scene: Scene,
+    def __init__(self, receptor_array, scene: Scene,
                  time_dithering: bool = True,
                  time_accumulation: float = 0.0,
                  nb_samples: int = 256,
@@ -557,7 +557,7 @@ class Raytracer(BaseInsectEyeRenderer):
                  enable_direct: bool = True,
                  enable_shadows: bool = True,
                  enable_ambient: bool = True,
-        ):
+                 ):
 
         self.scene = scene  # just for convenience
         self._scene_baked = RaytracingSceneBaker(scene)
@@ -575,7 +575,7 @@ class Raytracer(BaseInsectEyeRenderer):
 
         # super().__init__ *after* baking the scene to estimate VRAM
         super().__init__(
-            eye_model,
+            receptor_array,
             time_dithering=time_dithering,
             time_accumulation=time_accumulation,
             nb_samples=nb_samples,
@@ -601,17 +601,17 @@ class Raytracer(BaseInsectEyeRenderer):
 
         # Default number of samples
         self._samples_per_ommatidium = 0
-        self.samples_per_ommatidium = nb_samples  # via the setter to allocate the SSBO
+        self.samples_per_receptor = nb_samples  # via the setter to allocate the SSBO
 
     @property
     def samples_per_ommatidium(self):
         return self._samples_per_ommatidium
 
     @samples_per_ommatidium.setter
-    def samples_per_ommatidium(self, value):
+    def samples_per_receptor(self, value):
         bytes_per_sample = 16
         max_total_samples = self._max_ssbo_size_bytes // bytes_per_sample
-        max_samples_per_om = max(1, max_total_samples // self.num_ommatidia)
+        max_samples_per_om = max(1, max_total_samples // self.total_receptors)
         new_value = int(np.clip(value, 1, max_samples_per_om))
 
         if new_value != value:
@@ -622,7 +622,7 @@ class Raytracer(BaseInsectEyeRenderer):
 
         self.samples_per_pixel = 1
         self._samples_per_ommatidium = new_value
-        self.total_samples = self.num_ommatidia * self._samples_per_ommatidium
+        self.total_samples = self.total_receptors * self._samples_per_ommatidium
         required_buffer_size = self.total_samples * bytes_per_sample
 
         print(f"Allocating ray result buffer for {self.total_samples:,} "
@@ -763,7 +763,7 @@ class Raytracer(BaseInsectEyeRenderer):
     def _bind_ssbos(self):
         """Binds all scene geometry and light SSBOs to their fixed slots."""
 
-        # Bindings 0 and 1 are for the ommatidia data and rays outputs
+        # Bindings 0 and 1 are for the receptors data and rays outputs
         # Bindings 2-10 are scene geometry
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self._scene_baked.vertices_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self._scene_baked.indices_ssbo)
@@ -882,12 +882,12 @@ class Raytracer(BaseInsectEyeRenderer):
         self.perspective_shader.stop()
 
     def _raytrace(self, agent):
-        """Pass 1: Ray-tracing for ommatidia."""
+        """Pass 1: Ray-tracing each receptor"""
 
         self.raytrace_shader.use()
 
-        # Bind ommatidia-specific input/output buffers
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
+        # Bind receptors-specific input/output buffers
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.receptors_input_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.ray_results_ssbo)
 
         # Bind scene resources and common uniforms
@@ -928,7 +928,7 @@ class Raytracer(BaseInsectEyeRenderer):
 
         # Set uniforms
         glUniform1i(self.reduction_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
-        glUniform1i(self.reduction_shader.get_loc('nb_ommatidia'), self.num_ommatidia)
+        glUniform1i(self.reduction_shader.get_loc('nb_receptors'), self.total_receptors)
         glUniform1f(self.reduction_shader.get_loc('receptor_tau'), self.receptor_tau)
         glUniform1f(self.reduction_shader.get_loc('dt'), self._dt)
 
@@ -938,7 +938,7 @@ class Raytracer(BaseInsectEyeRenderer):
 
         # Dispatch compute shader
         workgroup_size = 64  # TODO: maybe tweak workgroup size
-        work_groups = (self.num_ommatidia + (workgroup_size - 1)) // workgroup_size
+        work_groups = (self.total_receptors + (workgroup_size - 1)) // workgroup_size
         glDispatchCompute(work_groups, 1, 1)
 
         # final_colors_ssbo must be fully written before the CPU or the drawing shader tries to read from it
@@ -947,7 +947,7 @@ class Raytracer(BaseInsectEyeRenderer):
         self.reduction_shader.stop()
 
     def _compute_colors(self, agent):
-        """The core ommatidia rendering logic."""
+        """The core receptors rendering logic."""
 
         self._tick()
 
@@ -1019,7 +1019,7 @@ class Pathtracer(Raytracer):
     """
     Path tracer: multiple bounces with Monte Carlo integration.
     """
-    def __init__(self, eye_model, scene: Scene,
+    def __init__(self, receptor_array, scene: Scene,
                  time_dithering: bool = True,
                  time_accumulation: float = 0.0,
                  nb_samples: int = 256,
@@ -1035,7 +1035,7 @@ class Pathtracer(Raytracer):
         self.max_bounces = max_bounces
 
         super().__init__(
-            eye_model=eye_model,
+            receptor_array=receptor_array,
             scene=scene,
             time_dithering=time_dithering,
             time_accumulation=time_accumulation,

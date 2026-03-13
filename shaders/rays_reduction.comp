@@ -1,32 +1,32 @@
 #version 430 core
 
-// One thread per ommatidium
+// One thread per receptor
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 // Input: Result of the raytracing pass
 layout(std430, binding = 0) readonly buffer RayResults { vec4 ray_results[]; };
 
 // Output: Final averaged colors
-layout(std430, binding = 1) writeonly buffer OmmatidiaHistory { vec4 history_data[]; };
+layout(std430, binding = 1) writeonly buffer ReceptorsHistory { vec4 history_data[]; };
 
 // Input / Output: Persistent photoreceptor state for temporal accumulation
 layout(std430, binding = 2) buffer PhotoreceptorState { vec4 receptor_state[]; };
 
 // Uniforms
 uniform int nb_samples;
-uniform int nb_ommatidia;
+uniform int nb_receptors;
 uniform int frame_offset;
 uniform float dt;           // seconds since last frame
 uniform float receptor_tau; // ~ 0.01 to 0.015 (10-15 ms)
 
 void main() {
-    uint ommatidium_idx = gl_GlobalInvocationID.x;
-    if (ommatidium_idx >= nb_ommatidia) {
+    uint receptor_idx = gl_GlobalInvocationID.x;
+    if (receptor_idx >= nb_receptors) {
         return;
     }
 
     vec3 total_color = vec3(0.0);
-    uint start_idx = ommatidium_idx * nb_samples;
+    uint start_idx = receptor_idx * nb_samples;
 
     for (int i = 0; i < nb_samples; ++i) {
         total_color += ray_results[start_idx + i].rgb;
@@ -40,14 +40,14 @@ void main() {
     if (receptor_tau > 0.0) {
         // Exponential moving average (first-order low-pass)
         float alpha = dt / (receptor_tau + dt);
-        vec3 prev = receptor_state[ommatidium_idx].rgb;
+        vec3 prev = receptor_state[receptor_idx].rgb;
         output_color = prev + alpha * (total_color - prev);
-        receptor_state[ommatidium_idx] = vec4(output_color, 1.0);
+        receptor_state[receptor_idx] = vec4(output_color, 1.0);
     } else {
         output_color = total_color;
     }
 
     // Write final color to the output SSBO at the correct frame index
-    uint output_index = (frame_offset * nb_ommatidia) + ommatidium_idx;
+    uint output_index = (frame_offset * nb_receptors) + receptor_idx;
     history_data[output_index] = vec4(output_color, 1.0);
 }

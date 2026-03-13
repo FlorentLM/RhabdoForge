@@ -7,7 +7,7 @@ from pyglm import glm
 import time
 from typing import Optional, Tuple, Callable, Dict, List, Union
 
-from graphics.renderers.base import BaseInsectEyeRenderer
+from graphics.renderers.base import BaseRenderer
 from graphics.scene import Scene
 from graphics.agent import Agent, OrbitCamera
 from graphics.utils import WORLD_UP, WORLD_DOWN, ViewMode, ProjectionMode
@@ -51,7 +51,7 @@ class Context:
         glEnable(GL_FRAMEBUFFER_SRGB)  # we want linear (non-gamma corrected)
 
         self.agent: Optional[Agent] = None
-        self.renderer: Optional[BaseInsectEyeRenderer] = None
+        self.renderer: Optional[BaseRenderer] = None
         self.scene: Optional[Scene] = None
         self.observer: Optional[OrbitCamera] = None
         self.view_mode: Optional[ViewMode] = None
@@ -170,7 +170,7 @@ class Context:
     def bound_keys(self) -> dict:
         return dict(self._key_bindings)
 
-    def run_interactive(self, agent: Agent, scene: Scene, renderer: BaseInsectEyeRenderer,
+    def run_interactive(self, agent: Agent, scene: Scene, renderer: BaseRenderer,
                         window_size=None, fps_limit=None, v_sync=None, invert_mouseY=None):
         """On first call, initialises and shows the window. Then checks if the interactive loop should continue."""
 
@@ -267,11 +267,11 @@ class Context:
 
             if key in (glfw.KEY_KP_ADD, glfw.KEY_EQUAL):
                 if hasattr(self.renderer, 'samples_per_ommatidium'):
-                    self.renderer.samples_per_ommatidium *= 2
+                    self.renderer.samples_per_receptor *= 2
 
             if key in (glfw.KEY_KP_SUBTRACT, glfw.KEY_MINUS):
                 if hasattr(self.renderer, 'samples_per_ommatidium'):
-                    self.renderer.samples_per_ommatidium = max(1, self.renderer.samples_per_ommatidium // 2)
+                    self.renderer.samples_per_receptor = max(1, self.renderer.samples_per_receptor // 2)
 
             if key == glfw.KEY_KP_MULTIPLY:
                 if hasattr(self.renderer, 'samples_per_pixel'):

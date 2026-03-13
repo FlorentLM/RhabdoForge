@@ -2,7 +2,7 @@ import numpy as np
 from graphics.debug import DebugBox, AxesGizmo
 from graphics.scene import Scene, Asset
 from graphics.agent import Agent
-from geometry.compound_eyes import CompoundEye
+from geometry.compound_eyes import ReceptorArray
 from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
 from graphics.renderers.rasterizer import Rasterizer
 from graphics.renderers.raytracer import Raytracer, Pathtracer
@@ -10,20 +10,21 @@ from graphics.context import Context
 
 
 def main():
-    # Configuration
+
     USE_RAYTRACER = True
     USE_POINT_CLOUD = True
-    NB_OMMATIDIA = 1962
-    NB_SAMPLES = 16
+
+    SAMPLES_PER_RECEPTOR = 16
     HEADLESS = False
-    ENABLE_SHADOWS = True   # basic shadows (only for ray tracing for now)
 
     USE_ASYNC_BATCHING = True
     BATCH_SIZE = 1000
 
+    SHOW_DEBUG_OBJECTS = False
+
     # -----------------------------------------------
 
-    # This needs to be the first thing called
+    # This always needs to be the first thing called
     context = Context()
 
     scene = Scene(background_color=(0.15, 0.15, 0.3))
@@ -49,16 +50,19 @@ def main():
     # Add a skybox
     scene.add_skybox('textures/bright_day_nosun')
 
-    context.debug.add(AxesGizmo(size=0.4))
-    context.debug.add(DebugBox(static_crate_1))
-    context.debug.add(DebugBox(static_crate_2))
-    context.debug.add(DebugBox(dynamic_crate))
+    # Example debug objects (wireframes, grid etc)
+    if SHOW_DEBUG_OBJECTS:
+        context.debug.add(AxesGizmo(size=0.4))
+        context.debug.add(DebugBox(static_crate_1))
+        context.debug.add(DebugBox(static_crate_2))
+        context.debug.add(DebugBox(dynamic_crate))
 
     # Setup eye model
-    # eye_model = CompoundEye(num_ommatidia=1962, force_isotropic=True)
-    eye_model = CompoundEye.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
-    # eye_model = CompoundEye.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
-    # eye_model = CompoundEye.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
+
+    # eye_model = ReceptorArray(num_ommatidia=1962, force_isotropic=True)
+    eye_model = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+    # eye_model = ReceptorArray.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
+    # eye_model = ReceptorArray.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
 
     eye_model.scale(0.01)
 
@@ -69,22 +73,24 @@ def main():
     batch_size = BATCH_SIZE if (HEADLESS and USE_ASYNC_BATCHING) else 1
 
     if USE_RAYTRACER:
-        eye_renderer = Raytracer(eye_model=eye_model, scene=scene,
-                                  nb_samples=NB_SAMPLES,
-                                  time_dithering=False,
-                                  # time_accumulation=0.012,  # 12 ms
-                                  quasi_random=False,
-                                  enable_shadows=ENABLE_SHADOWS)
+        eye_renderer = Raytracer(receptor_array=eye_model, scene=scene,
+                                 nb_samples=SAMPLES_PER_RECEPTOR,
+                                 time_dithering=False,
+                                 # time_accumulation=0.012,  # 12 ms
+                                 quasi_random=False,
+                                 enable_shadows=False)
 
-        for blas in eye_renderer._scene_baked.BLASes:
-            context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
+        # The BVH can also be displayed in debug
+        if SHOW_DEBUG_OBJECTS:
+            for blas in eye_renderer._scene_baked.BLASes:
+                context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
 
     else:
-        eye_renderer = Rasterizer(eye_model=eye_model, scene=scene,
-                                  nb_samples=NB_SAMPLES,
+        eye_renderer = Rasterizer(receptor_array=eye_model, scene=scene,
+                                  nb_samples=SAMPLES_PER_RECEPTOR,
                                   time_dithering=False,
                                   batch_size=batch_size,
-                                  enable_shadows=ENABLE_SHADOWS)
+                                  enable_shadows=False)
 
     # Example custom key binding:
     def toggle_halton():
@@ -92,17 +98,8 @@ def main():
 
     context.bind_key('m', toggle_halton)
 
-    # ================== Example moving ommatidia ==================
-
-    # Let's pick the one most aligned with the agent's forward direction
-    # o = eye_model.query_directions(agent.forward, k=1)
-
-    # or a bunch of them near this direction
-    foveal_indices = eye_model.query_directions_angle(agent.forward, angle=5.0, degrees=True)
-
-    # ================== End example moving ommatidia ==================
-
     # Run
+
     start_time = context.current_time
     nb_frames = 0
     all_ommatidia_data = []
@@ -116,20 +113,8 @@ def main():
             # Rotate dynamic test crate
             dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
-            # ================== Example moving ommatidia ==================
-
-            # Animate the foveal patch scanning horizontally
-            # eye_model.ommatidia[foveal_indices].dt(context.delta_time).rotate(yaw_delta=5.0)
-
-            # Send the updates to the GPU
-            eye_renderer.update()           # TODO: This could be called unconditionally since it is a no-op when nothing changed
-
-            # ================== End example moving ommatidia ==================
-
             # Get sensory data from the compound eye renderer
             ommatidia_data = eye_renderer.get_ommatidia_data(agent)
-
-            # ommatidia_data is the array that you'd feed to your neuromorphic model
 
             context.draw()  # this draws to the viewport, it can be omitted to run headless
 
@@ -159,7 +144,8 @@ def main():
 
         # After the loop, flush() gets the last partial batch from async mode
         # (this is harmless in sync mode, it will just return an empty array)
-        final_chunk = eye_renderer.flush()
+        final_chunk = eye_renderer.flush()  # TODO: This might actually be done automatically
+
         if final_chunk.size > 0:
             all_ommatidia_data.append(final_chunk)
 

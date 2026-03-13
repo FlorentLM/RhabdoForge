@@ -5,10 +5,10 @@ from OpenGL.GL import *
 import numpy as np
 from pyglm import glm
 
-from geometry.compound_eyes import CompoundEye
+from geometry.compound_eyes import ReceptorArray
 from graphics.agent import Agent
 from graphics.renderers.panoramic import PanoramicEye
-from graphics.renderers.base import BaseInsectEyeRenderer
+from graphics.renderers.base import BaseRenderer
 from graphics.scene import Scene, Asset, AssetType
 from graphics.lights import compute_light_space_matrix
 from graphics.utils import ShaderProgram, ViewMode
@@ -375,11 +375,11 @@ class RasterSceneBaker:
             self._shadow_points_shader.free()
 
 
-class Rasterizer(BaseInsectEyeRenderer):
+class Rasterizer(BaseRenderer):
 
     SHADOW_TEX_UNIT = 1
 
-    def __init__(self, eye_model: CompoundEye, scene: Scene,
+    def __init__(self, receptor_array: ReceptorArray, scene: Scene,
                  time_dithering: bool = False,
                  time_accumulation: float = 0.0,
                  nb_samples: int = 256,
@@ -391,7 +391,7 @@ class Rasterizer(BaseInsectEyeRenderer):
                  enable_ambient: bool = False,
                  shadow_resolution: int = 2048,
                  shadow_radius: float = 50.0
-        ):
+                 ):
 
         self.scene = scene
 
@@ -419,7 +419,7 @@ class Rasterizer(BaseInsectEyeRenderer):
 
         # super *after* creating the scene for correct VRAM usage computation :)
         super().__init__(
-            eye_model,
+            receptor_array,
             time_dithering=time_dithering,
             time_accumulation=time_accumulation,
             nb_samples=nb_samples,
@@ -439,7 +439,7 @@ class Rasterizer(BaseInsectEyeRenderer):
         return self._samples_per_ommatidium
 
     @samples_per_ommatidium.setter
-    def samples_per_ommatidium(self, value):
+    def samples_per_receptor(self, value):
         self._samples_per_ommatidium = int(min(32768, max(1, value)))
 
     def estimate_vram_usage(self):
@@ -682,7 +682,7 @@ class Rasterizer(BaseInsectEyeRenderer):
 
         self._rasterizer_shader.use()
 
-        glUniform1i(self._rasterizer_shader.get_loc('nb_ommatidia'), self.num_ommatidia)
+        glUniform1i(self._rasterizer_shader.get_loc('nb_receptors'), self.total_receptors)
         glUniform1i(self._rasterizer_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
         glUniform1f(self._rasterizer_shader.get_loc('time'), float(self._dither_counter))
 
@@ -703,15 +703,15 @@ class Rasterizer(BaseInsectEyeRenderer):
         glUniform1i(self._rasterizer_shader.get_loc('scene_cubemap'), 0)
 
         # Bind directions SSBO to binding point 0 (for reading)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.input_om_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.receptors_input_ssbo)
         # Bind colors SSBO to binding point 1 (for writing)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
         # Binding 2: persistent photoreceptor state for temporal integration
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self.receptor_state_ssbo)
 
         # Dispatch the compute shader
-        # Divide the total number of ommatidia by the workgroup size (64)
-        work_groups_x = (self.num_ommatidia + 63) // 64
+        # Divide the total number of receptors by the workgroup size (64)
+        work_groups_x = (self.total_receptors + 63) // 64
         glDispatchCompute(work_groups_x, 1, 1)
 
         # Wait for compute shader to finish writing to the SSBO
@@ -720,7 +720,7 @@ class Rasterizer(BaseInsectEyeRenderer):
         self._rasterizer_shader.stop()
 
     def _compute_colors(self, agent):
-        """The core ommatidia rendering logic."""
+        """The core receptors rendering logic."""
 
         self._tick()
 
