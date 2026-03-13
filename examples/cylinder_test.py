@@ -4,13 +4,15 @@ from typing import Tuple, List
 import numpy as np
 import matplotlib.pyplot as plt
 
-from graphics.scene import Scene, Asset
-from graphics.agent import Agent
-from graphics.renderers.raytracer import Raytracer
-from graphics.renderers.base import Colormap
-from graphics.context import Context
-from geometry.compound_eyes import OmmatidialArray, Eye
-from graphics.debug import AxesGizmo, DebugGrid, DebugBox
+from insectvision.engine.scene import Scene, Asset
+from insectvision.engine.agent import Agent
+from insectvision.engine.context import Context
+
+from insectvision.geometry.compound_eyes import ReceptorArray, Eye
+from insectvision.renderers.raytracer import Raytracer
+from insectvision.renderers.commons import Colormap
+
+from insectvision.debug import AxesGizmo, DebugGrid, DebugBox
 
 
 def inwards_cylinder(radius, height, segments=64):
@@ -159,7 +161,7 @@ cylinder_drum = scene.add_instance(asset=drum, dynamic=True)
 
 ##
 
-eye_array = OmmatidialArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+eye_array = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
 
 left_eye = eye_array.eye(0)
 right_eye = eye_array.eye(1)
@@ -168,7 +170,7 @@ start_position = (0.0, h/2.0, 0.0)
 agent = Agent(position=start_position)
 
 renderer = Raytracer(
-    eye_model=eye_array, scene=scene,
+    receptor_array=eye_array, scene=scene,
     nb_samples=512,
     time_dithering=True,
     time_accumulation=0.012,
@@ -222,7 +224,8 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
     cylinder_drum.rotate_axis(drum_yaw_delta, 'up')
     drum_current_yaw += drum_yaw_delta
 
-    ommatidia_data = renderer.get_ommatidia_data(agent)
+    view = renderer.get_visual_output(agent)
+    ommatidia_data = view.per_ommatidium
 
     left_motion = left_emd.process(ommatidia_data, dt)
     right_motion = right_emd.process(ommatidia_data, dt)

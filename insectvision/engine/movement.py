@@ -1,7 +1,5 @@
 from typing import Union
-
 import numpy as np
-from numpy._typing import ArrayLike
 from numpy.typing import ArrayLike
 from pyglm import glm
 

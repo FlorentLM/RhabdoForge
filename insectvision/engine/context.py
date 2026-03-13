@@ -7,12 +7,12 @@ from pyglm import glm
 import time
 from typing import Optional, Tuple, Callable, Dict, List, Union
 
-from graphics.renderers.base import BaseRenderer
-from graphics.scene import Scene
-from graphics.agent import Agent, OrbitCamera
-from graphics.utils import WORLD_UP, WORLD_DOWN, ViewMode, ProjectionMode
-from graphics.interactive.hud import HUD
-from graphics.debug import DebugOverlay
+from insectvision.engine.scene import Scene
+from insectvision.engine.agent import Agent, OrbitCamera
+from insectvision.engine.utils import WORLD_UP, WORLD_DOWN, ViewMode, ProjectionMode
+from insectvision.renderers.commons import BaseRenderer
+from insectvision.interactive.hud import HUD
+from insectvision.debug import DebugOverlay
 
 
 class Context:

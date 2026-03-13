@@ -5,13 +5,12 @@ from OpenGL.GL import *
 import numpy as np
 from pyglm import glm
 
-from geometry.compound_eyes import ReceptorArray
-from graphics.agent import Agent
-from graphics.renderers.panoramic import PanoramicEye
-from graphics.renderers.base import BaseRenderer
-from graphics.scene import Scene, Asset, AssetType
-from graphics.lights import compute_light_space_matrix
-from graphics.utils import ShaderProgram, ViewMode
+from insectvision.engine.agent import Agent
+from insectvision.engine.scene import Scene, Asset, AssetType
+from insectvision.engine.lights import compute_light_space_matrix
+from insectvision.engine.utils import ShaderProgram, ViewMode
+from insectvision.geometry.compound_eyes import ReceptorArray
+from insectvision.renderers.commons import BaseRenderer
 
 
 class ShadowMapFBO:
@@ -138,6 +137,55 @@ class CubemapFBO:
         glDeleteFramebuffers(1, [self.fbo_id])
         glDeleteTextures(1, [self.texture_id])
         glDeleteRenderbuffers(1, [self.depth_buffer_id])
+
+
+class EquirectangularCubemap:
+    """A simple asset to render a cubemap to the screen as a panoramic (equirectangular) view."""
+
+    def __init__(self):
+        self._shader = None
+        self._vao = None
+
+    @property
+    def shader(self):
+        if self._shader is None:
+            print("Compiling panoramic debug shaders...")
+            self._shader = ShaderProgram(vert_path='shaders/fullscreen.vert', frag_path='shaders/cubemapSampler.frag')
+        return self._shader
+
+    @property
+    def vao(self):
+        if self._vao is None:
+            # A dummy VAO is sufficient as vertices are generated in the vertex shader
+            self._vao = glGenVertexArrays(1)
+        return self._vao
+
+    def draw(self, cubemap_texture_id):
+        """Draws the panoramic view of the given cubemap."""
+        self.shader.use()
+
+        # Bind the cubemap texture we want to inspect
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_texture_id)
+        glUniform1i(self.shader.get_loc("cubemap"), 0)
+
+        # Draw a full-screen triangle
+        glBindVertexArray(self.vao)
+        glDrawArrays(GL_TRIANGLES, 0, 3)
+
+        # Unbind
+        glBindVertexArray(0)
+        self.shader.stop()
+
+    def free(self):
+        """Frees the GPU resources (shader and VAO)."""
+
+        if self._shader:
+            self._shader.free()
+        if self._vao:
+            glDeleteVertexArrays(1, [self._vao])
+        self._shader = None
+        self._vao = None
 
 
 class RasterMesh:
@@ -432,7 +480,7 @@ class Rasterizer(BaseRenderer):
         # simple 90 degrees view projection matrix for each cube face
         self._proj_mat = Agent(fov=90.0, ratio=1.0).projection
 
-        self._raster_panoramic = PanoramicEye()
+        self._raster_panoramic = EquirectangularCubemap()
 
     @property
     def samples_per_ommatidium(self):

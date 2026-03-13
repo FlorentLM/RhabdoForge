@@ -33,8 +33,8 @@ Examples:
 """
 
 from typing import Optional
-from graphics.debug.debug_renderer import DebugRenderer
-from graphics.debug.debug_objects import (
+from insectvision.debug.debug_renderer import DebugRenderer
+from insectvision.debug.debug_objects import (
     DebugDrawable,
     LineObject,
     ArrowObject,

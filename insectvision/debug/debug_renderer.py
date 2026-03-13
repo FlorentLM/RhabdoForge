@@ -5,7 +5,7 @@ from OpenGL.GL import *
 import ctypes
 import numpy as np
 from pyglm import glm
-from graphics.utils import ShaderProgram
+from insectvision.engine.utils import ShaderProgram
 
 
 class DebugRenderer:

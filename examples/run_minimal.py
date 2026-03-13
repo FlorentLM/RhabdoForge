@@ -1,11 +1,13 @@
 from pathlib import Path
-from graphics.scene import Scene
-from graphics.agent import Agent
-from geometry.compound_eyes import ReceptorArray
-from graphics.renderers.raytracer import Raytracer
-from graphics.context import Context
-from graphics.movement import Curve, Trajectory
-from graphics.utils import extract_obj_curves
+
+from insectvision.engine.scene import Scene
+from insectvision.engine.agent import Agent
+from insectvision.engine.context import Context
+from insectvision.engine.movement import Curve, Trajectory
+from insectvision.engine.utils import extract_obj_curves
+
+from insectvision.geometry.compound_eyes import ReceptorArray
+from insectvision.renderers.raytracer import Raytracer
 
 
 def main():
@@ -16,7 +18,7 @@ def main():
     example_obj = Path().home() / 'Desktop/gapArray.obj'
     scene.load(example_obj)
 
-    scene.add_skybox('textures/bright_day_nosun')
+    scene.add_skybox('assets/textures/bright_day_nosun')
 
     # eye_model = ReceptorArray(num_ommatidia=1962, force_isotropic=True)
     # eye_model = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)

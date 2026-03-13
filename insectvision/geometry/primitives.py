@@ -1,5 +1,6 @@
 import numpy as np
 
+
 CUBE_VERTICES = np.array((
     # Position           # UV Coords
 

@@ -1,5 +1,6 @@
 import OpenGL
 OpenGL.ERROR_CHECKING = False
+from OpenGL.GL import *
 
 import time
 import random
@@ -9,14 +10,12 @@ from typing import Optional
 import numpy as np
 from pyglm import glm
 
-from OpenGL.GL import *
-from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
+from insectvision.geometry.primitives import CONE_VERTICES, SPHERE_VERTICES
+from insectvision.geometry.compound_eyes import ReceptorArray, VisualOutput
 
-from graphics.scene import Scene
-from geometry.compound_eyes import ReceptorArray, VisualOutput
-from geometry.primitives import CONE_VERTICES, SPHERE_VERTICES
-from graphics.utils import ShaderProgram, ViewMode, ProjectionMode
-from graphics.agent import Agent
+from insectvision.engine.scene import Scene
+from insectvision.engine.utils import ShaderProgram, ViewMode, ProjectionMode
+from insectvision.engine.agent import Agent
 
 
 def query_max_SSBO_size() -> int:
@@ -28,6 +27,7 @@ def query_max_SSBO_size() -> int:
 def query_available_VRAM() -> int:
     """Checks for NVIDIA extension to query available VRAM. Returns 0 if not supported."""
     if b'GL_NVX_gpu_memory_info' in glGetString(GL_EXTENSIONS):
+        from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
         return glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX) // 1024
     return 0
 
@@ -672,3 +672,53 @@ class BaseRenderer(ABC):
 
         if self._heatmap_ssbo:
             glDeleteBuffers(1, [self._heatmap_ssbo])
+
+
+class TextureViewer:
+    """A simple helper to render a 2D texture to a full-screen quad."""
+
+    def __init__(self):
+        self._shader = None
+        self._vao = None
+
+    @property
+    def shader(self):
+        if self._shader is None:
+            print("Compiling fullscreen texture viewer shaders...")
+            self._shader = ShaderProgram(vert_path='shaders/fullscreen.vert', frag_path='shaders/textureSampler.frag')
+        return self._shader
+
+    @property
+    def vao(self):
+        if self._vao is None:
+            self._vao = glGenVertexArrays(1)
+        return self._vao
+
+    def draw(self, texture_id):
+        """Draws the given 2D texture to the screen."""
+
+        self.shader.use()
+        glDisable(GL_DEPTH_TEST)
+        glDepthMask(GL_FALSE)
+
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, texture_id)
+        glUniform1i(self.shader.get_loc("texture_sampler"), 0)
+
+        glBindVertexArray(self.vao)
+        glDrawArrays(GL_TRIANGLES, 0, 3)
+
+        glBindVertexArray(0)
+        self.shader.stop()
+
+        glDepthMask(GL_TRUE)
+        glEnable(GL_DEPTH_TEST)
+        glClear(GL_DEPTH_BUFFER_BIT)
+
+    def free(self):
+        if self._shader:
+            self._shader.free()
+        if self._vao:
+            glDeleteVertexArrays(1, [self._vao])
+        self._shader = None
+        self._vao = None

@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, Union, Sequence, List
 import numpy as np
-
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
-from graphics.utils import WORLD_UP, WORLD_RIGHT
+
+from insectvision.engine.utils import WORLD_UP, WORLD_RIGHT
 
 
 GPU_RECEPTOR_DTYPE = np.dtype([

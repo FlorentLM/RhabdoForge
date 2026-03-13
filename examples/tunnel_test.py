@@ -4,13 +4,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-from graphics.scene import Scene, Asset
-from graphics.agent import Agent
-from graphics.renderers.raytracer import Raytracer
-from graphics.renderers.base import Colormap
-from graphics.context import Context
-from geometry.compound_eyes import ReceptorArray, Eye
-from graphics.debug import AxesGizmo, DebugGrid, DebugBox
+from insectvision.engine.scene import Scene, Asset
+from insectvision.engine.agent import Agent
+from insectvision.engine.context import Context
+
+from insectvision.geometry.compound_eyes import ReceptorArray, Eye
+from insectvision.renderers.raytracer import Raytracer
+from insectvision.renderers.commons import Colormap
+from insectvision.debug import AxesGizmo, DebugGrid, DebugBox
 
 
 def checkerboard_texture(width, height, block_size=1, ratio=0.5):
@@ -109,7 +110,7 @@ class RunLog:
 context = Context(window_size=(1280, 720), fps_limit=None, v_sync=False)
 scene = Scene(background_color=(0.15, 0.15, 0.3))
 
-scene.add_skybox('textures/bright_day_nosun')
+scene.add_skybox('assets/textures/bright_day_nosun')
 
 w, h, l = 5.0, 5.0, 150.0
 

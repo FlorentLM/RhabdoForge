@@ -8,29 +8,26 @@ from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
-from graphics.agent import Agent
-from graphics.renderers.base import BaseRenderer
-from graphics.scene import Scene, AssetType
-from graphics.lights import (
-    DirectionalLight, PointLight, AreaLight, directional_light_dtype, point_light_dtype, area_light_dtype,
-)
-from graphics.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
-from graphics.renderers.panoramic import TextureViewer
+from insectvision.engine.agent import Agent
+from insectvision.engine.scene import Scene, AssetType
+from insectvision.engine.lights import directional_light_dtype, point_light_dtype, area_light_dtype
+from insectvision.engine.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
+from insectvision.renderers.commons import BaseRenderer, TextureViewer
 
 
-# Custom detailed dtype for the GPU SSBO
-gpu_instance_dtype = np.dtype([
+RENDERABLE_INST_DTYPE = np.dtype([
     ('transform', np.float32, (4, 4)),
     ('inverse_transform', np.float32, (4, 4)),
     ('blas_node_offset', np.uint32),
     ('vertex_or_point_offset', np.uint32),
     ('index_offset', np.uint32),
     ('material_id', np.uint32),
-    ('is_points', np.uint32),  # 0 for non-points (i.e. triangles asset), 1 for points
+    ('is_points', np.uint32),  # 0 for non-points (triangles asset), 1 for points
     ('prim_index_offset', np.uint32),
     ('radius_factor', np.float32),
     ('padding', np.uint32, 1),  # 4 bytes (1 * uint) of padding
 ])  # total 160 bytes
+# TODO: This struct can probably be optimised more
 
 
 class RaytracingSceneBaker:
@@ -363,7 +360,7 @@ class RaytracingSceneBaker:
 
         # pytinybvh input for TLAS build + our GPU-side per-instance struct
         tlas_build_data = np.zeros(num_instances, dtype=instance_dtype)
-        self.gpu_instances_info = np.zeros(num_instances, dtype=gpu_instance_dtype)
+        self.gpu_instances_info = np.zeros(num_instances, dtype=RENDERABLE_INST_DTYPE)
 
         for i, inst in enumerate(all_instances):
             blas_map = self.asset_to_blas_map[inst.asset.id]
@@ -444,7 +441,7 @@ class RaytracingSceneBaker:
                GL_STATIC_DRAW, np.uint32, 1)  # BLAS: leaf -> primitive
 
         # Per-instance info (updates with animation)
-        upload(self.instances_info_ssbo, self.gpu_instances_info, GL_DYNAMIC_DRAW, gpu_instance_dtype, 1)
+        upload(self.instances_info_ssbo, self.gpu_instances_info, GL_DYNAMIC_DRAW, RENDERABLE_INST_DTYPE, 1)
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
@@ -526,7 +523,7 @@ class RaytracingSceneBaker:
         return tex_array_id
 
     def free(self):
-        """ Deletes all OpenGL resources managed by this class """
+        """Deletes all OpenGL resources managed by this class."""
 
         buffers = [b for b in [
             self.vertices_ssbo, self.indices_ssbo, self.points_ssbo, self.materials_ssbo,
@@ -561,6 +558,7 @@ class Raytracer(BaseRenderer):
 
         self.scene = scene  # just for convenience
         self._scene_baked = RaytracingSceneBaker(scene)
+        # TODO: Add properties to access the baked BLASes and TLAS
 
         # Global lighting controls
         self.enable_direct = enable_direct

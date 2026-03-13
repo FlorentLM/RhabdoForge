@@ -1,5 +1,6 @@
 import OpenGL
 OpenGL.ERROR_CHECKING = False
+
 from typing import Dict, List, Optional, Union, Sequence, Set
 from numpy.typing import ArrayLike
 from enum import Enum, auto
@@ -8,6 +9,7 @@ import numpy as np
 from PIL import Image
 import trimesh
 from trimesh import Trimesh, PointCloud, Scene as TrimeshScene
+from pyglm import glm
 
 from OpenGL.GL import (ctypes,
                        glGenVertexArrays, glGenBuffers,
@@ -20,12 +22,12 @@ from OpenGL.GL import (ctypes,
                        GL_TEXTURE0, GL_TEXTURE_CUBE_MAP, GL_ELEMENT_ARRAY_BUFFER, GL_UNSIGNED_INT, GL_CULL_FACE,
                        GL_TRIANGLES, GL_LESS, GL_LEQUAL, GL_FLOAT, GL_ARRAY_BUFFER, GL_STATIC_DRAW)
 
-from pyglm import glm
-from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
-from graphics.utils import trimesh_from_arrays, load_shaders, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, \
-    DeltaTimeTransformer
-from graphics.lights import Sun, Light, DirectionalLight, PointLight, AreaLight
-from graphics.movement import TransformMixin
+from insectvision.geometry.primitives import CUBE_VERTICES, CUBE_INDICES
+
+from insectvision.engine.lights import Sun, Light, DirectionalLight, PointLight, AreaLight
+from insectvision.engine.movement import TransformMixin
+from insectvision.engine.utils import (trimesh_from_arrays, load_shaders, load_cubemap,
+                                       WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer)
 
 
 class MaterialData:

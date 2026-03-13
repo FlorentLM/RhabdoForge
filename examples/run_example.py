@@ -1,12 +1,15 @@
 import numpy as np
-from graphics.debug import DebugBox, AxesGizmo
-from graphics.scene import Scene, Asset
-from graphics.agent import Agent
-from geometry.compound_eyes import ReceptorArray
-from geometry.primitives import CUBE_VERTICES, CUBE_INDICES
-from graphics.renderers.rasterizer import Rasterizer
-from graphics.renderers.raytracer import Raytracer, Pathtracer
-from graphics.context import Context
+
+from insectvision.engine.scene import Scene, Asset
+from insectvision.engine.agent import Agent
+from insectvision.engine.context import Context
+
+from insectvision.geometry.primitives import CUBE_VERTICES, CUBE_INDICES
+from insectvision.geometry.compound_eyes import ReceptorArray
+
+from insectvision.renderers.rasterizer import Rasterizer
+from insectvision.renderers.raytracer import Raytracer, Pathtracer
+from insectvision.debug import DebugBox, AxesGizmo
 
 
 def main():
@@ -38,7 +41,7 @@ def main():
     cube_faces = CUBE_INDICES.reshape(-1, 3)
 
     # Create a mesh asset from raw vertex and index data
-    crate_asset = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='textures/wood.jpg')
+    crate_asset = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='assets/textures/wood.jpg')
 
     # Add multiple instances of the same asset
     static_crate_1 = scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))
@@ -48,7 +51,7 @@ def main():
     dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
 
     # Add a skybox
-    scene.add_skybox('textures/bright_day_nosun')
+    scene.add_skybox('assets/textures/bright_day_nosun')
 
     # Example debug objects (wireframes, grid etc)
     if SHOW_DEBUG_OBJECTS:

@@ -4,8 +4,8 @@ from typing import Sequence
 import numpy as np
 from pyglm import glm
 
-from graphics.utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD, DeltaTimeTransformer
-from graphics.movement import TransformMixin
+from insectvision.engine.utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD, DeltaTimeTransformer
+from insectvision.engine.movement import TransformMixin
 
 RIGHT_VEC4 = glm.vec4(WORLD_RIGHT, 0.0)
 UP_VEC4 = glm.vec4(WORLD_UP, 0.0)

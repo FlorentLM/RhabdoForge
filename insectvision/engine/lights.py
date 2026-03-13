@@ -5,7 +5,7 @@ from numpy.typing import ArrayLike
 import numpy as np
 from pyglm import glm
 
-from graphics.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
+from insectvision.engine.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
 
 # Custom dtypes for the GPU SSBOs

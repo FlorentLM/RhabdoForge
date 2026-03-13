@@ -1,5 +1,6 @@
 import OpenGL
 OpenGL.ERROR_CHECKING = False
+from OpenGL.GL import *
 
 from pathlib import Path
 from collections import deque
@@ -7,11 +8,10 @@ import numpy as np
 import json
 
 from PIL import Image
-from OpenGL.GL import *
 from pyglm import glm
 
-from graphics.utils import load_shaders, generate_font_atlas
-from graphics.renderers.raytracer import Raytracer, Pathtracer
+from insectvision.engine.utils import load_shaders, generate_font_atlas
+from insectvision.renderers.raytracer import Raytracer, Pathtracer
 
 
 class FontRenderer:
