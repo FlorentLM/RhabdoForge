@@ -267,11 +267,11 @@ class Context:
                     self.renderer.time_dithering = not self.renderer.time_dithering
 
             if key in (glfw.KEY_KP_ADD, glfw.KEY_EQUAL):
-                if hasattr(self.renderer, 'samples_per_ommatidium'):
+                if hasattr(self.renderer, 'samples_per_receptor'):
                     self.renderer.samples_per_receptor *= 2
 
             if key in (glfw.KEY_KP_SUBTRACT, glfw.KEY_MINUS):
-                if hasattr(self.renderer, 'samples_per_ommatidium'):
+                if hasattr(self.renderer, 'samples_per_receptor'):
                     self.renderer.samples_per_receptor = max(1, self.renderer.samples_per_receptor // 2)
 
             if key == glfw.KEY_KP_MULTIPLY:
