@@ -74,9 +74,10 @@ def main():
         eye_renderer = Raytracer(receptor_array=eye_model, scene=scene,
                                  nb_samples=SAMPLES_PER_RECEPTOR,
                                  time_dithering=False,
-                                 # time_accumulation=0.012,  # 12 ms
                                  quasi_random=False,
-                                 enable_shadows=False)
+                                 enable_direct=True,
+                                 enable_shadows=True,
+                                 enable_ambient=True)
 
         # The BVH can also be displayed in debug
         if SHOW_DEBUG_OBJECTS:

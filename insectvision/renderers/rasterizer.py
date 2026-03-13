@@ -11,7 +11,23 @@ from insectvision.engine.lights import DirectionalLight
 from insectvision.engine.utils import ShaderProgram, ViewMode, WORLD_UP, WORLD_RIGHT
 from insectvision.geometry.compound_eyes import ReceptorArray
 
-from .commons import BaseRenderer
+from .commons import BaseRenderer, BINDING_RECEPTORS, BINDING_COLORS, BINDING_STATE
+
+# Scene geometry bindings
+BINDING_VERTICES     = 5
+BINDING_INDICES      = 6
+BINDING_MATERIALS    = 7
+BINDING_POINTS       = 8
+BINDING_BLAS_NODES   = 9
+BINDING_TLAS_NODES   = 10
+BINDING_INSTANCES    = 11
+BINDING_TLAS_INDICES = 12
+BINDING_BLAS_INDICES = 13
+
+# Light bindings
+BINDING_LIGHT_DIR    = 14
+BINDING_LIGHT_POINT  = 15
+BINDING_LIGHT_AREA   = 16
 
 
 ##
@@ -48,8 +64,7 @@ class ShadowMapFBO:
         # Depth texture with hardware PCF comparison
         self.depth_texture = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, self.depth_texture)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F,
-                     self.resolution, self.resolution, 0,
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, self.resolution, self.resolution, 0,
                      GL_DEPTH_COMPONENT, GL_FLOAT, None)
 
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
@@ -450,7 +465,6 @@ class Rasterizer(BaseRenderer):
 
     def __init__(self, receptor_array: ReceptorArray, scene: Scene,
                  time_dithering: bool = False,
-                 time_accumulation: float = 0.0,
                  nb_samples: int = 256,
                  quasi_random: bool = False,
                  cubemap_res: int = 512,
@@ -490,7 +504,6 @@ class Rasterizer(BaseRenderer):
         super().__init__(
             receptor_array,
             time_dithering=time_dithering,
-            time_accumulation=time_accumulation,
             nb_samples=nb_samples,
             quasi_random=quasi_random,
             batch_size=batch_size,
@@ -632,10 +645,8 @@ class Rasterizer(BaseRenderer):
             glUniform1i(asset.shaders.get_loc("enable_ambient"), int(light is not None))
 
             if light is not None:
-                glUniform3f(asset.shaders.get_loc("light_direction"),
-                            light.direction.x, light.direction.y, light.direction.z)
-                glUniform3f(asset.shaders.get_loc("light_color"),
-                            light.color.x, light.color.y, light.color.z)
+                glUniform3f(asset.shaders.get_loc("light_direction"), light.direction.x, light.direction.y, light.direction.z)
+                glUniform3f(asset.shaders.get_loc("light_color"), light.color.x, light.color.y, light.color.z)
                 glUniform1f(asset.shaders.get_loc("light_intensity"), light.intensity)
                 glUniform3f(asset.shaders.get_loc("ambient_color"), *self.ambient_color)
                 glUniform1f(asset.shaders.get_loc("ambient_intensity"), self.ambient_intensity)
@@ -759,7 +770,6 @@ class Rasterizer(BaseRenderer):
         glUniform1i(self._rasterizer_shader.get_loc('use_quasi_random'), int(self._quasi_random))
 
         # Photoreceptor temporal integration
-        glUniform1f(self._rasterizer_shader.get_loc('receptor_tau'), self.receptor_tau)
         glUniform1f(self._rasterizer_shader.get_loc('dt'), self._dt)
 
         # Write into the history buffer circularly
@@ -771,12 +781,10 @@ class Rasterizer(BaseRenderer):
         glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.texture_id)
         glUniform1i(self._rasterizer_shader.get_loc('scene_cubemap'), 0)
 
-        # Bind directions SSBO to binding point 0 (for reading)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.receptors_input_ssbo)
-        # Bind colors SSBO to binding point 1 (for writing)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
-        # Binding 2: persistent photoreceptor state for temporal integration
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self.receptor_state_ssbo)
+        # Bind SSBOs
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, self.receptors_data_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, self.final_colors_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_STATE, self.receptor_state_ssbo)
 
         # Dispatch the compute shader
         # Divide the total number of receptors by the workgroup size (64)
@@ -800,9 +808,9 @@ class Rasterizer(BaseRenderer):
         self._sample_cubemap()
 
         # Unbind resources
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_STATE, 0)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 

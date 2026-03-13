@@ -1,25 +1,29 @@
 import numpy as np
 
 
-GPU_RECEPTOR_DTYPE = np.dtype([
-    ('position', np.float32, 4),                  # 16 bytes: x, y, z, w=1
-    ('direction', np.float32, 4),               # 16 bytes: x, y, z, w=0
-    ('acceptance_angles', np.float32, 2),       #  8 bytes: minor, major
-    ('interommatidial_angles', np.float32, 2),  #  8 bytes: minor, major (from parent lens)
-    ('tilt', np.float32),                       #  4 bytes: ellipse tilt (lattice geometry)
-    ('sensitivity', np.float32),                #  4 bytes: receptor sensitivity
-    ('packed_data', np.uint32),                 #  4 bytes: see below
-    ('padding', np.uint32)                      #  4 bytes
-])  # total = 64 bytes
+RECEPTOR_DTYPE = np.dtype([
+    ('position', np.float32, 3),    # 12 bytes: receptor position x, y, z
+    ('metadata', np.uint32),        # 4 bytes (see below): eye_id, R_type, neighbour_count, lens_id
+    ('direction', np.float32, 3),   # 12 bytes: receptor direction x, y, z
+    ('acc_tilt', np.float32),       # 4 bytes: acceptance angle ellipse tilt
+    ('acc_axes', np.float32, 2),    # 8 bytes: acceptance angle ellipse minor, major axes
+    ('sensitivity', np.float32),    # 4 bytes: photometric response multiplier
+    ('tau', np.float32)             # 4 bytes: temporal accumulation (ms)
+]) # total 48 bytes
 
-# packed_data layout:
-# bits 0-2: eye ID (0-7)
-# bits 3-6: receptor type (0-15) R1=0, R2=1, ...
-# bits 7-10: neighbour count (0-15)
-# bits 11-26: lens index (0-65535) parent ommatidium
-# bits 27-31: unused for now
+# metadata layout:
+#   bits 0-2: eye ID (0-7)
+#   bits 3-6: receptor type (0-15) R1=0, R2=1, ...
+#   bits 7-10: neighbour count (0-15)
+#   bits 11-26: lens ID (0-65535) parent ommatidium
+#   bits 27-31: unused
 
-# TODO: Receptor dtype coul dbe 48 bytes if IOA and tilt were a separate Lens struct
+LENS_DTYPE = np.dtype([
+    ('ioa_axes', np.float32, 2),    # 8 bytes: lattice geometry axes (ellipse minor, major)
+    ('tilt', np.float32),           # 4 bytes: lattice geometry orientation (ellipse tilt)
+    ('padding', np.uint32)          # 4 bytes: unused
+]) # total 16 bytes
+
 
 _CLEAR_EYE_ID = np.uint32(0xFFFFFFF8)
 

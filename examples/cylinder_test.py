@@ -252,7 +252,7 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
 
     renderer.set_heatmap_eyes(
         {left_eye: left_motion, right_eye: right_motion},
-        colormap=Colormap.DIVERGING, compression=0.5
+        colormap=Colormap.Diverging, compression=0.5
     )
 
     context.draw()

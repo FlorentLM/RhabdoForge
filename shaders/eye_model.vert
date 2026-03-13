@@ -4,10 +4,10 @@
 
 layout(location = 0) in vec3 model_vertex;
 
-layout(std430, binding = 0) readonly buffer ReceptorsInputBlock {
-   Receptor receptor_data[];
-};
+layout(std430, binding = 0) readonly buffer ReceptorsInputBlock { ReceptorData receptor_data[]; };
+layout(std430, binding = 1) readonly buffer LensDataBlock { LensData lenses_data[]; };
 
+// Uniforms
 uniform mat4 view;
 uniform mat4 projection;
 uniform mat4 eye_to_world;
@@ -29,61 +29,61 @@ mat3 rmatFromDir(vec3 z) {
 
 void main() {
     int i = gl_InstanceID;
-    Receptor rcpt = receptor_data[i];
+    ReceptorData rcpt = receptor_data[i];
+
+    uint lens_id = unpack_lens_id(rcpt);
+    LensData lens = lenses_data[lens_id];
 
     v_mode = projection_mode;
     v_eye_id = unpack_eye_id(rcpt);
 
-    vec3 P_world = (eye_to_world * vec4(rcpt.position.xyz * visualisation_scale, 1.0)).xyz;
-    vec3 D_world = normalize((eye_to_world * vec4(rcpt.direction.xyz, 0.0)).xyz);
+    vec3 P_world = (eye_to_world * vec4(rcpt.position * visualisation_scale, 1.0)).xyz;
+    vec3 D_world = normalize((eye_to_world * vec4(rcpt.direction, 0.0)).xyz);
 
     mat3 R_world = rmatFromDir(D_world);
-    float tilt = rcpt.tilt;
-    mat3 R_tilt = mat3(cos(tilt), -sin(tilt), 0,
-                       sin(tilt),  cos(tilt), 0,
-                       0,          0,         1);
+    mat3 R_tilt;
     mat3 S;
 
     if (projection_mode == 1) {
-        float half_acceptance_minor = 0.5 * rcpt.acceptance_angles.x;
-        float half_acceptance_major = 0.5 * rcpt.acceptance_angles.y;
-        float radius_minor = cone_length * tan(half_acceptance_minor);
-        float radius_major = cone_length * tan(half_acceptance_major);
+        float tilt = rcpt.acc_tilt;
+        R_tilt = mat3(cos(tilt), -sin(tilt), 0,
+                      sin(tilt),  cos(tilt), 0,
+                      0,          0,         1);
+
+        float half_acc_minor = 0.5 * rcpt.acc_axes.x;
+        float half_acc_major = 0.5 * rcpt.acc_axes.y;
+        float radius_minor = cone_length * tan(half_acc_minor);
+        float radius_major = cone_length * tan(half_acc_major);
 
         S = mat3(radius_minor, 0, 0, 0, radius_major, 0, 0, 0, cone_length);
-
         vec3 p_model = model_vertex + vec3(0.0, 0.0, 1.0);
-
         vec3 offset = R_world * R_tilt * S * p_model;
-
     }
     else {
-        float eye_radius_world = length(rcpt.position.xyz) * visualisation_scale;
+        float tilt = lens.tilt;
+        R_tilt = mat3(cos(tilt), -sin(tilt), 0,
+                      sin(tilt),  cos(tilt), 0,
+                      0,          0,         1);
+
+        float eye_radius_world = length(rcpt.position) * visualisation_scale;
         if (eye_radius_world < 0.001) eye_radius_world = 0.01 * visualisation_scale;
 
-        float half_inter_angle_minor = 0.5 * rcpt.interommatidial_angles.x;
-        float half_inter_angle_major = 0.5 * rcpt.interommatidial_angles.y;
-        float radius_minor = eye_radius_world * sin(half_inter_angle_minor);
-        float radius_major = eye_radius_world * sin(half_inter_angle_major);
+        float half_ioa_minor = 0.5 * lens.ioa_axes.x;
+        float half_ioa_major = 0.5 * lens.ioa_axes.y;
+        float radius_minor = eye_radius_world * sin(half_ioa_minor);
+        float radius_major = eye_radius_world * sin(half_ioa_major);
 
-        // Give the ovoid a nice height proportional to its base radius
-        float ovoid_height = (radius_minor + radius_major) * 0.15;   // visual size factor
+        float ovoid_height = (radius_minor + radius_major) * 0.15;
 
         S = mat3(radius_minor, 0, 0, 0, radius_major, 0, 0, 0, ovoid_height);
-
-        // The hemisphere model is a unit hemisphere along +Z so to scale, tilt, and orient it
         vec3 offset = R_world * R_tilt * S * model_vertex;
     }
 
     mat3 model_transform = R_world * R_tilt * S;
-
     vec3 pos_world = P_world + (model_transform * model_vertex);
-    // normals are just the model vertices for a unit sphere
-    vec3 model_normal = model_vertex;
 
-    // inverse transpose still needed for the transformation to handle the non-uniform scale
     mat3 normal_matrix = transpose(inverse(model_transform));
-    v_world_normal = normalize(normal_matrix * model_normal);
+    v_world_normal = normalize(normal_matrix * model_vertex);
 
     gl_Position = projection * view * vec4(pos_world, 1.0);
     v_index = i;

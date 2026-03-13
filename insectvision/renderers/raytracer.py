@@ -13,7 +13,24 @@ from insectvision.engine.scene import Scene, AssetType
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
 from insectvision.engine.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
 
-from .commons import BaseRenderer, TextureViewer
+from .commons import BaseRenderer, TextureViewer,BINDING_RECEPTORS, BINDING_COLORS, BINDING_STATE, BINDING_RAYS_INTERMEDIATE
+
+
+# Scene geometry bindings
+BINDING_VERTICES     = 5
+BINDING_INDICES      = 6
+BINDING_MATERIALS    = 7
+BINDING_POINTS       = 8
+BINDING_BLAS_NODES   = 9
+BINDING_TLAS_NODES   = 10
+BINDING_INSTANCES    = 11
+BINDING_TLAS_INDICES = 12
+BINDING_BLAS_INDICES = 13
+
+# Light bindings
+BINDING_LIGHT_DIR    = 14
+BINDING_LIGHT_POINT  = 15
+BINDING_LIGHT_AREA   = 16
 
 
 RENDERABLE_INST_DTYPE = np.dtype([
@@ -52,8 +69,10 @@ class RaytracingSceneBaker:
         self.skybox_texture = 0
         self.materials_ssbo, self.tex_array = 0, 0
         self.triangles_ssbo, self.points_ssbo = 0, 0
+        self.vertices_ssbo, self.indices_ssbo = 0, 0
         self.tlas_nodes_ssbo, self.blas_nodes_ssbo = 0, 0
         self.instances_info_ssbo, self.tlas_indices_ssbo = 0, 0
+        self.blas_indices_ssbo = 0
 
         # OpenGL handles for lights
         self.directional_lights_ssbo = 0
@@ -78,13 +97,9 @@ class RaytracingSceneBaker:
         self.skybox_texture = self.scene.skybox.texture_id if self.scene.skybox else 0
 
         self._pack_materials()
-
         self._build_BLASes()
         self._build_TLAS()
-
         self._upload_buffers()
-
-        # Pack lights after geometry
         self._pack_lights()
 
         print("Ray-tracing scene baking complete.")
@@ -547,7 +562,6 @@ class Raytracer(BaseRenderer):
 
     def __init__(self, receptor_array, scene: Scene,
                  time_dithering: bool = True,
-                 time_accumulation: float = 0.0,
                  nb_samples: int = 256,
                  quasi_random: bool = False,
                  pano_res: Tuple[int, int] = (1024, 512),
@@ -576,7 +590,6 @@ class Raytracer(BaseRenderer):
         super().__init__(
             receptor_array,
             time_dithering=time_dithering,
-            time_accumulation=time_accumulation,
             nb_samples=nb_samples,
             quasi_random=quasi_random,
             batch_size=batch_size
@@ -603,13 +616,13 @@ class Raytracer(BaseRenderer):
         self.samples_per_receptor = nb_samples  # via the setter to allocate the SSBO
 
     @property
-    def samples_per_ommatidium(self):
+    def samples_per_receptor(self):
         return self._samples_per_ommatidium
 
-    @samples_per_ommatidium.setter
+    @samples_per_receptor.setter
     def samples_per_receptor(self, value):
         bytes_per_sample = 16
-        max_total_samples = self._max_ssbo_size_bytes // bytes_per_sample
+        max_total_samples = self._max_ssbo_size // bytes_per_sample
         max_samples_per_om = max(1, max_total_samples // self.total_receptors)
         new_value = int(np.clip(value, 1, max_samples_per_om))
 
@@ -762,22 +775,23 @@ class Raytracer(BaseRenderer):
     def _bind_ssbos(self):
         """Binds all scene geometry and light SSBOs to their fixed slots."""
 
-        # Bindings 0 and 1 are for the receptors data and rays outputs
-        # Bindings 2-10 are scene geometry
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self._scene_baked.vertices_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, self._scene_baked.indices_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, self._scene_baked.materials_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, self._scene_baked.points_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, self._scene_baked.blas_nodes_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, self._scene_baked.tlas_nodes_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, self._scene_baked.instances_info_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, self._scene_baked.tlas_indices_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, self._scene_baked.blas_indices_ssbo)
+        # Bindings for the receptors data and rays outputs are handled in passes.
 
-        # Bindings 11-13 are lights
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, self._scene_baked.directional_lights_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, self._scene_baked.point_lights_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 13, self._scene_baked.area_lights_ssbo)
+        # Bindings for scene geometry
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_VERTICES, self._scene_baked.vertices_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_INDICES, self._scene_baked.indices_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_MATERIALS, self._scene_baked.materials_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_POINTS, self._scene_baked.points_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_BLAS_NODES, self._scene_baked.blas_nodes_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_TLAS_NODES, self._scene_baked.tlas_nodes_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_INSTANCES, self._scene_baked.instances_info_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_TLAS_INDICES, self._scene_baked.tlas_indices_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_BLAS_INDICES, self._scene_baked.blas_indices_ssbo)
+
+        # Bindings for lights
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LIGHT_DIR, self._scene_baked.directional_lights_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LIGHT_POINT, self._scene_baked.point_lights_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LIGHT_AREA, self._scene_baked.area_lights_ssbo)
 
     def _bind_textures(self, shader: ShaderProgram):
         """Binds skybox and material textures."""
@@ -886,14 +900,14 @@ class Raytracer(BaseRenderer):
         self.raytrace_shader.use()
 
         # Bind receptors-specific input/output buffers
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.receptors_input_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.ray_results_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, self.receptors_data_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.ray_results_ssbo)
 
         # Bind scene resources and common uniforms
         self._bind_resources(self.raytrace_shader)
 
         # Ommatidia-specific uniforms
-        glUniform1i(self.raytrace_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
+        glUniform1i(self.raytrace_shader.get_loc('nb_samples'), self.samples_per_receptor)
 
         # Halton sampling
         glUniform1i(self.raytrace_shader.get_loc('use_quasi_random'), int(self._quasi_random))
@@ -918,17 +932,14 @@ class Raytracer(BaseRenderer):
         self.reduction_shader.use()
 
         # Bind buffers
-        # Binding 0: input for this pass (raw ray results from pass 1)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.ray_results_ssbo)
-        # Binding 1: output for this pass (final averaged colour for each ommatidium)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
-        # Binding 2: persistent photoreceptor state for temporal integration
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self.receptor_state_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.ray_results_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, self.final_colors_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_STATE, self.receptor_state_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, self.receptors_data_ssbo)
 
         # Set uniforms
-        glUniform1i(self.reduction_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
+        glUniform1i(self.reduction_shader.get_loc('nb_samples'), self.samples_per_receptor)
         glUniform1i(self.reduction_shader.get_loc('nb_receptors'), self.total_receptors)
-        glUniform1f(self.reduction_shader.get_loc('receptor_tau'), self.receptor_tau)
         glUniform1f(self.reduction_shader.get_loc('dt'), self._dt)
 
         # Write into the history buffer circularly
@@ -960,7 +971,7 @@ class Raytracer(BaseRenderer):
         self._reduction()
 
         # Unbind all resources
-        for i in range(14):
+        for i in range(17):
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0)
 
         glActiveTexture(GL_TEXTURE0)
@@ -1020,7 +1031,6 @@ class Pathtracer(Raytracer):
     """
     def __init__(self, receptor_array, scene: Scene,
                  time_dithering: bool = True,
-                 time_accumulation: float = 0.0,
                  nb_samples: int = 256,
                  quasi_random: bool = False,
                  pano_res: Tuple[int, int] = (1024, 512),
@@ -1037,7 +1047,6 @@ class Pathtracer(Raytracer):
             receptor_array=receptor_array,
             scene=scene,
             time_dithering=time_dithering,
-            time_accumulation=time_accumulation,
             nb_samples=nb_samples,
             quasi_random=quasi_random,
             pano_res=pano_res,

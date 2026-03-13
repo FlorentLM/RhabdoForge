@@ -5,17 +5,13 @@
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 // Input: SSBO from binding point 0 contains an array of Receptors structs
-layout(std430, binding = 0) readonly buffer ReceptorsInputBlock {
-   Receptor receptor_data[];
-};
+layout(std430, binding = 0) readonly buffer ReceptorsInputBlock { ReceptorData receptor_data[]; };
 
 // Output: SSBO to write the results to
-layout(std430, binding = 1) writeonly buffer ReceptorsHistory {
-   vec4 history_data[];
-};
+layout(std430, binding = 2) writeonly buffer ReceptorsHistory { vec4 history_data[]; };
 
 // Input / Output: Persistent photoreceptor state for temporal accumulation
-layout(std430, binding = 2) buffer PhotoreceptorState { vec4 receptor_state[]; };
+layout(std430, binding = 3) buffer PhotoreceptorState { vec4 receptor_state[]; };
 
 // Input: scene rendered to a cubemap
 layout(binding = 0) uniform samplerCube scene_cubemap;
@@ -23,15 +19,14 @@ layout(binding = 0) uniform samplerCube scene_cubemap;
 // Uniforms
 uniform int nb_receptors;
 uniform int nb_samples;
-uniform float dither_counter; // for temporal dithering
-uniform int frame_index;  // current frame number
+uniform float dither_counter;
+uniform int frame_index;
 uniform bool use_quasi_random;
-uniform float dt;           // seconds since last frame
-uniform float receptor_tau; // ~ 0.01 to 0.015 (10-15 ms)
+uniform float dt;   // seconds since last frame
 
-void main()
-{
-    // Get the unique ID for this specific shader invocation
+void main() {
+
+    // unique ID for this specific shader invocation
     uint rcpt_id = gl_GlobalInvocationID.x;
 
     // Stop if out of bounds
@@ -39,15 +34,12 @@ void main()
         return;
     }
 
-    // Unpack data for this specific ommatidium
-    Receptor rcpt = receptor_data[rcpt_id];
-
-    vec3 rcpt_dir = normalize(rcpt.direction.xyz);
+    ReceptorData rcpt = receptor_data[rcpt_id];
+    vec3 rcpt_dir = normalize(rcpt.direction);
 
     vec3 total_color = vec3(0.0);
-    float total_weight = 0.0;
 
-    // Create a local coordinate system for the ommatidium
+    // Local coordinate system for the receptor
     vec3 up = abs(rcpt_dir.y) > 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
     vec3 tangent = normalize(cross(up, rcpt_dir));
     vec3 bitangent = cross(rcpt_dir, tangent);
@@ -77,31 +69,29 @@ void main()
             r2 = rand(vec2(rcpt_id, i) + 0.5, dither_counter);
         }
 
+         // Each sample has equal weight (distribution is already biased)
         vec3 sample_dir = sampledir(rcpt, tangent, bitangent, rcpt_dir, r1, r2);
-
-        // Each sample has equal weight (distribution is already biased)
-        vec3 sampled_color = texture(scene_cubemap, sample_dir).rgb;
-        total_color += sampled_color;
+        total_color += texture(scene_cubemap, sample_dir).rgb;
     }
 
-    // Simple Averaging
-    // Normalize by the total number of samples taken
+    // Simple averaging (norm by number of sampls taken)
     if (nb_samples > 0) {
         total_color /= float(nb_samples);
     }
 
     vec3 output_color;
-    if (receptor_tau > 0.0) {
+    float tau = rcpt.tau;
+
+    if (tau > 0.0) {
         // Exponential moving average (first-order low-pass)
-        float alpha = dt / (receptor_tau + dt);
+        float alpha = dt / (tau + dt);
         vec3 prev = receptor_state[rcpt_id].rgb;
-        output_color = prev + alpha * (total_color - prev);
+        output_color = mix(prev, total_color, alpha);
         receptor_state[rcpt_id] = vec4(output_color, 1.0);
     } else {
         output_color = total_color;
     }
 
-    // Write the final color to the output SSBO at the correct index
     uint output_index = (frame_index * nb_receptors) + rcpt_id;
     history_data[output_index] = vec4(output_color, 1.0);
 }

@@ -194,7 +194,6 @@ agent = Agent()
 renderer = Raytracer(
     receptor_array=eye_array, scene=scene,
     nb_samples=512,
-    time_accumulation=0.012,
     time_dithering=True,
     quasi_random=True,
     enable_shadows=False
@@ -290,7 +289,7 @@ for mode in modes:
 
         renderer.set_heatmap_eyes(
             {left_eye: left_motion, right_eye: right_motion},
-            colormap=Colormap.DIVERGING, compression=1.0
+            colormap=Colormap.Diverging, compression=1.0
         )
 
         context.draw()

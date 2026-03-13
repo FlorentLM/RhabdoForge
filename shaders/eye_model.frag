@@ -1,8 +1,6 @@
 #version 430 core
 
-layout(std430, binding = 1) readonly buffer ColorDataBlock {
-    vec4 final_rgba[];
-};
+layout(std430, binding = 2) readonly buffer ColorDataBlock { vec4 final_rgba[]; };
 
 in flat uint v_index;
 flat in uint v_mode;

@@ -35,61 +35,64 @@ class Receptor:
 
     @property
     def position(self) -> np.ndarray:
-        return self._data[self._item]['position'][..., :3]
+        return self._data[self._item]['position']
 
     @position.setter
     def position(self, value: Union[float, ArrayLike]):
-
-        self._data['position'][self._item, :3] = np.asarray(value, dtype=np.float32)
-        self._data['position'][self._item, 3] = 1.0
-
+        self._data['position'][self._item] = np.asarray(value, dtype=np.float32)
         self._parent.dirty_mask[self._item] = True
         self._parent._stale_receptor_spatial = True
 
     @property
     def direction(self) -> np.ndarray:
-        return self._data[self._item]['direction'][..., :3]
+        return self._data[self._item]['direction']
 
     @direction.setter
     def direction(self, value: Union[float, ArrayLike]):
-
         new_dirs = np.atleast_2d(value)
         norms = np.linalg.norm(new_dirs, axis=-1, keepdims=True)
         np.divide(new_dirs, norms, out=new_dirs, where=norms != 0)
 
-        self._data['direction'][self._item, :3] = new_dirs
-        self._data['direction'][self._item, 3] = 0.0
-
+        self._data['direction'][self._item] = new_dirs
         self._parent.dirty_mask[self._item] = True
         self._parent._stale_receptor_spatial = True
 
-    # Acceptance / sensitivity
+    # Optics / Temporal
+
+    @property
+    def acceptance_tilt(self) -> np.ndarray:
+        return self._data[self._item]['acc_tilt']
+
+    @acceptance_tilt.setter
+    def acceptance_tilt(self, value: Union[float, ArrayLike]):
+        self._data['acc_tilt'][self._item] = np.asarray(value, dtype=np.float32)
+        self._parent.dirty_mask[self._item] = True
 
     @property
     def acceptance_major(self) -> np.ndarray:
-        return self._data[self._item]['acceptance_angles'][..., 0]
+        return self._data[self._item]['acc_axes'][..., 1]
 
     @acceptance_major.setter
     def acceptance_major(self, value: Union[float, ArrayLike]):
-        self._data['acceptance_angles'][self._item, 0] = value
+        self._data['acc_axes'][self._item, 1] = value
         self._parent.dirty_mask[self._item] = True
 
     @property
     def acceptance_minor(self) -> np.ndarray:
-        return self._data[self._item]['acceptance_angles'][..., 1]
+        return self._data[self._item]['acc_axes'][..., 0]
 
     @acceptance_minor.setter
     def acceptance_minor(self, value: Union[float, ArrayLike]):
-        self._data['acceptance_angles'][self._item, 1] = value
+        self._data['acc_axes'][self._item, 0] = value
         self._parent.dirty_mask[self._item] = True
 
     @property
     def acceptance_rad(self) -> np.ndarray:
-        return self._data[self._item]['acceptance_angles']
+        return self._data[self._item]['acc_axes']
 
     @acceptance_rad.setter
     def acceptance_rad(self, values: Union[float, ArrayLike]):
-        self._data['acceptance_angles'][self._item] = values
+        self._data['acc_axes'][self._item] = values
         self._parent.dirty_mask[self._item] = True
 
     @property
@@ -109,53 +112,62 @@ class Receptor:
         self._data['sensitivity'][self._item] = np.asarray(value, dtype=np.float32)
         self._parent.dirty_mask[self._item] = True
 
+    @property
+    def tau(self) -> np.ndarray:
+        return self._data[self._item]['tau']
+
+    @tau.setter
+    def tau(self, value: Union[float, ArrayLike]):
+        self._data['tau'][self._item] = np.asarray(value, dtype=np.float32)
+        self._parent.dirty_mask[self._item] = True
+
     # Metadata
 
     @property
     def eye_id(self) -> np.ndarray:
-        return self._data[self._item]['packed_data'] & 0x07
+        return self._data[self._item]['metadata'] & 0x07
 
     @eye_id.setter
     def eye_id(self, value: Union[int, ArrayLike]):
         v = np.asarray(value, dtype=np.uint32)
-        cur = self._data['packed_data'][self._item]
-        self._data['packed_data'][self._item] = (cur & _CLEAR_EYE_ID) | (v & 0x07)
+        cur = self._data['metadata'][self._item]
+        self._data['metadata'][self._item] = (cur & _CLEAR_EYE_ID) | (v & 0x07)
         self._parent.dirty_mask[self._item] = True
 
     @property
     def receptor_type(self) -> np.ndarray:
-        return (self._data[self._item]['packed_data'] >> 3) & 0x0F
+        return (self._data[self._item]['metadata'] >> 3) & 0x0F
 
     @receptor_type.setter
     def receptor_type(self, value: Union[int, ArrayLike]):
         v = np.asarray(value, dtype=np.uint32)
-        cur = self._data['packed_data'][self._item]
-        self._data['packed_data'][self._item] = (cur & _CLEAR_RECEPTOR_TYPE) | ((v & 0x0F) << 3)
+        cur = self._data['metadata'][self._item]
+        self._data['metadata'][self._item] = (cur & _CLEAR_RECEPTOR_TYPE) | ((v & 0x0F) << 3)
         self._parent.dirty_mask[self._item] = True
 
     @property
     def neighbours_count(self) -> np.ndarray:
-        return (self._data[self._item]['packed_data'] >> 7) & 0x0F
+        return (self._data[self._item]['metadata'] >> 7) & 0x0F
 
     @neighbours_count.setter
     def neighbours_count(self, value: Union[int, ArrayLike]):
         v = np.asarray(value, dtype=np.uint32)
-        cur = self._data['packed_data'][self._item]
-        self._data['packed_data'][self._item] = (cur & _CLEAR_NEIGHBOURS) | ((v & 0x0F) << 7)
+        cur = self._data['metadata'][self._item]
+        self._data['metadata'][self._item] = (cur & _CLEAR_NEIGHBOURS) | ((v & 0x0F) << 7)
         self._parent.dirty_mask[self._item] = True
 
     @property
-    def lens_index(self) -> np.ndarray:
+    def lens_id(self) -> np.ndarray:
         """
         Index of the parent ommatidium in the lens-level array.
         """
-        return (self._data[self._item]['packed_data'] >> 11) & 0xFFFF
+        return (self._data[self._item]['metadata'] >> 11) & 0xFFFF
 
-    @lens_index.setter
-    def lens_index(self, value: Union[int, ArrayLike]):
+    @lens_id.setter
+    def lens_id(self, value: Union[int, ArrayLike]):
         v = np.asarray(value, dtype=np.uint32)
-        cur = self._data['packed_data'][self._item]
-        self._data['packed_data'][self._item] = (cur & _CLEAR_LENS_INDEX) | ((v & 0xFFFF) << 11)
+        cur = self._data['metadata'][self._item]
+        self._data['metadata'][self._item] = (cur & _CLEAR_LENS_INDEX) | ((v & 0xFFFF) << 11)
         self._parent.dirty_mask[self._item] = True
 
     # Convenience angular accessors
@@ -202,12 +214,12 @@ class Ommatidium:
         """``omm[r]`` returns the Receptor proxy for receptor type r"""
 
         if isinstance(receptor_idx, (int, np.integer)):
-            return Receptor(self._array.data,
+            return Receptor(self._array.receptor_data,
                             self._start + int(receptor_idx),
                             self._array)
 
         indices = np.arange(self._start, self._stop)[receptor_idx]
-        return Receptor(self._array.data, indices, self._array)
+        return Receptor(self._array.receptor_data, indices, self._array)
 
     def __len__(self) -> int:
         return self._array.receptor_count
@@ -231,7 +243,7 @@ class Ommatidium:
 
     @property
     def eye_id(self) -> int:
-        return int(self._array.data['packed_data'][self._start] & 0x07)
+        return int(self._array.receptor_data['metadata'][self._start] & 0x07)
 
     @property
     def bundle_orientation(self) -> float:
@@ -241,7 +253,7 @@ class Ommatidium:
     @property
     def receptors(self) -> Receptor:
         """Proxy spanning all R receptors of this ommatidium."""
-        return Receptor(self._array.data, self._slice, self._array)
+        return Receptor(self._array.receptor_data, self._slice, self._array)
 
     def actuate(self, displacement_um: float, axial_um: float = 0.0):
         """
@@ -275,11 +287,11 @@ class Cartridge:
         """``cartridge[k]`` returns the Receptor R{k+1} from the appropriate ommatidium."""
         source_lens = self._array._cartridge_map[self._lens_index, receptor_type]
         global_idx = source_lens * self._array.receptor_count + receptor_type
-        return Receptor(self._array.data, global_idx, self._array)
+        return Receptor(self._array.receptor_data, global_idx, self._array)
 
     @property
     def receptor_indices(self) -> np.ndarray:
-        """Global indices into ReceptorArray.data"""
+        """Global indices into ReceptorArray.receptor_data"""
         sources = self._array._cartridge_map[self._lens_index]
         R = self._array.receptor_count
         return sources * R + np.arange(min(6, R))
@@ -309,7 +321,7 @@ class Eye:
         R = array.receptor_count
 
         # lenses belonging to this eye
-        first_ids = array.data['packed_data'][::R] & 0x07
+        first_ids = array.receptor_data['metadata'][::R] & 0x07
         self._lens_mask = first_ids == eye_id
         self._lens_indices = np.where(self._lens_mask)[0]  # global lens indices
 
@@ -398,7 +410,7 @@ class Eye:
 
     @property
     def global_indices(self) -> np.ndarray:
-        """Maps to global receptor indices in ReceptorArray.data"""
+        """Maps to global receptor indices in ReceptorArray.receptor_data"""
         return self._receptor_indices
 
     @property
@@ -658,6 +670,7 @@ class VisualOutput:
         """
         batch_shape = self.raw.shape[:-2]
         new_shape = (*batch_shape, self._array.lens_count, self._array.receptor_count, self.raw.shape[-1])
+        # squeeze if simplified model and batch size is 1
         return self.raw.reshape(new_shape).squeeze() if not self._array.is_full_model else self.raw.reshape(new_shape)
 
     @property

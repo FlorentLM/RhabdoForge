@@ -2,53 +2,47 @@
 
 #include "commons.glsl"
 
-// Input: Per-vertex attribute for the base cone mesh
 layout (location = 0) in vec3 cone_vertex;
 
-// Bindings
-layout(std430, binding = 0) readonly buffer ReceptorsInputBlock {
-   Receptor receptors_data[];
-};
-
-layout(std430, binding = 1) readonly buffer ColorDataBlock {
-   vec4 receptors_colors[];
-};
+layout(std430, binding = 0) readonly buffer ReceptorsDataBlock { ReceptorData receptors_data[]; };
+layout(std430, binding = 1) readonly buffer LensDataBlock { LensData lenses_data[]; };
+layout(std430, binding = 2) readonly buffer ColorDataBlock { vec4 receptors_colors[]; };
 
 // Uniforms
 uniform float aspect_ratio;
 uniform int projection_mode; // 0 = Physical, 1 = Acceptance
 uniform bool tiled_mode;
-
-uniform float tiled_mode_scale;
+//uniform float tiled_mode_scale;
 uniform float receptive_field_scale;
 
 // Output: Varying to fragment shader
 layout (location = 0) out vec3 v_color;
 
 void main() {
-    // Get the data for this instance
     int instance_id = gl_InstanceID;
-    Receptor rcpt = receptors_data[instance_id];
+    ReceptorData rcpt = receptors_data[instance_id];
 
-    float tilt_angle = rcpt.tilt;
+    uint lens_id = unpack_lens_id(rcpt);
+    LensData lens = lenses_data[lens_id];
+
     vec3 instance_color = receptors_colors[instance_id].rgb;
+    vec3 projection_vector = (projection_mode == 1) ? rcpt.direction : normalize(rcpt.position);
 
-    // Determine projection vector based on mode
-    vec3 projection_vector = (projection_mode == 1)
-        ? rcpt.direction.xyz
-        : normalize(rcpt.position.xyz);
-
-    // Apply spherical projection to get screen position
+    // Spherical projection to get screen position
     float longitude = atan(projection_vector.x, -projection_vector.z);
     float latitude = asin(projection_vector.y);
     vec2 instance_screen_pos = vec2(longitude / PI, latitude / HPI);
 
-    // ellipse shape is determined by acceptance angles or interommatidial angles depending on the mode
+    // Swap between receptor parameters and lens parameters
+    float tilt_angle;
     vec2 base_ellipse_shape;
+
     if (tiled_mode) {
-        base_ellipse_shape = cone_vertex.xy * rcpt.interommatidial_angles;
+        tilt_angle = lens.tilt;
+        base_ellipse_shape = cone_vertex.xy * lens.ioa_axes;
     } else {
-        base_ellipse_shape = cone_vertex.xy * rcpt.acceptance_angles;
+        tilt_angle = rcpt.acc_tilt;
+        base_ellipse_shape = cone_vertex.xy * rcpt.acc_axes;
     }
 
     // Orient the ellipse

@@ -4,19 +4,15 @@
 
 layout (location = 0) in vec3 cone_vertex;
 
-layout(std430, binding = 0) readonly buffer ReceptorsInputBlock {
-   Receptor receptors_data[];
-};
+layout(std430, binding = 0) readonly buffer ReceptorsInputBlock { ReceptorData receptors_data[]; };
+layout(std430, binding = 1) readonly buffer LensDataBlock { LensData lenses_data[]; };
+layout(std430, binding = 2) readonly buffer ScalarDataBlock { float scalar_data[]; };
 
-layout(std430, binding = 1) readonly buffer ScalarDataBlock {
-   float scalar_data[];
-};
-
+// Uniforms
 uniform float aspect_ratio;
 uniform int projection_mode;  // 0 = physical, 1 = Acceptance
 uniform bool tiled_mode;
 uniform float receptive_field_scale;
-
 uniform float data_min;       // lower bound of colormap range
 uniform float data_max;       // upper bound of colormap range
 uniform int colormap;         // 0 = diverging (blue white red), 1 = sequential (viridis), 2 = thermal
@@ -26,23 +22,30 @@ layout (location = 0) out float v_scalar;   // normalised [0, 1]
 
 void main() {
     int instance_id = gl_InstanceID;
-    Receptor rcpt = receptors_data[instance_id];
+    ReceptorData rcpt = receptors_data[instance_id];
 
-    vec3 projection_vector = (projection_mode == 1) ? rcpt.direction.xyz: normalize(rcpt.position.xyz);
+    uint lens_id = unpack_lens_id(rcpt);
+    LensData lens = lenses_data[lens_id];
 
-    float longitude = atan(projection_vector.x, -projection_vector.z);
-    float latitude  = asin(projection_vector.y);
+    vec3 proj_vec = (projection_mode == 1) ? rcpt.direction : normalize(rcpt.position);
+
+    float longitude = atan(proj_vec.x, -proj_vec.z);
+    float latitude  = asin(proj_vec.y);
     vec2 instance_screen_pos = vec2(longitude / PI, latitude / HPI);
 
+    float tilt_angle;
     vec2 base_ellipse_shape;
+
     if (tiled_mode) {
-        base_ellipse_shape = cone_vertex.xy * rcpt.interommatidial_angles;
+        tilt_angle = lens.tilt;
+        base_ellipse_shape = cone_vertex.xy * lens.ioa_axes;
     } else {
-        base_ellipse_shape = cone_vertex.xy * rcpt.acceptance_angles;
+        tilt_angle = rcpt.acc_tilt;
+        base_ellipse_shape = cone_vertex.xy * rcpt.acc_axes;
     }
 
-    float s = sin(rcpt.tilt);
-    float c = cos(rcpt.tilt);
+    float s = sin(tilt_angle);
+    float c = cos(tilt_angle);
     mat2 rotation_matrix = mat2(c, -s, s, c);
     vec2 rotated_ellipse_xy = rotation_matrix * base_ellipse_shape;
 
@@ -59,13 +62,13 @@ void main() {
 
     gl_Position = vec4(final_pos, 1.0);
 
-    // normalised value with dynamic range compr
+    // Normalise scalar value with dynamic range compr
     float raw = scalar_data[instance_id];
     float range = data_max - data_min;
     float t = (range > 1e-8) ? clamp((raw - data_min) / range, 0.0, 1.0) : 0.5;
 
     if (colormap == 0) {
-        // Diverging: compress symmetrically around midpoint
+        // Diverging: compress symmetrically around midpoint (0.5)
         float centered = t * 2.0 - 1.0;  // [0,1] → [-1,1]
         float compressed = sign(centered) * pow(abs(centered), compression);
         t = compressed * 0.5 + 0.5;       // [-1,1] → [0,1]

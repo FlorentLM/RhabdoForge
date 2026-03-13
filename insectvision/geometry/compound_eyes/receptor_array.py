@@ -5,7 +5,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 
-from .datatypes import GPU_RECEPTOR_DTYPE, _CLEAR_NEIGHBOURS
+from .datatypes import RECEPTOR_DTYPE, LENS_DTYPE, _CLEAR_NEIGHBOURS
 from .kernel import RhabdomereKernel
 from .proxies import Eye, Ommatidium, Cartridge
 from .eye_utils import compute_lattice_properties, tangent_frames
@@ -116,9 +116,9 @@ class ReceptorArray:
                               np.full((N, R), -d, dtype=np.float32)], axis=-1)
 
         world_tip = (
-            local_tip[..., 0:1] * local_right[:, np.newaxis, :] +
-            local_tip[..., 1:2] * local_up[:, np.newaxis, :] +
-            local_tip[..., 2:3] * lens_dirs[:, np.newaxis, :]
+                local_tip[..., 0:1] * local_right[:, np.newaxis, :] +
+                local_tip[..., 1:2] * local_up[:, np.newaxis, :] +
+                local_tip[..., 2:3] * lens_dirs[:, np.newaxis, :]
         ).reshape(M, 3)
 
         # Receptor direction: from tip through lens centre = -world_tip
@@ -128,34 +128,33 @@ class ReceptorArray:
         # Receptor position: lens + tip offset
         rec_positions = np.repeat(lens_positions, R, axis=0) + world_tip
 
-        data = np.zeros(M, dtype=GPU_RECEPTOR_DTYPE)
-        data['position'][:, :3] = rec_positions
-        data['position'][:, 3] = 1.0
-        data['direction'][:, :3] = rec_dirs
-        data['direction'][:, 3] = 0.0
+        receptor_data = np.zeros(M, dtype=RECEPTOR_DTYPE)
+        receptor_data['position'] = rec_positions
+        receptor_data['direction'] = rec_dirs
 
         wavelength_um = wavelength_nm * 1e-3
-        diffraction = wavelength_um / kernel.lens_diameter_um     # λ/D (scalar)
-        geometric = kernel.diameters_um / d                       # d_rhab/f (R,)
-        full_acceptance = np.sqrt(diffraction**2 + geometric**2)  # (R,)
+        diffraction = wavelength_um / kernel.lens_diameter_um           # λ/D (scalar)
+        geometric = kernel.diameters_um / d                             # d_rhab/f (R,)
+        full_acceptance = np.sqrt(diffraction ** 2 + geometric ** 2)    # (R,)
 
         if eye_parameter is not None:
-            p_min, p_maj = (eye_parameter, eye_parameter) if isinstance(eye_parameter, (float, int, np.number)) else eye_parameter
-            data['acceptance_angles'][:, 0] = np.repeat(p_min * ioa_minor, R)
-            data['acceptance_angles'][:, 1] = np.repeat(p_maj * ioa_major, R)
+            p_min, p_maj = (eye_parameter, eye_parameter) if isinstance(eye_parameter,
+                                                                        (float, int, np.number)) else eye_parameter
+            receptor_data['acc_axes'][:, 0] = np.repeat(p_min * ioa_minor, R)
+            receptor_data['acc_axes'][:, 1] = np.repeat(p_maj * ioa_major, R)
 
         else:
-            data['acceptance_angles'][:, 0] = np.tile(full_acceptance, N)
-            data['acceptance_angles'][:, 1] = np.tile(full_acceptance, N)
+            receptor_data['acc_axes'][:, 0] = np.tile(full_acceptance, N)
+            receptor_data['acc_axes'][:, 1] = np.tile(full_acceptance, N)
 
-        data['interommatidial_angles'][:, 0] = np.repeat(ioa_minor, R)
-        data['interommatidial_angles'][:, 1] = np.repeat(ioa_major, R)
-        data['tilt'] = np.repeat(lattice_tilts, R)
+        receptor_data['acc_tilt'] = np.repeat(lattice_tilts, R)
 
         sens = 1.0 if sensitivities is None else sensitivities
-        data['sensitivity'] = np.repeat(
+        receptor_data['sensitivity'] = np.repeat(
             np.broadcast_to(np.float32(sens), N), R
         )
+
+        receptor_data['tau'] = 0.0
 
         # Packed metadata
         if eye_ids is not None:
@@ -166,16 +165,23 @@ class ReceptorArray:
         rtypes = np.tile(np.arange(R, dtype=np.uint32), N)
         lindex = np.repeat(np.arange(N, dtype=np.uint32), R)
 
-        data['packed_data'] = (
-            (eid & 0x07) |
-            ((rtypes & 0x0F) << 3) |
-            ((np.repeat(nb_counts, R) & 0x0F) << 7) |
-            ((lindex & 0xFFFF) << 11)
+        receptor_data['metadata'] = (
+                (eid & 0x07) |
+                ((rtypes & 0x0F) << 3) |
+                ((np.repeat(nb_counts, R) & 0x0F) << 7) |
+                ((lindex & 0xFFFF) << 11)
         )
+
+        # Lens data (for visualisation mostly)
+        lens_data = np.zeros(N, dtype=LENS_DTYPE)
+        lens_data['ioa_axes'][:, 0] = ioa_minor
+        lens_data['ioa_axes'][:, 1] = ioa_major
+        lens_data['tilt'] = lattice_tilts
 
         # assemble object
         obj = object.__new__(cls)
-        obj.data = data
+        obj.receptor_data = receptor_data
+        obj.lens_data = lens_data
         obj.lens_count = N
         obj.receptor_count = R
 
@@ -194,8 +200,8 @@ class ReceptorArray:
         obj._local_up = local_up
 
         with np.errstate(divide='ignore', invalid='ignore'):
-            obj.eye_parameter_minor = data['acceptance_angles'][:, 0] / np.repeat(ioa_minor, R)
-            obj.eye_parameter_major = data['acceptance_angles'][:, 1] / np.repeat(ioa_major, R)
+            obj.eye_parameter_minor = receptor_data['acc_axes'][:, 0] / np.repeat(ioa_minor, R)
+            obj.eye_parameter_major = receptor_data['acc_axes'][:, 1] / np.repeat(ioa_major, R)
 
         np.nan_to_num(obj.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         np.nan_to_num(obj.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
@@ -253,7 +259,7 @@ class ReceptorArray:
 
         self.lens_count = N
         self.receptor_count = 1
-        self.data = np.zeros(N, dtype=GPU_RECEPTOR_DTYPE)
+        self.receptor_data = np.zeros(N, dtype=RECEPTOR_DTYPE)
 
         self._kernel = None
         self._cartridge_map = None
@@ -261,27 +267,26 @@ class ReceptorArray:
 
         # Directions
         norms = np.linalg.norm(directions, axis=1, keepdims=True)
-        self.data['direction'][:, :3] = directions / norms
-        self.data['direction'][:, 3] = 0.0
+        self.receptor_data['direction'] = directions / norms
 
         # Positions
         if positions is not None:
             positions_arr = np.asarray(positions, dtype=np.float32)
 
             if positions_arr.ndim == 1 and positions_arr.shape[0] == 3:
-                self.data['position'][:, :3] = positions_arr
+                self.receptor_data['position'] = positions_arr
             elif positions_arr.shape == (N, 3):
-                self.data['position'][:, :3] = positions_arr
+                self.receptor_data['position'] = positions_arr
             else:
                 raise ValueError(f"Invalid 'positions' shape {positions_arr.shape}. Expected ({N}, 3) or (3,).")
 
         elif eye_radius > 0:
-            self.data['position'][:, :3] = self.data['direction'][:, :3] * eye_radius
+            self.receptor_data['position'] = self.receptor_data['direction'] * eye_radius
 
-        self.data['position'][:, 3] = 1.0
-
-        self.data['sensitivity'] = np.asarray(
+        self.receptor_data['sensitivity'] = np.asarray(
             sensitivities if sensitivities is not None else 1.0, dtype=np.float32)
+
+        self.receptor_data['tau'] = 0.0
 
         # Packed metadata
         id_arr = np.zeros(N, dtype=np.uint32)
@@ -298,10 +303,10 @@ class ReceptorArray:
 
         lens_idx_arr = np.arange(N, dtype=np.uint32)
 
-        self.data['packed_data'] = (
-            (id_arr & 0x07) |
-            ((types_arr & 0x0F) << 3) |
-            ((lens_idx_arr & 0xFFFF) << 11)
+        self.receptor_data['metadata'] = (
+                (id_arr & 0x07) |
+                ((types_arr & 0x0F) << 3) |
+                ((lens_idx_arr & 0xFFFF) << 11)
         )
 
         self.dirty_mask = np.zeros(N, dtype=bool)
@@ -309,14 +314,14 @@ class ReceptorArray:
         self._stale_lens_spatial = False
 
         # Can eagerly build since receptor=lens, it's cheap
-        self._kdtree_directions = KDTree(self.data['direction'][:, :3])
-        self._kdtree_positions = KDTree(self.data['position'][:, :3])
+        self._kdtree_directions = KDTree(self.receptor_data['direction'])
+        self._kdtree_positions = KDTree(self.receptor_data['position'])
         self._eye_cache = {}
 
         # Lattice properties
         is_pre_expanded = False
         if N > 1:
-            if np.allclose(self.data['position'][0], self.data['position'][1], atol=1e-7):
+            if np.allclose(self.receptor_data['position'][0], self.receptor_data['position'][1], atol=1e-7):
                 is_pre_expanded = True
 
         if interommatidial_angles_rad is not None:
@@ -330,40 +335,38 @@ class ReceptorArray:
                 ioa_min = np.minimum(broad[:, 0], broad[:, 1])
                 ioa_maj = np.maximum(broad[:, 0], broad[:, 1])
 
-            self.data['interommatidial_angles'][:, 0] = ioa_min
-            self.data['interommatidial_angles'][:, 1] = ioa_maj
-
             self._ioa_minor_rad = ioa_min
             self._ioa_major_rad = ioa_maj
             self._lattice_tilts = np.zeros(N, dtype=np.float32)
 
         elif not is_pre_expanded:
             ioa_min, ioa_maj, tilts, counts = compute_lattice_properties(
-                self.data['direction'][:, :3],
-                self.data['position'][:, :3]
+                self.receptor_data['direction'],
+                self.receptor_data['position']
             )
 
             self._ioa_minor_rad = ioa_min
             self._ioa_major_rad = ioa_maj
             self._lattice_tilts = tilts
 
-            self.data['interommatidial_angles'][:, 0] = ioa_min
-            self.data['interommatidial_angles'][:, 1] = ioa_maj
-            self.data['tilt'] = tilts
-
-            cleared = self.data['packed_data'] & _CLEAR_NEIGHBOURS
-            self.data['packed_data'] = cleared | ((counts & 0x0F) << 7)
+            cleared = self.receptor_data['metadata'] & _CLEAR_NEIGHBOURS
+            self.receptor_data['metadata'] = cleared | ((counts & 0x0F) << 7)
         else:
-            self._ioa_minor_rad = self.data['interommatidial_angles'][:, 0]
-            self._ioa_major_rad = self.data['interommatidial_angles'][:, 1]
-            self._lattice_tilts = self.data['tilt'].copy()
+            self._ioa_minor_rad = np.zeros(N, dtype=np.float32)
+            self._ioa_major_rad = np.zeros(N, dtype=np.float32)
+            self._lattice_tilts = np.zeros(N, dtype=np.float32)
+
+        self.lens_data = np.zeros(N, dtype=LENS_DTYPE)
+        self.lens_data['ioa_axes'][:, 0] = self._ioa_minor_rad
+        self.lens_data['ioa_axes'][:, 1] = self._ioa_major_rad
+        self.lens_data['tilt'] = self._lattice_tilts
 
         # Bundle orientation: in single receptor mode this defaults to lattice tilt
         # TODO: This is probably not the best approximation
 
         self._bundle_orientation = self._lattice_tilts.copy()
-        self._lens_directions = self.data['direction'][:, :3].copy()
-        self._lens_positions = self.data['position'][:, :3].copy()
+        self._lens_directions = self.receptor_data['direction'].copy()
+        self._lens_positions = self.receptor_data['position'].copy()
         self._actuation_state = np.zeros(N, dtype=np.float32)
         self._local_right = None
         self._local_up = None
@@ -398,13 +401,15 @@ class ReceptorArray:
         angles_arr = np.asarray(estimated_angles, dtype=np.float32)
 
         if angles_arr.shape == (N,):
-            self.data['acceptance_angles'] = angles_arr[:, np.newaxis]
+            self.receptor_data['acc_axes'] = angles_arr[:, np.newaxis]
         else:
-            self.data['acceptance_angles'] = angles_arr
+            self.receptor_data['acc_axes'] = angles_arr
+
+        self.receptor_data['acc_tilt'] = self._lattice_tilts
 
         with np.errstate(divide='ignore', invalid='ignore'):
-            self.eye_parameter_minor = self.data['acceptance_angles'][:, 0] / self._ioa_minor_rad
-            self.eye_parameter_major = self.data['acceptance_angles'][:, 1] / self._ioa_major_rad
+            self.eye_parameter_minor = self.receptor_data['acc_axes'][:, 0] / self._ioa_minor_rad
+            self.eye_parameter_major = self.receptor_data['acc_axes'][:, 1] / self._ioa_major_rad
 
         np.nan_to_num(self.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         np.nan_to_num(self.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
@@ -440,10 +445,10 @@ class ReceptorArray:
     # Overrides and internal helpers
 
     def __len__(self):
-        return len(self.data)
+        return len(self.receptor_data)
 
     def __repr__(self):
-        return f"<ReceptorArray(lenses={self.lens_count}, R={self.receptor_count}, total={len(self.data)})>"
+        return f"<ReceptorArray(lenses={self.lens_count}, R={self.receptor_count}, total={len(self.receptor_data)})>"
 
     def _prepare_param(self, param, name="param"):
         arr = np.asarray(param, dtype=np.float32)
@@ -471,12 +476,12 @@ class ReceptorArray:
     @property
     def eyes(self) -> list:
         """List of Eye views for all eye_ids present."""
-        unique = np.unique(self.data['packed_data'][::self.receptor_count] & 0x07)
+        unique = np.unique(self.receptor_data['metadata'][::self.receptor_count] & 0x07)
         return [self.eye(int(eid)) for eid in unique]
 
     @property
     def eye_ids(self) -> np.ndarray:
-        return np.unique(self.data['packed_data'][::self.receptor_count] & 0x07)
+        return np.unique(self.receptor_data['metadata'][::self.receptor_count] & 0x07)
 
     def ommatidium(self, lens_index: int) -> Ommatidium:
         """Global lens index -> Ommatidium group view."""
@@ -525,7 +530,7 @@ class ReceptorArray:
 
         for k in range(R_outer):
             # Directions of receptor type k across all lenses
-            type_k_dirs = self.data['direction'][k::R, :3]
+            type_k_dirs = self.receptor_data['direction'][k::R]
             tree = KDTree(type_k_dirs)
             _, indices = tree.query(lens_dirs)
             cartridge[:, k] = indices
@@ -636,9 +641,9 @@ class ReceptorArray:
         ], axis=-1)
 
         world_tip = (
-            local_tip[..., 0:1] * lr[:, np.newaxis, :] +
-            local_tip[..., 1:2] * lu[:, np.newaxis, :] +
-            local_tip[..., 2:3] * fwd[:, np.newaxis, :]
+                local_tip[..., 0:1] * lr[:, np.newaxis, :] +
+                local_tip[..., 1:2] * lu[:, np.newaxis, :] +
+                local_tip[..., 2:3] * fwd[:, np.newaxis, :]
         )  # (n_act, R, 3)
 
         new_dirs = -world_tip
@@ -649,13 +654,11 @@ class ReceptorArray:
 
         # build global receptor indices for all affected lenses
         receptor_indices = (
-            lens_mask[:, np.newaxis] * R + np.arange(R)[np.newaxis, :]
+                lens_mask[:, np.newaxis] * R + np.arange(R)[np.newaxis, :]
         ).ravel()  # (n_act * R,)
 
-        self.data['direction'][receptor_indices, :3] = new_dirs.reshape(-1, 3)
-        self.data['direction'][receptor_indices, 3] = 0.0
-        self.data['position'][receptor_indices, :3] = new_positions.reshape(-1, 3)
-        self.data['position'][receptor_indices, 3] = 1.0
+        self.receptor_data['direction'][receptor_indices] = new_dirs.reshape(-1, 3)
+        self.receptor_data['position'][receptor_indices] = new_positions.reshape(-1, 3)
 
         # Also change acceptance angles for any with axial displacement
         has_axial = np.any(axi != 0.0)
@@ -666,8 +669,8 @@ class ReceptorArray:
             geometric = kernel.diameters_um[np.newaxis, :] / d_eff[:, np.newaxis]
             new_acc = np.sqrt(diffraction ** 2 + geometric ** 2)  # (n_act, R)
 
-            self.data['acceptance_angles'][receptor_indices, 0] = new_acc.ravel()
-            self.data['acceptance_angles'][receptor_indices, 1] = new_acc.ravel()
+            self.receptor_data['acc_axes'][receptor_indices, 0] = new_acc.ravel()
+            self.receptor_data['acc_axes'][receptor_indices, 1] = new_acc.ravel()
 
         self.dirty_mask[receptor_indices] = True
 
@@ -699,7 +702,7 @@ class ReceptorArray:
         """Lazy build of receptor-level direction KDTree."""
 
         if self._stale_receptor_spatial or self._kdtree_directions is None:
-            self._kdtree_directions = KDTree(self.data['direction'][:, :3])
+            self._kdtree_directions = KDTree(self.receptor_data['direction'])
             self._stale_receptor_spatial = False  # directions rebuilt
 
         return self._kdtree_directions
@@ -708,7 +711,7 @@ class ReceptorArray:
         """Lazy build of receptor-level position KDTree."""
 
         if self._stale_receptor_spatial or self._kdtree_positions is None:
-            self._kdtree_positions = KDTree(self.data['position'][:, :3])
+            self._kdtree_positions = KDTree(self.receptor_data['position'])
 
         return self._kdtree_positions
 
@@ -774,11 +777,11 @@ class ReceptorArray:
         q = np.atleast_2d(np.asarray(targets, dtype=np.float32))
         is_single = np.asarray(targets).ndim == 1
 
-        desired = q[:, np.newaxis, :] - self.data['position'][:, :3][np.newaxis, :, :]
+        desired = q[:, np.newaxis, :] - self.receptor_data['position'][np.newaxis, :, :]
 
         norms = np.linalg.norm(desired, axis=-1, keepdims=True)
         np.divide(desired, norms, out=desired, where=norms != 0)
-        dots = np.einsum('jk,ijk->ij', self.data['direction'][:, :3], desired)
+        dots = np.einsum('jk,ijk->ij', self.receptor_data['direction'], desired)
 
         part = np.argpartition(dots, -k, axis=1)[:, -k:]
         top = np.take_along_axis(dots, part, axis=1)
@@ -817,11 +820,11 @@ class ReceptorArray:
         Largest angular gap between any receptor and its nearest neighbour.
         """
 
-        if len(self.data) <= 1:
+        if len(self.receptor_data) <= 1:
             return 0.0
 
         kd = self._ensure_global_kdtree_directions()
-        d, _ = kd.query(self.data['direction'][:, :3], k=2)
+        d, _ = kd.query(self.receptor_data['direction'], k=2)
         return float(np.arccos(np.clip(1.0 - (np.max(d[:, 1]) ** 2) / 2.0, -1, 1)))
 
     # Whole-array transforms (initial unit scaling, agent setup, etc)
@@ -831,7 +834,7 @@ class ReceptorArray:
         Scale all receptor positions by a factor.
         """
 
-        self.data['position'][:, :3] *= factor
+        self.receptor_data['position'] *= factor
         self._lens_positions *= factor
 
         # both levels stale: lens positions changed, receptor positions changed
@@ -849,7 +852,7 @@ class ReceptorArray:
         """
         v = np.asarray(vector, dtype=np.float32)
 
-        self.data['position'][:, :3] += v
+        self.receptor_data['position'] += v
 
         self._lens_positions += v
         self._stale_receptor_spatial = True

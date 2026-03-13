@@ -9,21 +9,26 @@ const float TWOPI = 2.0 * PI;
 const float GAUSS_CONSTANT_K = 2.77258872224;
 
 struct Material {
-    uint texture_idx;       // 0xFFFFFFFF means no texture, use base_color
+    uint texture_idx;       // 0xFFFFFFFF means no texture (use base_color)
     uint base_color;        // RGBA8 packed into uint32
     uint pad0, pad1;
 };
 
-struct Receptor {
-    vec4 position;
-    vec4 direction;
-    vec2 acceptance_angles;       // .x = minor axis, .y = major axis
-    vec2 interommatidial_angles;  // .x = minor axis, .y = major axis
-    float tilt;
-    float sensitivity;
-    uint packed_data;   // bits 0-2 = eye ID, bits 3-6 = receptor type, bits 7-10 = mumber of neighbours, bits 11-26 = custom ID, rest is padding
+struct ReceptorData {
+    vec3 position;      // receptor position x, y, z
+    uint metadata;      // eye_id, R_type, neighbour_count, lens_id, pad
+    vec3 direction;     // receptor direction x, y, z
+    float acc_tilt;     // acceptance angle ellipse tilt
+    vec2 acc_axes;      // acceptance angle ellipse minor, major axes
+    float sensitivity;  // photometric response multiplier
+    float tau;          // temporal accumulation
+}; // 48 bytes
+
+struct LensData {
+    vec2 ioa_axes;      // lattice geometry axes (ellipse minor, major)
+    float tilt;         // lattice geometry orientation (ellipse tilt)
     uint padding;
-};
+}; // 16 bytes
 
 // Helper functions for unpacking
 
@@ -35,27 +40,27 @@ vec4 unpack_color(uint packed_color) {
     return vec4(r, g, b, a);
 }
 
-uint unpack_eye_id(Receptor rcpt) {
-    return rcpt.packed_data & 7u; // bits 0-2
+uint unpack_eye_id(ReceptorData rcpt) {
+    return rcpt.metadata & 7u; // bits 0-2
 }
 
-uint unpack_receptor_type(Receptor rcpt) {
-    return (rcpt.packed_data >> 3u) & 15u; // bits 3-6
+uint unpack_receptor_type(ReceptorData rcpt) {
+    return (rcpt.metadata >> 3u) & 15u; // bits 3-6
 }
 
-uint unpack_neighbours_count(Receptor rcpt) {
-    return (rcpt.packed_data >> 7u) & 15u; // bits 7-10
+uint unpack_neighbours_count(ReceptorData rcpt) {
+    return (rcpt.metadata >> 7u) & 15u; // bits 7-10
 }
 
-uint unpack_lens_index(Receptor rcpt) {
-    return (rcpt.packed_data >> 11u) & 65535u; // bits 11-26
+uint unpack_lens_id(ReceptorData rcpt) {
+    return (rcpt.metadata >> 11u) & 65535u; // bits 11-26
 }
 
 struct Triangle {
     vec4 v0, v1, v2;       // offsets 0, 16 and 32, size 16. w is unused
     vec2 uv0, uv1, uv2;    // offsets 48, 56 and 64, size 8
     uint material_idx;     // offset 72, size 4
-}; // total size = 80 bytes
+}; // 80 bytes
 
 struct Point {
     vec3 position;
@@ -90,7 +95,7 @@ float halton_sequence(uint index, uint base) {
 //      - tangent, bitangent, forward: The basis vectors of the receptor's local frame
 //      - u1, u2: Two uniform random numbers in the range [0, 1]
 vec3 sampledir(
-    in Receptor rcpt,
+    in ReceptorData rcpt,
     in vec3 tangent,
     in vec3 bitangent,
     in vec3 forward,
@@ -102,8 +107,8 @@ vec3 sampledir(
 
     // Importance sample the polar angle theta for each axis (minor and major)
     // using the inverse CDF of the Gaussian distribution
-    float angle_minor = rcpt.acceptance_angles.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);
-    float angle_major = rcpt.acceptance_angles.y * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    float angle_minor = rcpt.acc_axes.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    float angle_major = rcpt.acc_axes.y * sqrt(-log(u1) / GAUSS_CONSTANT_K);
 
     // Using the same random number u1 for both maintains correlation and correctly
     // forms an elliptical distribution from a circular one
@@ -114,8 +119,8 @@ vec3 sampledir(
     point_on_ellipse.y = tan(angle_major) * sin(phi);
 
     // Rotate this 2D point by the receptor's elliptic tilt
-    float s = sin(rcpt.tilt);
-    float c = cos(rcpt.tilt);
+    float s = sin(rcpt.acc_tilt);
+    float c = cos(rcpt.acc_tilt);
     mat2 rotation_matrix = mat2(c, -s, s, c);
     vec2 tilted_point = rotation_matrix * point_on_ellipse;
 

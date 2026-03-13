@@ -18,16 +18,20 @@ from insectvision.engine.scene import Scene
 from insectvision.engine.utils import ShaderProgram, ViewMode, ProjectionMode
 
 
-def query_max_SSBO_size() -> int:
-    max_size = glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)
-    print(f"[INFO] Max possible SSBO size: {max_size / (1024 * 1024):.2f} MB")
-    return max_size
+# Core SSBO bindings (receptors data, rays results, etc)
+BINDING_RECEPTORS         = 0
+BINDING_LENSES            = 1
+BINDING_COLORS            = 2
+BINDING_STATE             = 3
+BINDING_RAYS_INTERMEDIATE = 4
 
 
 def query_available_VRAM() -> int:
     """
     Checks for NVIDIA extension to query available VRAM. Returns 0 if not supported.
     """
+    # TODO: Should probably have one for non-Nvidia
+
     if b'GL_NVX_gpu_memory_info' in glGetString(GL_EXTENSIONS):
         from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
         return glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX) // 1024
@@ -38,9 +42,9 @@ class Colormap(IntEnum):
     """
     Colormaps for the heatmap visualisation mode.
     """
-    DIVERGING = 0   # Blue -> white -> red  (signed and centred on zero)
-    SEQUENTIAL = 1  # Viridis-like          (positive magnitude)
-    THERMAL = 2     # Black -> red -> white (positive magnitude)
+    Diverging = 0   # Blue -> white -> red  (signed and centred on zero)
+    Sequential = 1  # Viridis-like          (positive magnitude)
+    Thermal = 2     # Black -> red -> white (positive magnitude)
 
 
 class BaseRenderer(ABC):
@@ -51,7 +55,6 @@ class BaseRenderer(ABC):
     def __init__(self,
                  receptor_array: ReceptorArray,
                  time_dithering: bool = True,
-                 time_accumulation: float = 0.0,
                  nb_samples: int = 256,
                  quasi_random: bool = False,
                  batch_size: int = 1
@@ -75,13 +78,23 @@ class BaseRenderer(ABC):
         self._dt = 0.0      # elapsed time (in seconds) since last render
 
         # Hardware queries
-        self._max_ssbo_size_bytes = query_max_SSBO_size()
+        self._max_ssbo_size = glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)
+        print(f"[INFO] Max possible SSBO size: {self._max_ssbo_size / (1024 * 1024):.2f} MB")
 
-        # Input receptors SSBO
-        self.receptors_input_ssbo = glGenBuffers(1)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptors_input_ssbo)
-        glBufferData(GL_SHADER_STORAGE_BUFFER, self.receptor_array.data.nbytes, self.receptor_array.data,
-                     GL_DYNAMIC_DRAW)
+        # Compound eye model SSBOs
+
+        # Receptors data SSBO (Binding 0)
+        self.receptors_data_ssbo = glGenBuffers(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptors_data_ssbo)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, self.receptor_array.receptor_data.nbytes,
+                     self.receptor_array.receptor_data, GL_DYNAMIC_DRAW)
+
+        # Lens data SSBO (Binding 1, only for visualisation)
+        self.lens_data_ssbo = glGenBuffers(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.lens_data_ssbo)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, self.receptor_array.lens_data.nbytes,
+                     self.receptor_array.lens_data, GL_STATIC_DRAW)
+
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
         # Visualisation resources (lazy-loaded)
@@ -93,7 +106,7 @@ class BaseRenderer(ABC):
         self.heatmap_enabled = False
         self._heatmap_ssbo = 0
         self._heatmap_ssbo_capacity = 0
-        self._heatmap_colormap = Colormap.THERMAL
+        self._heatmap_colormap = Colormap.Thermal
         self._heatmap_range = (0.0, 1.0)
         self._heatmap_compression = 1.0  # power exponent for dynamic range compression (1.0 = linear, 0.5 = sqrt, lower = more contrast)
         self._heatmap_auto_range_percentile = 98 # percentile to reject outliers
@@ -121,9 +134,7 @@ class BaseRenderer(ABC):
 
         self._allocate_history_buffers(self._batch_size)
 
-        # Photoreceptor temporal integration
-        self.receptor_tau: float = time_accumulation    # TODO: mode this into the receptor dtype
-
+        # Photoreceptor temporal integration buffer
         self.receptor_state_ssbo = glGenBuffers(1)
         receptor_buf_size = self.total_receptors * 16  # vec4 = 16 bytes
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptor_state_ssbo)
@@ -180,25 +191,25 @@ class BaseRenderer(ABC):
     def _allocate_history_buffers(self, requested_frames: int):
 
         bytes_per_frame = self.total_receptors * 16  # 16 bytes per vec4 (RGBA float)
-        requested_history_size_mb = (bytes_per_frame * requested_frames) / (1024 * 1024)
+        requested_history_size = (bytes_per_frame * requested_frames) / (1024 * 1024)   # in Mb
 
         # Estimate other VRAM usage (this is a rough estimate, subclasses can override)
         other_usage_mb = self.estimate_vram_usage()
-        total_requested_mb = requested_history_size_mb + other_usage_mb
-
-        available_vram_mb = query_available_VRAM()
+        total_requested_mb = requested_history_size + other_usage_mb
 
         safe_frames = requested_frames
-        if available_vram_mb > 0:
+
+        avail_VRAM = query_available_VRAM() # in Mb
+        if avail_VRAM > 0:
             print(
-                f"Available VRAM: {available_vram_mb} MB. Scene VRAM: {other_usage_mb:.2f} MB. Ommatidia views buffer VRAM: {requested_history_size_mb:.2f} MB.")
-            if total_requested_mb > available_vram_mb * 0.9:  # 90 % threshold for safety
-                safe_history_mb = (available_vram_mb * 0.9) - other_usage_mb
+                f"Available VRAM: {avail_VRAM} MB. Scene VRAM: {other_usage_mb:.2f} MB. Ommatidia views buffer VRAM: {requested_history_size:.2f} MB.")
+            if total_requested_mb > avail_VRAM * 0.9:  # 90% for safety
+                safe_history_mb = (avail_VRAM * 0.9) - other_usage_mb
                 safe_frames = int(safe_history_mb * 1024 * 1024 / bytes_per_frame)
 
                 if safe_frames < requested_frames:
                     print(
-                        f"WARNING: Requested {requested_frames} frames ({requested_history_size_mb:.2f} MB) exceeds available VRAM.")
+                        f"WARNING: Requested {requested_frames} frames ({requested_history_size:.2f} MB) exceeds available VRAM.")
                     print(f"         Reducing history capacity to {safe_frames} frames.")
         else:
             print("WARNING: Could not query available VRAM. Assuming enough memory is available.")
@@ -236,6 +247,8 @@ class BaseRenderer(ABC):
         - if batch_size = 1: Blocks and returns the current frame's data
         - if batch_size > 1: Queues the frame on the GPU and returns None
         """
+
+        self.update()
 
         is_sync_mode = getattr(self, 'is_interactive', False) or self._batch_size == 1
 
@@ -326,17 +339,17 @@ class BaseRenderer(ABC):
         if dirty_indices.size == 0:
             return
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptors_input_ssbo)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.receptors_data_ssbo)
 
         if force_all:
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.receptor_array.data.nbytes, self.receptor_array.data)
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.receptor_array.receptor_data.nbytes, self.receptor_array.receptor_data)
 
         else:
             # Find contiguous blocks of updated indices
             jumps = np.where(np.diff(dirty_indices) != 1)[0] + 1
             contiguous_blocks = np.split(dirty_indices, jumps)
 
-            item_size = self.receptor_array.data.itemsize  # 48 bytes
+            item_size = self.receptor_array.receptor_data.itemsize  # 48 bytes
 
             for block in contiguous_blocks:
                 nb_items = block.size
@@ -345,7 +358,7 @@ class BaseRenderer(ABC):
 
                 # indexing like this instead of fancy indexing (using [block] directly) avoids a copy
                 start_index = block[0]
-                data_view = self.receptor_array.data[start_index: start_index + nb_items]
+                data_view = self.receptor_array.receptor_data[start_index: start_index + nb_items]
 
                 glBufferSubData(GL_SHADER_STORAGE_BUFFER, start_index * item_size, data_view.nbytes, data_view)
 
@@ -378,7 +391,7 @@ class BaseRenderer(ABC):
         self,
         values: np.ndarray,
         range: tuple = None,
-        colormap: 'Colormap' = Colormap.THERMAL,
+        colormap: 'Colormap' = Colormap.Thermal,
         compression: float = 0.5,
     ):
         """
@@ -436,7 +449,7 @@ class BaseRenderer(ABC):
 
             range_bound = max(self._heatmap_current_range, 1e-6)
 
-            if colormap == Colormap.DIVERGING:
+            if colormap == Colormap.Diverging:
                 self._heatmap_range = (-range_bound, range_bound)
             else:
                 self._heatmap_range = (0.0, range_bound)
@@ -448,7 +461,7 @@ class BaseRenderer(ABC):
         self,
         values_dict: dict,
         range: tuple = None,
-        colormap: 'Colormap' = Colormap.THERMAL,
+        colormap: 'Colormap' = Colormap.Thermal,
         compression: float = 0.5,
     ):
         """
@@ -506,13 +519,14 @@ class BaseRenderer(ABC):
         return self._hemispheres_vao
 
     def _draw_voronoi(self):
-        """Draws the compound-eye view using final ommatidia colours."""
+        """Draws the compound-eye view using final colours."""
 
         if self.heatmap_enabled and self._heatmap_ssbo != 0:
             self._draw_heatmap()
             return
 
-        self.voronoi_shader.use()
+        shader = self.voronoi_shader
+        shader.use()
 
         glEnable(GL_DEPTH_TEST)
 
@@ -522,26 +536,31 @@ class BaseRenderer(ABC):
         aspect_ratio = viewport[2] / viewport[3] if viewport[3] > 0 else 1.0
 
         # glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), 1.0)
-        glUniform1f(self.voronoi_shader.get_loc('aspect_ratio'), aspect_ratio)
-        glUniform1i(self.voronoi_shader.get_loc('tiled_mode'), self.tiled_mode)
-        glUniform1i(self.voronoi_shader.get_loc('projection_mode'), self.projection_mode)
-        glUniform1f(self.voronoi_shader.get_loc('receptive_field_scale'), self.receptive_field_scale)
+        glUniform1f(shader.get_loc('aspect_ratio'), aspect_ratio)
+        glUniform1i(shader.get_loc('tiled_mode'), self.tiled_mode)
+        glUniform1i(shader.get_loc('projection_mode'), self.projection_mode)
+        glUniform1f(shader.get_loc('receptive_field_scale'), self.receptive_field_scale)
 
-        # Binding 0: Ommatidia geometry (directions, positions, etc)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.receptors_input_ssbo)
-        # Binding 1: Final computed colors (from subclass computation)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
+        # Binding Receptor data
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, self.receptors_data_ssbo)
+        # Binding Lens data
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENSES, self.lens_data_ssbo)
+        # Binding Final computed colours (from subclass computation)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, self.final_colors_ssbo)
 
         glBindVertexArray(self.cones_vao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.total_receptors)
 
         # Unbind everyone
         glBindVertexArray(0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENSES, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, 0)
         glDisable(GL_DEPTH_TEST)
 
-        self.voronoi_shader.stop()
+        shader.stop()
+
+    # TODO: _draw_heatmap is almost identical to _draw_voronoi -> should be broken into helpers
 
     def _draw_heatmap(self):
         """Draws the compound-eye view with scalar data mapped to a colormap."""
@@ -564,48 +583,43 @@ class BaseRenderer(ABC):
         glUniform1i(shader.get_loc('colormap'), int(self._heatmap_colormap))
         glUniform1f(shader.get_loc('compression'), self._heatmap_compression)
 
-        # Binding 0: Ommatidia geometry (for positioning)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.receptors_input_ssbo)
-        # Binding 1: Scalar data (replaces the colour buffer)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self._heatmap_ssbo)
+        # Binding Receptors data
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, self.receptors_data_ssbo)
+        # Binding Lens data
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENSES, self.lens_data_ssbo)
+        # Binding Scalar data (replaces the colour buffer)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, self._heatmap_ssbo)
 
         glBindVertexArray(self.cones_vao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_cone_vertices, self.total_receptors)
 
         glBindVertexArray(0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENSES, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, 0)
         glDisable(GL_DEPTH_TEST)
 
         shader.stop()
 
     def _draw_eye_model(self, observer_camera, agent):
 
-        self.eye_model_shader.use()
+        shader = self.eye_model_shader
+        shader.use()
 
         glEnable(GL_BLEND)
-        # glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        # glDisable(GL_CULL_FACE)
 
-        # TODO: Why is this conversion to numpy necessary??
         view_matrix_np = np.array(observer_camera.view, dtype=np.float32)
         projection_matrix_np = np.array(observer_camera.projection, dtype=np.float32)
 
         # This one works fine
         c2w_mat = glm.inverse(agent.view)
 
-        glUniformMatrix4fv(self.eye_model_shader.get_loc('view'), 1, True, view_matrix_np)
-        glUniformMatrix4fv(self.eye_model_shader.get_loc('projection'), 1, True, projection_matrix_np)
-        glUniformMatrix4fv(self.eye_model_shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w_mat))
-
-        # Testing something with light
-
-        # sun-like light source high up (+Y), and slightly to the right (+X) and back (+Z)
-        # light_dir = glm.normalize(glm.vec3(0.5, 1.0, 0.4))
-        # glUniform3fv(self.eye_model_shader.get_loc('light_dir'), 1, glm.value_ptr(light_dir))
+        glUniformMatrix4fv(shader.get_loc('view'), 1, True, view_matrix_np)
+        glUniformMatrix4fv(shader.get_loc('projection'), 1, True, projection_matrix_np)
+        glUniformMatrix4fv(shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
         # Compute nice-looking cone length for acceptance angles
-        avg_radius = np.mean(np.linalg.norm(self.receptor_array.data['position'][:, :3], axis=1))
+        avg_radius = np.mean(np.linalg.norm(self.receptor_array.receptor_data['position'][:, :3], axis=1))
         if avg_radius < 1e-6:
             avg_radius = 0.01
 
@@ -614,12 +628,13 @@ class BaseRenderer(ABC):
 
         visualisation_scale = 1.0
 
-        glUniform1i(self.eye_model_shader.get_loc('projection_mode'), self.projection_mode)
-        glUniform1f(self.eye_model_shader.get_loc("cone_length"), cone_length)
-        glUniform1f(self.eye_model_shader.get_loc("visualisation_scale"), visualisation_scale)
+        glUniform1i(shader.get_loc('projection_mode'), self.projection_mode)
+        glUniform1f(shader.get_loc("cone_length"), cone_length)
+        glUniform1f(shader.get_loc("visualisation_scale"), visualisation_scale)
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.receptors_input_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, self.receptors_data_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENSES, self.lens_data_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, self.final_colors_ssbo)
 
         if self.projection_mode == ProjectionMode.Physical:
             # Physical layout mode: hemispheres to avoid Z-fighting
@@ -632,21 +647,22 @@ class BaseRenderer(ABC):
 
         # Unbind everyone
         glBindVertexArray(0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENSES, 0)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, 0)
 
         # Restore state
         glEnable(GL_CULL_FACE)
         glDisable(GL_BLEND)
         glDisable(GL_DEPTH_TEST)
 
-        self.eye_model_shader.stop()
+        shader.stop()
 
     def free(self):
         """Free GPU resources."""
 
-        if self.receptors_input_ssbo:
-            glDeleteBuffers(1, [self.receptors_input_ssbo])
+        if self.receptors_data_ssbo:
+            glDeleteBuffers(1, [self.receptors_data_ssbo])
 
         if self.history_ssbo:
             glDeleteBuffers(1, [self.history_ssbo])
