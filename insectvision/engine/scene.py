@@ -1,5 +1,17 @@
 import OpenGL
 OpenGL.ERROR_CHECKING = False
+from OpenGL.GL import (
+    ctypes,
+    glGenVertexArrays, glGenBuffers,
+    glEnableVertexAttribArray, glVertexAttribPointer, glGetUniformLocation,
+    glBindVertexArray, glBindBuffer, glBindTexture,
+    glDepthFunc, glDrawElements,
+    glUseProgram, glEnable, glDisable,
+    glUniformMatrix4fv, glUniform1i,
+    glActiveTexture, glBufferData,
+    GL_TEXTURE0, GL_TEXTURE_CUBE_MAP, GL_ELEMENT_ARRAY_BUFFER, GL_UNSIGNED_INT, GL_CULL_FACE,
+    GL_TRIANGLES, GL_LESS, GL_LEQUAL, GL_FLOAT, GL_ARRAY_BUFFER, GL_STATIC_DRAW
+)
 
 from typing import Dict, List, Optional, Union, Sequence, Set
 from numpy.typing import ArrayLike
@@ -11,23 +23,12 @@ import trimesh
 from trimesh import Trimesh, PointCloud, Scene as TrimeshScene
 from pyglm import glm
 
-from OpenGL.GL import (ctypes,
-                       glGenVertexArrays, glGenBuffers,
-                       glEnableVertexAttribArray, glVertexAttribPointer, glGetUniformLocation,
-                       glBindVertexArray, glBindBuffer, glBindTexture,
-                       glDepthFunc, glDrawElements,
-                       glUseProgram, glEnable, glDisable,
-                       glUniformMatrix4fv, glUniform1i,
-                       glActiveTexture, glBufferData,
-                       GL_TEXTURE0, GL_TEXTURE_CUBE_MAP, GL_ELEMENT_ARRAY_BUFFER, GL_UNSIGNED_INT, GL_CULL_FACE,
-                       GL_TRIANGLES, GL_LESS, GL_LEQUAL, GL_FLOAT, GL_ARRAY_BUFFER, GL_STATIC_DRAW)
+from .lights import Sun, Light, DirectionalLight, PointLight, AreaLight
+from .movement import TransformMixin
+from .utils import (trimesh_from_arrays, load_shaders, load_cubemap,
+                    WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer)
 
 from insectvision.geometry.primitives import CUBE_VERTICES, CUBE_INDICES
-
-from insectvision.engine.lights import Sun, Light, DirectionalLight, PointLight, AreaLight
-from insectvision.engine.movement import TransformMixin
-from insectvision.engine.utils import (trimesh_from_arrays, load_shaders, load_cubemap,
-                                       WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer)
 
 
 class MaterialData:

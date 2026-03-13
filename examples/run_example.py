@@ -1,20 +1,15 @@
 import numpy as np
 
-from insectvision.engine.scene import Scene, Asset
-from insectvision.engine.agent import Agent
-from insectvision.engine.context import Context
-
-from insectvision.geometry.primitives import CUBE_VERTICES, CUBE_INDICES
-from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
-
-from insectvision.renderers.rasterizer import Rasterizer
-from insectvision.renderers.raytracer import Raytracer
+from insectvision.engine import Context, Agent, Scene, Asset
+from insectvision.geometry import CUBE_VERTICES, CUBE_INDICES
+from insectvision.geometry.compound_eyes import ReceptorArray
+from insectvision.renderers import Rasterizer, Raytracer
 from insectvision.debug import DebugBox, AxesGizmo
 
 
 def main():
 
-    USE_RAYTRACER = True
+    USE_RAYTRACER = False
     USE_POINT_CLOUD = True
 
     SAMPLES_PER_RECEPTOR = 16
@@ -93,7 +88,9 @@ def main():
                                   nb_samples=SAMPLES_PER_RECEPTOR,
                                   time_dithering=False,
                                   batch_size=batch_size,
-                                  enable_shadows=False)
+                                  enable_direct=True,
+                                  enable_shadows=True,
+                                  enable_ambient=True)
 
     # Example custom key binding:
     def toggle_halton():

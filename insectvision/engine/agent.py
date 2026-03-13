@@ -1,19 +1,23 @@
 import OpenGL
 OpenGL.ERROR_CHECKING = False
+
 from typing import Sequence
 import numpy as np
 from pyglm import glm
 
-from insectvision.engine.utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD, DeltaTimeTransformer
-from insectvision.engine.movement import TransformMixin
+from .utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD, DeltaTimeTransformer
+from .movement import TransformMixin
+
 
 RIGHT_VEC4 = glm.vec4(WORLD_RIGHT, 0.0)
+
 UP_VEC4 = glm.vec4(WORLD_UP, 0.0)
+
 FORWARD_VEC4 = glm.vec4(WORLD_FORWARD, 0.0)
 
 
 class Agent(TransformMixin):
-    """ Represents an agent in the 3D world """
+    """Represents an agent in the 3D world."""
 
     def __init__(self,
                  position: Sequence[float | int] = (0.0, 0.0, 0.0),
@@ -46,7 +50,7 @@ class Agent(TransformMixin):
 
     def dt(self, delta_time: float) -> DeltaTimeTransformer:
         """
-        Enables framerate-independent transformations for a chain of method calls
+        Enables framerate-independent transformations for a chain of method calls.
 
         Example:
             # Rotates at 90 degrees per second
@@ -98,7 +102,7 @@ class Agent(TransformMixin):
 
     @property
     def orientation(self):
-        """ The agent's orientation matrix (rotates from local to world space) """
+        """The agent's orientation matrix (rotates from local to world space)."""
 
         identity = glm.mat4(1.0)
 
@@ -153,7 +157,7 @@ class Agent(TransformMixin):
 
 class OrbitCamera:
     """
-    Wrapper camera that orbits around a target position
+    Wrapper camera that orbits around a target position.
     """
 
     def __init__(self,
@@ -181,7 +185,7 @@ class OrbitCamera:
         self.update()
 
     def pan(self, azimuth_delta: float, elevation_delta: float, degrees: bool = True):
-        """ Pans the camera by changing azimuth and elevation """
+        """Pans the camera by changing azimuth and elevation."""
 
         if not degrees:
             azimuth_delta = glm.degrees(azimuth_delta)
@@ -192,12 +196,12 @@ class OrbitCamera:
         self.update()
 
     def zoom(self, factor: float):
-        """ Zooms the camera by adjusting its distance to the target """
+        """Zooms the camera by adjusting its distance to the target."""
         self.distance = max(self.min_distance, self.distance * factor)
         self.update()
 
     def update(self):
-        """ Recalculates the observer's position and orientation based on orbit parameters """
+        """Recalculates the observer's position and orientation based on orbit parameters."""
 
         az_rad = glm.radians(self.azimuth)
         el_rad = glm.radians(self.elevation)

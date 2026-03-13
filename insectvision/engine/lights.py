@@ -5,12 +5,10 @@ from numpy.typing import ArrayLike
 import numpy as np
 from pyglm import glm
 
-from insectvision.engine.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
+from .utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
 
-# Custom dtypes for the GPU SSBOs
-
-directional_light_dtype = np.dtype([
+DIR_LIGHT_DTYPE = np.dtype([
     ('direction', np.float32, 3),
     ('angular_radius', np.float32),
     ('color', np.float32, 3),
@@ -19,7 +17,7 @@ directional_light_dtype = np.dtype([
     ('_pad', np.uint32, 3),
 ])  # total 48 bytes
 
-point_light_dtype = np.dtype([
+POINT_LIGHT_DTYPE = np.dtype([
     ('position', np.float32, 3),
     ('radius', np.float32),
     ('color', np.float32, 3),
@@ -30,7 +28,7 @@ point_light_dtype = np.dtype([
     ('cast_shadows', np.uint32),
 ])  # total 48 bytes
 
-area_light_dtype = np.dtype([
+AREA_LIGHT_DTYPE = np.dtype([
     ('position', np.float32, 3),
     ('width', np.float32),
     ('normal', np.float32, 3),
@@ -47,9 +45,9 @@ area_light_dtype = np.dtype([
 
 
 class LightType(Enum):
-    DIRECTIONAL = auto()    # Infinitely distant (sun, moon)
-    POINT = auto()          # Omnidirectional (with falloff)
-    AREA = auto()           # Rectangular/disk emitter
+    Directional = auto()    # Infinitely distant (sun, moon)
+    Point = auto()          # Omnidirectional (with falloff)
+    Area = auto()           # Rectangular/disk emitter
 
 
 class Light(ABC):
@@ -139,7 +137,7 @@ class DirectionalLight(Light):
 
     @property
     def light_type(self) -> LightType:
-        return LightType.DIRECTIONAL
+        return LightType.Directional
 
     @property
     def direction(self) -> glm.vec3:
@@ -165,7 +163,7 @@ class DirectionalLight(Light):
         self._angular_radius = max(0.0, value)
 
     def pack(self) -> np.ndarray:
-        data = np.zeros(1, dtype=directional_light_dtype)
+        data = np.zeros(1, dtype=DIR_LIGHT_DTYPE)
         data['direction'] = self.direction.x, self.direction.y, self.direction.z
         data['angular_radius'] = self.angular_radius
         data['color'] = self.color.x, self.color.y, self.color.z
@@ -397,7 +395,7 @@ class PointLight(Light):
 
     @property
     def light_type(self) -> LightType:
-        return LightType.POINT
+        return LightType.Point
 
     @property
     def position(self) -> glm.vec3:
@@ -425,7 +423,7 @@ class PointLight(Light):
         return 1.0 / (self.constant + self.linear * distance + self.quadratic * distance * distance)
 
     def pack(self) -> np.ndarray:
-        data = np.zeros(1, dtype=point_light_dtype)
+        data = np.zeros(1, dtype=POINT_LIGHT_DTYPE)
         data['position'] = self.position.x, self.position.y, self.position.z
         data['radius'] = self.radius
         data['color'] = self.color.x, self.color.y, self.color.z
@@ -478,7 +476,7 @@ class AreaLight(Light):
 
     @property
     def light_type(self) -> LightType:
-        return LightType.AREA
+        return LightType.Area
 
     @property
     def position(self) -> glm.vec3:
@@ -547,7 +545,7 @@ class AreaLight(Light):
         return self._position + self._tangent * local_u + self._bitangent * local_v
 
     def pack(self) -> np.ndarray:
-        data = np.zeros(1, dtype=area_light_dtype)
+        data = np.zeros(1, dtype=AREA_LIGHT_DTYPE)
         data['position'] = self.position.x, self.position.y, self.position.z
         data['width'] = self.width
         data['normal'] = self.normal.x, self.normal.y, self.normal.z
@@ -559,22 +557,3 @@ class AreaLight(Light):
         data['color'] = self.color.x, self.color.y, self.color.z
         data['two_sided'] = 1 if self.two_sided else 0
         return data
-
-
-##
-
-def compute_light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
-
-    center = glm.vec3(scene_center)
-    light_pos = center + light.direction * scene_radius
-
-    up = glm.vec3(0.0, 1.0, 0.0)
-    if abs(glm.dot(glm.normalize(light.direction), up)) > 0.999:
-        up = glm.vec3(0.0, 0.0, 1.0)
-
-    light_view = glm.lookAt(light_pos, center, up)
-    light_proj = glm.ortho(
-        -scene_radius, scene_radius,
-        -scene_radius, scene_radius,
-        0.01, scene_radius * 2.0)
-    return light_proj * light_view

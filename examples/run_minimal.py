@@ -1,13 +1,9 @@
 from pathlib import Path
 
-from insectvision.engine.scene import Scene
-from insectvision.engine.agent import Agent
-from insectvision.engine.context import Context
-from insectvision.engine.movement import Curve, Trajectory
-from insectvision.engine.utils import extract_obj_curves
-
-from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
-from insectvision.renderers.raytracer import Raytracer
+from insectvision.engine import Context, Agent, Scene
+from insectvision.engine.movement import Curve, Trajectory, extract_obj_curves
+from insectvision.geometry.compound_eyes import ReceptorArray
+from insectvision.renderers import Raytracer
 
 
 def main():
@@ -36,7 +32,7 @@ def main():
         enable_shadows=True
     )
 
-    # Extract curve coords from the .obj file
+    # Extract curve coords from the .obj file # TODO: This could be done internally by the scene's loader
     nurbs = extract_obj_curves(example_obj)
     curve_coords = nurbs['NurbsPath']
 

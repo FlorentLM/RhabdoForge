@@ -11,7 +11,7 @@ from PIL import Image
 from pyglm import glm
 
 from insectvision.engine.utils import load_shaders, generate_font_atlas
-from insectvision.renderers.raytracer import Raytracer, Pathtracer
+from insectvision.renderers import Raytracer, Pathtracer
 
 
 class FontRenderer:

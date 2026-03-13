@@ -10,13 +10,12 @@ from typing import Optional
 import numpy as np
 from pyglm import glm
 
-from insectvision.geometry.primitives import CONE_VERTICES, SPHERE_VERTICES
-from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
-from insectvision.geometry.compound_eyes.proxies import VisualOutput
+from insectvision.geometry import CONE_VERTICES, SPHERE_VERTICES
+from insectvision.geometry.compound_eyes import ReceptorArray, VisualOutput
 
+from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
 from insectvision.engine.utils import ShaderProgram, ViewMode, ProjectionMode
-from insectvision.engine.agent import Agent
 
 
 def query_max_SSBO_size() -> int:
@@ -26,7 +25,9 @@ def query_max_SSBO_size() -> int:
 
 
 def query_available_VRAM() -> int:
-    """Checks for NVIDIA extension to query available VRAM. Returns 0 if not supported."""
+    """
+    Checks for NVIDIA extension to query available VRAM. Returns 0 if not supported.
+    """
     if b'GL_NVX_gpu_memory_info' in glGetString(GL_EXTENSIONS):
         from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
         return glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX) // 1024
@@ -34,7 +35,9 @@ def query_available_VRAM() -> int:
 
 
 class Colormap(IntEnum):
-    """Colormaps for the heatmap visualisation mode."""
+    """
+    Colormaps for the heatmap visualisation mode.
+    """
     DIVERGING = 0   # Blue -> white -> red  (signed and centred on zero)
     SEQUENTIAL = 1  # Viridis-like          (positive magnitude)
     THERMAL = 2     # Black -> red -> white (positive magnitude)

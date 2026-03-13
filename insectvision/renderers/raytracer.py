@@ -10,9 +10,10 @@ from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType
-from insectvision.engine.lights import directional_light_dtype, point_light_dtype, area_light_dtype
+from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
 from insectvision.engine.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
-from insectvision.renderers.commons import BaseRenderer, TextureViewer
+
+from .commons import BaseRenderer, TextureViewer
 
 
 RENDERABLE_INST_DTYPE = np.dtype([
@@ -109,7 +110,7 @@ class RaytracingSceneBaker:
         if directional_lights:
             packed = np.concatenate([l.pack() for l in directional_lights])
         else:
-            packed = np.zeros(1, dtype=directional_light_dtype)
+            packed = np.zeros(1, dtype=DIR_LIGHT_DTYPE)
 
         self.directional_lights_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.directional_lights_ssbo)
@@ -119,7 +120,7 @@ class RaytracingSceneBaker:
         if point_lights:
             packed = np.concatenate([l.pack() for l in point_lights])
         else:
-            packed = np.zeros(1, dtype=point_light_dtype)
+            packed = np.zeros(1, dtype=POINT_LIGHT_DTYPE)
 
         self.point_lights_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.point_lights_ssbo)
@@ -129,7 +130,7 @@ class RaytracingSceneBaker:
         if area_lights:
             packed = np.concatenate([l.pack() for l in area_lights])
         else:
-            packed = np.zeros(1, dtype=area_light_dtype)
+            packed = np.zeros(1, dtype=AREA_LIGHT_DTYPE)
 
         self.area_lights_ssbo = glGenBuffers(1)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.area_lights_ssbo)
@@ -970,10 +971,10 @@ class Raytracer(BaseRenderer):
     def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent = None):
         """Renders one of the rasterizer's supported views to the screen."""
 
-        if view_mode == ViewMode.compound_eye:
+        if view_mode == ViewMode.Compound:
             self._draw_voronoi()
 
-        elif view_mode == ViewMode.panoramic:
+        elif view_mode == ViewMode.Panoramic:
 
             if self._pano_texture_id == 0 or self.panoramic_shader is None:
                 self._initialize_pano_resources()
@@ -982,7 +983,7 @@ class Raytracer(BaseRenderer):
             self._raytrace_panoramic(point_of_view)
             self._texture_viewer.draw(self._pano_texture_id)
 
-        elif view_mode == ViewMode.perspective or view_mode == ViewMode.third_person:
+        elif view_mode == ViewMode.Perspective or view_mode == ViewMode.Third_person:
 
             if self._persp_texture_id == 0 or self.perspective_shader is None:
                 self._initialize_persp_resources()
@@ -991,7 +992,7 @@ class Raytracer(BaseRenderer):
             self._raytrace_perspective(point_of_view)
             self._texture_viewer.draw(self._persp_texture_id)
 
-        if view_mode == ViewMode.third_person:
+        if view_mode == ViewMode.Third_person:
             self._draw_eye_model(point_of_view, agent)
 
     def free(self):

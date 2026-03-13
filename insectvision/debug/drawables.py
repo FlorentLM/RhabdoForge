@@ -1,8 +1,9 @@
 from typing import Sequence, Optional, Union
 import numpy as np
 from pyglm import glm
-from insectvision.debug import debug_primitives as dp
-from insectvision.debug.debug_renderer import DebugRenderer
+
+from . import debug_primitives as dp
+from .debug_renderer import DebugRenderer
 
 
 class DebugDrawable:

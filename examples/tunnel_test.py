@@ -4,13 +4,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-from insectvision.engine.scene import Scene, Asset
-from insectvision.engine.agent import Agent
-from insectvision.engine.context import Context
+from insectvision.engine import Context, Agent, Scene, Asset
 
-from insectvision.geometry.compound_eyes.proxies import Eye
-from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
-from insectvision.renderers.raytracer import Raytracer
+from insectvision.geometry.compound_eyes import ReceptorArray, Eye
+from insectvision.renderers import Raytracer
 from insectvision.renderers.commons import Colormap
 from insectvision.debug import AxesGizmo, DebugGrid, DebugBox
 

@@ -35,7 +35,7 @@ def tangent_frames(direction: np.ndarray):
     # TODO: This can gimbal lock
 
     dots = np.abs(direction @ WORLD_UP)
-    ref_ups = np.where(dots[:, np.newaxis] > 0.9999, WORLD_RIGHT, WORLD_UP)
+    ref_ups = np.where(dots[:, np.newaxis] > 0.999, WORLD_RIGHT, WORLD_UP)
 
     local_right = np.cross(direction, ref_ups)
     local_right /= np.linalg.norm(local_right, axis=1, keepdims=True)

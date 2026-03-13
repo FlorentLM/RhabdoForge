@@ -7,10 +7,31 @@ from pyglm import glm
 
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
-from insectvision.engine.lights import compute_light_space_matrix
-from insectvision.engine.utils import ShaderProgram, ViewMode
-from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
-from insectvision.renderers.commons import BaseRenderer
+from insectvision.engine.lights import DirectionalLight
+from insectvision.engine.utils import ShaderProgram, ViewMode, WORLD_UP, WORLD_RIGHT
+from insectvision.geometry.compound_eyes import ReceptorArray
+
+from .commons import BaseRenderer
+
+
+##
+
+def light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
+
+    center = glm.vec3(scene_center)
+    light_pos = center + light.direction * scene_radius
+
+    dots = np.abs(glm.dot(glm.normalize(light.direction), WORLD_UP))
+    up = np.where(dots > 0.999, WORLD_RIGHT, WORLD_UP)
+
+    light_view = glm.lookAt(light_pos, center, up)
+    light_proj = glm.ortho(
+        -scene_radius, scene_radius,
+        -scene_radius, scene_radius,
+        0.01, scene_radius * 2.0)
+
+    return light_proj * light_view
+
 
 
 class ShadowMapFBO:
@@ -483,12 +504,12 @@ class Rasterizer(BaseRenderer):
         self._raster_panoramic = EquirectangularCubemap()
 
     @property
-    def samples_per_ommatidium(self):
-        return self._samples_per_ommatidium
+    def samples_per_receptor(self):
+        return self._samples_per_receptor
 
-    @samples_per_ommatidium.setter
+    @samples_per_receptor.setter
     def samples_per_receptor(self, value):
-        self._samples_per_ommatidium = int(min(32768, max(1, value)))
+        self._samples_per_receptor = int(min(32768, max(1, value)))
 
     def estimate_vram_usage(self):
 
@@ -516,7 +537,7 @@ class Rasterizer(BaseRenderer):
         if light is None:
             return
 
-        self._light_space_matrix = compute_light_space_matrix(
+        self._light_space_matrix = light_space_matrix(
             light=light,
             scene_center=(agent.position.x, agent.position.y, agent.position.z),
             scene_radius=self._shadow_radius)
@@ -731,7 +752,7 @@ class Rasterizer(BaseRenderer):
         self._rasterizer_shader.use()
 
         glUniform1i(self._rasterizer_shader.get_loc('nb_receptors'), self.total_receptors)
-        glUniform1i(self._rasterizer_shader.get_loc('nb_samples'), self.samples_per_ommatidium)
+        glUniform1i(self._rasterizer_shader.get_loc('nb_samples'), self.samples_per_receptor)
         glUniform1f(self._rasterizer_shader.get_loc('time'), float(self._dither_counter))
 
         # Quasi-random sampling
@@ -787,17 +808,17 @@ class Rasterizer(BaseRenderer):
 
     def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent):
 
-        if view_mode in (ViewMode.perspective, ViewMode.third_person):
+        if view_mode in (ViewMode.Perspective, ViewMode.Third_person):
             if self.enable_shadows and self._shadow_map:
                 self._render_shadow_pass(agent)
 
-        if view_mode == ViewMode.compound_eye:
+        if view_mode == ViewMode.Compound:
             self._draw_voronoi()
 
-        elif view_mode == ViewMode.panoramic:
+        elif view_mode == ViewMode.Panoramic:
             self._raster_panoramic.draw(self._cubemap_fbo.texture_id)
 
-        elif view_mode == ViewMode.perspective or view_mode == ViewMode.third_person:
+        elif view_mode == ViewMode.Perspective or view_mode == ViewMode.Third_person:
 
             if self._scene_baked.scene.skybox is not None:
                 self._scene_baked.scene.skybox.draw(point_of_view.projection, point_of_view.view)
@@ -807,7 +828,7 @@ class Rasterizer(BaseRenderer):
             for instance in renderables:
                 self._render_instance(instance, point_of_view.view, point_of_view.projection)
 
-        if view_mode == ViewMode.third_person:
+        if view_mode == ViewMode.Third_person:
             self._draw_eye_model(point_of_view, agent)
 
     def free(self):

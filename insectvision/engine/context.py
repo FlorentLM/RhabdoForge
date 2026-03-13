@@ -7,9 +7,10 @@ from pyglm import glm
 import time
 from typing import Optional, Tuple, Callable, Dict, List, Union
 
-from insectvision.engine.scene import Scene
-from insectvision.engine.agent import Agent, OrbitCamera
-from insectvision.engine.utils import WORLD_UP, WORLD_DOWN, ViewMode, ProjectionMode
+from .scene import Scene
+from .agent import Agent, OrbitCamera
+from .utils import WORLD_UP, WORLD_DOWN, ViewMode, ProjectionMode
+
 from insectvision.renderers.commons import BaseRenderer
 from insectvision.interactive.hud import HUD
 from insectvision.debug import DebugOverlay
@@ -199,7 +200,7 @@ class Context:
             glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_HIDDEN)
             glfw.set_scroll_callback(self.window, self.scroll_callback)
 
-            self.view_mode = ViewMode.compound_eye
+            self.view_mode = ViewMode.Compound
 
             self.hud = HUD(self)
 
@@ -315,7 +316,7 @@ class Context:
         yaw_input = 0.0
         strafe_mode = glfw.get_key(self.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS
 
-        if self.view_mode == ViewMode.third_person and not strafe_mode:
+        if self.view_mode == ViewMode.Third_person and not strafe_mode:
             # in 3rd person, A/D turns the agent
             if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS: yaw_input += 1.0
             if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS: yaw_input -= 1.0
@@ -366,7 +367,7 @@ class Context:
             mouse_yaw_delta = dx * self.mouse_sensitivity * -1
             mouse_pitch_delta = dy * self.mouse_sensitivity * self.mouse_y_dir
 
-            if self.view_mode == ViewMode.third_person:
+            if self.view_mode == ViewMode.Third_person:
                 # Mouse pans the camera
                 self.observer.pan(azimuth_delta=mouse_yaw_delta * 0.5,
                                   elevation_delta=mouse_pitch_delta * 0.5,
@@ -405,7 +406,7 @@ class Context:
         glViewport(0, 0, self._window_size[0], self._window_size[1])
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        if self.view_mode == ViewMode.third_person:
+        if self.view_mode == ViewMode.Third_person:
             self.observer.ratio = self._window_size[0] / self._window_size[1]
             self.observer.update()
             pov = self.observer
@@ -414,7 +415,7 @@ class Context:
 
         self.renderer.draw(self.view_mode, pov, self.agent)
 
-        if self.debug is not None and self.view_mode != ViewMode.panoramic: # TODO: debug projection in panoramic mode? idk if useful
+        if self.debug is not None and self.view_mode != ViewMode.Panoramic: # TODO: debug projection in panoramic mode? idk if useful
             self.debug.draw(view=pov.view, proj=pov.projection)
 
         if self.hud:

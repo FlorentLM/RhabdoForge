@@ -1,17 +1,15 @@
 import warnings
 from pathlib import Path
 from typing import Optional, Union, Tuple, Sequence
-
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 
-from insectvision.geometry.compound_eyes.datatypes import GPU_RECEPTOR_DTYPE, _CLEAR_NEIGHBOURS
-from insectvision.geometry.compound_eyes.kernel import RhabdomereKernel
-from insectvision.geometry.compound_eyes.proxies import Eye, Ommatidium, Cartridge
-
+from .datatypes import GPU_RECEPTOR_DTYPE, _CLEAR_NEIGHBOURS
+from .kernel import RhabdomereKernel
+from .proxies import Eye, Ommatidium, Cartridge
+from .eye_utils import compute_lattice_properties, tangent_frames
 from insectvision.geometry.geom_utils import estimate_lod, subdivide_icosahedron, fibonacci_sphere
-from insectvision.geometry.compound_eyes.eye_utils import compute_lattice_properties, tangent_frames
 
 
 class ReceptorArray:
