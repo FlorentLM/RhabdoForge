@@ -4,12 +4,14 @@ from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 
 from insectvision.engine.utils import WORLD_UP, WORLD_RIGHT
-from .datatypes import *
+from insectvision.geometry.compound_eyes.datatypes import (
+    DEFAULT_ANGLE, _CLEAR_EYE_ID, _CLEAR_RECEPTOR_TYPE, _CLEAR_NEIGHBOURS, _CLEAR_LENS_INDEX
+)
 
 
 class Receptor:
     """
-    View into one or more elements of a ReceptorArray.
+    View into one or several elements of a ReceptorArray.
     """
 
     def __init__(self, data_array: np.ndarray, item, parent_array: 'ReceptorArray'):
@@ -21,23 +23,25 @@ class Receptor:
         return 1 if self._data[self._item].ndim == 0 else self._data[self._item].shape[0]
 
     def __repr__(self):
+
         if isinstance(self._item, (int, np.int_)):
-            o = np.array2string(self.origin, precision=3, suppress_small=True)
+            p = np.array2string(self.position, precision=3, suppress_small=True)
             d = np.array2string(self.direction, precision=3, suppress_small=True)
-            return f"<Receptor(idx={int(self._item)}, origin={o}, direction={d})>"
+
+            return f"<Receptor(idx={int(self._item)}, position={p}, direction={d})>"
         return f"<Receptors(key={self._item}, count={len(self)})>"
 
     # Spatial properties
 
     @property
-    def origin(self) -> np.ndarray:
-        return self._data[self._item]['origin'][..., :3]
+    def position(self) -> np.ndarray:
+        return self._data[self._item]['position'][..., :3]
 
-    @origin.setter
-    def origin(self, value: Union[float, ArrayLike]):
+    @position.setter
+    def position(self, value: Union[float, ArrayLike]):
 
-        self._data['origin'][self._item, :3] = np.asarray(value, dtype=np.float32)
-        self._data['origin'][self._item, 3] = 1.0
+        self._data['position'][self._item, :3] = np.asarray(value, dtype=np.float32)
+        self._data['position'][self._item, 3] = 1.0
 
         self._parent.dirty_mask[self._item] = True
         self._parent._stale_receptor_spatial = True
@@ -142,7 +146,9 @@ class Receptor:
 
     @property
     def lens_index(self) -> np.ndarray:
-        """Index of the parent ommatidium in the lens-level array."""
+        """
+        Index of the parent ommatidium in the lens-level array.
+        """
         return (self._data[self._item]['packed_data'] >> 11) & 0xFFFF
 
     @lens_index.setter
@@ -455,14 +461,11 @@ class Eye:
         q = np.atleast_2d(np.asarray(targets, dtype=np.float32))
         is_single = np.asarray(targets).ndim == 1
 
-        dirs = self.directions
-        origs = self.positions
-
-        desired = q[:, np.newaxis, :] - origs[np.newaxis, :, :]
+        desired = q[:, np.newaxis, :] - self.positions[np.newaxis, :, :]
         norms = np.linalg.norm(desired, axis=-1, keepdims=True)
         np.divide(desired, norms, out=desired, where=norms != 0)
 
-        dots = np.einsum('jk,ijk->ij', dirs, desired)
+        dots = np.einsum('jk,ijk->ij', self.directions, desired)
 
         part = np.argpartition(dots, -k, axis=1)[:, -k:]
         top = np.take_along_axis(dots, part, axis=1)

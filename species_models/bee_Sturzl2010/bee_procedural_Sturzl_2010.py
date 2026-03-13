@@ -243,10 +243,10 @@ def generate_eyes(right_eye_dirs):
     l_dir[:, 0] *= -1
 
     directions = np.vstack([r_dir, l_dir])
-    origins = np.vstack([r_ori, l_ori])
+    positions = np.vstack([r_ori, l_ori])
     eye_id = np.concatenate([np.ones(len(r_dir)), np.zeros(len(l_dir))])
 
-    return directions, origins, eye_id
+    return directions, positions, eye_id
 
 
 if __name__ == "__main__":
@@ -276,20 +276,20 @@ if __name__ == "__main__":
         plot_receptive_fields(right_eye_dirs, right_eye_acceptance)  # Fig. 10
 
     # Create the other eye
-    directions, origins, eye_id = generate_eyes(right_eye_dirs)
+    directions, positions, eye_id = generate_eyes(right_eye_dirs)
 
     output_filename = "species_models/bee_Sturzl.npz"
     np.savez_compressed(
         output_filename,
         directions=directions,
-        origins=origins,
+        positions=positions,
         eye_id=eye_id
     )
 
     if PLOT_EYES:
         plot_eyes_3d(
-            origins,
+            positions,
             directions,
             eye_id,
-            title='Drosophila eyes (from Kemppainen et al., 2022)'
+            title='Bee eyes (from Stürzl et al., 2010)'
         )

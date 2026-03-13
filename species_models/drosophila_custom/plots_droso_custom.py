@@ -180,7 +180,7 @@ def plot_density_2d(raw_pts_2d, lattice_pts_2d, rbf_func, mean_spacing):
     plt.show()
 
 
-def plot_density_3d(origins, directions, title="Visual Density Map"):
+def plot_density_3d(positions, directions, title="Visual density map"):
 
     tree = cKDTree(directions)
     dists, _ = tree.query(directions, k=7)
@@ -189,7 +189,7 @@ def plot_density_3d(origins, directions, title="Visual Density Map"):
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
 
-    sc = ax.scatter(origins[:, 0], origins[:, 2], origins[:, 1],
+    sc = ax.scatter(positions[:, 0], positions[:, 2], positions[:, 1],
                     c=angular_spacing_deg, cmap='plasma_r', s=20, alpha=0.8)
 
     cbar = fig.colorbar(sc, ax=ax, shrink=0.5, aspect=10)
@@ -200,12 +200,12 @@ def plot_density_3d(origins, directions, title="Visual Density Map"):
     ax.set_zlabel('Dorsal-Ventral (Y)')
     ax.set_title(title)
 
-    max_range = np.array([origins[:, 0].max() - origins[:, 0].min(),
-                          origins[:, 1].max() - origins[:, 1].min(),
-                          origins[:, 2].max() - origins[:, 2].min()]).max() / 2.0
-    mid_x = (origins[:, 0].max() + origins[:, 0].min()) * 0.5
-    mid_y = (origins[:, 1].max() + origins[:, 1].min()) * 0.5
-    mid_z = (origins[:, 2].max() + origins[:, 2].min()) * 0.5
+    max_range = np.array([positions[:, 0].max() - positions[:, 0].min(),
+                          positions[:, 1].max() - positions[:, 1].min(),
+                          positions[:, 2].max() - positions[:, 2].min()]).max() / 2.0
+    mid_x = (positions[:, 0].max() + positions[:, 0].min()) * 0.5
+    mid_y = (positions[:, 1].max() + positions[:, 1].min()) * 0.5
+    mid_z = (positions[:, 2].max() + positions[:, 2].min()) * 0.5
     ax.set_xlim(mid_x - max_range, mid_x + max_range)
     ax.set_ylim(mid_z - max_range, mid_z + max_range)
     ax.set_zlim(mid_y - max_range, mid_y + max_range)

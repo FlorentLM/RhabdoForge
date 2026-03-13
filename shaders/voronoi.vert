@@ -36,7 +36,7 @@ void main() {
     // Determine projection vector based on mode
     vec3 projection_vector = (projection_mode == 1)
         ? rcpt.direction.xyz
-        : normalize(rcpt.origin.xyz);
+        : normalize(rcpt.position.xyz);
 
     // Apply spherical projection to get screen position
     float longitude = atan(projection_vector.x, -projection_vector.z);

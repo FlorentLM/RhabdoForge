@@ -28,7 +28,7 @@ SHOW_DEBUG_PLOTS = True     # Show intermediate fitting plots
 class BuchnerSVGContent:
     ommatidia: np.ndarray
     stars: np.ndarray
-    lattice_origin: np.ndarray
+    lattice_position: np.ndarray
     axes: Dict[str, np.ndarray]
     hemisphere_center: np.ndarray
     hemisphere_radius: float
@@ -87,13 +87,13 @@ def parse_drosophila_svg(svg_file: Path) -> BuchnerSVGContent:
             path = parse_path(star_elem.get('d'))
             stars.append(get_path_centroid(path))
 
-    # Extract lattice origin
-    lattice_elem = root.find(".//*[@id='lattice-origin']", ns)
+    # Extract lattice position
+    lattice_elem = root.find(".//*[@id='lattice-position']", ns)
     if lattice_elem is not None:
         path = parse_path(lattice_elem.get('d'))
-        lattice_origin = get_path_centroid(path)
+        lattice_position = get_path_centroid(path)
     else:
-        lattice_origin = np.zeros(2)
+        lattice_position = np.zeros(2)
 
     # Extract axes
     axes = {}
@@ -108,7 +108,7 @@ def parse_drosophila_svg(svg_file: Path) -> BuchnerSVGContent:
     return BuchnerSVGContent(
         ommatidia=np.array(ommatidia),
         stars=np.array(stars),
-        lattice_origin=lattice_origin,
+        lattice_position=lattice_position,
         axes=axes,
         hemisphere_center=hem_center,
         hemisphere_radius=hem_radius
@@ -206,7 +206,7 @@ def fit_lattice(raw_dirs: np.ndarray,
     Fit hexagonal lattice to match ommatidial density distribution.
 
     raw_dirs: 3D viewing directions (already unprojected from SVG)
-    density_scale: Relative density (1.0 = original, 2.0 = twice as dense)
+    density_scale: Relative density (1.0 = positional, 2.0 = twice as dense)
     lattice_angle: Angle between lattice basis vectors (π/3 = hexagonal)
     show_debug_plots: Whether to display intermediate plots
     """
@@ -246,10 +246,10 @@ def fit_lattice(raw_dirs: np.ndarray,
         return inside
 
     def loss(p):
-        origin, rot, scale = p[:2], p[2], p[3]
+        position, rot, scale = p[:2], p[2], p[3]
         mat = np.array([[np.cos(rot), -np.sin(rot)],
                         [np.sin(rot), np.cos(rot)]])
-        transformed = (grid * scale) @ mat.T + origin
+        transformed = (grid * scale) @ mat.T + position
 
         # Forward error: how far are data points from lattice?
         t_tree = cKDTree(transformed)
@@ -331,14 +331,14 @@ def build_eye(svg_path: Path,
 
     if show_plots:
         stars_3d = unproject(data.stars, data.hemisphere_center, data.hemisphere_radius)
-        origin_3d = unproject(data.lattice_origin[np.newaxis, :], data.hemisphere_center, data.hemisphere_radius)[0]
+        position_3d = unproject(data.lattice_position[np.newaxis, :], data.hemisphere_center, data.hemisphere_radius)[0]
 
         axes_3d = {
             axis_id: unproject(points, data.hemisphere_center, data.hemisphere_radius)
             for axis_id, points in data.axes.items()
         }
 
-        plot_buchner_3d(raw_dirs, stars_3d, origin_3d, axes_3d,
+        plot_buchner_3d(raw_dirs, stars_3d, position_3d, axes_3d,
                         title="Drosophila ommatidia viewing directions (Buchner, 1971)")
 
     if return_raw_data:
@@ -393,42 +393,41 @@ if __name__ == "__main__":
     print(f"Ellipsoid fit: Rx = {best_rx:.2f} µm")
 
     # Generate left eye positions
-    L_origins_local = get_ellipsoid_points(L_dirs, best_rx, ry, rz)
+    L_positions_local = get_ellipsoid_points(L_dirs, best_rx, ry, rz)
 
     # Align medial edge to -FW/2
-    current_medial_x = np.max(L_origins_local[:, 0])
+    current_medial_x = np.max(L_positions_local[:, 0])
     target_medial_x = -FW / 2.0
     shift_x = target_medial_x - current_medial_x
-    L_origins = L_origins_local + np.array([shift_x, 0, 0])
+    L_positions = L_positions_local + np.array([shift_x, 0, 0])
 
-    R_origins = L_origins.copy()
-    R_origins[:, 0] *= -1
+    R_positions = L_positions.copy()
+    R_positions[:, 0] *= -1
     R_dirs = L_dirs.copy()
     R_dirs[:, 0] *= -1
 
-    all_origins = np.vstack([L_origins, R_origins])
+    all_positions = np.vstack([L_positions, R_positions])
     all_directions = np.vstack([L_dirs, R_dirs])
-    eye_ids = np.concatenate([np.zeros(len(L_origins)), np.ones(len(R_origins))])
+    eye_ids = np.concatenate([np.zeros(len(L_positions)), np.ones(len(R_positions))])
 
-    print(f"\nFinal eye model:")
-    print(f"  Total ommatidia: {len(all_origins)}")
-    print(f"  Left eye: {len(L_origins)}")
-    print(f"  Right eye: {len(R_origins)}")
+    print(f"\nFinal model:")
+    print(f"  Left eye: {len(L_positions)}")
+    print(f"  Right eye: {len(R_positions)}")
 
-    all_origins *= 0.001
+    all_positions *= 0.001
 
     np.savez_compressed("species_models/drosophila_custom.npz",
                         directions=all_directions,
-                        origins=all_origins,
+                        positions=all_positions,
                         eye_id=eye_ids)
 
     if PLOT:
         plot_eyes_3d(
-            all_origins,
+            all_positions,
             all_directions,
             eye_ids,
             title='Drosophila eyes\n(parametric model fitted to Buchner, 1971)',
             show_sphere_projection=True
         )
 
-        plot_density_3d(all_origins, all_directions, title="Ommatidia density")
+        plot_density_3d(all_positions, all_directions, title="Ommatidia density")

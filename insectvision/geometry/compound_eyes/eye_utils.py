@@ -33,6 +33,7 @@ def tangent_frames(direction: np.ndarray):
     Compute orthonormal frame for one or more directions.
     """
     # TODO: This can gimbal lock
+    # TODO: Use this function in more places
 
     dots = np.abs(direction @ WORLD_UP)
     ref_ups = np.where(dots[:, np.newaxis] > 0.999, WORLD_RIGHT, WORLD_UP)
@@ -48,7 +49,7 @@ def tangent_frames(direction: np.ndarray):
 
 def compute_lattice_properties(
         directions: np.ndarray,
-        origins: np.ndarray,
+        positions: np.ndarray,
         k: int = 8,
         neighbour_dist_factor: float = 1.5
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -62,8 +63,8 @@ def compute_lattice_properties(
         return z, z, z, np.zeros(N, dtype=np.uint32)
 
     # Physical direction vectors from common centre
-    eye_center = np.mean(origins, axis=0)
-    phys_dirs = origins - eye_center
+    eye_center = np.mean(positions, axis=0)
+    phys_dirs = positions - eye_center
     norms = np.linalg.norm(phys_dirs, axis=1, keepdims=True)
     np.divide(phys_dirs, norms, out=phys_dirs, where=norms != 0)
 
@@ -83,7 +84,7 @@ def compute_lattice_properties(
 
     # Local tangent planes
     dot_up = np.abs(phys_dirs @ WORLD_UP)
-    is_polar = dot_up > 0.9999
+    is_polar = dot_up > 0.999
     ref_ups = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
 
     local_y = ref_ups - phys_dirs * np.sum(phys_dirs * ref_ups, axis=1, keepdims=True)

@@ -34,7 +34,7 @@ void main() {
     v_mode = projection_mode;
     v_eye_id = unpack_eye_id(rcpt);
 
-    vec3 O_world = (eye_to_world * vec4(rcpt.origin.xyz * visualisation_scale, 1.0)).xyz;
+    vec3 P_world = (eye_to_world * vec4(rcpt.position.xyz * visualisation_scale, 1.0)).xyz;
     vec3 D_world = normalize((eye_to_world * vec4(rcpt.direction.xyz, 0.0)).xyz);
 
     mat3 R_world = rmatFromDir(D_world);
@@ -58,7 +58,7 @@ void main() {
 
     }
     else {
-        float eye_radius_world = length(rcpt.origin.xyz) * visualisation_scale;
+        float eye_radius_world = length(rcpt.position.xyz) * visualisation_scale;
         if (eye_radius_world < 0.001) eye_radius_world = 0.01 * visualisation_scale;
 
         float half_inter_angle_minor = 0.5 * rcpt.interommatidial_angles.x;
@@ -77,7 +77,7 @@ void main() {
 
     mat3 model_transform = R_world * R_tilt * S;
 
-    vec3 pos_world = O_world + (model_transform * model_vertex);
+    vec3 pos_world = P_world + (model_transform * model_vertex);
     // normals are just the model vertices for a unit sphere
     vec3 model_normal = model_vertex;
 

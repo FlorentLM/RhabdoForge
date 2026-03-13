@@ -15,7 +15,7 @@ struct Material {
 };
 
 struct Receptor {
-    vec4 origin;
+    vec4 position;
     vec4 direction;
     vec2 acceptance_angles;       // .x = minor axis, .y = major axis
     vec2 interommatidial_angles;  // .x = minor axis, .y = major axis

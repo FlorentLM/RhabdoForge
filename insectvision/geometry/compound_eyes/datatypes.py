@@ -2,7 +2,7 @@ import numpy as np
 
 
 GPU_RECEPTOR_DTYPE = np.dtype([
-    ('origin', np.float32, 4),                  # 16 bytes: x, y, z, w=1
+    ('position', np.float32, 4),                  # 16 bytes: x, y, z, w=1
     ('direction', np.float32, 4),               # 16 bytes: x, y, z, w=0
     ('acceptance_angles', np.float32, 2),       #  8 bytes: minor, major
     ('interommatidial_angles', np.float32, 2),  #  8 bytes: minor, major (from parent lens)

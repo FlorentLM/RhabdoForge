@@ -9,7 +9,7 @@ from insectvision.debug import DebugBox, AxesGizmo
 
 def main():
 
-    USE_RAYTRACER = False
+    USE_RAYTRACER = True
     USE_POINT_CLOUD = True
 
     SAMPLES_PER_RECEPTOR = 16

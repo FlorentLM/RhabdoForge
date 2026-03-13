@@ -527,7 +527,7 @@ class BaseRenderer(ABC):
         glUniform1i(self.voronoi_shader.get_loc('projection_mode'), self.projection_mode)
         glUniform1f(self.voronoi_shader.get_loc('receptive_field_scale'), self.receptive_field_scale)
 
-        # Binding 0: Ommatidia geometry (directions, origins, etc)
+        # Binding 0: Ommatidia geometry (directions, positions, etc)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.receptors_input_ssbo)
         # Binding 1: Final computed colors (from subclass computation)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.final_colors_ssbo)
@@ -605,7 +605,7 @@ class BaseRenderer(ABC):
         # glUniform3fv(self.eye_model_shader.get_loc('light_dir'), 1, glm.value_ptr(light_dir))
 
         # Compute nice-looking cone length for acceptance angles
-        avg_radius = np.mean(np.linalg.norm(self.receptor_array.data['origin'][:, :3], axis=1))
+        avg_radius = np.mean(np.linalg.norm(self.receptor_array.data['position'][:, :3], axis=1))
         if avg_radius < 1e-6:
             avg_radius = 0.01
 

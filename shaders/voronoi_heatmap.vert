@@ -28,7 +28,7 @@ void main() {
     int instance_id = gl_InstanceID;
     Receptor rcpt = receptors_data[instance_id];
 
-    vec3 projection_vector = (projection_mode == 1) ? rcpt.direction.xyz: normalize(rcpt.origin.xyz);
+    vec3 projection_vector = (projection_mode == 1) ? rcpt.direction.xyz: normalize(rcpt.position.xyz);
 
     float longitude = atan(projection_vector.x, -projection_vector.z);
     float latitude  = asin(projection_vector.y);

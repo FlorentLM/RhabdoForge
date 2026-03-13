@@ -169,7 +169,7 @@ def generate_eyes():
 
     Returns:
         directions: (N, 3) array of unit direction vectors in Cartesian coordinates
-        origins: (N, 3) array of ommatidium origins in Cartesian coordinates (in mm if scale_to_mm=True)
+        positions: (N, 3) array of ommatidium positions in Cartesian coordinates (in mm if scale_to_mm=True)
         eye_id: (N,) array of eye identifiers (1=right, 0=left)
     """
 
@@ -205,27 +205,27 @@ def generate_eyes():
     l_dir /= np.linalg.norm(l_dir, axis=1, keepdims=True)
 
     directions = np.vstack([r_dir, l_dir])
-    origins = np.vstack([right_eye, left_eye])
+    positions = np.vstack([right_eye, left_eye])
     eye_id = np.concatenate([np.ones(len(right_eye)), np.zeros(len(left_eye))])
 
-    origins *= 0.001
+    positions *= 0.001
 
-    return directions, origins, eye_id
+    return directions, positions, eye_id
 
 
 if __name__ == "__main__":
 
     PLOT_EYES = True
 
-    directions, origins, eye_id = generate_eyes()
+    directions, positions, eye_id = generate_eyes()
 
     output_filename = "species_models/drosophila_Kemppainen.npz"
     np.savez_compressed(
         output_filename,
         directions=directions,
-        origins=origins,
+        positions=positions,
         eye_id=eye_id
     )
 
     if PLOT_EYES:
-        plot_eyes_3d(origins, directions, eye_id, title='Drosophila eyes (from Kemppainen et al., 2022)')
+        plot_eyes_3d(positions, directions, eye_id, title='Drosophila eyes (from Kemppainen et al., 2022)')
