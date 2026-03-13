@@ -44,7 +44,7 @@ class FontRenderer:
     def _load_atlas_data(self, font_name='freesansbold.ttf'):
         """Loads atlas metadata from JSON and the texture from the associated PNG file."""
 
-        atlas_dir = Path('graphics/interactive/fonts')
+        atlas_dir = Path('insectvision/interactive/fonts')
 
         json_path = (atlas_dir / f'{font_name}.json')
         if not json_path.exists():

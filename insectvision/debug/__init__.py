@@ -34,7 +34,7 @@ Examples:
 
 from typing import Optional
 from insectvision.debug.debug_renderer import DebugRenderer
-from insectvision.debug.debug_objects import (
+from insectvision.debug.drawables import (
     DebugDrawable,
     LineObject,
     ArrowObject,

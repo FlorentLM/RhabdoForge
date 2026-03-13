@@ -3,19 +3,22 @@ import numpy as np
 from numpy.typing import ArrayLike
 from pyglm import glm
 
+from insectvision.engine.utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
+
 
 class TransformMixin:
     """
     Mixin class for common transformation methods.
 
     Currently classes using this mixin should have:
+
     For agent-like objects:
     - `_position` attribute
     - `yaw`, `pitch`, `roll` attributes
     - `orientation` property
     - `right`, `up`, `forward` properties
 
-      OR
+    OR
 
     For instance-like objects:
     - `transform` attribute (glm.mat4)
@@ -77,7 +80,6 @@ class TransformMixin:
         """
 
         if isinstance(axis, str):
-            from graphics.utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
 
             axis_str = axis.lower()
 
@@ -297,7 +299,7 @@ class CollisionMixin:
         # start slightly above current position to avoid starting inside geometry
         ray_origin = self.position - down_vec * 0.1
 
-        ray = Ray(origin=tuple(ray_origin), direction=tuple(down_vec), t=max_dist)
+        ray = Ray(origin=ray_origin, direction=down_vec, t=max_dist)
         t = self.collider.intersect(ray)
 
         if ray.prim_id != -1:
@@ -318,7 +320,7 @@ class CollisionMixin:
         results = []
 
         for d in directions:
-            ray = Ray(origin=tuple(self.position), direction=tuple(glm.normalize(d)), t=max_dist)
+            ray = Ray(origin=self.position, direction=np.asarray(glm.normalize(d)), t=max_dist)
             results.append(self.collider.is_occluded(ray))
 
         return results

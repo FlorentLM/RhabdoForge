@@ -11,8 +11,8 @@ import numpy as np
 from pyglm import glm
 
 from insectvision.geometry.primitives import CONE_VERTICES, SPHERE_VERTICES
-from insectvision.geometry.compound_eyes.compound_eyes import VisualOutput
 from insectvision.geometry.compound_eyes.receptor_array import ReceptorArray
+from insectvision.geometry.compound_eyes.proxies import VisualOutput
 
 from insectvision.engine.scene import Scene
 from insectvision.engine.utils import ShaderProgram, ViewMode, ProjectionMode
@@ -227,7 +227,7 @@ class BaseRenderer(ABC):
         """
         return 100.0    # conservative guess
 
-    def get_visual_output(self, agent: Agent, readback: bool = True) -> Optional[VisualOutput]:
+    def get_visual_output(self, agent: Agent, readback: bool = True) -> Optional['VisualOutput']:
         """
         Runs one frame of simulation. Behaviour is determined by the `batch_size`
         - if batch_size = 1: Blocks and returns the current frame's data
@@ -283,7 +283,8 @@ class BaseRenderer(ABC):
                 # The buffer is full: block, download, and return the data
                 print(f"  > GPU batch is full. Flushing {self._batch_size} frames...")
 
-                return self.flush()
+                batch_result = self.flush()
+                return VisualOutput(batch_result, self.receptor_array)
 
             # if the batch is not yet full, return None
             return None
@@ -304,14 +305,12 @@ class BaseRenderer(ABC):
         num_frames_to_read = self._frame_index
         bytes_to_read = self.total_receptors * 16 * num_frames_to_read
 
-        # For simplicity and robustness, a direct synchronous download is best here
-        # PBOs are most effective when overlapping computation, which isn't happening during a final flush
+        # Direct synchronous download is ok here
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.history_ssbo)
         data_bytes = glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, bytes_to_read)
         data_np = np.frombuffer(data_bytes, dtype=np.float32)
 
-        # Reset the counter for the next batch
-        self._frame_index = 0
+        self._frame_index = 0 # reset counter for next batch
 
         return data_np.reshape(num_frames_to_read, self.total_receptors, 4)
 
