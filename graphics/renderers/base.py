@@ -13,7 +13,7 @@ from OpenGL.GL import *
 from OpenGL.raw.GL.NVX.gpu_memory_info import GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
 
 from graphics.scene import Scene
-from geometry.compound_eyes import ReceptorArray
+from geometry.compound_eyes import ReceptorArray, VisualOutput
 from geometry.primitives import CONE_VERTICES, SPHERE_VERTICES
 from graphics.utils import ShaderProgram, ViewMode, ProjectionMode
 from graphics.agent import Agent
@@ -226,11 +226,11 @@ class BaseRenderer(ABC):
         """
         return 100.0    # conservative guess
 
-    def get_ommatidia_data(self, agent: Agent, readback: bool = True) -> Optional[np.ndarray]:
+    def get_visual_output(self, agent: Agent, readback: bool = True) -> Optional[VisualOutput]:
         """
-        Runs one frame of simulation. Behavior is determined by the `batch_size`
-        - If batch_size = 1: Blocks and returns the current frame's data
-        - If batch_size > 1: Queues the frame on the GPU and returns None
+        Runs one frame of simulation. Behaviour is determined by the `batch_size`
+        - if batch_size = 1: Blocks and returns the current frame's data
+        - if batch_size > 1: Queues the frame on the GPU and returns None
         """
 
         is_sync_mode = getattr(self, 'is_interactive', False) or self._batch_size == 1
@@ -261,11 +261,11 @@ class BaseRenderer(ABC):
                 glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
                 glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
 
-                return self.sync_cpu_buffer.copy()
+                return VisualOutput(self.sync_cpu_buffer.copy(), self.receptor_array)
 
                 # TODO: this would be true zero-copy. should expose it. (but the buffer needs to be unmapped manually after use of raw_array
                 # raw_array = np.ctypeslib.as_array(ctypes.cast(ptr, ctypes.POINTER(ctypes.c_float)), shape=(self.num_ommatidia, 4))
-                # return raw_array
+                # return VisionResult(raw_array, self.receptor_array)
 
             else:
                 return None

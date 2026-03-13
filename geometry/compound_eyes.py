@@ -1387,6 +1387,22 @@ class ReceptorArray:
         self._cartridge_map = cartridge
         return cartridge
 
+    @property
+    def cartridge_global_indices(self) -> np.ndarray:
+        # TODO: rename this
+        """
+        Returns (N, R_outer) array of global receptor indices (for neural superposition).
+        """
+        if self._cartridge_map is None:
+            self.build_cartridge_map()
+
+        R = self.receptor_count
+        R_outer = self._cartridge_map.shape[1]
+
+        type_offsets = np.arange(R_outer)
+
+        return self._cartridge_map * R + type_offsets
+
     # Actuation
 
     def actuate(self, displacement_um: Union[float, ArrayLike],
@@ -1697,6 +1713,41 @@ class ReceptorArray:
         self._resolve_lens_spatial()
 
         return self
+
+
+class VisualOutput:
+    """
+    Wrapper around raw GPU readback to provide meaningful views.
+    """
+
+    def __init__(self, raw_data: np.ndarray, receptor_array):
+        self.raw = raw_data    # raw_data is (batch_size, total_receptors, 4) or (total_receptors, 4)
+        self._array = receptor_array
+
+    def __repr__(self):
+        return f"VisualOutput([{'×'.join(str(s) for s in self.raw.shape)}])"
+
+    @property
+    def per_ommatidium(self) -> np.ndarray:
+        """
+        Groups receptors by their physical lens.
+        Returns (..., N_lenses, R_receptors, 4) array.
+        """
+        batch_shape = self.raw.shape[:-2]
+        new_shape = (*batch_shape, self._array.lens_count, self._array.receptor_count, self.raw.shape[-1])
+        return self.raw.reshape(new_shape).squeeze() if not self._array.is_full_model else self.raw.reshape(new_shape)
+
+    @property
+    def per_cartridge(self) -> np.ndarray:
+        """
+        Groups receptors by neural superposition (Lamina cartridge).
+        Returns (..., N_lenses, R_outer, 4) array.
+        """
+        if not self._array.is_full_model:
+            return self.per_ommatidium  # fallback for R=1 model
+
+        indices = self._array.cartridge_global_indices
+        return self.raw[..., indices, :]
 
 
 ## TODO: Move these to geometry utils module

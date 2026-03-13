@@ -240,7 +240,8 @@ for mode in modes:
         dt = 1/200.0
         sim_time += dt
 
-        ommatidia_data = renderer.get_ommatidia_data(agent)
+        view = renderer.get_visual_output(agent)
+        ommatidia_data = view.per_ommatidium
 
         left_motion = left_emd.process(ommatidia_data, dt)
         right_motion = right_emd.process(ommatidia_data, dt)

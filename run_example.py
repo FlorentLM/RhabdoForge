@@ -114,7 +114,7 @@ def main():
             dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
             # Get sensory data from the compound eye renderer
-            ommatidia_data = eye_renderer.get_ommatidia_data(agent)
+            ommatidia_data = eye_renderer.get_visual_output(agent)
 
             context.draw()  # this draws to the viewport, it can be omitted to run headless
 
@@ -134,11 +134,11 @@ def main():
             agent.translate(agent.forward * 0.05).rotate(yaw_delta=-0.5, pitch_delta=0, roll_delta=0, degrees=False)
 
             # Get sensory data from the compound eye renderer
-            ommatidia_data = eye_renderer.get_ommatidia_data(agent)
+            view = eye_renderer.get_visual_output(agent)
 
             # If the return value is not None, it's a valid chunk of data (either a single frame or a full batch)
-            if ommatidia_data is not None:
-                all_ommatidia_data.append(ommatidia_data)
+            if view is not None:
+                all_ommatidia_data.append(view.per_ommatidium)
 
             nb_frames += 1
 

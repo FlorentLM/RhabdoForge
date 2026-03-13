@@ -48,7 +48,8 @@ def main():
         # Make the agent follow the trajectory
         agent.dt(context.delta_time).follow(agent_path, align_orientation=True)
 
-        ommatidia_data = eye_renderer.get_ommatidia_data(agent)
+        view = eye_renderer.get_visual_output(agent)
+
         context.draw()
 
     eye_renderer.free()
