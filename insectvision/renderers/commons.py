@@ -27,6 +27,7 @@ BINDING_STATE             = 3
 BINDING_RAYS_INTERMEDIATE = 4
 
 
+# TODO: Urgent: Implement this visualisation
 class EyeOutput(IntEnum):
     Raw = 0         # Render receptors individually (scaled down)
     Ommatidium = 1  # render 1 tile per lens (averaging R1-R8)
