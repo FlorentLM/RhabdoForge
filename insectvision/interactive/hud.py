@@ -11,8 +11,92 @@ from PIL import Image
 from pyglm import glm
 
 from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.engine.utils import generate_font_atlas
 from insectvision.renderers import Raytracer, Pathtracer
+
+
+def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fonts', color=(255, 255, 255, 255)):
+    """
+    Generates a fonts atlas texture and its corresponding metadata file.
+    """
+    from os import environ
+    environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
+    try:
+        import pygame
+    except ImportError:
+        raise ImportError("'pygame' package required for pygame texture generation")
+    import string
+    import json
+
+    pygame.init()
+
+    if font_name is None:
+        font_name = pygame.font.get_default_font()
+
+    print(f"Generating fonts atlas for '{font_name}' (size {font_size})...")
+
+    font = pygame.font.SysFont(font_name, font_size)
+
+    chars_to_render = string.printable
+    atlas_cols = 16
+    atlas_rows = (len(chars_to_render) + atlas_cols - 1) // atlas_cols
+    char_data = {}
+
+    max_w, max_h = 0, 0
+    for char in chars_to_render:
+        w, h = font.size(char)
+        if w > max_w: max_w = w
+        if h > max_h: max_h = h
+
+    cell_w, cell_h = max_w, max_h
+    atlas_width = atlas_cols * cell_w
+    atlas_height = atlas_rows * cell_h
+
+    atlas_surface = pygame.Surface((atlas_width, atlas_height), pygame.SRCALPHA)
+    atlas_surface.fill((0, 0, 0, 0))
+
+    for i, char in enumerate(chars_to_render):
+        char_surface = font.render(char, True, color)
+        metrics = font.metrics(char)[0]
+        advance = metrics[4]
+
+        col = i % atlas_cols
+        row = i // atlas_cols
+        x, y = col * cell_w, row * cell_h
+
+        atlas_surface.blit(char_surface, (x, y))
+
+        # Store character metadata
+        uv_x0 = x / atlas_width
+        uv_y0 = y / atlas_height
+        uv_x1 = (x + char_surface.get_width()) / atlas_width
+        uv_y1 = (y + char_surface.get_height()) / atlas_height
+
+        char_data[char] = {
+            'w': char_surface.get_width(),
+            'h': char_surface.get_height(),
+            'uv_rect': (uv_x0, uv_y0, uv_x1, uv_y1),
+            'advance': advance
+        }
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    image_path = output_dir / f'{font_name}.png'
+    json_path = output_dir / f'{font_name}.json'
+
+    pygame.image.save(atlas_surface, image_path)
+
+    with open(json_path, 'w') as f:
+        json.dump({
+            'font_name': font_name,
+            'font_size': font_size,
+            'atlas_image': f'{font_name}.png',
+            'char_data': char_data
+        }, f, indent=4)
+
+    print(f"Saved fonts atlas for '{font_name}' (size {font_size}).")
+
+    pygame.quit()
 
 
 class FontRenderer:

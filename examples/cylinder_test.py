@@ -9,7 +9,7 @@ from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.geometry.compound_eyes import ReceptorArray, Eye
 from insectvision.renderers import Raytracer
 from insectvision.renderers.commons import Colormap
-from insectvision.debug import AxesGizmo, DebugGrid, DebugBox
+from insectvision.interactive.debug import AxesGizmo, DebugGrid, DebugBox
 
 
 # TODO: These should go to the geometry submodule
@@ -161,6 +161,9 @@ cylinder_drum = scene.add_instance(asset=drum, dynamic=True)
 ##
 
 eye_array = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+eye_array.scale(0.01)
+
+eye_array.tau = 0.012
 
 left_eye = eye_array.eye(0)
 right_eye = eye_array.eye(1)
@@ -172,7 +175,6 @@ renderer = Raytracer(
     receptor_array=eye_array, scene=scene,
     nb_samples=512,
     time_dithering=True,
-    time_accumulation=0.012,
     quasi_random=True,
     enable_shadows=False
 )
@@ -238,7 +240,7 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
     estimated_slip_velocity = net_rotational_flow * EMD_TO_DEG_PER_SEC
 
     # Optomotor controller
-    optomotor_gain = 2.5
+    optomotor_gain = 2.0
     turn_rate = estimated_slip_velocity * optomotor_gain
 
     agent.dt(dt).rotate(yaw_delta=turn_rate)

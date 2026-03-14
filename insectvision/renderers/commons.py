@@ -16,7 +16,7 @@ from insectvision.geometry.compound_eyes import ReceptorArray, VisualOutput
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
 from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.engine.utils import ViewMode, ProjectionMode
+from insectvision.interactive.utils import DisplayMode
 
 
 # Core SSBO bindings (receptors data, rays results, etc)
@@ -25,6 +25,27 @@ BINDING_LENSES            = 1
 BINDING_COLORS            = 2
 BINDING_STATE             = 3
 BINDING_RAYS_INTERMEDIATE = 4
+
+
+class EyeOutput(IntEnum):
+    Raw = 0         # Render receptors individually (scaled down)
+    Ommatidium = 1  # render 1 tile per lens (averaging R1-R8)
+    Cartridge = 2   # render 1 tile per lens (averaging optically superimposed receptors)
+
+# TODO: Probably unify v these two ^ structs
+
+class EyeProjection(IntEnum):
+    Physical = 0
+    Acceptance = 1
+
+
+class Colormap(IntEnum):
+    """
+    Colormaps for the heatmap visualisation mode.
+    """
+    Diverging = 0   # Blue -> white -> red  (signed and centred on zero)
+    Sequential = 1  # Viridis-like          (positive magnitude)
+    Thermal = 2     # Black -> red -> white (positive magnitude)
 
 
 def query_available_VRAM() -> int:
@@ -39,27 +60,18 @@ def query_available_VRAM() -> int:
     return 0
 
 
-class Colormap(IntEnum):
-    """
-    Colormaps for the heatmap visualisation mode.
-    """
-    Diverging = 0   # Blue -> white -> red  (signed and centred on zero)
-    Sequential = 1  # Viridis-like          (positive magnitude)
-    Thermal = 2     # Black -> red -> white (positive magnitude)
-
-
 class BaseRenderer(ABC):
     """
     Abstract base class for an insect eye model.
     """
 
     def __init__(self,
-                 receptor_array: ReceptorArray,
-                 time_dithering: bool = True,
-                 nb_samples: int = 256,
-                 quasi_random: bool = False,
-                 batch_size: int = 1
-                 ):
+            receptor_array: ReceptorArray,
+            time_dithering: bool = True,
+            nb_samples: int = 256,
+            quasi_random: bool = False,
+            batch_size: int = 1
+        ):
 
         self.receptor_array: ReceptorArray = receptor_array
         self.scene: Scene
@@ -123,7 +135,7 @@ class BaseRenderer(ABC):
 
         # first-person specific stuff
         self.tiled_mode = True
-        self.projection_mode: ProjectionMode = ProjectionMode.Physical
+        self.projection_mode: EyeProjection = EyeProjection.Physical
 
         # History buffer state
         self._batch_size = max(1, batch_size)
@@ -185,7 +197,7 @@ class BaseRenderer(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent):
+    def draw(self, view_mode: DisplayMode, point_of_view: Agent, agent: Agent):
         # Each subclass implements its own rendering logic
         raise NotImplementedError
 
@@ -634,7 +646,7 @@ class BaseRenderer(ABC):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENSES, self.lens_data_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, self.final_colors_ssbo)
 
-        if self.projection_mode == ProjectionMode.Physical:
+        if self.projection_mode == EyeProjection.Physical:
             # Physical layout mode: hemispheres to avoid Z-fighting
             glBindVertexArray(self.hemispheres_vao)
             glDrawArraysInstanced(GL_TRIANGLES, 0, self._nb_hemisphere_vertices, self.total_receptors)

@@ -9,8 +9,9 @@ from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight
 from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.engine.utils import ViewMode, WORLD_UP, WORLD_RIGHT
+from insectvision.engine.utils import WORLD_UP, WORLD_RIGHT
 from insectvision.geometry.compound_eyes import ReceptorArray
+from insectvision.interactive.utils import DisplayMode
 
 from .commons import BaseRenderer, BINDING_RECEPTORS, BINDING_COLORS, BINDING_STATE
 
@@ -803,19 +804,19 @@ class Rasterizer(BaseRenderer):
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 
-    def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent):
+    def draw(self, view_mode: DisplayMode, point_of_view: Agent, agent: Agent):
 
-        if view_mode in (ViewMode.Perspective, ViewMode.Third_person):
+        if view_mode in (DisplayMode.Perspective, DisplayMode.Third_person):
             if self.enable_shadows and self._shadow_map:
                 self._render_shadow_pass(agent)
 
-        if view_mode == ViewMode.Compound:
+        if view_mode == DisplayMode.Compound:
             self._draw_voronoi()
 
-        elif view_mode == ViewMode.Panoramic:
+        elif view_mode == DisplayMode.Panoramic:
             self._raster_panoramic.draw(self._cubemap_fbo.texture_id)
 
-        elif view_mode == ViewMode.Perspective or view_mode == ViewMode.Third_person:
+        elif view_mode == DisplayMode.Perspective or view_mode == DisplayMode.Third_person:
 
             if self._scene_baked.scene.skybox is not None:
                 self._scene_baked.scene.skybox.draw(point_of_view.projection, point_of_view.view)
@@ -825,7 +826,7 @@ class Rasterizer(BaseRenderer):
             for instance in renderables:
                 self._render_instance(instance, point_of_view.view, point_of_view.projection)
 
-        if view_mode == ViewMode.Third_person:
+        if view_mode == DisplayMode.Third_person:
             self._draw_eye_model(point_of_view, agent)
 
     def free(self):

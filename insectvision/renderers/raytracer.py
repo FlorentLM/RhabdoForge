@@ -12,7 +12,7 @@ from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
 from insectvision.engine.shader_utils import write_pytinybvh_preamble, ShaderProgram
-from insectvision.engine.utils import ViewMode
+from insectvision.interactive.utils import DisplayMode
 
 from .commons import BaseRenderer, TextureViewer,BINDING_RECEPTORS, BINDING_COLORS, BINDING_STATE, BINDING_RAYS_INTERMEDIATE
 
@@ -980,13 +980,13 @@ class Raytracer(BaseRenderer):
         glActiveTexture(GL_TEXTURE1)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
-    def draw(self, view_mode: ViewMode, point_of_view: Agent, agent: Agent = None):
+    def draw(self, view_mode: DisplayMode, point_of_view: Agent, agent: Agent = None):
         """Renders one of the rasterizer's supported views to the screen."""
 
-        if view_mode == ViewMode.Compound:
+        if view_mode == DisplayMode.Compound:
             self._draw_voronoi()
 
-        elif view_mode == ViewMode.Panoramic:
+        elif view_mode == DisplayMode.Panoramic:
 
             if self._pano_texture_id == 0 or self.panoramic_shader is None:
                 self._initialize_pano_resources()
@@ -995,7 +995,7 @@ class Raytracer(BaseRenderer):
             self._raytrace_panoramic(point_of_view)
             self._texture_viewer.draw(self._pano_texture_id)
 
-        elif view_mode == ViewMode.Perspective or view_mode == ViewMode.Third_person:
+        elif view_mode == DisplayMode.Perspective or view_mode == DisplayMode.Third_person:
 
             if self._persp_texture_id == 0 or self.perspective_shader is None:
                 self._initialize_persp_resources()
@@ -1004,7 +1004,7 @@ class Raytracer(BaseRenderer):
             self._raytrace_perspective(point_of_view)
             self._texture_viewer.draw(self._persp_texture_id)
 
-        if view_mode == ViewMode.Third_person:
+        if view_mode == DisplayMode.Third_person:
             self._draw_eye_model(point_of_view, agent)
 
     def free(self):

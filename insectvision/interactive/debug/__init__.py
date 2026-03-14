@@ -103,8 +103,8 @@ class DebugOverlay:
             if hasattr(context_or_pov, 'view_mode'):
 
                 ctx = context_or_pov
-                from insectvision.engine.utils import ViewMode
-                if ctx.view_mode == ViewMode.Third_person and ctx.observer is not None:
+                from insectvision.interactive.utils import DisplayMode
+                if ctx.view_mode == DisplayMode.Third_person and ctx.observer is not None:
                     ctx.observer.ratio = ctx.window_size[0] / ctx.window_size[1]
                     ctx.observer.update()
                     pov = ctx.observer

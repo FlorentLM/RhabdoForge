@@ -10,7 +10,12 @@ from OpenGL.GL import (
     glUniformMatrix4fv, glUniform1i,
     glActiveTexture, glBufferData,
     GL_TEXTURE0, GL_TEXTURE_CUBE_MAP, GL_ELEMENT_ARRAY_BUFFER, GL_UNSIGNED_INT, GL_CULL_FACE,
-    GL_TRIANGLES, GL_LESS, GL_LEQUAL, GL_FLOAT, GL_ARRAY_BUFFER, GL_STATIC_DRAW
+    GL_TRIANGLES, GL_LESS, GL_LEQUAL, GL_FLOAT, GL_ARRAY_BUFFER, GL_STATIC_DRAW, glGenTextures, glTexImage2D,
+    GL_RGBA, glTexParameteri, GL_TEXTURE_MAG_FILTER, GL_LINEAR, GL_TEXTURE_MIN_FILTER,
+    GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE, GL_TEXTURE_WRAP_R,
+    GL_TEXTURE_CUBE_MAP_POSITIVE_X, GL_TEXTURE_CUBE_MAP_NEGATIVE_X, GL_TEXTURE_CUBE_MAP_POSITIVE_Y,
+    GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, GL_TEXTURE_CUBE_MAP_POSITIVE_Z, GL_TEXTURE_CUBE_MAP_NEGATIVE_Z,
+    GL_SRGB8, GL_UNSIGNED_BYTE
 )
 
 from typing import Dict, List, Optional, Union, Sequence, Set
@@ -20,19 +25,160 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 import trimesh
-from trimesh import Trimesh, PointCloud, Scene as TrimeshScene
 from pyglm import glm
 
 from .lights import Sun, Light, DirectionalLight, PointLight, AreaLight
 from .movement import TransformMixin
 from .shader_utils import ShaderProgram
-from .utils import trimesh_from_arrays, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
+from .utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
 from insectvision.geometry.primitives import CUBE_VERTICES, CUBE_INDICES
 
 
+def load_cubemap(folder_path):
+
+    faces_gl =[
+        GL_TEXTURE_CUBE_MAP_POSITIVE_X,
+        GL_TEXTURE_CUBE_MAP_NEGATIVE_X,
+        GL_TEXTURE_CUBE_MAP_POSITIVE_Y,
+        GL_TEXTURE_CUBE_MAP_NEGATIVE_Y,
+        GL_TEXTURE_CUBE_MAP_POSITIVE_Z,
+        GL_TEXTURE_CUBE_MAP_NEGATIVE_Z
+    ]
+
+    face_files =['right.jpg', 'left.jpg', 'top.jpg', 'bottom.jpg', 'front.jpg', 'back.jpg']
+
+    texture_id = glGenTextures(1)
+    glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id)
+
+    for i in range(6):
+        filepath = Path(folder_path) / face_files[i]
+        if not filepath.exists():
+            # Try png
+            filepath = filepath.with_suffix('.png')
+            if not filepath.exists():
+                raise FileNotFoundError(f"Could not find cubemap face: {filepath.with_suffix('.png')}")
+
+        with Image.open(filepath) as im:
+            w, h = im.width, im.height
+            im_data = im.convert('RGBA').tobytes()
+
+        glTexImage2D(faces_gl[i], 0, GL_SRGB8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, im_data)
+
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE)
+
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
+    return texture_id
+
+
+def trimesh_from_arrays(
+    vertices: np.ndarray,
+    faces: np.ndarray = None,
+    normals: np.ndarray = None,
+    vertex_colors: np.ndarray = None,
+    uv_coords: np.ndarray = None,
+    texture_image: Image.Image = None
+) -> Union[trimesh.Trimesh, trimesh.PointCloud, None]:
+    """
+    Creates a trimesh.Trimesh object from numpy arrays
+
+    Args:
+        vertices (np.ndarray): N x 3 array of vertex positions.
+        faces (np.ndarray, optional): M x 3 (or M x N_verts_per_face) array of face indices.
+                                      If None, a point cloud is created or faces are inferred by trimesh.
+        normals (np.ndarray, optional): N x 3 array of vertex normals. Will be calculated by trimesh
+                                        if not provided or invalid.
+        vertex_colors (np.ndarray, optional): N x 3 (RGB) or N x 4 (RGBA) array of vertex colors.
+                                              Values can be 0-255 (uint8) or 0.0-1.0 (float).
+        uv_coords (np.ndarray, optional): N x 2 array of UV texture coordinates.
+        texture_image (PIL.Image.Image, optional): A PIL Image object to be used as a texture.
+                                                   Requires uv_coords to be applied.
+
+    Returns:
+        trimesh.Trimesh: A trimesh object created from the provided data.
+                         (or None if an error occurs)
+    """
+
+    if vertices is None or vertices.ndim != 2 or vertices.shape[1] != 3:
+        print("Error: 'vertices' must be an N x 3 numpy array.")
+        return None
+
+    try:
+        is_mesh = faces is not None and faces.ndim == 2 and faces.shape[1] >= 3
+
+        mesh_kwargs = {'vertices': vertices}
+        if is_mesh:
+            mesh_kwargs['faces'] = faces
+        else:
+            print("Info: No valid faces provided. Creating a trimesh.PointCloud object.")
+
+        if normals is not None:
+            if normals.shape != vertices.shape:
+                print("Warning: 'normals' shape does not match 'vertices' shape. Ignoring provided normals.")
+            else:
+                mesh_kwargs['vertex_normals'] = normals
+
+        # visual attributes (colors, UVs, texture)
+        visual_args = {}
+
+        if uv_coords is not None:
+            if uv_coords.shape[0] == vertices.shape[0] and uv_coords.shape[1] == 2:
+                visual_args['uv'] = uv_coords
+
+                if texture_image is not None:
+
+                    material = trimesh.visual.material.SimpleMaterial(image=texture_image)
+
+                    visual_args['material'] = material
+                    print("Info: Texture image and UV coordinates provided.")
+
+                else:
+                    print(
+                        "Info: UV coordinates provided but no texture image. Model will have UVs but no visual texture.")
+            else:
+                print("Warning: 'uv_coords' count or shape does not match 'vertices'. Ignoring provided UVs.")
+        elif texture_image is not None and uv_coords is None:
+            print("Warning: Texture image provided but no UV coordinates. Texture will not be applied visually.")
+
+        if vertex_colors is not None:
+            if vertex_colors.shape[0] == vertices.shape[0] and vertex_colors.shape[1] in [3, 4]:
+                visual_args['vertex_colors'] = vertex_colors
+                print("Info: Vertex colors provided.")
+            else:
+                print("Warning: 'vertex_colors' count or shape does not match 'vertices'. Ignoring provided colors.")
+
+        if 'uv' in visual_args or 'material' in visual_args:
+            if is_mesh:
+                mesh_kwargs['visual'] = trimesh.visual.TextureVisuals(**visual_args)
+
+            else:
+                print("Warning: Texture/UVs provided for a PointCloud. trimesh.PointCloud does not directly "
+                    "support TextureVisuals. Visual information will be limited to vertex colors if provided.")
+
+        elif 'vertex_colors' in visual_args:
+            mesh_kwargs['vertex_colors'] = visual_args['vertex_colors']
+
+        if is_mesh:
+            model = trimesh.Trimesh(**mesh_kwargs)
+        else:
+            model = trimesh.PointCloud(**mesh_kwargs)
+
+        return model
+
+    except Exception as e:
+        print(f"Error creating model from arrays: {e}")
+        return None
+
+##
+
 class MaterialData:
-    """Material properties for rendering (colors, specular, etc.)"""
+    """
+    Material properties for rendering (colors, specular, etc.)
+    """
 
     def __init__(self):
         self.base_color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
@@ -41,7 +187,9 @@ class MaterialData:
 
 
 class AssetType(Enum):
-    """Distinguishes between different types of geometry assets."""
+    """
+    Distinguishes between different types of geometry assets.
+    """
     Mesh = auto()
     Points = auto()
 
@@ -135,11 +283,14 @@ class Asset:
 
     @classmethod
     def from_file(cls,
-            name: str, file_path: Union[Path, str],
+            name: str,
+            file_path: Union[Path, str],
             texture: Optional[Union[Path, str, Image.Image, np.ndarray]] = None,
             radii: Optional[Union[float, ArrayLike]] = None
         ):
-        """Creates an Asset by loading a 3D model from a file."""
+        """
+        Creates an Asset by loading a 3D model from a file.
+        """
 
         instance = cls(name)
 
@@ -153,10 +304,12 @@ class Asset:
         if trimesh_model is None:
             raise ValueError(f"Failed to load 3D model from {file_path}")
 
-        if isinstance(trimesh_model, TrimeshScene):
+        if isinstance(trimesh_model, trimesh.Scene):
             print(f"Info: File '{file_path}' contains multiple meshes. Merging into single Asset '{name}'.")
+
             trimesh_model = trimesh_model.dump(concatenate=True)
-            if not isinstance(trimesh_model, (Trimesh, PointCloud)):
+
+            if not isinstance(trimesh_model, (trimesh.Trimesh, trimesh.PointCloud)):
                 raise ValueError(f"Failed to extract geometry from scene {file_path}")
 
         instance.process_trimesh(trimesh_model, radii, extract_texture=not texture_override)
@@ -165,15 +318,19 @@ class Asset:
         return instance
 
     @classmethod
-    def from_arrays(cls, name: str,
-                    vertices: np.ndarray,
-                    faces: Optional[np.ndarray] = None,
-                    normals: Optional[np.ndarray] = None,
-                    vertex_colors: Optional[np.ndarray] = None,
-                    uv_coords: Optional[np.ndarray] = None,
-                    texture: Optional[Union[Path, str, Image.Image, np.ndarray]] = None,
-                    radii: Optional[Union[float, ArrayLike]] = None):
-        """Creates an Asset from numpy arrays."""
+    def from_arrays(cls,
+            name: str,
+            vertices: np.ndarray,
+            faces: Optional[np.ndarray] = None,
+            normals: Optional[np.ndarray] = None,
+            vertex_colors: Optional[np.ndarray] = None,
+            uv_coords: Optional[np.ndarray] = None,
+            texture: Optional[Union[Path, str, Image.Image, np.ndarray]] = None,
+            radii: Optional[Union[float, ArrayLike]] = None
+        ):
+        """
+        Creates an Asset from numpy arrays.
+        """
 
         instance = cls(name)
 
@@ -198,28 +355,32 @@ class Asset:
         return instance
 
     def process_trimesh(self,
-                        trimesh_obj: Union[Trimesh, PointCloud],
+                        trimesh_obj: Union[trimesh.Trimesh, trimesh.PointCloud],
                         radii: Optional[Union[float, ArrayLike]],
                         extract_texture: bool = True
                         ):
-        """Populates Asset data from a trimesh object."""
+        """
+        Populates Asset data from a trimesh object.
+        """
 
         if trimesh_obj.is_empty:
             raise ValueError(f"Geometry is empty for asset '{self.name}'.")
 
-        if isinstance(trimesh_obj, Trimesh) and trimesh_obj.faces is not None and len(trimesh_obj.faces) > 0:
+        if isinstance(trimesh_obj, trimesh.Trimesh) and trimesh_obj.faces is not None and len(trimesh_obj.faces) > 0:
             self.asset_type = AssetType.Mesh
             self._setup_mesh_data(trimesh_obj, extract_texture)
 
-        elif isinstance(trimesh_obj, PointCloud) and trimesh_obj.vertices is not None:
+        elif isinstance(trimesh_obj, trimesh.PointCloud) and trimesh_obj.vertices is not None:
             self.asset_type = AssetType.Points
             self._setup_point_cloud_data(trimesh_obj, radii)
 
         else:
             raise ValueError(f"No valid geometry found for asset '{self.name}'.")
 
-    def _setup_mesh_data(self, trimesh_obj: Trimesh, extract_texture: bool):
-        """Populates mesh-specific data from a trimesh object."""
+    def _setup_mesh_data(self, trimesh_obj: trimesh.Trimesh, extract_texture: bool):
+        """
+        Populates mesh-specific data from a trimesh object.
+        """
 
         vertices_3d = trimesh_obj.vertices.astype(np.float32)
         indices = trimesh_obj.faces.astype(np.uint32)
@@ -262,8 +423,10 @@ class Asset:
         else:
             print(f"Info: Asset '{self.name}' has no texture (will use base_color)")
 
-    def _setup_point_cloud_data(self, trimesh_obj: PointCloud, radii: Optional[Union[float, ArrayLike]]):
-        """Populates point cloud-specific data."""
+    def _setup_point_cloud_data(self, trimesh_obj: trimesh.PointCloud, radii: Optional[Union[float, ArrayLike]]):
+        """
+        Populates point cloud-specific data.
+        """
 
         self.points = trimesh_obj.vertices.astype(np.float32)
         self._nb_points = len(self.points)
@@ -381,12 +544,10 @@ class Instance(TransformMixin):
             self.transform = glm.rotate(self.transform, glm.radians(yaw_delta) if degrees else yaw_delta, WORLD_UP)
 
         if pitch_delta != 0.0:
-            self.transform = glm.rotate(self.transform, glm.radians(pitch_delta) if degrees else pitch_delta,
-                                        WORLD_RIGHT)
+            self.transform = glm.rotate(self.transform, glm.radians(pitch_delta) if degrees else pitch_delta, WORLD_RIGHT)
 
         if roll_delta != 0.0:
-            self.transform = glm.rotate(self.transform, glm.radians(roll_delta) if degrees else roll_delta,
-                                        WORLD_FORWARD)
+            self.transform = glm.rotate(self.transform, glm.radians(roll_delta) if degrees else roll_delta, WORLD_FORWARD)
 
         return self
 
@@ -607,7 +768,6 @@ class Scene:
 
         if isinstance(data, trimesh.Scene):
             # Multi-geometry file
-            # print(f"Loading Scene '{file_path}' ({len(data.geometry)} geometries)")
 
             for geom_name, geom_obj in data.geometry.items():
 
@@ -626,9 +786,8 @@ class Scene:
                                          **{k: v for k, v in kwargs.items() if k != 'radii'})
                 new_instances.append(inst)
 
-        elif isinstance(data, (Trimesh, PointCloud)):
+        elif isinstance(data, (trimesh.Trimesh, trimesh.PointCloud)):
             # Single-geometry file
-            # print(f"Loading single geometry '{file_path}'")
 
             asset_name = name_prefix
 
@@ -648,7 +807,9 @@ class Scene:
 
     @property
     def instances(self) -> List[Instance]:
-        """Returns a combined list of all instances."""
+        """
+        Returns a combined list of all instances.
+        """
         return list(self._mesh_instances | self._point_instances)
 
     @property
@@ -689,12 +850,16 @@ class Scene:
 
     @property
     def sun(self) -> Optional[Sun]:
-        """Returns the first Sun found in the directional lights set."""
+        """
+        Returns the first Sun found in the directional lights set.
+        """
         return next((l for l in self._directional_lights if isinstance(l, Sun)), None)
 
     @sun.setter
     def sun(self, value: Optional[Sun]):
-        """Replaces all current Sun instances in the directional lights set."""
+        """
+        Replaces all current Sun instances in the directional lights set.
+        """
         suns = [l for l in self._directional_lights if isinstance(l, Sun)]
         for s in suns:
             self._directional_lights.remove(s)

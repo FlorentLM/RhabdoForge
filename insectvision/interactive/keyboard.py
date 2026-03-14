@@ -2,7 +2,8 @@ import glfw
 from pyglm import glm
 from typing import Optional, Tuple
 
-from insectvision.engine.utils import WORLD_UP, WORLD_DOWN, ViewMode
+from insectvision.engine.utils import WORLD_UP, WORLD_DOWN
+from insectvision.interactive.utils import DisplayMode
 from insectvision.interactive.controls_interface import Controls
 
 
@@ -106,7 +107,7 @@ class KeyboardMouse(Controls):
         yaw_input = 0.0
         strafe_mode = glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS
 
-        if ctx.view_mode == ViewMode.Third_person and not strafe_mode:
+        if ctx.view_mode == DisplayMode.Third_person and not strafe_mode:
             if glfw.get_key(window, glfw.KEY_A) == glfw.PRESS: yaw_input += 1.0
             if glfw.get_key(window, glfw.KEY_D) == glfw.PRESS: yaw_input -= 1.0
         else:
@@ -148,7 +149,7 @@ class KeyboardMouse(Controls):
             mouse_yaw = dx * self.mouse_sensitivity * self._mouse_y_dir
             mouse_pitch = dy * self.mouse_sensitivity * self._mouse_y_dir
 
-            if ctx.view_mode == ViewMode.Third_person:
+            if ctx.view_mode == DisplayMode.Third_person:
                 ctx.observer.pan(
                     azimuth_delta=mouse_yaw * 0.5,
                     elevation_delta=mouse_pitch * 0.5,

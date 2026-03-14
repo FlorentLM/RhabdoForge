@@ -9,7 +9,7 @@ from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.geometry.compound_eyes import ReceptorArray, Eye
 from insectvision.renderers import Raytracer
 from insectvision.renderers.commons import Colormap
-from insectvision.debug import AxesGizmo, DebugGrid, DebugBox
+from insectvision.interactive.debug import AxesGizmo, DebugGrid, DebugBox
 
 
 # TODO: These should go to the geometry submodule
@@ -179,6 +179,9 @@ scene.add_instance(top_wall)
 eye_array = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
 eye_array.scale(0.01)
 
+eye_array.tau = 0.012
+
+
 left_eye = eye_array.eye(0)
 right_eye = eye_array.eye(1)
 
@@ -237,7 +240,7 @@ for mode in modes:
 
         context.input()
 
-        dt = 1/200.0
+        dt = 1/120.0
         sim_time += dt
 
         view = renderer.get_visual_output(agent)

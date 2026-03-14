@@ -4,7 +4,7 @@ from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.geometry import CUBE_VERTICES, CUBE_INDICES
 from insectvision.geometry.compound_eyes import ReceptorArray
 from insectvision.renderers import Rasterizer, Raytracer
-from insectvision.debug import DebugBox, AxesGizmo
+from insectvision.interactive.debug import DebugBox, AxesGizmo
 
 
 def main():
