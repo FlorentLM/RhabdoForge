@@ -13,22 +13,6 @@ from insectvision.geometry.compound_eyes import ReceptorArray
 
 from .commons import BaseRenderer, BINDING_RECEPTORS, BINDING_COLORS, BINDING_STATE
 
-# Scene geometry bindings
-BINDING_VERTICES     = 5
-BINDING_INDICES      = 6
-BINDING_MATERIALS    = 7
-BINDING_POINTS       = 8
-BINDING_BLAS_NODES   = 9
-BINDING_TLAS_NODES   = 10
-BINDING_INSTANCES    = 11
-BINDING_TLAS_INDICES = 12
-BINDING_BLAS_INDICES = 13
-
-# Light bindings
-BINDING_LIGHT_DIR    = 14
-BINDING_LIGHT_POINT  = 15
-BINDING_LIGHT_AREA   = 16
-
 
 ##
 
