@@ -2,6 +2,7 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
+from typing import List
 import numpy as np
 from pyglm import glm
 
@@ -37,7 +38,9 @@ def light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), sc
 
 
 class ShadowMapFBO:
-    """Depth-only FBO for directional light shadow mapping."""
+    """
+    Depth-only FBO for directional light shadow mapping.
+    """
 
     def __init__(self, resolution: int = 2048):
         self.resolution = resolution
@@ -88,7 +91,9 @@ class ShadowMapFBO:
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
     def bind_texture(self, unit: int = 1):
-        """Bind the depth texture for sampling in colour shaders."""
+        """
+        Bind the depth texture for sampling in colour shaders.
+        """
         glActiveTexture(GL_TEXTURE0 + unit)
         glBindTexture(GL_TEXTURE_2D, self.depth_texture)
 
@@ -162,7 +167,9 @@ class CubemapFBO:
 
 
 class EquirectangularCubemap:
-    """A simple asset to render a cubemap to the screen as a panoramic (equirectangular) view."""
+    """
+    A simple asset to render a cubemap to the screen as a panoramic (equirectangular) view.
+    """
 
     def __init__(self):
         self._shader = None
@@ -171,8 +178,9 @@ class EquirectangularCubemap:
     @property
     def shader(self):
         if self._shader is None:
-            print("Compiling panoramic debug shaders...")
-            self._shader = ShaderProgram(vert_path='visualisation/fullscreen.vert', frag_path='visualisation/cubemapSampler.frag')
+            self._shader = ShaderProgram(
+                vert_path='visualisation/fullscreen.vert', frag_path='visualisation/cubemapSampler.frag'
+            )
         return self._shader
 
     @property
@@ -183,7 +191,10 @@ class EquirectangularCubemap:
         return self._vao
 
     def draw(self, cubemap_texture_id):
-        """Draws the panoramic view of the given cubemap."""
+        """
+        Draws the panoramic view of the given cubemap.
+        """
+
         self.shader.use()
 
         # Bind the cubemap texture we want to inspect
@@ -368,7 +379,9 @@ class RasterPoints:
 
 
 class RasterInstance:
-    """Instance wrapper for the rasterizer, holding a baked asset and transform."""
+    """
+    Instance wrapper for the rasterizer, holding a baked asset and transform.
+    """
     def __init__(self, asset: RasterMesh | RasterPoints, transform: glm.mat4, properties: dict):
         self.asset = asset
         self.transform = transform
@@ -389,12 +402,12 @@ class RasterSceneBaker:
         self._shadow_mesh_shader = None
         self._shadow_points_shader = None
 
-        self._bake_all_assets()
+        self._bake_assets()
 
         if enable_shadows:
             self._compile_shadow_shaders()
 
-    def _bake_all_assets(self):
+    def _bake_assets(self):
         print("Baking rasterizer assets...")
 
         for asset in self.scene.assets.values():
@@ -416,21 +429,20 @@ class RasterSceneBaker:
 
     def _compile_shadow_shaders(self):
         print("Compiling shadow depth shaders...")
-
         self._shadow_mesh_shader = ShaderProgram(vert_path='shadowDepthMesh.vert', frag_path='shadowDepth.frag')
-
         self._shadow_points_shader = ShaderProgram(vert_path='shadowDepthPointcloud.vert', frag_path='shadowDepth.frag')
 
-    def get_renderables(self):
-        renderables = []
+    @property
+    def renderables(self) -> List[RasterInstance]:
+        renderables_list = []
 
         for instance in self.scene.instances:
             baked_asset = self._raster_asset_cache.get(instance.asset.id)
 
             if baked_asset:
-                renderables.append(RasterInstance(baked_asset, instance.transform, instance.properties))
+                renderables_list.append(RasterInstance(baked_asset, instance.transform, instance.properties))
 
-        return renderables
+        return renderables_list
 
     def free(self):
         for raster_asset in self._raster_asset_cache.values():
@@ -449,18 +461,20 @@ class Rasterizer(BaseRenderer):
 
     SHADOW_TEX_UNIT = 1
 
-    def __init__(self, receptor_array: ReceptorArray, scene: Scene,
-                 time_dithering: bool = False,
-                 nb_samples: int = 256,
-                 quasi_random: bool = False,
-                 cubemap_res: int = 512,
-                 batch_size: int = 1,
-                 enable_direct: bool = False,
-                 enable_shadows: bool = False,
-                 enable_ambient: bool = False,
-                 shadow_resolution: int = 2048,
-                 shadow_radius: float = 50.0
-                 ):
+    def __init__(self,
+            receptor_array: ReceptorArray,
+            scene: Scene,
+            time_dithering: bool = False,
+            nb_samples: int = 256,
+            quasi_random: bool = False,
+            cubemap_res: int = 512,
+            batch_size: int = 1,
+            enable_direct: bool = False,
+            enable_shadows: bool = False,
+            enable_ambient: bool = False,
+            shadow_resolution: int = 2048,
+            shadow_radius: float = 50.0
+        ):
 
         self.scene = scene
 
@@ -547,7 +561,7 @@ class Rasterizer(BaseRenderer):
         glEnable(GL_POLYGON_OFFSET_FILL)
         glPolygonOffset(2.0, 4.0)
 
-        renderables = self._scene_baked.get_renderables()
+        renderables_list = self._scene_baked.renderables
 
         # Meshes
         mesh_shader = self._scene_baked._shadow_mesh_shader
@@ -556,7 +570,7 @@ class Rasterizer(BaseRenderer):
         glUniformMatrix4fv(mesh_shader.get_loc('light_space_matrix'), 1, False, lsm_ptr)
         glUniform1i(mesh_shader.get_loc('is_point_cloud'), 0)
 
-        for inst in renderables:
+        for inst in renderables_list:
             if not isinstance(inst.asset, RasterMesh):
                 continue
             glUniformMatrix4fv(mesh_shader.get_loc('model'), 1, False,
@@ -575,7 +589,7 @@ class Rasterizer(BaseRenderer):
         pixel_mult = 25.0
         glEnable(GL_PROGRAM_POINT_SIZE)
 
-        for inst in renderables:
+        for inst in renderables_list:
             if not isinstance(inst.asset, RasterPoints):
                 continue
             radius_scale = inst.properties.get('radius_scale', 1.0) * pixel_mult * self.shadow_splat_scale
@@ -711,8 +725,6 @@ class Rasterizer(BaseRenderer):
             agent.down,
         ]
 
-        renderables = self._scene_baked.get_renderables()
-
         bg = self.scene.background_color
         glClearColor(bg[0], bg[1], bg[2], 1.0)
 
@@ -734,7 +746,7 @@ class Rasterizer(BaseRenderer):
             if self._scene_baked.scene.skybox is not None:
                 self._scene_baked.scene.skybox.draw(self._proj_mat, view)
 
-            for instance in renderables:
+            for instance in self._scene_baked.renderables:
                 self._render_instance(instance, view, self._proj_mat)
 
         self._cubemap_fbo.unbind()
@@ -821,9 +833,7 @@ class Rasterizer(BaseRenderer):
             if self._scene_baked.scene.skybox is not None:
                 self._scene_baked.scene.skybox.draw(point_of_view.projection, point_of_view.view)
 
-            renderables = self._scene_baked.get_renderables()
-
-            for instance in renderables:
+            for instance in self._scene_baked.renderables:
                 self._render_instance(instance, point_of_view.view, point_of_view.projection)
 
         if view_mode == DisplayMode.Third_person:
