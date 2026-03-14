@@ -9,6 +9,68 @@ from insectvision.geometry.compound_eyes.datatypes import (
 )
 
 
+_RW_FIELDS = (
+    'tau', 'sensitivity',
+    'acceptance_tilt', 'acceptance_major', 'acceptance_minor',
+    'acceptance_rad', 'acceptance_deg',
+    'eye_id', 'receptor_type', 'neighbours_count', 'lens_id',
+)
+
+_RO_FIELDS = (
+    'azimuth_rad', 'azimuth_deg',
+    'elevation_rad', 'elevation_deg',
+)
+
+
+def _make_rw(name):
+
+    def fget(self):
+        return getattr(self._receptor_proxy, name)
+
+    def fset(self, value):
+        setattr(self._receptor_proxy, name, value)
+
+    return property(fget, fset, doc=f"Forwarded receptor field: {name}")
+
+
+def _make_ro(name):
+
+    def fget(self):
+        return getattr(self._receptor_proxy, name)
+
+    return property(fget, doc=f"Forwarded receptor field (read-only): {name}")
+
+
+class _ReceptorProxyMixin:
+
+    @property
+    def _receptor_proxy(self) -> 'Receptor':
+        raise NotImplementedError
+
+    @property
+    def receptors(self) -> 'Receptor':
+        return self._receptor_proxy
+
+
+for _name in _RW_FIELDS:
+    setattr(_ReceptorProxyMixin, _name, _make_rw(_name))
+
+for _name in _RO_FIELDS:
+    setattr(_ReceptorProxyMixin, _name, _make_ro(_name))
+
+if DEFAULT_ANGLE == 'rad':
+    _ReceptorProxyMixin.lon = _ReceptorProxyMixin.longitude = _ReceptorProxyMixin.azimuth = _make_ro('azimuth_rad')
+    _ReceptorProxyMixin.lat = _ReceptorProxyMixin.latitude = _ReceptorProxyMixin.elevation = _make_ro('elevation_rad')
+    _ReceptorProxyMixin.rho = _ReceptorProxyMixin.acceptance = _make_rw('acceptance_rad')
+else:
+    _ReceptorProxyMixin.lon = _ReceptorProxyMixin.longitude = _ReceptorProxyMixin.azimuth = _make_ro('azimuth_deg')
+    _ReceptorProxyMixin.lat = _ReceptorProxyMixin.latitude = _ReceptorProxyMixin.elevation = _make_ro('elevation_deg')
+    _ReceptorProxyMixin.rho = _ReceptorProxyMixin.acceptance = _make_rw('acceptance_deg')
+
+_ReceptorProxyMixin.rho_minor = _make_rw('acceptance_minor')
+_ReceptorProxyMixin.rho_major = _make_rw('acceptance_major')
+
+
 class Receptor:
     """
     View into one or several elements of a ReceptorArray.
@@ -195,7 +257,7 @@ class Receptor:
     rho_major = acceptance_major
 
 
-class Ommatidium:
+class Ommatidium(_ReceptorProxyMixin):
     """
     Grouping of the R receptors behind a single lens.
     """
@@ -209,6 +271,10 @@ class Ommatidium:
         self._start = self._lens_index * R
         self._stop = self._start + R
         self._slice = slice(self._start, self._stop)
+
+    @property
+    def _receptor_proxy(self) -> Receptor:
+        return Receptor(self._array.receptor_data, self._slice, self._array)
 
     def __getitem__(self, receptor_idx) -> Receptor:
         """``omm[r]`` returns the Receptor proxy for receptor type r"""
@@ -245,15 +311,14 @@ class Ommatidium:
     def eye_id(self) -> int:
         return int(self._array.receptor_data['metadata'][self._start] & 0x07)
 
+    @eye_id.setter
+    def eye_id(self, value):
+        self._receptor_proxy.eye_id = value
+
     @property
     def bundle_orientation(self) -> float:
         """Rotation of rhabdomere bundle in tangent plane (radians).""" # TODO: maybe return degrees instead?
         return float(self._array._bundle_orientation[self._lens_index])
-
-    @property
-    def receptors(self) -> Receptor:
-        """Proxy spanning all R receptors of this ommatidium."""
-        return Receptor(self._array.receptor_data, self._slice, self._array)
 
     def actuate(self, displacement_um: float, axial_um: float = 0.0):
         """
@@ -270,7 +335,7 @@ class Ommatidium:
         )
 
 
-class Cartridge:
+class Cartridge(_ReceptorProxyMixin):
     """
     Neural superposition unit: The 6 outer receptors (R1-R6) from 6 different ommatidia
     that converge onto one lamina column.
@@ -282,6 +347,10 @@ class Cartridge:
 
         if array._cartridge_map is None:
             raise RuntimeError("Cartridge map not built. Call array.build_cartridge_map() first.")  # TODO: may eventually be done automatically
+
+    @property
+    def _receptor_proxy(self) -> Receptor:
+        return Receptor(self._array.receptor_data, self.receptor_indices, self._array)
 
     def __getitem__(self, receptor_type: int) -> Receptor:
         """``cartridge[k]`` returns the Receptor R{k+1} from the appropriate ommatidium."""
@@ -307,7 +376,7 @@ class Cartridge:
         return f"<Cartridge(lens={self._lens_index}, inputs={len(self)})>"
 
 
-class Eye:
+class Eye(_ReceptorProxyMixin):
     """
     View into a ReceptorArray scoped to a a single eye_id.
 
@@ -335,6 +404,10 @@ class Eye:
         self._kdtree_directions = None
         self._kdtree_positions = None
         self._neighbour_graph = None
+
+    @property
+    def _receptor_proxy(self) -> Receptor:
+        return Receptor(self._array.receptor_data, self._receptor_indices, self._array)
 
     @property
     def eye_id(self) -> int:

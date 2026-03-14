@@ -7,12 +7,12 @@ from scipy.spatial import KDTree
 
 from .datatypes import RECEPTOR_DTYPE, LENS_DTYPE, _CLEAR_NEIGHBOURS
 from .kernel import RhabdomereKernel
-from .proxies import Eye, Ommatidium, Cartridge
+from .proxies import Eye, Ommatidium, Cartridge, _ReceptorProxyMixin
 from .eye_utils import compute_lattice_properties, tangent_frames
 from insectvision.geometry.geom_utils import estimate_lod, subdivide_icosahedron, fibonacci_sphere
 
 
-class ReceptorArray:
+class ReceptorArray(_ReceptorProxyMixin):
     """
     Flat (GPU-friendly) structured array of receptors for the renderer.
     Every element is one rhabdomere. The GPU traces rays for `len(data)` receptors.
@@ -449,6 +449,11 @@ class ReceptorArray:
 
     def __repr__(self):
         return f"<ReceptorArray(lenses={self.lens_count}, R={self.receptor_count}, total={len(self.receptor_data)})>"
+
+    @property
+    def _receptor_proxy(self):
+        from .proxies import Receptor
+        return Receptor(self.receptor_data, slice(None), self)
 
     def _prepare_param(self, param, name="param"):
         arr = np.asarray(param, dtype=np.float32)

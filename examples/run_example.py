@@ -64,6 +64,9 @@ def main():
 
     eye_model.scale(0.01)
 
+    # Example setting time adaptation
+    eye_model.tau = 0.012   # 12 ms is good for Drosophila
+
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))
 
