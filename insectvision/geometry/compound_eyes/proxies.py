@@ -9,6 +9,7 @@ from insectvision.geometry.compound_eyes.datatypes import (
 )
 
 
+# read write: can be got or set at any scope
 _RW_FIELDS = (
     'tau', 'sensitivity',
     'acceptance_tilt', 'acceptance_major', 'acceptance_minor',
@@ -16,6 +17,7 @@ _RW_FIELDS = (
     'eye_id', 'receptor_type', 'neighbours_count', 'lens_id',
 )
 
+# derived angular quantities (no meaningful setter)
 _RO_FIELDS = (
     'azimuth_rad', 'azimuth_deg',
     'elevation_rad', 'elevation_deg',
@@ -23,6 +25,7 @@ _RO_FIELDS = (
 
 
 def _make_rw(name):
+    """Create a read-write property that delegates to the scoped Receptor proxy."""
 
     def fget(self):
         return getattr(self._receptor_proxy, name)
@@ -34,6 +37,7 @@ def _make_rw(name):
 
 
 def _make_ro(name):
+    """Create a read-only property that delegates to the scoped Receptor proxy."""
 
     def fget(self):
         return getattr(self._receptor_proxy, name)
@@ -42,6 +46,15 @@ def _make_ro(name):
 
 
 class _ReceptorProxyMixin:
+    """
+    Mixin that gives any hierarchy level accessors to receptor fields.
+
+    (subclasses implement `_receptor_proxy` returning a `Receptor``
+        which indexes cover the receptors in scope)
+
+    Concerned properties are whitelisted so lens-level overrides
+    like `Ommatidium.position` keep their semantics
+    """
 
     @property
     def _receptor_proxy(self) -> 'Receptor':
@@ -49,6 +62,7 @@ class _ReceptorProxyMixin:
 
     @property
     def receptors(self) -> 'Receptor':
+        """Receptor view spanning every receptor in this scope."""
         return self._receptor_proxy
 
 
@@ -309,10 +323,12 @@ class Ommatidium(_ReceptorProxyMixin):
 
     @property
     def eye_id(self) -> int:
+        """Eye ID for this ommatidium."""
         return int(self._array.receptor_data['metadata'][self._start] & 0x07)
 
     @eye_id.setter
     def eye_id(self, value):
+        """Set eye_id for all receptors in this ommatidium."""
         self._receptor_proxy.eye_id = value
 
     @property
@@ -464,7 +480,7 @@ class Eye(_ReceptorProxyMixin):
         self._kdtree_positions = None
         self._neighbour_graph = None
 
-    # Bulk data views
+    # Bulk data views (lens-level)
 
     @property
     def directions(self) -> np.ndarray:
@@ -743,7 +759,7 @@ class VisualOutput:
         """
         batch_shape = self.raw.shape[:-2]
         new_shape = (*batch_shape, self._array.lens_count, self._array.receptor_count, self.raw.shape[-1])
-        # squeeze if simplified model and batch size is 1
+        # squeeze if simplified model and batch size is 1 # TODO: or not, idk
         return self.raw.reshape(new_shape).squeeze() if not self._array.is_full_model else self.raw.reshape(new_shape)
 
     @property
