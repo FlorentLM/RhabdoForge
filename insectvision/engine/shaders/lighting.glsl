@@ -49,7 +49,7 @@ struct AreaLightData {
 
 uniform vec3 background_color;
 uniform bool use_skybox;
-uniform float sky_intensity;  // intensity for sky color and sun disk
+uniform float sky_intensity;        // intensity for sky color and sun disk
 uniform bool enable_ambient;        // toggle ambient/fill lighting from sky
 uniform bool enable_direct;         // toggle all direct lighting
 uniform bool enable_shadows;        // global shadow override (false = skip all shadow rays)

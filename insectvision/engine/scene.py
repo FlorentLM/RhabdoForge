@@ -25,8 +25,8 @@ from pyglm import glm
 
 from .lights import Sun, Light, DirectionalLight, PointLight, AreaLight
 from .movement import TransformMixin
-from .utils import (trimesh_from_arrays, load_shaders, load_cubemap,
-                    WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer)
+from .shader_utils import ShaderProgram
+from .utils import trimesh_from_arrays, load_cubemap, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
 from insectvision.geometry.primitives import CUBE_VERTICES, CUBE_INDICES
 
@@ -396,7 +396,7 @@ class Skybox:
 
         self.texture_id = load_cubemap(texture_path)
 
-        self.program = load_shaders('shaders/skybox.vert', 'shaders/skybox.frag')
+        self.program = ShaderProgram(vert_path='skybox.vert', frag_path='skybox.frag')
 
         skybox_vertices = CUBE_VERTICES.reshape(-1, 5)[:, :3]
 

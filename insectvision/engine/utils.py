@@ -2,9 +2,8 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-import re
 from pathlib import Path
-from typing import Any, Union, Optional, Set
+from typing import Any, Union
 from enum import IntEnum
 from PIL import Image
 import numpy as np
@@ -107,146 +106,17 @@ class DeltaTimeTransformer:
         return self
 
 
-## Shader compiling functions
-
-def _process_shader_includes_recursive(path: Path, include_stack: set):
-    """
-    Recursively processes #include directives in a shader file
-    """
-    if path in include_stack:
-        raise RuntimeError(f"Circular #include detected: {path} is already in the include stack.")
-
-    if not path.exists():
-        raise FileNotFoundError(f"Cannot find include file: {path}")
-
-    # Add the current file to the stack (for the duration of this call)
-    include_stack.add(path)
-
-    code = ""
-    include_pattern = re.compile(r'#include\s+"(.*?)"')
-
-    with open(path, 'r') as f:
-        for line in f:
-            match = include_pattern.match(line.strip())
-            if match:
-                include_path_str = match.group(1)
-                # Included paths are relative to the file they are in
-                include_path = path.parent / include_path_str
-                # Recursively process the included file
-                code += _process_shader_includes_recursive(include_path, include_stack) + "\n"
-            else:
-                code += line
-
-    # Remove file from the stack after processing is complete
-    include_stack.remove(path)
-    return code
-
-
-def compile_shader(path, shader_type, defines: Optional[Set[str]] = None):
-    """Compiles a single shader from a file path with support for #include and #define directives."""
-
-    shader_path = Path(path)
-
-    combined_code = _process_shader_includes_recursive(shader_path, set())
-
-    version_pattern = re.compile(r'^\s*#version\s+.*$', re.MULTILINE)
-    matches = version_pattern.findall(combined_code)
-
-    if not matches:
-        raise RuntimeError(f"Shader '{shader_path}' and its includes contain no #version directive.")
-
-    if len(matches) > 1:
-        conflicts = "\n".join(f"  - {match.strip()}" for match in matches)
-        raise RuntimeError(f"Shader '{shader_path}' contains multiple conflicting #version directives:\n{conflicts}")
-
-    # remove the #version directive from its original position
-    version_directive = matches[0]
-    code_without_version = version_pattern.sub('', combined_code)
-
-    define_block = ''
-    if defines:
-        define_block = '\n'.join(f'#define {d}' for d in sorted(defines)) + '\n'
-
-    final_code = version_directive + '\n' + define_block + code_without_version
-
-    shader = glCreateShader(shader_type)
-    glShaderSource(shader, final_code)
-    glCompileShader(shader)
-
-    if not glGetShaderiv(shader, GL_COMPILE_STATUS):
-        error = glGetShaderInfoLog(shader).decode()
-        glDeleteShader(shader)
-        raise RuntimeError(f"Shader compilation error in {path}:\n{error}")
-
-    return shader
-
-
-def load_shaders(path_vert, path_frag, path_geom=None, defines: Optional[Set[str]] = None):
-
-    vertex_shader = compile_shader(path_vert, GL_VERTEX_SHADER, defines)
-    fragment_shader = compile_shader(path_frag, GL_FRAGMENT_SHADER, defines)
-
-    shaders_to_link = [vertex_shader, fragment_shader]
-    if path_geom:
-        geometry_shader = compile_shader(path_geom, GL_GEOMETRY_SHADER, defines)
-        shaders_to_link.append(geometry_shader)
-
-    program = glCreateProgram()
-    for shader in shaders_to_link:
-        glAttachShader(program, shader)
-
-    glLinkProgram(program)
-
-    # Check for linking errors
-    if not glGetProgramiv(program, GL_LINK_STATUS):
-        error = glGetProgramInfoLog(program).decode()
-        for shader in shaders_to_link:
-            glDetachShader(program, shader)
-            glDeleteShader(shader)
-        glDeleteProgram(program)
-
-        raise RuntimeError(f"Shader linking error:\n{error}")
-
-    for shader in shaders_to_link:
-        glDetachShader(program, shader)
-        glDeleteShader(shader)
-
-    return program
-
-
-def load_compute_shader(path_comp, defines: Optional[Set[str]] = None):
-    """Loads, compiles, and links a single compute shader into a program."""
-
-    shader = compile_shader(path_comp, GL_COMPUTE_SHADER, defines)
-
-    program = glCreateProgram()
-    glAttachShader(program, shader)
-    glLinkProgram(program)
-
-    if not glGetProgramiv(program, GL_LINK_STATUS):
-        error = glGetProgramInfoLog(program).decode()
-        glDetachShader(program, shader)
-        glDeleteShader(shader)
-        glDeleteProgram(program)
-        raise RuntimeError(f"Shader linking error for {path_comp}:\n{error}")
-
-    glDetachShader(program, shader)
-    glDeleteShader(shader)
-
-    return program
-
-
 def load_cubemap(folder_path):
 
     # OpenGL cubemap face order
-    faces_gl = [GL_TEXTURE_CUBE_MAP_POSITIVE_X,
+    faces_gl =[GL_TEXTURE_CUBE_MAP_POSITIVE_X,
                 GL_TEXTURE_CUBE_MAP_NEGATIVE_X,
                 GL_TEXTURE_CUBE_MAP_POSITIVE_Y,
                 GL_TEXTURE_CUBE_MAP_NEGATIVE_Y,
                 GL_TEXTURE_CUBE_MAP_POSITIVE_Z,
                 GL_TEXTURE_CUBE_MAP_NEGATIVE_Z]
 
-    face_files = ['right.jpg', 'left.jpg', 'top.jpg', 'bottom.jpg', 'front.jpg', 'back.jpg']
+    face_files =['right.jpg', 'left.jpg', 'top.jpg', 'bottom.jpg', 'front.jpg', 'back.jpg']
 
     texture_id = glGenTextures(1)
     glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id)
@@ -274,72 +144,6 @@ def load_cubemap(folder_path):
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
     return texture_id
 
-
-class ShaderProgram:
-    """A wrapper for a GLSL shader program and its uniform locations."""
-
-    def __init__(self, vert_path=None, frag_path=None, comp_path=None, defines: Optional[Set[str]] = None):
-        if comp_path:
-            self.program_id = load_compute_shader(comp_path, defines=defines)
-        else:
-            self.program_id = load_shaders(vert_path, frag_path, defines=defines)
-        self.locations = {}
-        self.use()
-        self._cache_all_uniforms()
-        self.stop()
-
-    def _cache_all_uniforms(self):
-        """Automatically queries and caches all active uniform locations."""
-
-        num_uniforms = glGetProgramiv(self.program_id, GL_ACTIVE_UNIFORMS)
-
-        for i in range(num_uniforms):
-            name, size, type = glGetActiveUniform(self.program_id, i)
-
-            # Handle the case where drivers return the name as a numpy array
-            if isinstance(name, np.ndarray):
-                # Convert numpy array to bytes, then decode to a string, stripping any null terminators
-                name = name.tobytes().decode('utf-8').rstrip('\x00')
-            else:
-                # decode a bytes object to a string
-                name = name.decode('utf-8')
-
-            # Handle arrays by removing the '[0]' suffix if present
-            if name.endswith('[0]'):
-                name = name[:-3]
-
-            self.locations[name] = glGetUniformLocation(self.program_id, name)
-
-    def use(self):
-        """Binds the shader program."""
-        glUseProgram(self.program_id)
-
-    def stop(self):
-        """Unbinds the shader program."""
-        glUseProgram(0)
-
-    def get_loc(self, name):
-        """Gets a cached uniform location."""
-        return self.locations.get(name, -1)
-
-    def free(self):
-        """Deletes the shader program."""
-        glDeleteProgram(self.program_id)
-
-
-def write_pytinybvh_preamble(preamble: str):
-    """Writes PyTinyBVH #defines to a shader include that GLSL can #include."""
-
-    try:
-        out_dir = Path('shaders')
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / 'pytinybvh_preamble.glsl').write_text(
-                '// Auto-generated by pytinybvh.get_SSBO_bundle()\n' + preamble)
-    except Exception as e:
-        print('[Warn] Could not write pytinybvh_preamble.glsl:', e)
-
-
-##
 
 def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fonts', color=(255, 255, 255, 255)):
     """

@@ -6,7 +6,7 @@ import ctypes
 import numpy as np
 from pyglm import glm
 
-from insectvision.engine.utils import ShaderProgram
+from insectvision.engine.shader_utils import ShaderProgram
 
 
 class DebugRenderer:
@@ -19,8 +19,8 @@ class DebugRenderer:
 
     def __init__(self, initial_capacity: int = 65536):
 
-        self._color_shader = ShaderProgram('shaders/debug/color.vert','shaders/debug/color.frag')
-        self._billboard_shader = ShaderProgram('shaders/debug/billboard.vert', 'shaders/debug/billboard.frag')
+        self._color_shader = ShaderProgram(vert_path='color.vert', frag_path='color.frag')
+        self._billboard_shader = ShaderProgram(vert_path='billboard.vert', frag_path='billboard.frag')
 
         # Dynamic VBO + VAO
         self._vao = glGenVertexArrays(1)
@@ -193,10 +193,13 @@ class DebugRenderer:
             glBindBuffer(GL_ARRAY_BUFFER, self._vbo)
             glBufferData(GL_ARRAY_BUFFER, self._capacity * 4, None, GL_DYNAMIC_DRAW)
 
-    def _upload_and_draw(self, data: np.ndarray, mode: int,
-                         shader: ShaderProgram = None,
-                         model: glm.mat4 = None,
-                         alpha: float = None):
+    def _upload_and_draw(self,
+            data: np.ndarray,
+            mode: int,
+            shader: ShaderProgram = None,
+            model: glm.mat4 = None,
+            alpha: float = None
+        ):
 
         flat = data.astype(np.float32)
         n_floats = flat.size

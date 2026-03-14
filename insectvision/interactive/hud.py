@@ -10,7 +10,8 @@ import json
 from PIL import Image
 from pyglm import glm
 
-from insectvision.engine.utils import load_shaders, generate_font_atlas
+from insectvision.engine.shader_utils import ShaderProgram
+from insectvision.engine.utils import generate_font_atlas
 from insectvision.renderers import Raytracer, Pathtracer
 
 
@@ -19,11 +20,11 @@ class FontRenderer:
 
     def __init__(self):
         self.char_data = {}
-        self.text_program = load_shaders('shaders/text.vert', 'shaders/text.frag')
+        self.text_program = ShaderProgram(vert_path='text.vert', frag_path='text.frag')
 
-        self.proj_loc = glGetUniformLocation(self.text_program, "projection")
-        self.color_loc = glGetUniformLocation(self.text_program, "textColor")
-        self.atlas_loc = glGetUniformLocation(self.text_program, "fontAtlas")
+        self.proj_loc = self.text_program.get_loc("projection")
+        self.color_loc = self.text_program.get_loc("textColor")
+        self.atlas_loc = self.text_program.get_loc("fontAtlas")
 
         self._load_atlas_data()
 
@@ -42,7 +43,9 @@ class FontRenderer:
         glBindVertexArray(0)
 
     def _load_atlas_data(self, font_name='freesansbold.ttf'):
-        """Loads atlas metadata from JSON and the texture from the associated PNG file."""
+        """
+        Loads atlas metadata from JSON and the texture from the associated PNG file.
+        """
 
         atlas_dir = Path('insectvision/interactive/fonts')
 
@@ -50,7 +53,6 @@ class FontRenderer:
         if not json_path.exists():
             generate_font_atlas(font_name=font_name, font_size=22, output_dir=atlas_dir)
 
-        # Load metadata from JSON
         with json_path.open(encoding="UTF-8") as f:
             data = json.load(f)
             self.char_data = data['char_data']
@@ -78,16 +80,21 @@ class FontRenderer:
         glBindTexture(GL_TEXTURE_2D, 0)
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4)  # Reset to default
 
-    def get_text_width(self, text, scale=1.0):
-        """Calculates the pixel width of a string based on the fonts atlas."""
+    def text_width(self, text, scale=1.0):
+        """
+        Returns pixel width of a string based on the fonts atlas.
+        """
         width = 0
         for char in text:
             if char in self.char_data:
                 width += self.char_data[char]['advance'] * scale
         return width
 
-    def generate_text_vertices(self, text, x, y, scale=1.0):
-        """Generates vertex data for a string and returns it as a list."""
+    def text_vertices(self, text, x, y, scale=1.0):
+        """
+        Generates vertex data for a string and returns it as a list.
+        """
+
         vertices = []
         cursor_x = x
         for char in text:
@@ -117,14 +124,16 @@ class FontRenderer:
         return vertices
 
     def free(self):
-        glDeleteProgram(self.text_program)
+        self.text_program.free()
         glDeleteVertexArrays(1, [self.vao])
         glDeleteBuffers(1, [self.vbo])
-        glDeleteTextures(1, [self.atlas_texture])
+        glDeleteTextures(1,[self.atlas_texture])
 
 
 class HUD:
-    """Manages the rendering of all HUD elements."""
+    """
+    Manages the rendering of all HUD elements.
+    """
 
     # TODO: Comment this class a bit more
 
@@ -152,7 +161,7 @@ class HUD:
         self._last_update_time = 0
         self._info_text = ""
         self._controls_text_lines = []
-        self._stats_text_lines = []
+        self._stats_text_lines =[]
         self._info_shadow_verts, self._info_fg_verts = None, None
         self._controls_shadow_verts, self._controls_fg_verts = None, None
         self._stats_shadow_verts, self._stats_fg_verts = None, None
@@ -185,13 +194,13 @@ class HUD:
             'ESC: Quit'
         ])
 
-        shadow_verts, fg_verts = [], []
+        shadow_verts, fg_verts = [],[]
         margin, line_height = 10, self.font_renderer.font_size
 
         for i, text in enumerate(self._controls_text_lines):
             y_pos = margin + (i * line_height)
-            shadow_verts.extend(self.font_renderer.generate_text_vertices(text, margin + 1, y_pos - 1))
-            fg_verts.extend(self.font_renderer.generate_text_vertices(text, margin, y_pos))
+            shadow_verts.extend(self.font_renderer.text_vertices(text, margin + 1, y_pos - 1))
+            fg_verts.extend(self.font_renderer.text_vertices(text, margin, y_pos))
 
         self._controls_shadow_verts = np.array(shadow_verts, dtype=np.float32) if shadow_verts else None
         self._controls_fg_verts = np.array(fg_verts, dtype=np.float32) if fg_verts else None
@@ -243,16 +252,16 @@ class HUD:
                 f'Mode: {render_mode} | '
                 f'Ommatidia: {nb_om} | '
                 f'{sample_label}: {nb_om_samples}/om{samples_pp_str} | '
-                f'XYZ: [ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ] | '
+                f'XYZ:[ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ] | '
                 f'View mode: {view_mode} | '
                 f'Projection mode: {proj_mode}'
                 # f' | Sun: azm={self.ctx.renderer.sun.azimuth:.2f}, elv={self.ctx.renderer.sun.elevation:.2f}'
             )
 
             margin, line_height = 10, self.font_renderer.font_size * 1.1
-            info_sv = self.font_renderer.generate_text_vertices(self._info_text, margin + 1,
-                                                                self.height - line_height - 1)
-            info_fv = self.font_renderer.generate_text_vertices(self._info_text, margin, self.height - line_height)
+            info_sv = self.font_renderer.text_vertices(self._info_text, margin + 1,
+                                                       self.height - line_height - 1)
+            info_fv = self.font_renderer.text_vertices(self._info_text, margin, self.height - line_height)
             self._info_shadow_verts = np.array(info_sv, dtype=np.float32) if info_sv else None
             self._info_fg_verts = np.array(info_fv, dtype=np.float32) if info_fv else None
 
@@ -263,21 +272,21 @@ class HUD:
             total_pp = f' (om) + {nb_px_samples * self.nb_px:,} (px)' if has_pixels else ''
 
             if point_count > 0:
-                self._stats_text_lines = [f'Total {sample_label}: {nb_om * nb_om_samples:,}{total_pp}',
+                self._stats_text_lines =[f'Total {sample_label}: {nb_om * nb_om_samples:,}{total_pp}',
                                         f'Scene Triangles: {tri_count:,}',
                                         f'Scene Points: {point_count:,}']
             else:
-                self._stats_text_lines = [f'Total {sample_label}: {nb_om * nb_om_samples:,}{total_pp}',
+                self._stats_text_lines =[f'Total {sample_label}: {nb_om * nb_om_samples:,}{total_pp}',
                                         f'Scene Triangles: {tri_count:,}']
 
-            stats_sv, stats_fv = [], []
+            stats_sv, stats_fv = [],[]
 
             for i, text in enumerate(self._stats_text_lines):
-                text_width = self.font_renderer.get_text_width(text)
+                text_width = self.font_renderer.text_width(text)
                 x_pos = self.width - text_width - margin
                 y_pos = margin + (i * line_height)
-                stats_sv.extend(self.font_renderer.generate_text_vertices(text, x_pos + 1, y_pos - 1))
-                stats_fv.extend(self.font_renderer.generate_text_vertices(text, x_pos, y_pos))
+                stats_sv.extend(self.font_renderer.text_vertices(text, x_pos + 1, y_pos - 1))
+                stats_fv.extend(self.font_renderer.text_vertices(text, x_pos, y_pos))
 
             self._stats_shadow_verts = np.array(stats_sv, dtype=np.float32) if stats_sv else None
             self._stats_fg_verts = np.array(stats_fv, dtype=np.float32) if stats_fv else None
@@ -289,8 +298,8 @@ class HUD:
 
         self._update_text_vertices()
 
-        all_shadow_verts = [v for v in (self._info_shadow_verts, self._controls_shadow_verts, self._stats_shadow_verts) if v is not None]
-        all_fg_verts = [v for v in (self._info_fg_verts, self._controls_fg_verts, self._stats_fg_verts) if v is not None]
+        all_shadow_verts =[v for v in (self._info_shadow_verts, self._controls_shadow_verts, self._stats_shadow_verts) if v is not None]
+        all_fg_verts =[v for v in (self._info_fg_verts, self._controls_fg_verts, self._stats_fg_verts) if v is not None]
 
         if not all_shadow_verts and not all_fg_verts:
             return
@@ -300,7 +309,8 @@ class HUD:
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glDisable(GL_CULL_FACE)
 
-        glUseProgram(self.font_renderer.text_program)
+        self.font_renderer.text_program.use()
+
         glUniformMatrix4fv(self.font_renderer.proj_loc, 1, False, glm.value_ptr(self.projection_matrix))
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, self.font_renderer.atlas_texture)
@@ -322,7 +332,9 @@ class HUD:
 
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
-        glUseProgram(0)
+
+        self.font_renderer.text_program.stop()
+
         glEnable(GL_CULL_FACE)
         glEnable(GL_DEPTH_TEST)
         glDisable(GL_BLEND)

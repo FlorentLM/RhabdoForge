@@ -8,7 +8,8 @@ from pyglm import glm
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight
-from insectvision.engine.utils import ShaderProgram, ViewMode, WORLD_UP, WORLD_RIGHT
+from insectvision.engine.shader_utils import ShaderProgram
+from insectvision.engine.utils import ViewMode, WORLD_UP, WORLD_RIGHT
 from insectvision.geometry.compound_eyes import ReceptorArray
 
 from .commons import BaseRenderer, BINDING_RECEPTORS, BINDING_COLORS, BINDING_STATE
@@ -170,7 +171,7 @@ class EquirectangularCubemap:
     def shader(self):
         if self._shader is None:
             print("Compiling panoramic debug shaders...")
-            self._shader = ShaderProgram(vert_path='shaders/fullscreen.vert', frag_path='shaders/cubemapSampler.frag')
+            self._shader = ShaderProgram(vert_path='visualisation/fullscreen.vert', frag_path='visualisation/cubemapSampler.frag')
         return self._shader
 
     @property
@@ -222,7 +223,7 @@ class RasterMesh:
         self.indices = asset.indices
         self.draw_count = self.indices.size
 
-        self.shaders = ShaderProgram(vert_shader_path, frag_shader_path)
+        self.shaders = ShaderProgram(vert_path=vert_shader_path, frag_path=frag_shader_path)
 
         self.texture = self._load_texture_from_asset(asset)
         self.has_texture = self.texture != 0
@@ -329,7 +330,7 @@ class RasterPoints:
         self.source_asset_id = asset.id
         self.draw_count = asset._nb_points
 
-        self.shaders = ShaderProgram(vert_shader_path, frag_shader_path)
+        self.shaders = ShaderProgram(vert_path=vert_shader_path, frag_path=frag_shader_path)
         self.vao = glGenVertexArrays(1)
         self.vbo = glGenBuffers(1)
 
@@ -402,22 +403,22 @@ class RasterSceneBaker:
 
             if asset.asset_type == AssetType.Mesh:
                 self._raster_asset_cache[asset.id] = RasterMesh(
-                    asset, 'shaders/mesh.vert', 'shaders/mesh.frag')
+                    asset, 'meshRaster.vert', 'meshRaster.frag'
+                )
 
             elif asset.asset_type == AssetType.Points:
                 self._raster_asset_cache[asset.id] = RasterPoints(
-                    asset, 'shaders/pointclouds.vert', 'shaders/pointclouds.frag')
+                    asset, 'pointcloudRaster.vert', 'pointcloudRaster.frag'
+                )
 
         print("Rasterizer asset baking complete.")
 
     def _compile_shadow_shaders(self):
         print("Compiling shadow depth shaders...")
 
-        self._shadow_mesh_shader = ShaderProgram(
-            vert_path='shaders/shadow_depth.vert', frag_path='shaders/shadow_depth.frag')
+        self._shadow_mesh_shader = ShaderProgram(vert_path='shadowDepthMesh.vert', frag_path='shadowDepth.frag')
 
-        self._shadow_points_shader = ShaderProgram(
-            vert_path='shaders/shadow_depth_points.vert', frag_path='shaders/shadow_depth.frag')
+        self._shadow_points_shader = ShaderProgram(vert_path='shadowDepthPointcloud.vert', frag_path='shadowDepth.frag')
 
     def get_renderables(self):
         renderables = []
@@ -493,7 +494,7 @@ class Rasterizer(BaseRenderer):
             batch_size=batch_size,
         )
 
-        self._rasterizer_shader = ShaderProgram(comp_path='shaders/ommatidia_rasterizer.comp')
+        self._rasterizer_shader = ShaderProgram(comp_path='ommatidiaRasterizer.comp')
 
         # simple 90 degrees view projection matrix for each cube face
         self._proj_mat = Agent(fov=90.0, ratio=1.0).projection
@@ -592,15 +593,19 @@ class Rasterizer(BaseRenderer):
         self._shadow_map.unbind()
 
     def _set_shadow_uniforms(self, shader: ShaderProgram):
-        has_shadow = (self.enable_shadows and self._shadow_map
-                      and self.primary_directional_light is not None)
 
+        has_shadow = self.enable_shadows and self._shadow_map and self.primary_directional_light is not None
         glUniform1i(shader.get_loc('enable_shadows'), int(has_shadow))
 
         if has_shadow:
             glUniform1f(shader.get_loc('shadow_bias'), self.shadow_bias)
-            glUniformMatrix4fv(shader.get_loc('light_space_matrix'), 1, False,
-                               glm.value_ptr(self._light_space_matrix))
+
+            glUniformMatrix4fv(
+                shader.get_loc('light_space_matrix'),
+                1,
+                False,
+                glm.value_ptr(self._light_space_matrix)
+            )
 
             self._shadow_map.bind_texture(unit=self.SHADOW_TEX_UNIT)
             glUniform1i(shader.get_loc('shadow_map'), self.SHADOW_TEX_UNIT)

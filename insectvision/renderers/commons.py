@@ -15,7 +15,8 @@ from insectvision.geometry.compound_eyes import ReceptorArray, VisualOutput
 
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
-from insectvision.engine.utils import ShaderProgram, ViewMode, ProjectionMode
+from insectvision.engine.shader_utils import ShaderProgram
+from insectvision.engine.utils import ViewMode, ProjectionMode
 
 
 # Core SSBO bindings (receptors data, rays results, etc)
@@ -368,22 +369,19 @@ class BaseRenderer(ABC):
     @property
     def eye_model_shader(self):
         if self._eye_model_shader is None:
-            self._eye_model_shader = ShaderProgram(vert_path="shaders/eye_model.vert", frag_path="shaders/eye_model.frag")
+            self._eye_model_shader = ShaderProgram(vert_path="eyeModel.vert", frag_path="eyeModel.frag")
         return self._eye_model_shader
 
     @property
     def voronoi_shader(self):
         if self._voronoi_shader is None:
-            self._voronoi_shader = ShaderProgram(vert_path='shaders/voronoi.vert', frag_path='shaders/voronoi.frag')
+            self._voronoi_shader = ShaderProgram(vert_path='voronoi.vert', frag_path='voronoi.frag')
         return self._voronoi_shader
 
     @property
     def heatmap_shader(self):
         if self._heatmap_shader is None:
-            self._heatmap_shader = ShaderProgram(
-                vert_path='shaders/voronoi_heatmap.vert',
-                frag_path='shaders/voronoi_heatmap.frag',
-            )
+            self._heatmap_shader = ShaderProgram(vert_path='voronoiHeatmap.vert', frag_path='voronoiHeatmap.frag')
         return self._heatmap_shader
 
     # TODO: These two methods might be replaced / reworked. They will do for now
@@ -704,7 +702,7 @@ class TextureViewer:
     def shader(self):
         if self._shader is None:
             print("Compiling fullscreen texture viewer shaders...")
-            self._shader = ShaderProgram(vert_path='shaders/fullscreen.vert', frag_path='shaders/textureSampler.frag')
+            self._shader = ShaderProgram(vert_path='fullscreen.vert', frag_path='textureSampler.frag')
         return self._shader
 
     @property

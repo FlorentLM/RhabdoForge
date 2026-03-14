@@ -4,7 +4,7 @@
 // BVH traversal and scene geometry access
 
 #include "commons.glsl"
-#include "pytinybvh_preamble.glsl"
+#include "pytinybvhPreamble.glsl"
 
 // ============================================ Structs =============================================
 

@@ -11,7 +11,8 @@ from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
-from insectvision.engine.utils import ShaderProgram, write_pytinybvh_preamble, ViewMode
+from insectvision.engine.shader_utils import write_pytinybvh_preamble, ShaderProgram
+from insectvision.engine.utils import ViewMode
 
 from .commons import BaseRenderer, TextureViewer,BINDING_RECEPTORS, BINDING_COLORS, BINDING_STATE, BINDING_RAYS_INTERMEDIATE
 
@@ -679,8 +680,8 @@ class Raytracer(BaseRenderer):
         define_names = sorted(defines) if defines else ['(none)']
         print(f"Compiling ray-tracing shaders with defines: {', '.join(define_names)}")
 
-        self.raytrace_shader = ShaderProgram(comp_path='shaders/ommatidia_raytracing.comp', defines=defines)
-        self.reduction_shader = ShaderProgram(comp_path='shaders/rays_reduction.comp')
+        self.raytrace_shader = ShaderProgram(comp_path='shaders/raytracing/ommatidiaRaytracing.comp', defines=defines)
+        self.reduction_shader = ShaderProgram(comp_path='shaders/raytracing/raysReduction.comp')
 
     def _check_recompile(self):
         """Check if light configuration changed and recompile shaders if needed."""
@@ -731,7 +732,7 @@ class Raytracer(BaseRenderer):
 
         if self.panoramic_shader is None:
             defines = self._get_light_defines()
-            self.panoramic_shader = ShaderProgram(comp_path='shaders/panoramic_raytracing.comp', defines=defines)
+            self.panoramic_shader = ShaderProgram(comp_path='shaders/raytracing/panoramicRaytracing.comp', defines=defines)
 
         if self._pano_texture_id == 0:
             texture_id = glGenTextures(1)
@@ -753,7 +754,7 @@ class Raytracer(BaseRenderer):
 
         if self.perspective_shader is None:
             defines = self._get_light_defines()
-            self.perspective_shader = ShaderProgram(comp_path='shaders/perspective_raytracing.comp', defines=defines)
+            self.perspective_shader = ShaderProgram(comp_path='shaders/raytracing/perspectiveRaytracing.comp', defines=defines)
 
         if self._persp_res is None:
             viewport = glGetIntegerv(GL_VIEWPORT)

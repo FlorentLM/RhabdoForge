@@ -8,7 +8,7 @@ layout (location = 0) out vec3 texCoords;
 
 // Uniforms
 uniform mat4 projection;
-uniform mat4 view; // This will be the view matrix without translation
+uniform mat4 view; // view matrix without translation
 
 void main()
 {
