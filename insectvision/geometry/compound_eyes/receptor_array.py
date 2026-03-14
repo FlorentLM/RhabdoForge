@@ -148,7 +148,7 @@ class ReceptorArray(_ReceptorProxyMixin):
         receptor_data['acc_tilt'] = np.repeat(lattice_tilts, R)
 
         receptor_data['sensitivity'] = kernel.sensitivity
-        receptor_data['tau'] = kernel.tau_ms
+        receptor_data['tau'] = kernel.tau_s
 
         # Packed metadata
         if eye_ids is not None:
