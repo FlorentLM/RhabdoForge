@@ -25,6 +25,10 @@ class RhabdomereKernel:
     diameters_um: np.ndarray        # (R,) waveguide diameter
     lens_diameter_um: float         # facet lens diameter (for diffraction term)
     saccade_axis_deg: float = 0.0   # microsaccade axis delta (relative to main_axis)
+    tau_ms: float = 0.0             # time accumulation (in milliseconds)
+    sensitivity: float = 1.0        # Photometric sensitivity in [0.0, 1.0] (linear prefilter, independent from tau)
+
+    # TODO: modeling light adaptation would be nice, but it would likely be a separate pass, *after* linear sensitivity
 
     @property
     def count(self) -> int:

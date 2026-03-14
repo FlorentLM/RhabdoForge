@@ -39,7 +39,6 @@ class ReceptorArray(_ReceptorProxyMixin):
                    eye_ids: Optional[ArrayLike] = None,
                    eye_parameter: Optional[Union[float, Tuple]] = None,
                    interommatidial_angles_rad: Optional[ArrayLike] = None,
-                   sensitivities: Optional[Union[ArrayLike, float]] = None,
                    wavelength_nm: float = 500.0,
                    ) -> 'ReceptorArray':
         """
@@ -65,7 +64,6 @@ class ReceptorArray(_ReceptorProxyMixin):
             eye_parameter: Optional p = delta_rho / delta_phi override
                 Bypasses the optical formula and computes acceptance as p * IOA (as in the simplified path)
             interommatidial_angles_rad: (N,) or (N,2) if known, otherwise estimated
-            sensitivities: scalar or (N,) per lens (tiled to receptors) # TODO: maybe this should be a receptor-level prop?
             wavelength_nm: light wavelength for diffraction term (default 500)
         """
 
@@ -149,12 +147,8 @@ class ReceptorArray(_ReceptorProxyMixin):
 
         receptor_data['acc_tilt'] = np.repeat(lattice_tilts, R)
 
-        sens = 1.0 if sensitivities is None else sensitivities
-        receptor_data['sensitivity'] = np.repeat(
-            np.broadcast_to(np.float32(sens), N), R
-        )
-
-        receptor_data['tau'] = 0.0
+        receptor_data['sensitivity'] = kernel.sensitivity
+        receptor_data['tau'] = kernel.tau_ms
 
         # Packed metadata
         if eye_ids is not None:
@@ -224,7 +218,6 @@ class ReceptorArray(_ReceptorProxyMixin):
                  num_ommatidia: Optional[int] = None,
                  acceptance_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
                  interommatidial_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
-                 sensitivities: Optional[Union[ArrayLike, float]] = None,
                  receptor_types: Optional[Union[ArrayLike, int]] = None,
                  eye_id: Optional[Union[int, ArrayLike]] = None,
                  eye_parameter: Optional[Union[float, Tuple]] = None,
@@ -283,9 +276,7 @@ class ReceptorArray(_ReceptorProxyMixin):
         elif eye_radius > 0:
             self.receptor_data['position'] = self.receptor_data['direction'] * eye_radius
 
-        self.receptor_data['sensitivity'] = np.asarray(
-            sensitivities if sensitivities is not None else 1.0, dtype=np.float32)
-
+        self.receptor_data['sensitivity'] = 1.0
         self.receptor_data['tau'] = 0.0
 
         # Packed metadata
@@ -435,7 +426,6 @@ class ReceptorArray(_ReceptorProxyMixin):
             'positions': data.get('positions'),
             'acceptance_angles_rad': data.get('acceptance_angles_rad'),
             'interommatidial_angles_rad': data.get('interommatidial_angles_rad'),
-            'sensitivities': data.get('sensitivities'),
             'receptor_types': data.get('receptor_types'),
             'eye_id': data.get('eye_id'),
         }

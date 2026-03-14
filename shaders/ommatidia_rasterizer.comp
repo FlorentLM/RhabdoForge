@@ -79,6 +79,9 @@ void main() {
         total_color /= float(nb_samples);
     }
 
+    float sensitivity = rcpt.sensitivity;
+    total_color *= sensitivity;
+
     vec3 output_color;
     float tau = rcpt.tau;
 
