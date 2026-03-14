@@ -3,14 +3,14 @@ OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 import glfw
-from pyglm import glm
 import time
 from typing import Optional, Tuple, Callable, Dict, List, Union
 
 from .scene import Scene
 from .agent import Agent, OrbitCamera
-from .utils import WORLD_UP, WORLD_DOWN, ViewMode, ProjectionMode
+from .utils import ViewMode, ProjectionMode
 
+from insectvision.interactive.controls_interface import Controls
 from insectvision.renderers.commons import BaseRenderer
 from insectvision.interactive.hud import HUD
 from insectvision.debug import DebugOverlay
@@ -23,7 +23,7 @@ class Context:
                  debug_overlay: bool = True,
                  fps_limit: int = None,
                  v_sync: bool = False,
-                 invert_mouseY: bool = False
+                 controls: Optional['Controls'] = None
          ):
 
         self._window_size = window_size if window_size is not None else (1280, 720)
@@ -57,33 +57,50 @@ class Context:
         self.observer: Optional[OrbitCamera] = None
         self.view_mode: Optional[ViewMode] = None
         self.hud: Optional[HUD] = None
-        self.last_mouse_pos: Optional[Tuple[float, float]] = None
 
         self.debug: Optional[DebugOverlay] = DebugOverlay() if debug_overlay else None
 
         self.last_frame_time: float = 0.0
         self._delta_time: float = 1e-12
 
+        # Shared movement parameter
         self.move_speed: float = 3.0
-        self.keyboard_turn_speed: float = 1.0
-        self.mouse_sensitivity: float = 0.5
-        self.mouse_y_dir: float = 1.0 if invert_mouseY else -1.0
 
         # Sun control mode
         self.sun_control_mode: bool = False
-        self.sun_orbit_sensitivity: float = 0.2
 
         # Key bindings: (glfw_key, glfw_action) -> [callbacks]
         self._key_bindings: Dict[Tuple[int, int], List[Callable]] = {}
 
+        self._controls: Optional[Controls] = controls
+
+    @property
+    def controls(self) -> Optional[Controls]:
+        return self._controls
+
+    @controls.setter
+    def controls(self, new_controls: Optional[Controls]):
+        """Swap the active controller (safe to call at any time)."""
+        if self._controls is not None:
+            self._controls.free()
+        self._controls = new_controls
+        if self._controls is not None and self._interactive_initialised:
+            self._controls.setup(self)
+
+    # Time
+
     def update_dt(self):
-        """Update delta time based on the real-world clock."""
+        """
+        Update delta time based on the real-world clock.
+        """
         current_time = self.current_time
         self._delta_time = current_time - self.last_frame_time
         self.last_frame_time = current_time
 
     def reset_time(self):
-        """Initialise last_frame_time right before a loop starts."""
+        """
+        Initialise last_frame_time right before a loop starts.
+        """
         self.last_frame_time = self.current_time
 
     @property
@@ -93,7 +110,9 @@ class Context:
     @delta_time.setter
     def delta_time(self, value: float):
         """Allow manually setting the delta time for fixed-step headless simulations."""
-        self._delta_time = value#
+        self._delta_time = value
+
+    # Custom key bindings
 
     @staticmethod
     def _resolve_key(key: Union[int, str]) -> int:
@@ -171,9 +190,73 @@ class Context:
     def bound_keys(self) -> dict:
         return dict(self._key_bindings)
 
+    # Actions
+
+    def cycle_view_mode(self):
+        self.view_mode = (self.view_mode + 1) % 3
+
+    def toggle_voronoi(self):
+        self.renderer.tiled_mode = not self.renderer.tiled_mode
+
+    def toggle_projection_mode(self):
+        self.renderer.projection_mode = (
+            ProjectionMode.Physical
+            if self.renderer.projection_mode == ProjectionMode.Acceptance
+            else ProjectionMode.Acceptance
+        )
+
+    def toggle_hud(self):
+        if self.hud:
+            self.hud.show = not self.hud.show
+
+    def toggle_heatmap(self):
+        self.renderer.heatmap_enabled = not self.renderer.heatmap_enabled
+
+    def toggle_sun_control(self):
+        self.sun_control_mode = not self.sun_control_mode
+        mode_name = "Sun" if self.sun_control_mode else "View"
+        print(f"Mouse control: {mode_name}")
+
+    def toggle_time_dithering(self):
+        if hasattr(self.renderer, 'time_dithering'):
+            self.renderer.time_dithering = not self.renderer.time_dithering
+
+    def dither_once(self):
+        self.renderer.dither()
+
+    def increase_samples(self):
+        if hasattr(self.renderer, 'samples_per_receptor'):
+            self.renderer.samples_per_receptor *= 2
+
+    def decrease_samples(self):
+        if hasattr(self.renderer, 'samples_per_receptor'):
+            self.renderer.samples_per_receptor = max(1, self.renderer.samples_per_receptor // 2)
+
+    def increase_pixel_samples(self):
+        if hasattr(self.renderer, 'samples_per_pixel'):
+            self.renderer.samples_per_pixel *= 2
+
+    def decrease_pixel_samples(self):
+        if hasattr(self.renderer, 'samples_per_pixel'):
+            self.renderer.samples_per_pixel = max(1, self.renderer.samples_per_pixel // 2)
+
+    def toggle_debug(self):
+        if self.debug is not None:
+            self.debug.enabled = not self.debug.enabled
+
+    def reset_position(self):
+        self.agent.position = (0.0, 0.0, 0.0)
+
+    def reset_rotation(self):
+        self.agent.yaw, self.agent.pitch, self.agent.roll = (0.0, 0.0, 0.0)
+
+    # Interactive loop
+
     def run_interactive(self, agent: Agent, scene: Scene, renderer: BaseRenderer,
-                        window_size=None, fps_limit=None, v_sync=None, invert_mouseY=None):
-        """On first call, initialises and shows the window. Then checks if the interactive loop should continue."""
+                        window_size=None, fps_limit=None, v_sync=None):
+        """
+        On first call, initialises and shows the window. Then checks if the interactive loop should continue.
+        """
 
         if not self._interactive_initialised:
 
@@ -186,23 +269,22 @@ class Context:
             if v_sync is not None:
                 self._v_sync = bool(v_sync)
 
-            if invert_mouseY is not None:
-                self.mouse_y_dir = 1 if invert_mouseY else -1
-
             glfw.swap_interval(int(self._v_sync))
 
             glfw.show_window(self.window)
 
             self.observer = OrbitCamera(target=agent, distance=1.5, ratio=self._window_size[0] / self._window_size[1])
 
-            glfw.set_key_callback(self.window, self.key_callback)
-            # glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
-            glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_HIDDEN)
-            glfw.set_scroll_callback(self.window, self.scroll_callback)
-
             self.view_mode = ViewMode.Compound
 
             self.hud = HUD(self)
+
+            # Default to kb + mouse
+            if self._controls is None:
+                from insectvision.interactive.keyboard import KeyboardMouse
+                self._controls = KeyboardMouse()
+
+            self._controls.setup(self)
 
             # Initialise last_frame_time right before the loop starts to prevent a massive initial delta_time
             self.last_frame_time = self.current_time
@@ -223,73 +305,6 @@ class Context:
 
         return not glfw.window_should_close(self.window)
 
-    def scroll_callback(self, window, xoffset, yoffset):
-        if self.sun_control_mode and self.scene and self.scene.sun:
-            # scroll adjusts sun intensity
-            sun = self.scene.sun
-            intensity_factor = 1.1 ** yoffset  # yoffset > 0 => brighter
-            sun.intensity = max(0.1, min(10.0, sun.intensity * intensity_factor))
-        else:
-            # Normal mode: scroll zooms camera
-            zoom_factor = 0.9 ** yoffset  # yoffset > 0 => 0.9 (zoom in), yoffset < 0 => 1.11 (zoom out)
-            self.observer.zoom(zoom_factor)
-
-    def key_callback(self, window, key, scancode, action, mods):
-
-        if action == glfw.PRESS:
-
-            if key == glfw.KEY_C:
-                self.view_mode = (self.view_mode + 1) % 3
-
-            if key == glfw.KEY_V:
-                self.renderer.tiled_mode = not self.renderer.tiled_mode
-
-            if key == glfw.KEY_P:
-                self.renderer.projection_mode = ProjectionMode.Physical if self.renderer.projection_mode == ProjectionMode.Acceptance else ProjectionMode.Acceptance
-
-            if key == glfw.KEY_I:
-                if self.hud:
-                    self.hud.show = not self.hud.show
-
-            if key == glfw.KEY_H:
-                self.renderer.heatmap_enabled = not self.renderer.heatmap_enabled
-
-            if key == glfw.KEY_L:
-                self.sun_control_mode = not self.sun_control_mode
-                mode_name = "Sun" if self.sun_control_mode else "View"
-                print(f"Mouse control: {mode_name}")
-
-            if key == glfw.KEY_X:
-                self.renderer.dither()
-
-            if key == glfw.KEY_T:
-                if hasattr(self.renderer, 'time_dithering'):
-                    self.renderer.time_dithering = not self.renderer.time_dithering
-
-            if key in (glfw.KEY_KP_ADD, glfw.KEY_EQUAL):
-                if hasattr(self.renderer, 'samples_per_receptor'):
-                    self.renderer.samples_per_receptor *= 2
-
-            if key in (glfw.KEY_KP_SUBTRACT, glfw.KEY_MINUS):
-                if hasattr(self.renderer, 'samples_per_receptor'):
-                    self.renderer.samples_per_receptor = max(1, self.renderer.samples_per_receptor // 2)
-
-            if key == glfw.KEY_KP_MULTIPLY:
-                if hasattr(self.renderer, 'samples_per_pixel'):
-                    self.renderer.samples_per_pixel *= 2
-
-            if key == glfw.KEY_KP_DIVIDE:
-                if hasattr(self.renderer, 'samples_per_pixel'):
-                    self.renderer.samples_per_pixel = max(1, self.renderer.samples_per_pixel // 2)
-
-            if key == glfw.KEY_G:
-                if self.debug is not None:
-                    self.debug.enabled = not self.debug.enabled
-
-        binding = (key, action)
-        for callback in self._key_bindings.get(binding, ()):
-            callback()
-
     def input(self):
 
         if not self._interactive_initialised:
@@ -301,97 +316,8 @@ class Context:
             glfw.set_window_should_close(self.window, True)
             return
 
-        # Movement
-        move_direction = glm.vec3(0.0)
-        if glfw.get_key(self.window, glfw.KEY_W) == glfw.PRESS: move_direction += self.agent.forward
-        if glfw.get_key(self.window, glfw.KEY_S) == glfw.PRESS: move_direction += self.agent.backward
-        if glfw.get_key(self.window, glfw.KEY_SPACE) == glfw.PRESS: move_direction += WORLD_UP
-        if glfw.get_key(self.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS: move_direction += WORLD_DOWN
-
-        # Rotation inputs
-        roll_input = 0.0
-        if glfw.get_key(self.window, glfw.KEY_Q) == glfw.PRESS: roll_input += 1.0
-        if glfw.get_key(self.window, glfw.KEY_E) == glfw.PRESS: roll_input -= 1.0
-
-        yaw_input = 0.0
-        strafe_mode = glfw.get_key(self.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS
-
-        if self.view_mode == ViewMode.Third_person and not strafe_mode:
-            # in 3rd person, A/D turns the agent
-            if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS: yaw_input += 1.0
-            if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS: yaw_input -= 1.0
-        else:
-            # in 1st person or when holding Shift, A/D strafes
-            if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS: move_direction += self.agent.left
-            if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS: move_direction += self.agent.right
-
-        if glm.length(move_direction) > 0:
-            self.agent.dt(self._delta_time).translate(glm.normalize(move_direction) * self.move_speed)
-
-        # Mouse input
-        current_mouse_pos = glfw.get_cursor_pos(self.window)
-        if self.last_mouse_pos is None:
-            self.last_mouse_pos = current_mouse_pos
-
-        dx = (current_mouse_pos[0] - self.last_mouse_pos[0])
-        dy = (current_mouse_pos[1] - self.last_mouse_pos[1])
-        self.last_mouse_pos = current_mouse_pos
-
-        # Sun control: mouse orbits the sun around the scene
-        if self.sun_control_mode and self.scene and self.scene.sun:
-            sun = self.scene.sun
-            current_azimuth = sun.azimuth
-            current_elevation = sun.elevation
-            current_distance = sun.distance
-
-            # Horizontal mouse = azimuth change
-            new_azimuth = current_azimuth + dx * self.sun_orbit_sensitivity * -1
-
-            # Vertical mouse = elevation change (clamped to stay above horizon)
-            new_elevation = current_elevation - dy * self.sun_orbit_sensitivity
-            new_elevation = max(1.0, min(89.0, new_elevation))
-
-            # Apply if there was any mouse movement
-            if abs(dx) > 0.1 or abs(dy) > 0.1:
-                sun.from_angles(new_azimuth, new_elevation, current_distance)
-
-            # Keyboard rotates the agent
-            self.agent.rotate(
-                yaw_delta=yaw_input * self.keyboard_turn_speed,
-                roll_delta=roll_input * self.keyboard_turn_speed,
-                degrees=True
-            )
-
-        # Normal view control
-        else:
-            mouse_yaw_delta = dx * self.mouse_sensitivity * -1
-            mouse_pitch_delta = dy * self.mouse_sensitivity * self.mouse_y_dir
-
-            if self.view_mode == ViewMode.Third_person:
-                # Mouse pans the camera
-                self.observer.pan(azimuth_delta=mouse_yaw_delta * 0.5,
-                                  elevation_delta=mouse_pitch_delta * 0.5,
-                                  degrees=True)
-
-                # Keyboard rotates the agent
-                self.agent.rotate(
-                    yaw_delta=yaw_input * self.keyboard_turn_speed,
-                    roll_delta=roll_input * self.keyboard_turn_speed,
-                    degrees=True
-                )
-            else:
-                # First-person: Mouse controls yaw/pitch, keyboard controls roll
-                self.agent.rotate(
-                    yaw_delta=mouse_yaw_delta,
-                    pitch_delta=mouse_pitch_delta,
-                    roll_delta=roll_input * self.keyboard_turn_speed,
-                    degrees=True
-                )
-
-        # Resets
-        if glfw.get_key(self.window, glfw.KEY_O) == glfw.PRESS: self.agent.position = (0.0, 0.0, 0.0)
-        if glfw.get_key(self.window, glfw.KEY_R) == glfw.PRESS: self.agent.yaw, self.agent.pitch, self.agent.roll = (
-            0.0, 0.0, 0.0)
+        if self._controls is not None:
+            self._controls.poll(self)
 
     def draw(self):
 
@@ -432,6 +358,8 @@ class Context:
                 time.sleep(wait_time)
 
     def free(self):
+        if self._controls:
+            self._controls.free()
         if self.debug:
             self.debug.free()
         if self.hud:
