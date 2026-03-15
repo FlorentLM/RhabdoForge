@@ -5,7 +5,7 @@ from scipy.spatial import KDTree
 
 from insectvision.engine.utils import WORLD_UP, WORLD_RIGHT
 from insectvision.geometry.compound_eyes.datatypes import (
-    DEFAULT_ANGLE, _CLEAR_EYE_ID, _CLEAR_RECEPTOR_TYPE, _CLEAR_NEIGHBOURS, _CLEAR_LENS_INDEX
+    DEFAULT_ANGLE, _CLEAR_EYE_ID, _CLEAR_RECEPTOR_TYPE, _CLEAR_NEIGHBOURS, _CLEAR_LENS_INDEX, _CLEAR_CHIRALITY
 )
 
 
@@ -14,7 +14,7 @@ _RW_FIELDS = (
     'tau', 'sensitivity',
     'acceptance_tilt', 'acceptance_major', 'acceptance_minor',
     'acceptance_rad', 'acceptance_deg',
-    'eye_id', 'receptor_type', 'neighbours_count', 'lens_id',
+    'eye_id', 'receptor_type', 'neighbours_count', 'lens_id', 'chirality'
 )
 
 # derived angular quantities (no meaningful setter)
@@ -230,6 +230,23 @@ class Receptor:
         v = np.asarray(value, dtype=np.uint32)
         cur = self._data['metadata'][self._item]
         self._data['metadata'][self._item] = (cur & _CLEAR_NEIGHBOURS) | ((v & 0x0F) << 7)
+        self._parent.dirty_mask[self._item] = True
+
+    @property
+    def chirality(self) -> np.ndarray:
+        """
+        Returns +1 for normal, -1 for mirrored.
+        """
+        # TODO: Maybe just return bools instead?
+        is_mirrored = (self._data[self._item]['metadata'] >> 27) & 0x01
+        return np.where(is_mirrored, -1, 1)
+
+    @chirality.setter
+    def chirality(self, value: Union[float, ArrayLike]):
+        v_arr = np.asarray(value)
+        is_mirrored = (v_arr < 0).astype(np.uint32)
+        cur = self._data['metadata'][self._item]
+        self._data['metadata'][self._item] = (cur & _CLEAR_CHIRALITY) | ((is_mirrored & 0x01) << 27)
         self._parent.dirty_mask[self._item] = True
 
     @property

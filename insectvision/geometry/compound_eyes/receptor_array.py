@@ -5,44 +5,223 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 
-from .datatypes import RECEPTOR_DTYPE, LENS_DTYPE, _CLEAR_NEIGHBOURS
+from .datatypes import RECEPTOR_DTYPE, LENS_DTYPE
 from .kernel import RhabdomereKernel
 from .proxies import Eye, Ommatidium, Cartridge, _ReceptorProxyMixin
 from .eye_utils import compute_lattice_properties, tangent_frames
 from insectvision.geometry.geom_utils import estimate_lod, subdivide_icosahedron, fibonacci_sphere
 
 
+# Math and build helpers
+
+def _get_lens_geometry(
+        directions: Optional[ArrayLike],
+        positions: Optional[ArrayLike],
+        ommatidia_count: Optional[int],
+        eye_radius: float,
+        icosphere_method: bool
+) -> Tuple[np.ndarray, np.ndarray, int]:
+    """
+    Generates or normalises the base 3D lens positions and directions.
+    """
+
+    if directions is None and ommatidia_count is None:
+        raise ValueError("Requires either 'directions' or 'ommatidia_count'.")
+
+    if directions is not None:
+        dirs = np.asarray(directions, dtype=np.float32)
+    else:
+        if icosphere_method:
+            lod = estimate_lod(ommatidia_count)
+            dirs = subdivide_icosahedron(lod).astype(np.float32)
+            if abs(ommatidia_count - len(dirs)) > 1:
+                print(f"Note: {len(dirs)} ommatidia for subdivision level {lod}.")
+        else:
+            dirs = fibonacci_sphere(ommatidia_count).astype(np.float32)
+
+    N = len(dirs)
+
+    # Normalise lens directions
+    norms = np.linalg.norm(dirs, axis=1, keepdims=True)
+    dirs = np.divide(dirs, norms, out=dirs, where=norms != 0)
+
+    if positions is not None:
+        pos = np.asarray(positions, dtype=np.float32)
+        if pos.ndim == 1 and pos.shape[0] == 3:
+            pos = np.tile(pos, (N, 1))
+        elif pos.shape != (N, 3):
+            raise ValueError(f"Invalid 'positions' shape {pos.shape}. Expected ({N}, 3) or (3,).")
+    else:
+        pos = dirs * eye_radius
+
+    return dirs, pos, N
+
+
+def _get_receptors_geometry(
+        lens_dirs: np.ndarray,
+        lens_pos: np.ndarray,
+        local_right: np.ndarray,
+        local_up: np.ndarray,
+        kernel: RhabdomereKernel,
+        bundle_orientation: np.ndarray,
+        chirality: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Calculates 3D world directions and positions for every rhabdomere behind the lenses.
+    """
+
+    N = len(lens_dirs)
+    R = kernel.count
+
+    cos_chi = np.cos(bundle_orientation)[:, np.newaxis]
+    sin_chi = np.sin(bundle_orientation)[:, np.newaxis]
+
+    dx = kernel.offsets_um[:, 0]
+    dy = kernel.offsets_um[:, 1]
+
+    # Apply chirality (mirrors the kernel horizontally before rotation)
+    dx_chiral = dx[np.newaxis, :] * chirality[:, np.newaxis]
+
+    # Rotate kernel offsets by chi (per lens)
+    rot_dx = cos_chi * dx_chiral - sin_chi * dy[np.newaxis, :]
+    rot_dy = sin_chi * dx_chiral + cos_chi * dy[np.newaxis, :]
+
+    # Local tip vectors in lens frame: (N, R, 3) as [right, up, fwd]
+    local_tip = np.stack([
+        rot_dx,
+        rot_dy,
+        np.full((N, R), -kernel.nodal_distance_um, dtype=np.float32)
+    ], axis=-1)
+
+    world_tip = (
+            local_tip[..., 0:1] * local_right[:, np.newaxis, :] +
+            local_tip[..., 1:2] * local_up[:, np.newaxis, :] +
+            local_tip[..., 2:3] * lens_dirs[:, np.newaxis, :]
+    ).reshape(N * R, 3)
+
+    # Receptor direction: from tip through lens centre = -world_tip
+    rec_dirs = -world_tip
+    norms = np.linalg.norm(rec_dirs, axis=1, keepdims=True)
+    np.divide(rec_dirs, norms, out=rec_dirs, where=norms != 0)
+
+    # Receptor position: lens + tip offset
+    rec_pos = np.repeat(lens_pos, R, axis=0) + world_tip
+
+    return rec_dirs, rec_pos
+
+
+def _get_acceptance_angles(
+        N: int,
+        kernel: RhabdomereKernel,
+        ioa_minor: np.ndarray,
+        ioa_major: np.ndarray,
+        wavelength_nm: float,
+        eye_parameter: Optional[Union[float, Tuple]],
+        explicit_angles_rad: Optional[ArrayLike]
+) -> np.ndarray:
+    """
+    Computes the acceptance angles for all receptors.
+    """
+
+    R = kernel.count
+    M = N * R
+
+    if explicit_angles_rad is not None:
+        angles_arr = np.asarray(explicit_angles_rad, dtype=np.float32)
+
+        if angles_arr.shape == (M, 2):
+            return angles_arr
+
+        elif angles_arr.shape == (M,):
+            return np.column_stack([angles_arr, angles_arr])
+
+        elif angles_arr.shape == (N, 2) or angles_arr.shape == (N,):
+            # Broadcast lens-level explicit to receptor-level
+            if angles_arr.ndim == 1:
+                angles_arr = np.column_stack([angles_arr, angles_arr])
+            return np.repeat(angles_arr, R, axis=0)
+
+        raise ValueError(f"Invalid explicit_angles_rad shape: {angles_arr.shape}")
+
+    # If physical parameters are missing (R=1 simplified) use eye_parameter (p * IOA)
+    if eye_parameter is not None or kernel.nodal_distance_um < 1e-6:
+        p = eye_parameter if eye_parameter is not None else 1.0
+        p_min, p_maj = (p, p) if isinstance(p, (int, float, np.number)) else p
+
+        acc_min = np.repeat(p_min * ioa_minor, R)
+        acc_maj = np.repeat(p_maj * ioa_major, R)
+        return np.column_stack([acc_min, acc_maj])
+
+    # Acceptance angles computed from the Snyder optical model (Snyder 1979):
+    # Δρ = sqrt( (λ/D)² + (d_rhab/f)² )
+    wavelength_um = wavelength_nm * 1e-3
+    diffraction = wavelength_um / kernel.lens_diameter_um           # λ/D (scalar)
+    geometric = kernel.diameters_um / kernel.nodal_distance_um      # d/f (R,)
+    full_acceptance = np.sqrt(diffraction ** 2 + geometric ** 2)    # (R,)
+
+    acc_1d = np.tile(full_acceptance, N)
+
+    return np.column_stack([acc_1d, acc_1d])
+
+
+def _pack_metadata(
+        N: int,
+        R: int,
+        eye_ids: np.ndarray,
+        receptor_types: Optional[np.ndarray],
+        nb_counts: np.ndarray,
+        chirality: np.ndarray
+) -> np.ndarray:
+    """
+    Packs IDs, types, counts, and chirality flag into the uint32 bitfield.
+    """
+
+    eid = np.repeat(eye_ids, R).astype(np.uint32)
+    lindex = np.repeat(np.arange(N, dtype=np.uint32), R)
+    nb_rep = np.repeat(nb_counts, R).astype(np.uint32)
+
+    is_mirrored = (np.repeat(chirality, R) < 0).astype(np.uint32)
+
+    if receptor_types is not None and R == 1:
+        # Override for R=1 where user specified the exact receptor type
+        # TODO: Not sure this is worth keeping
+        rtypes = np.asarray(receptor_types, dtype=np.uint32)
+    else:
+        # standard kernel layout
+        rtypes = np.tile(np.arange(R, dtype=np.uint32), N)
+
+    return (
+            (eid & 0x07) |
+            ((rtypes & 0x0F) << 3) |
+            ((nb_rep & 0x0F) << 7) |
+            ((lindex & 0xFFFF) << 11) |
+            ((is_mirrored & 0x01) << 27)
+    )
+
+
 class ReceptorArray(_ReceptorProxyMixin):
     """
     Flat (GPU-friendly) structured array of receptors for the renderer.
     Every element is one rhabdomere. The GPU traces rays for `len(data)` receptors.
-
-    Construction modes:
-    # TODO: This will probably change
-
-    *Full model (R receptors per lens):
-        array = ReceptorArray.from_build(directions=dirs,
-                                        positions=positions,
-                                        kernel=DROSOPHILA_KERNEL,
-                                        bundle_orientation=chi, ...)
-
-    *Simplified (1 receptor per lens, more or less just R7/8):
-        array = ReceptorArray(directions=dirs, positions=positions, ...)
     """
 
-    @classmethod
-    def from_build(cls,
-                   directions: ArrayLike,
-                   positions: ArrayLike,
-                   kernel: RhabdomereKernel,
-                   bundle_orientation: ArrayLike,
-                   eye_ids: Optional[ArrayLike] = None,
-                   eye_parameter: Optional[Union[float, Tuple]] = None,
-                   interommatidial_angles_rad: Optional[ArrayLike] = None,
-                   wavelength_nm: float = 500.0,
-                   ) -> 'ReceptorArray':
+    def __init__(self,
+                 directions: Optional[ArrayLike] = None,
+                 positions: Optional[ArrayLike] = None,
+                 ommatidia_count: Optional[int] = None,
+                 kernel: Optional[RhabdomereKernel] = None,
+                 bundle_orientation: Optional[ArrayLike] = None,
+                 chirality: Optional[ArrayLike] = None,
+                 eye_ids: Optional[Union[int, ArrayLike]] = None,
+                 receptor_types: Optional[Union[int, ArrayLike]] = None,
+                 eye_parameter: Optional[Union[float, Tuple]] = None,
+                 interommatidial_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
+                 acceptance_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
+                 wavelength_nm: float = 500.0,
+                 eye_radius: float = 0.01,
+                 icosphere_method: bool = True):
         """
-        Construct a full receptor array from lens-level geometry and a rhabdomere kernel.
+        Construct a full receptor array.
 
         Each of the *N* lenses contains *R* receptors whose world-space directions are
         determined by the kernel offsets and rotated by the per-lens bundle orientation (chi).
@@ -58,362 +237,123 @@ class ReceptorArray(_ReceptorProxyMixin):
         Args:
             directions: (N, 3) lens optical axes
             positions: (N, 3) lens positions in head space
+            ommatidia_count: Number of ommatidia to build a uniform eye for (when positions are not specified)
             kernel: Species-level rhabdomere geometry
             bundle_orientation: (N,) chi per lens (radians in tangent plane)
+            chirality:
             eye_ids: (N,) integer eye id per lens, 0-7
             eye_parameter: Optional p = delta_rho / delta_phi override
                 Bypasses the optical formula and computes acceptance as p * IOA (as in the simplified path)
             interommatidial_angles_rad: (N,) or (N,2) if known, otherwise estimated
-            wavelength_nm: light wavelength for diffraction term (default 500)
+            acceptance_angles_rad:
+            eye_radius:
+            icosphere_method:
         """
+        # TODO: Add missing args descriptions
 
-        dirs = np.asarray(directions, dtype=np.float32)
-        pos = np.asarray(positions, dtype=np.float32)
-        chi = np.asarray(bundle_orientation, dtype=np.float32)
+        self._kernel = kernel if kernel is not None else RhabdomereKernel()
 
-        N = len(dirs)
-        R = kernel.count
+        lens_dirs, lens_positions, N = _get_lens_geometry(
+            directions, positions, ommatidia_count, eye_radius, icosphere_method)
+        R = self._kernel.count
         M = N * R
-        d = kernel.nodal_distance_um  # lens to rhabdomere tips (at rest) = lever arm
 
-        # Normalise lens directions
-        norms = np.linalg.norm(dirs, axis=1, keepdims=True)
-        lens_dirs = dirs / norms
-        lens_positions = pos
+        self.lens_count = N
+        self.receptor_count = R
+        self._wavelength_nm = wavelength_nm
 
-        # Lens-level lattice properties
+        # Derive lattice
+        chi = np.zeros(N, dtype=np.float32) \
+            if bundle_orientation is None \
+            else self._prepare_param(bundle_orientation, "bundle_orientation", N)
+
+        chiral_arr = np.ones(N, dtype=np.float32) \
+            if chirality is None \
+            else self._prepare_param(chirality, "chirality", N)
+
+        e_ids = np.zeros(N, dtype=np.uint32) \
+            if eye_ids is None \
+            else self._prepare_param(eye_ids, "eye_ids", N).astype(np.uint32)
+
+        is_pre_expanded = N > 1 and np.allclose(lens_positions[0], lens_positions[1], atol=1e-7)
+
+        # Lens-level lattice props
         if interommatidial_angles_rad is not None:
-            ioa_arr = np.asarray(interommatidial_angles_rad, dtype=np.float32)
-            if ioa_arr.ndim == 1:
-                ioa_minor = ioa_arr
-                ioa_major = ioa_arr
-            else:
-                ioa_minor = np.minimum(ioa_arr[:, 0], ioa_arr[:, 1])
-                ioa_major = np.maximum(ioa_arr[:, 0], ioa_arr[:, 1])
+            ioa_arr = self._prepare_param(interommatidial_angles_rad, "interommatidial_angles", N, allow_2d=True)
+            ioa_minor = ioa_arr[:, 0] if ioa_arr.ndim == 2 else ioa_arr
+            ioa_major = ioa_arr[:, 1] if ioa_arr.ndim == 2 else ioa_arr
             lattice_tilts = np.zeros(N, dtype=np.float32)
             nb_counts = np.zeros(N, dtype=np.uint32)
+
+        elif not is_pre_expanded:
+            ioa_minor, ioa_major, lattice_tilts, nb_counts = compute_lattice_properties(lens_dirs, lens_positions)
+
         else:
-            ioa_minor, ioa_major, lattice_tilts, nb_counts = \
-                compute_lattice_properties(lens_dirs, lens_positions)
+            ioa_minor = ioa_major = lattice_tilts = np.zeros(N, dtype=np.float32)
+            nb_counts = np.zeros(N, dtype=np.uint32)
 
         # Tangent frames
         local_right, local_up = tangent_frames(lens_dirs)
 
-        # Rotate kernel offsets by chi (that is per lens)
-        cos_chi = np.cos(chi)[:, np.newaxis]  # (N, 1)
-        sin_chi = np.sin(chi)[:, np.newaxis]
-
-        dx = kernel.offsets_um[:, 0]  # (R,)
-        dy = kernel.offsets_um[:, 1]
-
-        rot_dx = cos_chi * dx[np.newaxis, :] - sin_chi * dy[np.newaxis, :]  # (N, R)
-        rot_dy = sin_chi * dx[np.newaxis, :] + cos_chi * dy[np.newaxis, :]
-
-        # Local tip vectors in lens frame: (N, R, 3) as [right, up, fwd]
-        local_tip = np.stack([rot_dx, rot_dy,
-                              np.full((N, R), -d, dtype=np.float32)], axis=-1)
-
-        world_tip = (
-                local_tip[..., 0:1] * local_right[:, np.newaxis, :] +
-                local_tip[..., 1:2] * local_up[:, np.newaxis, :] +
-                local_tip[..., 2:3] * lens_dirs[:, np.newaxis, :]
-        ).reshape(M, 3)
-
-        # Receptor direction: from tip through lens centre = -world_tip
-        rec_dirs = -world_tip
-        rec_dirs /= np.linalg.norm(rec_dirs, axis=1, keepdims=True)
-
-        # Receptor position: lens + tip offset
-        rec_positions = np.repeat(lens_positions, R, axis=0) + world_tip
-
-        receptor_data = np.zeros(M, dtype=RECEPTOR_DTYPE)
-        receptor_data['position'] = rec_positions
-        receptor_data['direction'] = rec_dirs
-
-        wavelength_um = wavelength_nm * 1e-3
-        diffraction = wavelength_um / kernel.lens_diameter_um           # λ/D (scalar)
-        geometric = kernel.diameters_um / d                             # d_rhab/f (R,)
-        full_acceptance = np.sqrt(diffraction ** 2 + geometric ** 2)    # (R,)
-
-        if eye_parameter is not None:
-            p_min, p_maj = (eye_parameter, eye_parameter) if isinstance(eye_parameter,
-                                                                        (float, int, np.number)) else eye_parameter
-            receptor_data['acc_axes'][:, 0] = np.repeat(p_min * ioa_minor, R)
-            receptor_data['acc_axes'][:, 1] = np.repeat(p_maj * ioa_major, R)
-
-        else:
-            receptor_data['acc_axes'][:, 0] = np.tile(full_acceptance, N)
-            receptor_data['acc_axes'][:, 1] = np.tile(full_acceptance, N)
-
-        receptor_data['acc_tilt'] = np.repeat(lattice_tilts, R)
-
-        receptor_data['sensitivity'] = kernel.sensitivity
-        receptor_data['tau'] = kernel.tau_s
-
-        # Packed metadata
-        if eye_ids is not None:
-            eid = np.repeat(np.asarray(eye_ids, dtype=np.uint32), R)
-        else:
-            eid = np.zeros(M, dtype=np.uint32)
-
-        rtypes = np.tile(np.arange(R, dtype=np.uint32), N)
-        lindex = np.repeat(np.arange(N, dtype=np.uint32), R)
-
-        receptor_data['metadata'] = (
-                (eid & 0x07) |
-                ((rtypes & 0x0F) << 3) |
-                ((np.repeat(nb_counts, R) & 0x0F) << 7) |
-                ((lindex & 0xFFFF) << 11)
+        # Build geometry
+        rec_dirs, rec_pos = _get_receptors_geometry(
+            lens_dirs, lens_positions, local_right, local_up,
+            self._kernel, chi, chiral_arr
         )
 
-        # Lens data (for visualisation mostly)
-        lens_data = np.zeros(N, dtype=LENS_DTYPE)
-        lens_data['ioa_axes'][:, 0] = ioa_minor
-        lens_data['ioa_axes'][:, 1] = ioa_major
-        lens_data['tilt'] = lattice_tilts
-
-        # assemble object
-        obj = object.__new__(cls)
-        obj.receptor_data = receptor_data
-        obj.lens_data = lens_data
-        obj.lens_count = N
-        obj.receptor_count = R
-
-        obj._kernel = kernel
-        obj._bundle_orientation = chi.copy()
-        obj._lens_directions = lens_dirs.copy()
-        obj._lens_positions = lens_positions.copy()
-        obj._actuation_state = np.zeros(N, dtype=np.float32)
-        obj._wavelength_nm = wavelength_nm
-
-        obj._ioa_minor_rad = ioa_minor
-        obj._ioa_major_rad = ioa_major
-        obj._lattice_tilts = lattice_tilts
-
-        obj._local_right = local_right
-        obj._local_up = local_up
-
-        with np.errstate(divide='ignore', invalid='ignore'):
-            obj.eye_parameter_minor = receptor_data['acc_axes'][:, 0] / np.repeat(ioa_minor, R)
-            obj.eye_parameter_major = receptor_data['acc_axes'][:, 1] / np.repeat(ioa_major, R)
-
-        np.nan_to_num(obj.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-        np.nan_to_num(obj.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-
-        obj.dirty_mask = np.zeros(M, dtype=bool)
-        obj._stale_receptor_spatial = False
-        obj._stale_lens_spatial = False
-        obj._kdtree_directions = None   # lazy
-        obj._kdtree_positions = None    # also lazy
-        obj._eye_cache = {}
-        obj._cartridge_map = None
-
-        return obj
-
-    # Single-receptor constructor
-
-    def __init__(self,
-                 directions: Optional[ArrayLike] = None,
-                 positions: Optional[ArrayLike] = None,
-                 num_ommatidia: Optional[int] = None,
-                 acceptance_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
-                 interommatidial_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
-                 receptor_types: Optional[Union[ArrayLike, int]] = None,
-                 eye_id: Optional[Union[int, ArrayLike]] = None,
-                 eye_parameter: Optional[Union[float, Tuple]] = None,
-                 lens_diameter_nm: Optional[Union[float, Tuple]] = None,
-                 rhabdom_diameter_nm: Optional[Union[float, Tuple]] = None,
-                 focal_length_nm: Optional[Union[float, Tuple]] = None,
-                 wavelength_nm: float = 500,
-                 eye_radius: float = 0.01,
-                 force_isotropic: bool = False,
-                 icosphere_method: bool = True,
-                 ):
-        """
-        Simplified construction (single receptor per lens).
-        """
-
-        if directions is None and num_ommatidia is None:
-            raise ValueError("Requires either 'directions' or 'num_ommatidia'.")
-
-        if directions is not None:
-            directions = np.asarray(directions, dtype=np.float32)
-            N = len(directions)
-        else:
-            if icosphere_method:
-                lod = estimate_lod(num_ommatidia)
-                directions = subdivide_icosahedron(lod)
-                N = len(directions)
-                if abs(num_ommatidia - N) > 1:
-                    print(f"Note: {N} ommatidia for subdivision level {lod}.")
-            else:
-                directions = fibonacci_sphere(num_ommatidia)
-                N = len(directions)
-
-        self.lens_count = N
-        self.receptor_count = 1
-        self.receptor_data = np.zeros(N, dtype=RECEPTOR_DTYPE)
-
-        self._kernel = None
-        self._cartridge_map = None
-        self._wavelength_nm = wavelength_nm
-
-        # Directions
-        norms = np.linalg.norm(directions, axis=1, keepdims=True)
-        self.receptor_data['direction'] = directions / norms
-
-        # Positions
-        if positions is not None:
-            positions_arr = np.asarray(positions, dtype=np.float32)
-
-            if positions_arr.ndim == 1 and positions_arr.shape[0] == 3:
-                self.receptor_data['position'] = positions_arr
-            elif positions_arr.shape == (N, 3):
-                self.receptor_data['position'] = positions_arr
-            else:
-                raise ValueError(f"Invalid 'positions' shape {positions_arr.shape}. Expected ({N}, 3) or (3,).")
-
-        elif eye_radius > 0:
-            self.receptor_data['position'] = self.receptor_data['direction'] * eye_radius
-
-        self.receptor_data['sensitivity'] = 1.0
-        self.receptor_data['tau'] = 0.0
-
-        # Packed metadata
-        id_arr = np.zeros(N, dtype=np.uint32)
-        if eye_id is not None:
-            prepared = self._prepare_param(eye_id, "eye_id")
-            if np.any(prepared > 7) or np.any(prepared < 0):
-                raise ValueError("eye_id must be in [0, 7].")
-            id_arr = prepared.astype(np.uint32)
-
-        types_arr = np.zeros(N, dtype=np.uint32)
-        if receptor_types is not None:
-            prepared = self._prepare_param(receptor_types, "receptor_types")
-            types_arr = np.clip(prepared, 0, 15).astype(np.uint32)
-
-        lens_idx_arr = np.arange(N, dtype=np.uint32)
-
-        self.receptor_data['metadata'] = (
-                (id_arr & 0x07) |
-                ((types_arr & 0x0F) << 3) |
-                ((lens_idx_arr & 0xFFFF) << 11)
+        acc_axes = _get_acceptance_angles(
+            N, self._kernel, ioa_minor, ioa_major,
+            wavelength_nm, eye_parameter, acceptance_angles_rad
         )
 
-        self.dirty_mask = np.zeros(N, dtype=bool)
-        self._stale_receptor_spatial = False
-        self._stale_lens_spatial = False
+        # Fill data structure
+        self.receptor_data = np.zeros(M, dtype=RECEPTOR_DTYPE)
+        self.receptor_data['position'] = rec_pos
+        self.receptor_data['direction'] = rec_dirs
+        self.receptor_data['acc_axes'] = acc_axes
+        self.receptor_data['acc_tilt'] = np.repeat(lattice_tilts, R)
+        self.receptor_data['sensitivity'] = self._kernel.sensitivity
+        self.receptor_data['tau'] = self._kernel.tau_s
+        self.receptor_data['metadata'] = _pack_metadata(N, R, e_ids, receptor_types, nb_counts, chiral_arr)
 
-        # Can eagerly build since receptor=lens, it's cheap
-        self._kdtree_directions = KDTree(self.receptor_data['direction'])
-        self._kdtree_positions = KDTree(self.receptor_data['position'])
-        self._eye_cache = {}
-
-        # Lattice properties
-        is_pre_expanded = False
-        if N > 1:
-            if np.allclose(self.receptor_data['position'][0], self.receptor_data['position'][1], atol=1e-7):
-                is_pre_expanded = True
-
-        if interommatidial_angles_rad is not None:
-            angles_arr = np.asarray(interommatidial_angles_rad, dtype=np.float32)
-
-            if angles_arr.shape == (N,):
-                ioa_min = angles_arr
-                ioa_maj = angles_arr
-            else:
-                broad = np.broadcast_to(angles_arr, (N, 2))
-                ioa_min = np.minimum(broad[:, 0], broad[:, 1])
-                ioa_maj = np.maximum(broad[:, 0], broad[:, 1])
-
-            self._ioa_minor_rad = ioa_min
-            self._ioa_major_rad = ioa_maj
-            self._lattice_tilts = np.zeros(N, dtype=np.float32)
-
-        elif not is_pre_expanded:
-            ioa_min, ioa_maj, tilts, counts = compute_lattice_properties(
-                self.receptor_data['direction'],
-                self.receptor_data['position']
-            )
-
-            self._ioa_minor_rad = ioa_min
-            self._ioa_major_rad = ioa_maj
-            self._lattice_tilts = tilts
-
-            cleared = self.receptor_data['metadata'] & _CLEAR_NEIGHBOURS
-            self.receptor_data['metadata'] = cleared | ((counts & 0x0F) << 7)
-        else:
-            self._ioa_minor_rad = np.zeros(N, dtype=np.float32)
-            self._ioa_major_rad = np.zeros(N, dtype=np.float32)
-            self._lattice_tilts = np.zeros(N, dtype=np.float32)
-
+        # Fill lens data (for visualisation mostly)
         self.lens_data = np.zeros(N, dtype=LENS_DTYPE)
-        self.lens_data['ioa_axes'][:, 0] = self._ioa_minor_rad
-        self.lens_data['ioa_axes'][:, 1] = self._ioa_major_rad
-        self.lens_data['tilt'] = self._lattice_tilts
+        self.lens_data['ioa_axes'][:, 0] = ioa_minor
+        self.lens_data['ioa_axes'][:, 1] = ioa_major
+        self.lens_data['tilt'] = lattice_tilts
 
-        # Bundle orientation: in single receptor mode this defaults to lattice tilt
-        # TODO: This is probably not the best approximation
-
-        self._bundle_orientation = self._lattice_tilts.copy()
-        self._lens_directions = self.receptor_data['direction'].copy()
-        self._lens_positions = self.receptor_data['position'].copy()
+        self._bundle_orientation = chi
+        self._lens_directions = lens_dirs
+        self._lens_positions = lens_positions
         self._actuation_state = np.zeros(N, dtype=np.float32)
-        self._local_right = None
-        self._local_up = None
-
-        # Acceptance angles
-        if acceptance_angles_rad is not None:
-            estimated_angles = acceptance_angles_rad
-
-        elif all(p is not None for p in [lens_diameter_nm, rhabdom_diameter_nm, focal_length_nm]):
-
-            D_min, D_maj = self._unpack(lens_diameter_nm, "lens_diameter")
-            d_min, d_maj = self._unpack(rhabdom_diameter_nm, "rhabdom_diameter")
-            f_min, f_maj = self._unpack(focal_length_nm, "focal_length")
-
-            acc_min = np.sqrt((wavelength_nm / D_min) ** 2 + (d_min / f_min) ** 2)
-            acc_maj = np.sqrt((wavelength_nm / D_maj) ** 2 + (d_maj / f_maj) ** 2)
-            estimated_angles = np.vstack([acc_min, acc_maj]).T
-
-        else:
-            p = eye_parameter if eye_parameter is not None else 1.0
-            p_min, p_maj = (p, p) if isinstance(p, (int, float)) else p
-
-            estimated_angles = np.vstack([
-                p_min * self._ioa_minor_rad,
-                p_maj * self._ioa_major_rad
-            ]).T
-
-        if force_isotropic:
-            mean_a = np.mean(np.atleast_2d(estimated_angles), axis=1)
-            estimated_angles = np.vstack([mean_a, mean_a]).T
-
-        angles_arr = np.asarray(estimated_angles, dtype=np.float32)
-
-        if angles_arr.shape == (N,):
-            self.receptor_data['acc_axes'] = angles_arr[:, np.newaxis]
-        else:
-            self.receptor_data['acc_axes'] = angles_arr
-
-        self.receptor_data['acc_tilt'] = self._lattice_tilts
+        self._ioa_minor_rad = ioa_minor
+        self._ioa_major_rad = ioa_major
+        self._lattice_tilts = lattice_tilts
+        self._local_right = local_right
+        self._local_up = local_up
 
         with np.errstate(divide='ignore', invalid='ignore'):
-            self.eye_parameter_minor = self.receptor_data['acc_axes'][:, 0] / self._ioa_minor_rad
-            self.eye_parameter_major = self.receptor_data['acc_axes'][:, 1] / self._ioa_major_rad
+            self.eye_parameter_minor = self.receptor_data['acc_axes'][:, 0] / np.repeat(ioa_minor, R)
+            self.eye_parameter_major = self.receptor_data['acc_axes'][:, 1] / np.repeat(ioa_major, R)
 
         np.nan_to_num(self.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         np.nan_to_num(self.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
+        self.dirty_mask = np.zeros(M, dtype=bool)
+        self._stale_receptor_spatial = False
+        self._stale_lens_spatial = False
+        self._kdtree_directions = KDTree(rec_dirs) if R == 1 else None  # eager for small models, lazy for full
+        self._kdtree_positions = KDTree(rec_pos) if R == 1 else None
+        self._eye_cache = {}
+        self._cartridge_map = None
+
     @classmethod
     def from_file(cls, file_path: Union[str, Path], **kwargs):
         """
-        Load (a R=1 simple) model from .npz archive.
+        Load from .npz archive.
         """
-        # TODO: This should also load a full model
 
         path = Path(file_path)
-
         if not path.exists():
             raise FileNotFoundError(f"Cannot find: {path}")
 
@@ -427,7 +367,9 @@ class ReceptorArray(_ReceptorProxyMixin):
             'acceptance_angles_rad': data.get('acceptance_angles_rad'),
             'interommatidial_angles_rad': data.get('interommatidial_angles_rad'),
             'receptor_types': data.get('receptor_types'),
-            'eye_id': data.get('eye_id'),
+            'eye_ids': data.get('eye_id'),
+            'bundle_orientation': data.get('bundle_orientation'),
+            'chirality': data.get('chirality'),
         }
         args.update(kwargs)
         return cls(**args)
@@ -445,14 +387,19 @@ class ReceptorArray(_ReceptorProxyMixin):
         from .proxies import Receptor
         return Receptor(self.receptor_data, slice(None), self)
 
-    def _prepare_param(self, param, name="param"):
+    def _prepare_param(self, param, name="param", expected_len=None, allow_2d=False):
         arr = np.asarray(param, dtype=np.float32)
+        if expected_len is None:
+            expected_len = self.lens_count
+
         if arr.ndim == 0:
-            return np.full(self.lens_count, arr.item())
-        if arr.ndim == 1 and len(arr) == self.lens_count:
+            return np.full(expected_len, arr.item())
+        if arr.ndim == 1 and len(arr) == expected_len:
             return arr
-        raise ValueError(
-            f"'{name}' shape invalid. Need scalar or length-{self.lens_count}.")
+        if allow_2d and arr.ndim == 2 and arr.shape == (expected_len, 2):
+            return arr
+
+        raise ValueError(f"'{name}' shape invalid. Need scalar or length-{expected_len}.")
 
     def _unpack(self, param, name="param"):
         if isinstance(param, Sequence):
@@ -470,7 +417,9 @@ class ReceptorArray(_ReceptorProxyMixin):
 
     @property
     def eyes(self) -> list:
-        """List of Eye views for all eye_ids present."""
+        """
+        List of Eye views for all eye_ids present.
+        """
         unique = np.unique(self.receptor_data['metadata'][::self.receptor_count] & 0x07)
         return [self.eye(int(eid)) for eid in unique]
 
@@ -479,12 +428,30 @@ class ReceptorArray(_ReceptorProxyMixin):
         return np.unique(self.receptor_data['metadata'][::self.receptor_count] & 0x07)
 
     def ommatidium(self, lens_index: int) -> Ommatidium:
-        """Global lens index -> Ommatidium group view."""
+        """
+        Global lens index -> Ommatidium group view.
+        """
         return Ommatidium(self, lens_index)
 
     def cartridge(self, lens_index: int) -> Cartridge:
-        """Global lens index -> Cartridge (neural superposition unit)."""
+        """
+        Global lens index -> Cartridge (neural superposition unit).
+        """
         return Cartridge(self, lens_index)
+
+    # Properties
+
+    @property
+    def max_gap(self) -> float:
+        """
+        Largest angular gap between any receptor and its nearest neighbour.
+        """
+        if len(self.receptor_data) <= 1:
+            return 0.0
+
+        kd = self._ensure_global_kdtree_directions()
+        d, _ = kd.query(self.receptor_data['direction'], k=2)
+        return float(np.arccos(np.clip(1.0 - (np.max(d[:, 1]) ** 2) / 2.0, -1, 1)))
 
     @property
     def kernel(self) -> Optional[RhabdomereKernel]:
@@ -492,12 +459,25 @@ class ReceptorArray(_ReceptorProxyMixin):
 
     @property
     def bundle_orientation(self) -> np.ndarray:
-        """Bundle orientation (chi), per lens."""
+        """
+        Bundle orientation (chi), per lens.
+        """
         return self._bundle_orientation
 
     @property
+    def chirality(self) -> np.ndarray:
+        """
+        Bundle chirality (+1 normal, -1 mirrored), per lens.
+        """
+        is_mirrored = (self.receptor_data['metadata'][::self.receptor_count] >> 27) & 0x01
+        return np.where(is_mirrored, -1, 1)
+
+    @property
     def is_full_model(self) -> bool:
-        """True if built with a rhabdomere kernel (R > 1)."""
+        """
+        True if built with a rhabdomere kernel (R > 1).
+        """
+        # TODO: DEPRECATED, model always has a kernel now
         return self._kernel is not None
 
     @property
@@ -583,7 +563,7 @@ class ReceptorArray(_ReceptorProxyMixin):
         """
 
         if self._kernel is None:
-            raise RuntimeError("Actuation requires a full model (use from_build).")
+            raise RuntimeError("Actuation requires a full model.")
 
         kernel = self._kernel
         R = self.receptor_count
@@ -603,23 +583,32 @@ class ReceptorArray(_ReceptorProxyMixin):
         self._actuation_state[lens_mask] = lat
 
         chi = self._bundle_orientation[lens_mask]
-        cos_chi = np.cos(chi)[:, np.newaxis]
-        sin_chi = np.sin(chi)[:, np.newaxis]
+        cos_chi = np.cos(chi)
+        sin_chi = np.sin(chi)
 
-        # Actuation direction: chi + kernel intrinsic angle (main_axis + saccade offset)
-        act_angle = chi + np.radians(kernel.actuation_angle_deg)
-        cos_act = np.cos(act_angle)[:, np.newaxis]
-        sin_act = np.sin(act_angle)[:, np.newaxis]
+        # We must fetch chirality to correctly mirror the layout and the saccade vector!
+        chiral_arr = self.chirality[lens_mask]
 
         # Effective nodal distance after axial contraction
         d_eff = d_rest - axi  # (n_act,)
         d_eff = np.maximum(d_eff, 1.0)  # clamp to 1 μm minimum
 
-        # Rotate kernel offsets by chi then add lateral displacement along actuation axis
-        rot_dx = cos_chi * dx[np.newaxis, :] - sin_chi * dy[np.newaxis, :]
-        rot_dy = sin_chi * dx[np.newaxis, :] + cos_chi * dy[np.newaxis, :]
-        rot_dx += lat[:, np.newaxis] * cos_act
-        rot_dy += lat[:, np.newaxis] * sin_act
+        # Reconstruct kernel offsets at rest (applying chirality)
+        dx_chiral = dx[np.newaxis, :] * chiral_arr[:, np.newaxis]
+        rot_dx = cos_chi[:, np.newaxis] * dx_chiral - sin_chi[:, np.newaxis] * dy[np.newaxis, :]
+        rot_dy = sin_chi[:, np.newaxis] * dx_chiral + cos_chi[:, np.newaxis] * dy[np.newaxis, :]
+
+        # Reconstruct saccade vector (applying chirality to its X component)
+        act_angle_rad = np.radians(kernel.actuation_angle_deg)
+        local_act_dx = np.cos(act_angle_rad) * chiral_arr  # mirror X if chirality is -1
+        local_act_dy = np.sin(act_angle_rad)
+
+        act_dx = cos_chi * local_act_dx - sin_chi * local_act_dy
+        act_dy = sin_chi * local_act_dx + cos_chi * local_act_dy
+
+        # Add lateral displacement along the world actuation vector
+        rot_dx += lat[:, np.newaxis] * act_dx[:, np.newaxis]
+        rot_dy += lat[:, np.newaxis] * act_dy[:, np.newaxis]
 
         if self._local_right is None:
             self._local_right, self._local_up = tangent_frames(self._lens_directions)
@@ -643,7 +632,7 @@ class ReceptorArray(_ReceptorProxyMixin):
 
         new_dirs = -world_tip
         norms = np.linalg.norm(new_dirs, axis=-1, keepdims=True)
-        new_dirs /= norms
+        np.divide(new_dirs, norms, out=new_dirs, where=norms != 0)
 
         new_positions = self._lens_positions[lens_mask, np.newaxis, :] + world_tip
 
@@ -672,6 +661,7 @@ class ReceptorArray(_ReceptorProxyMixin):
         self._stale_receptor_spatial = True
 
     # Spatial structures: 2 levels tracked independently
+    # TODO: This can be simplified. Lens level will likely never change now.
     #
     # Lens-level (_stale_lens_spatial):
     #   - Eye KDTrees (built from _lens_directions / _lens_positions)
@@ -791,7 +781,7 @@ class ReceptorArray(_ReceptorProxyMixin):
 
     def query_cone(self, center_direction: ArrayLike, angle: float, degrees: bool = True) -> np.ndarray:
         """
-        Find all receptors within angle of a center direction. Global indices.
+        Find all receptors within angle of a centre direction. Global indices.
         """
 
         kd = self._ensure_global_kdtree_directions()
@@ -803,24 +793,12 @@ class ReceptorArray(_ReceptorProxyMixin):
 
     def query_ball(self, center_position: ArrayLike, radius: float) -> np.ndarray:
         """
-        Find all receptors within radius of a center position. Global indices.
+        Find all receptors within radius of a centre position. Global indices.
         """
 
         kd = self._ensure_global_kdtree_positions()
         c = np.asarray(center_position, dtype=np.float32)
         return kd.query_ball_point(c, r=radius)
-
-    def max_gap(self) -> float:
-        """
-        Largest angular gap between any receptor and its nearest neighbour.
-        """
-
-        if len(self.receptor_data) <= 1:
-            return 0.0
-
-        kd = self._ensure_global_kdtree_directions()
-        d, _ = kd.query(self.receptor_data['direction'], k=2)
-        return float(np.arccos(np.clip(1.0 - (np.max(d[:, 1]) ** 2) / 2.0, -1, 1)))
 
     # Whole-array transforms (initial unit scaling, agent setup, etc)
 
@@ -857,3 +835,45 @@ class ReceptorArray(_ReceptorProxyMixin):
         self._resolve_lens_spatial()
 
         return self
+
+
+## Examples:
+#
+# # Minimal, uniform sphere model
+#
+# # Generates ~2000 ommatidia on a sphere
+# # Defaults to R=1 (point kernel), p=1.0 (acceptance = IOA)
+# eye_array = ReceptorArray(ommatidia_count=2000)
+#
+# # or with a custom eye parameter or radius
+# eye_array = ReceptorArray(
+#     ommatidia_count=2000,
+#     eye_radius=0.05,
+#     eye_parameter=1.2 # slightly overlapping fields of view
+# )
+#
+# # _____________________________________________________________________________
+#
+# # Intermediate, with ommatidia positions
+#
+# # dirs and pos are (N, 3) arrays
+# eye_array = ReceptorArray(
+#     directions=dirs,
+#     positions=pos,
+#     # Overriding default kernel to set specific lens properties for the R=1 model
+#     kernel=RhabdomereKernel(lens_diameter_um=16.0, diameters_um=2.0)
+# )
+#
+# # _____________________________________________________________________________
+#
+# DROSOPHILA_KERNEL = RhabdomereKernel(...)
+#
+# # Full model with rhabdomere data
+# eye_array = ReceptorArray(
+#     directions=dirs,
+#     positions=pos,
+#     kernel=DROSOPHILA_KERNEL,       # R=7 defined kernel
+#     bundle_orientation=chi_array,   # (N,) array of bundle rotations
+#     chirality=chirality_array,      # (N,) array of +1 or -1 for the equator flip
+#     eye_ids=eye_id_array            # (N,) mapping left/right eyes
+# )
