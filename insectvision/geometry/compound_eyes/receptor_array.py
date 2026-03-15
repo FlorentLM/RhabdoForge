@@ -8,8 +8,9 @@ from scipy.spatial import KDTree
 from .datatypes import RECEPTOR_DTYPE, LENS_DTYPE
 from .kernel import RhabdomereKernel
 from .proxies import Eye, Ommatidium, Cartridge, _ReceptorProxyMixin
-from .eye_utils import compute_lattice_properties, tangent_frames
+from .eye_utils import tangent_frames
 from insectvision.geometry.geom_utils import estimate_lod, subdivide_icosahedron, fibonacci_sphere
+from ...engine.utils import WORLD_UP, WORLD_RIGHT
 
 
 # Math and build helpers
@@ -164,6 +165,91 @@ def _get_acceptance_angles(
     return np.column_stack([acc_1d, acc_1d])
 
 
+def _get_lattice_properties(
+        directions: np.ndarray,
+        positions: np.ndarray,
+        k: int = 8,
+        neighbour_dist_factor: float = 1.5
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Estimate local lattice properties from lens positions.
+    """
+
+    N = len(directions)
+    if N <= k:
+        z = np.zeros(N, dtype=np.float32)
+        return z, z, z, np.zeros(N, dtype=np.uint32)
+
+    # Physical direction vectors from common centre
+    eye_center = np.mean(positions, axis=0)
+    phys_dirs = positions - eye_center
+    norms = np.linalg.norm(phys_dirs, axis=1, keepdims=True)
+    np.divide(phys_dirs, norms, out=phys_dirs, where=norms != 0)
+
+    phys_kdtree = KDTree(phys_dirs)
+    distances, indices = phys_kdtree.query(phys_dirs, k=k + 1)
+    nb_indices = indices[:, 1:]
+    nb_distances = distances[:, 1:]
+
+    if nb_indices.size == 0:
+        z = np.zeros(N, dtype=np.float32)
+        return z, z, z, np.zeros(N, dtype=np.uint32)
+
+    angular_sep = 2.0 * np.arcsin(np.clip(nb_distances / 2.0, -1.0, 1.0))
+    dist_to_closest = angular_sep[:, 0]
+    is_immediate = angular_sep <= dist_to_closest[:, np.newaxis] * neighbour_dist_factor
+    nb_counts = np.sum(is_immediate, axis=1)
+
+    # Local tangent planes
+    dot_up = np.abs(phys_dirs @ WORLD_UP)
+    is_polar = dot_up > 0.999
+    ref_ups = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
+
+    local_y = ref_ups - phys_dirs * np.sum(phys_dirs * ref_ups, axis=1, keepdims=True)
+    local_y /= np.linalg.norm(local_y, axis=1, keepdims=True)
+    local_x = np.cross(local_y, phys_dirs)
+
+    nb_phys = phys_dirs[nb_indices]
+    delta = nb_phys - phys_dirs[:, np.newaxis, :]
+
+    proj_x = np.sum(delta * local_x[:, np.newaxis, :], axis=2)
+    proj_y = np.sum(delta * local_y[:, np.newaxis, :], axis=2)
+
+    tilts = np.zeros(N, dtype=np.float32)
+    ioa_major = np.zeros(N, dtype=np.float32)
+    ioa_minor = np.zeros(N, dtype=np.float32)
+    psi6_magnitudes = np.zeros(N, dtype=np.float32)
+
+    for i in range(N):
+        mask = is_immediate[i]
+        x, y = proj_x[i, mask], proj_y[i, mask]
+        sep = angular_sep[i, mask]
+
+        if len(x) < 2:
+            avg = np.mean(sep) if np.any(mask) else 0.0
+            ioa_major[i], ioa_minor[i], tilts[i] = avg, avg, 0.0
+            continue
+
+        # Hexatic phase
+        angles = np.arctan2(y, x)
+        phasors = np.exp(1j * 6 * angles) # map tangent plane angles to phasors (* 6 because hexagonal)
+        z_avg = np.mean(phasors)
+        psi6_magnitudes[i] = np.abs(z_avg)  # magnitude tells how 'perfectly hexagonal' the grid is
+        tilts[i] = np.angle(z_avg) / 6.0    # angle of the average phasor is the 'consensus' orientation
+
+        # IOA = mean of the 2 smallest and 2 largest separations
+        sep_sorted = np.sort(sep)
+
+        ioa_minor[i] = np.mean(sep_sorted[:2])
+        ioa_major[i] = np.mean(sep_sorted[-2:]) if len(sep_sorted) >= 2 else ioa_minor[i]
+
+    mean_q = np.mean(psi6_magnitudes)
+    print(f"Lattice hexatic quality (Ψ6): {mean_q:.3f}"
+          f" ({'Excellent' if mean_q > 0.8 else 'Irregular' if mean_q > 0.5 else 'Poor'})")
+
+    return ioa_minor, ioa_major, tilts, nb_counts.astype(np.uint32)
+
+
 def _pack_metadata(
         N: int,
         R: int,
@@ -286,7 +372,7 @@ class ReceptorArray(_ReceptorProxyMixin):
             nb_counts = np.zeros(N, dtype=np.uint32)
 
         elif not is_pre_expanded:
-            ioa_minor, ioa_major, lattice_tilts, nb_counts = compute_lattice_properties(lens_dirs, lens_positions)
+            ioa_minor, ioa_major, lattice_tilts, nb_counts = _get_lattice_properties(lens_dirs, lens_positions)
 
         else:
             ioa_minor = ioa_major = lattice_tilts = np.zeros(N, dtype=np.float32)
