@@ -348,22 +348,15 @@ class ReceptorArray(_ReceptorProxyMixin):
         self.receptor_count = R
         self._wavelength_nm = wavelength_nm
 
-        # Derive lattice
-        chi = np.zeros(N, dtype=np.float32) \
-            if bundle_orientation is None \
-            else self._prepare_param(bundle_orientation, "bundle_orientation", N)
-
-        chiral_arr = np.ones(N, dtype=np.float32) \
-            if chirality is None \
-            else self._prepare_param(chirality, "chirality", N)
-
-        e_ids = np.zeros(N, dtype=np.uint32) \
-            if eye_ids is None \
-            else self._prepare_param(eye_ids, "eye_ids", N).astype(np.uint32)
+        if eye_ids is None:
+            e_ids = np.zeros(N, dtype=np.uint32)
+        else:
+            e_ids = self._prepare_param(eye_ids, "eye_ids", N).astype(np.uint32)
 
         is_pre_expanded = N > 1 and np.allclose(lens_positions[0], lens_positions[1], atol=1e-7)
 
         # Lens-level lattice props
+
         if interommatidial_angles_rad is not None:
             ioa_arr = self._prepare_param(interommatidial_angles_rad, "interommatidial_angles", N, allow_2d=True)
             ioa_minor = ioa_arr[:, 0] if ioa_arr.ndim == 2 else ioa_arr
@@ -377,6 +370,20 @@ class ReceptorArray(_ReceptorProxyMixin):
         else:
             ioa_minor = ioa_major = lattice_tilts = np.zeros(N, dtype=np.float32)
             nb_counts = np.zeros(N, dtype=np.uint32)
+
+        # Parameters derived from lattice as fallback
+
+        if chirality is None:
+            # default to equator flip
+            chiral_arr = np.where(lens_positions[:, 1] >= 0, 1.0, -1.0).astype(np.float32)
+        else:
+            chiral_arr = self._prepare_param(chirality, "chirality", N)
+
+        if bundle_orientation is None:
+            # default to align the rhabdomere bundle with the lattice grain
+            chi = lattice_tilts.copy()
+        else:
+            chi = self._prepare_param(bundle_orientation, "bundle_orientation", N)
 
         # Tangent frames
         local_right, local_up = tangent_frames(lens_dirs)
@@ -397,7 +404,7 @@ class ReceptorArray(_ReceptorProxyMixin):
         self.receptor_data['position'] = rec_pos
         self.receptor_data['direction'] = rec_dirs
         self.receptor_data['acc_axes'] = acc_axes
-        self.receptor_data['acc_tilt'] = np.repeat(lattice_tilts, R)
+        self.receptor_data['acc_tilt'] = np.repeat(chi, R)
         self.receptor_data['sensitivity'] = self._kernel.sensitivity
         self.receptor_data['tau'] = self._kernel.tau_s
         self.receptor_data['metadata'] = _pack_metadata(N, R, e_ids, receptor_types, nb_counts, chiral_arr)
@@ -672,11 +679,10 @@ class ReceptorArray(_ReceptorProxyMixin):
         cos_chi = np.cos(chi)
         sin_chi = np.sin(chi)
 
-        # We must fetch chirality to correctly mirror the layout and the saccade vector!
         chiral_arr = self.chirality[lens_mask]
 
         # Effective nodal distance after axial contraction
-        d_eff = d_rest - axi  # (n_act,)
+        d_eff = d_rest - axi
         d_eff = np.maximum(d_eff, 1.0)  # clamp to 1 μm minimum
 
         # Reconstruct kernel offsets at rest (applying chirality)
