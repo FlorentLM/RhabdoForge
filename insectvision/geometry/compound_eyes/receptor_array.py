@@ -155,29 +155,24 @@ def _get_acceptance_angles(
 
 
 def _get_lattice_properties(
-        directions: np.ndarray,
-        positions: np.ndarray,
+        optical_axes: np.ndarray,
         k: int = 8,
         neighbour_dist_factor: float = 1.5
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Estimate local lattice properties from lens positions.
+    Estimate local lattice properties from lenses' optical axes.
     """
     # TODO: This needs to use the math and lattice_topology helpers
 
-
-    N = len(directions)
+    N = len(optical_axes)
     if N <= k:
         z = np.zeros(N, dtype=np.float32)
         return z, z, z, np.zeros(N, dtype=np.uint32)
 
-    # Physical direction vectors from common centre
-    eye_center = np.mean(positions, axis=0)
-    phys_dirs = positions - eye_center
-    phys_dirs = normalise_vectors(phys_dirs)
+    dirs = normalise_vectors(optical_axes)
+    dir_kdtree = KDTree(dirs)
+    distances, indices = dir_kdtree.query(dirs, k=k + 1)
 
-    phys_kdtree = KDTree(phys_dirs)
-    distances, indices = phys_kdtree.query(phys_dirs, k=k + 1)
     nb_indices = indices[:, 1:]
     nb_distances = distances[:, 1:]
 
@@ -192,13 +187,13 @@ def _get_lattice_properties(
 
     # Local tangent planes
     local_x, local_y = tangent_frames(
-        phys_dirs,
+        dirs,
         world_up=WORLD_UP,
         world_right=WORLD_RIGHT
     )
 
-    nb_phys = phys_dirs[nb_indices]
-    delta = nb_phys - phys_dirs[:, np.newaxis, :]
+    nb_phys = dirs[nb_indices]
+    delta = nb_phys - dirs[:, np.newaxis, :]
 
     proj_x = np.sum(delta * local_x[:, np.newaxis, :], axis=2)
     proj_y = np.sum(delta * local_y[:, np.newaxis, :], axis=2)
@@ -353,7 +348,7 @@ class ReceptorArray(_ReceptorProxyMixin):
             nb_counts = np.zeros(N, dtype=np.uint32)
 
         elif not is_pre_expanded:
-            ioa_minor, ioa_major, lattice_tilts, nb_counts = _get_lattice_properties(lens_dirs, lens_positions)
+            ioa_minor, ioa_major, lattice_tilts, nb_counts = _get_lattice_properties(lens_dirs)
 
         else:
             ioa_minor = ioa_major = lattice_tilts = np.zeros(N, dtype=np.float32)
