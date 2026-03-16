@@ -162,6 +162,7 @@ def _get_acceptance_angles(
 def _get_lattice_properties(
         directions: np.ndarray,
         positions: np.ndarray,
+        eye_ids: np.ndarray,
         k: int = 8,
         neighbour_dist_factor: float = 1.5
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -171,79 +172,92 @@ def _get_lattice_properties(
     """
 
     N = len(directions)
-    if N <= k:
-        z = np.zeros(N, dtype=np.float32)
-        return z, z, z, np.zeros(N, dtype=np.uint32)
-
-    # Topology find structural neighbours using physical 3D positions
-    pos_kdtree = KDTree(positions)
-    pos_distances, indices = pos_kdtree.query(positions, k=k + 1)
-
-    nb_indices = indices[:, 1:]
-    nb_pos_distances = pos_distances[:, 1:]
-
-    if nb_indices.size == 0:
-        z = np.zeros(N, dtype=np.float32)
-        return z, z, z, np.zeros(N, dtype=np.uint32)
-
-    # Filter immediate physical neighbours
-    dist_to_closest = nb_pos_distances[:, 0]
-    is_immediate = nb_pos_distances <= dist_to_closest[:, np.newaxis] * neighbour_dist_factor
-    nb_counts = np.sum(is_immediate, axis=1)
-
-    # Optics: Calculate optical IOA using optical directions
-    dirs_main = directions[:, np.newaxis, :]
-    dirs_nb = directions[nb_indices]
-
-    dots = np.sum(dirs_main * dirs_nb, axis=2)
-    angular_sep = np.arccos(np.clip(dots, -1.0, 1.0))
-
-    # Layout: Tangent frames orthogonal to the visual axis
-    local_x, local_y = tangent_frames(
-        directions,  # optical axis is the normal for the layout plane
-        world_up=WORLD_UP,
-        world_right=WORLD_RIGHT
-    )
-
-    # Project physical neighbour vectors on the tangent plane to find lattice tilt
-    pos_nb = positions[nb_indices]
-    delta_pos = pos_nb - positions[:, np.newaxis, :]
-
-    proj_x = np.sum(delta_pos * local_x[:, np.newaxis, :], axis=2)
-    proj_y = np.sum(delta_pos * local_y[:, np.newaxis, :], axis=2)
-
-    tilts = np.zeros(N, dtype=np.float32)
-    ioa_major = np.zeros(N, dtype=np.float32)
     ioa_minor = np.zeros(N, dtype=np.float32)
-    psi6_magnitudes = np.zeros(N, dtype=np.float32)
+    ioa_major = np.zeros(N, dtype=np.float32)
+    tilts = np.zeros(N, dtype=np.float32)
+    nb_counts = np.zeros(N, dtype=np.uint32)
 
-    for i in range(N):
-        mask = is_immediate[i]
-        x, y = proj_x[i, mask], proj_y[i, mask]
-        sep = angular_sep[i, mask]
+    unique_eyes = np.unique(eye_ids)
 
-        if len(x) < 2:
-            avg = np.mean(sep) if np.any(mask) else 0.0
-            ioa_major[i], ioa_minor[i], tilts[i] = avg, avg, 0.0
+    for e_id in unique_eyes:
+
+        mask = np.where(eye_ids == e_id)[0]
+        n_eye = len(mask)
+
+        if n_eye <= k:
             continue
 
-        # Hexatic phase based on physical layout
-        angles = np.arctan2(y, x)
-        phasors = np.exp(1j * 6 * angles)
-        z_avg = np.mean(phasors)
-        psi6_magnitudes[i] = np.abs(z_avg)
-        tilts[i] = np.angle(z_avg) / 6.0
+        e_dirs = directions[mask]
+        e_pos = positions[mask]
 
-        # IOA = mean of the 2 smallest and 2 largest visual separations
-        sep_sorted = np.sort(sep)
-        ioa_minor[i] = np.mean(sep_sorted[:2])
-        ioa_major[i] = np.mean(sep_sorted[-2:]) if len(sep_sorted) >= 2 else ioa_minor[i]
+        # Topology: find structural neighbours using physical 3D positions
+        pos_kdtree = KDTree(e_pos)
+        pos_distances, indices = pos_kdtree.query(e_pos, k=k + 1)
 
-    mean_q = np.mean(psi6_magnitudes)
-    print(f"Lattice hexatic quality (Ψ6): {mean_q:.3f}"
-          f" ({'Excellent' if mean_q > 0.8 else 'Irregular' if mean_q > 0.5 else 'Poor'})")
+        nb_indices = indices[:, 1:]
+        nb_pos_distances = pos_distances[:, 1:]
 
-    return ioa_minor, ioa_major, tilts, nb_counts.astype(np.uint32)
+        # Filter immediate physical neighbours
+        dist_to_closest = nb_pos_distances[:, 0]
+        is_immediate = nb_pos_distances <= dist_to_closest[:, np.newaxis] * neighbour_dist_factor
+        nb_counts[mask] = np.sum(is_immediate, axis=1)
+
+        # Optics: Calculate optical IOA using optical directions
+        dirs_main = e_dirs[:, np.newaxis, :]
+        dirs_nb = e_dirs[nb_indices]
+
+        dots = np.sum(dirs_main * dirs_nb, axis=2)
+        angular_sep = np.arccos(np.clip(dots, -1.0, 1.0))
+
+        # Layout: Tangent frames orthogonal to the visual axis
+        local_x, local_y = tangent_frames(
+            e_dirs,
+            world_up=WORLD_UP,
+            world_right=WORLD_RIGHT
+        )
+
+        # Project physical neighbour vectors on the tangent plane to find lattice tilt
+        pos_nb = e_pos[nb_indices]
+        delta_pos = pos_nb - e_pos[:, np.newaxis, :]
+
+        proj_x = np.sum(delta_pos * local_x[:, np.newaxis, :], axis=2)
+        proj_y = np.sum(delta_pos * local_y[:, np.newaxis, :], axis=2)
+
+        e_tilts = np.zeros(n_eye, dtype=np.float32)
+        e_ioa_major = np.zeros(n_eye, dtype=np.float32)
+        e_ioa_minor = np.zeros(n_eye, dtype=np.float32)
+        e_psi6 = np.zeros(n_eye, dtype=np.float32)
+
+        for i in range(n_eye):
+            imask = is_immediate[i]
+            x, y = proj_x[i, imask], proj_y[i, imask]
+            sep = angular_sep[i, imask]
+
+            if len(x) < 2:
+                avg = np.mean(sep) if np.any(imask) else 0.0
+                e_ioa_major[i], e_ioa_minor[i], e_tilts[i] = avg, avg, 0.0
+                continue
+
+            # Hexatic phase
+            angles = np.arctan2(y, x)
+            phasors = np.exp(1j * 6 * angles)
+            z_avg = np.mean(phasors)
+            e_psi6[i] = np.abs(z_avg)
+            e_tilts[i] = np.angle(z_avg) / 6.0
+
+            # IOA = mean of the 2 smallest and 2 largest visual separations
+            sep_sorted = np.sort(sep)
+            e_ioa_minor[i] = np.mean(sep_sorted[:2])
+            e_ioa_major[i] = np.mean(sep_sorted[-2:]) if len(sep_sorted) >= 2 else e_ioa_minor[i]
+
+        tilts[mask] = e_tilts
+        ioa_minor[mask] = e_ioa_minor
+        ioa_major[mask] = e_ioa_major
+
+        mean_q = np.mean(e_psi6)
+        print(f"Eye {e_id} lattice hexatic quality (Ψ6): {mean_q:.3f}")
+
+    return ioa_minor, ioa_major, tilts, nb_counts
 
 
 def _pack_metadata(
@@ -361,7 +375,7 @@ class ReceptorArray(_ReceptorProxyMixin):
             nb_counts = np.zeros(N, dtype=np.uint32)
 
         elif not is_pre_expanded:
-            ioa_minor, ioa_major, lattice_tilts, nb_counts = _get_lattice_properties(lens_dirs, lens_positions)
+            ioa_minor, ioa_major, lattice_tilts, nb_counts = _get_lattice_properties(lens_dirs, lens_positions, e_ids)
 
         else:
             ioa_minor = ioa_major = lattice_tilts = np.zeros(N, dtype=np.float32)
@@ -588,16 +602,25 @@ class ReceptorArray(_ReceptorProxyMixin):
 
         N = self.lens_count
         R = self.receptor_count
-        lens_dirs = self._lens_directions
-
         cartridge = np.zeros((N, len(peripheral)), dtype=np.intp)
 
-        for col, receptor_idx in enumerate(peripheral):
-            # Directions of this receptor type across all lenses
-            type_dirs = self.receptor_data['direction'][receptor_idx::R]
-            tree = KDTree(type_dirs)
-            _, indices = tree.query(lens_dirs)
-            cartridge[:, col] = indices
+        eye_ids = self.receptor_data['metadata'][::R] & 0x07
+        unique_eyes = np.unique(eye_ids)
+
+        for e_id in unique_eyes:
+            mask = np.where(eye_ids == e_id)[0]
+            if len(mask) == 0: continue
+
+            lens_dirs = self._lens_directions[mask]
+
+            for col, receptor_idx in enumerate(peripheral):
+                eye_receptors_start = mask * R + receptor_idx
+                type_dirs = self.receptor_data['direction'][eye_receptors_start]
+
+                tree = KDTree(type_dirs)
+                _, local_indices = tree.query(lens_dirs)
+
+                cartridge[mask, col] = mask[local_indices]
 
         self._cartridge_map = cartridge
         return cartridge
