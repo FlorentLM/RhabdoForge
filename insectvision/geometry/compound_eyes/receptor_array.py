@@ -448,7 +448,11 @@ class ReceptorArray(_ReceptorProxyMixin):
         self._kdtree_directions = KDTree(rec_dirs) if R == 1 else None  # eager for small models, lazy for full
         self._kdtree_positions = KDTree(rec_pos) if R == 1 else None
         self._eye_cache = {}
-        self._cartridge_map = None
+
+        if R == 1:
+            self.build_cartridge_map()
+        else:
+            self._cartridge_map = None
 
     @classmethod
     def from_file(cls, file_path: Union[str, Path], **kwargs):
@@ -594,7 +598,6 @@ class ReceptorArray(_ReceptorProxyMixin):
         Returns (N, R) array of global lens indices.
         Receptors not in `peripheral_indices` fallback to the home lens.
         """
-        # TODO: This needs to be reworked
 
         peripheral = self._kernel.peripheral_indices
         R = self.receptor_count
@@ -617,7 +620,9 @@ class ReceptorArray(_ReceptorProxyMixin):
 
             lens_dirs = self._lens_directions[mask]
 
-            # Distance threshold ~0.75x local IOA
+            # Distance threshold:
+            # if the nearest R1 of a neighbour is further away than 75% of a typical facet width, it's not a valid neighbour
+            # -> this should be correctly dealing with the equator flip
             threshold_dist = 2.0 * np.sin((self._ioa_major_rad[mask] * 0.75) / 2.0)
 
             # Overwrite peripheral channels with neighbours
