@@ -160,48 +160,57 @@ def _get_acceptance_angles(
 
 
 def _get_lattice_properties(
-        optical_axes: np.ndarray,
+        directions: np.ndarray,
+        positions: np.ndarray,
         k: int = 8,
         neighbour_dist_factor: float = 1.5
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Estimate local lattice properties from lenses' optical axes.
+    Estimate local lattice properties by separating structural topology (positions)
+    from optical axes (directions).
     """
-    # TODO: This needs to use the math and lattice_topology helpers
 
-    N = len(optical_axes)
+    N = len(directions)
     if N <= k:
         z = np.zeros(N, dtype=np.float32)
         return z, z, z, np.zeros(N, dtype=np.uint32)
 
-    dirs = normalise_vectors(optical_axes)
-    dir_kdtree = KDTree(dirs)
-    distances, indices = dir_kdtree.query(dirs, k=k + 1)
+    # Topology find structural neighbours using physical 3D positions
+    pos_kdtree = KDTree(positions)
+    pos_distances, indices = pos_kdtree.query(positions, k=k + 1)
 
     nb_indices = indices[:, 1:]
-    nb_distances = distances[:, 1:]
+    nb_pos_distances = pos_distances[:, 1:]
 
     if nb_indices.size == 0:
         z = np.zeros(N, dtype=np.float32)
         return z, z, z, np.zeros(N, dtype=np.uint32)
 
-    angular_sep = 2.0 * np.arcsin(np.clip(nb_distances / 2.0, -1.0, 1.0))
-    dist_to_closest = angular_sep[:, 0]
-    is_immediate = angular_sep <= dist_to_closest[:, np.newaxis] * neighbour_dist_factor
+    # Filter immediate physical neighbours
+    dist_to_closest = nb_pos_distances[:, 0]
+    is_immediate = nb_pos_distances <= dist_to_closest[:, np.newaxis] * neighbour_dist_factor
     nb_counts = np.sum(is_immediate, axis=1)
 
-    # Local tangent planes
+    # Optics: Calculate optical IOA using optical directions
+    dirs_main = directions[:, np.newaxis, :]
+    dirs_nb = directions[nb_indices]
+
+    dots = np.sum(dirs_main * dirs_nb, axis=2)
+    angular_sep = np.arccos(np.clip(dots, -1.0, 1.0))
+
+    # Layout: Tangent frames orthogonal to the visual axis
     local_x, local_y = tangent_frames(
-        dirs,
+        directions,  # optical axis is the normal for the layout plane
         world_up=WORLD_UP,
         world_right=WORLD_RIGHT
     )
 
-    nb_phys = dirs[nb_indices]
-    delta = nb_phys - dirs[:, np.newaxis, :]
+    # Project physical neighbour vectors on the tangent plane to find lattice tilt
+    pos_nb = positions[nb_indices]
+    delta_pos = pos_nb - positions[:, np.newaxis, :]
 
-    proj_x = np.sum(delta * local_x[:, np.newaxis, :], axis=2)
-    proj_y = np.sum(delta * local_y[:, np.newaxis, :], axis=2)
+    proj_x = np.sum(delta_pos * local_x[:, np.newaxis, :], axis=2)
+    proj_y = np.sum(delta_pos * local_y[:, np.newaxis, :], axis=2)
 
     tilts = np.zeros(N, dtype=np.float32)
     ioa_major = np.zeros(N, dtype=np.float32)
@@ -218,16 +227,15 @@ def _get_lattice_properties(
             ioa_major[i], ioa_minor[i], tilts[i] = avg, avg, 0.0
             continue
 
-        # Hexatic phase
+        # Hexatic phase based on physical layout
         angles = np.arctan2(y, x)
-        phasors = np.exp(1j * 6 * angles) # map tangent plane angles to phasors (* 6 because hexagonal)
+        phasors = np.exp(1j * 6 * angles)
         z_avg = np.mean(phasors)
-        psi6_magnitudes[i] = np.abs(z_avg)  # magnitude tells how 'perfectly hexagonal' the grid is
-        tilts[i] = np.angle(z_avg) / 6.0    # angle of the average phasor is the 'consensus' orientation
+        psi6_magnitudes[i] = np.abs(z_avg)
+        tilts[i] = np.angle(z_avg) / 6.0
 
-        # IOA = mean of the 2 smallest and 2 largest separations
+        # IOA = mean of the 2 smallest and 2 largest visual separations
         sep_sorted = np.sort(sep)
-
         ioa_minor[i] = np.mean(sep_sorted[:2])
         ioa_major[i] = np.mean(sep_sorted[-2:]) if len(sep_sorted) >= 2 else ioa_minor[i]
 
@@ -353,7 +361,7 @@ class ReceptorArray(_ReceptorProxyMixin):
             nb_counts = np.zeros(N, dtype=np.uint32)
 
         elif not is_pre_expanded:
-            ioa_minor, ioa_major, lattice_tilts, nb_counts = _get_lattice_properties(lens_dirs)
+            ioa_minor, ioa_major, lattice_tilts, nb_counts = _get_lattice_properties(lens_dirs, lens_positions)
 
         else:
             ioa_minor = ioa_major = lattice_tilts = np.zeros(N, dtype=np.float32)
