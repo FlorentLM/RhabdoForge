@@ -9,6 +9,18 @@ RECEPTOR_DTYPE = np.dtype([
     ('acc_axes', np.float32, 2),    # 8 bytes: acceptance angle ellipse minor, major axes
     ('sensitivity', np.float32),    # 4 bytes: photometric response multiplier
     ('tau', np.float32)             # 4 bytes: temporal accumulation (ms)
+
+# TODO: Could actually expand to 64 bytes to include 3 spectral sensitivities and time adaptation...
+#     ('position', np.float32, 3),              # 12 bytes: receptor position x, y, z
+#     ('metadata', np.uint32),                  # 4 bytes (see below): eye_id, R_type, neighbour_count, lens_id, chirality
+#     ('direction', np.float32, 3),             # 12 bytes: receptor direction x, y, z
+#     ('acc_tilt', np.float32),                 # 4 bytes: acceptance angle ellipse tilt
+#     ('acc_axes', np.float32, 2),              # 8 bytes: acceptance angle ellipse minor, major axes
+#     ('spectral_sensitivity', np.float32, 3),  # 12 bytes: Spectral multipliers (e.g. UV, Blue, Green)
+#     ('tau', np.float32),                      # 4 bytes: temporal accumulation (ms)
+#     ('adaptation', np.float32),               # 4 bytes: Light adaptation state / dynamic pupil size
+#     ('padding', np.uint32)                    # 4 bytes: Unused
+
 ]) # total 48 bytes
 
 # metadata layout:
