@@ -10,7 +10,27 @@ from insectvision.interactive.controls_interface import Controls
 class Gamepad(Controls):
     """
     Gamepad controller
+
+        Left stick         : Move (forwards/backwards)
+                              1st person: Strafe left/right
+                              3rd person: Turn (yaw) left/right
+        Right stick        : Look/Pan (yaw, pitch)
+        Button A (Cross)   : Move up (world)
+        Button X (Square)  : Move down (world)
+        LB / RB            : Roll left / right (press both to reset rotation)
+        LT / RT            : Zoom in / out (3rd Person) or Sun brightness +/-
+
+        R-stick click      : Cycle view mode (1st, 3rd, panoramic)
+        L-stick click      : Toggle Sun Control Mode
+        Select (Back)      : Toggle HUD
+        Start              : Teleport back to (0, 0, 0)
+        Button B (Circle)  : Toggle Voronoi tiled mode
+        Button Y (Triangle): Toggle Projection mode (Physical vs Acceptance)
+
+        D-pad Up/Down      : Increase / Decrease samples per receptor
+        D-pad Left         : Toggle time dithering
     """
+    # TODO: HUD should show gamepad buttons when gamepad mode
 
     def __init__(self,
                  look_sensitivity: float = 240.0,  # degrees per second
@@ -91,12 +111,30 @@ class Gamepad(Controls):
         rx = self._set_deadzone(state.axes[glfw.GAMEPAD_AXIS_RIGHT_X])
         ry = self._set_deadzone(state.axes[glfw.GAMEPAD_AXIS_RIGHT_Y])
 
-        # Movement
-        move_direction = glm.vec3(0.0)
-        if abs(ly) > 0: move_direction += agent.forward * (-ly)
-        if abs(lx) > 0: move_direction += agent.right * lx
+        # Triggers
+        lt = (state.axes[glfw.GAMEPAD_AXIS_LEFT_TRIGGER] + 1.0) * 0.5
+        rt = (state.axes[glfw.GAMEPAD_AXIS_RIGHT_TRIGGER] + 1.0) * 0.5
+        lt = lt if lt > 0.1 else 0.0
+        rt = rt if rt > 0.1 else 0.0
 
-        # Up/down
+        # Movement & turning
+        move_direction = glm.vec3(0.0)
+        left_stick_yaw_delta = 0.0
+
+        # Y axis is always forward/back
+        if abs(ly) > 0:
+            move_direction += agent.forward * (-ly)
+
+        # X axis depends on view mode
+        if ctx.view_mode == DisplayMode.Third_person:
+            # Turn the agent
+            left_stick_yaw_delta = -lx * self.look_sensitivity * dt
+        else:
+            # Strafe the agent
+            if abs(lx) > 0:
+                move_direction += agent.right * lx
+
+        # Vertical movement
         if state.buttons[glfw.GAMEPAD_BUTTON_X]:  # Square / X
             move_direction += WORLD_DOWN
         if state.buttons[glfw.GAMEPAD_BUTTON_A]:  # Cross / A
@@ -106,8 +144,19 @@ class Gamepad(Controls):
             speed = ctx.move_speed * self.move_sensitivity
             agent.dt(dt).translate(glm.normalize(move_direction) * speed)
 
+        # Zoom / Sun brightness
+        scroll_delta = (rt - lt) * dt * 10.0
+        if abs(scroll_delta) > 0:
+            if ctx.sun_control_mode and ctx.scene and ctx.scene.sun:
+                sun = ctx.scene.sun
+                intensity_factor = 1.1 ** scroll_delta
+                sun.intensity = max(0.1, min(10.0, sun.intensity * intensity_factor))
+            elif ctx.view_mode == DisplayMode.Third_person:
+                zoom_factor = 0.9 ** scroll_delta
+                ctx.observer.zoom(zoom_factor)
+
         # Look (pitch/yaw)
-        if abs(rx) > 0 or abs(ry) > 0:
+        if abs(rx) > 0 or abs(ry) > 0 or abs(left_stick_yaw_delta) > 0:
             if ctx.sun_control_mode and ctx.scene and ctx.scene.sun:
                 sun = ctx.scene.sun
                 new_azimuth = sun.azimuth - (rx * self._sun_orbit_speed * dt)
@@ -115,13 +164,21 @@ class Gamepad(Controls):
                 new_elevation = max(1.0, min(89.0, new_elevation))
                 sun.from_angles(new_azimuth, new_elevation, sun.distance)
 
+                if abs(left_stick_yaw_delta) > 0:
+                    agent.rotate(yaw_delta=left_stick_yaw_delta, degrees=True)
+
             elif ctx.view_mode == DisplayMode.Third_person:
+                # Right stick pans the camera
                 ctx.observer.pan(
                     azimuth_delta=-rx * self._look_x_dir * self.look_sensitivity * dt,
                     elevation_delta=ry * self._look_y_dir * self.look_sensitivity * dt,
                     degrees=True
                 )
+                # Left stick rotates the agent
+                if abs(left_stick_yaw_delta) > 0:
+                    agent.rotate(yaw_delta=left_stick_yaw_delta, degrees=True)
             else:
+                #1st person rotation (Right stick)
                 agent.rotate(
                     yaw_delta=-rx * self._look_x_dir * self.look_sensitivity * dt,
                     pitch_delta=ry * self._look_y_dir * self.look_sensitivity * dt,
@@ -172,5 +229,3 @@ class Gamepad(Controls):
             ctx.decrease_samples()
         if self._button_pressed(state, glfw.GAMEPAD_BUTTON_DPAD_LEFT):
             ctx.toggle_time_dithering()
-        # if self._button_pressed(state, glfw.GAMEPAD_BUTTON_DPAD_RIGHT):
-        #     ctx.toggle_projection_mode()

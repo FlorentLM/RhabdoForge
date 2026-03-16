@@ -25,6 +25,10 @@ def main():
     # This always needs to be the first thing called
     context = Context()
 
+    # # Example: use a gamepad
+    # from insectvision.interactive import Gamepad
+    # context.controls = Gamepad()
+
     scene = Scene(background_color=(0.15, 0.15, 0.3))
 
     if USE_POINT_CLOUD:
