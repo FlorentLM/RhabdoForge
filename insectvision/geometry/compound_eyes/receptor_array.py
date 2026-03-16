@@ -138,8 +138,13 @@ def _get_acceptance_angles(
         p = eye_parameter if eye_parameter is not None else 1.0
         p_min, p_maj = (p, p) if isinstance(p, (int, float, np.number)) else p
 
-        acc_min = np.repeat(p_min * ioa_minor, R)
-        acc_maj = np.repeat(p_maj * ioa_major, R)
+        # Scale acceptance by relative receptor diameters
+        max_d = np.max(kernel.diameters_um)
+        rel_d = kernel.diameters_um / max_d if max_d > 0 else np.ones(R)
+
+        acc_min = np.repeat(p_min * ioa_minor, R) * np.tile(rel_d, N)
+        acc_maj = np.repeat(p_maj * ioa_major, R) * np.tile(rel_d, N)
+
         return np.column_stack([acc_min, acc_maj])
 
     # Acceptance angles computed from the Snyder optical model (Snyder 1979):
