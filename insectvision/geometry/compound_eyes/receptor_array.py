@@ -672,9 +672,6 @@ class ReceptorArray(_ReceptorProxyMixin):
             lens_mask: Global lens indices to actuate. None = all.
         """
 
-        if self.receptor_count < 2:
-            raise RuntimeError("Actuation requires a full model (R > 1).")
-
         kernel = self._kernel
         R = self.receptor_count
         d_rest = kernel.nodal_distance_um  # nodal distance at rest
