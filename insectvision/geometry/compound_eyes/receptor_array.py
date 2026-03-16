@@ -556,10 +556,9 @@ class ReceptorArray(_ReceptorProxyMixin):
     @property
     def is_full_model(self) -> bool:
         """
-        True if built with a rhabdomere kernel (R > 1).
+        True if built with a multi-receptor kernel (R > 1).
         """
-        # TODO: DEPRECATED, model always has a kernel now
-        return self._kernel is not None
+        return self.receptor_count > 1
 
     @property
     def interommatidial_angles_rad(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -570,26 +569,27 @@ class ReceptorArray(_ReceptorProxyMixin):
     def build_cartridge_map(self) -> np.ndarray:
         """
         For each lens, compute which neighbour's receptor points at this lens's optical axis.
-        Returns (N, R_outer) array of global lens indices, where R_outer = min(receptor_count, 6) (R1-R6 only)
+        Returns (N, R_periph) array of global lens indices, where R_periph is defined by the kernel.
         """
+        # TODO: This needs to be reworked
 
-        if self.receptor_count < 2:
-            warnings.warn("Cartridge map requires a full model (R > 1).")
+        peripheral = self._kernel.peripheral_indices
+        if self.receptor_count < 2 or len(peripheral) == 0:
+            warnings.warn("Cartridge map requires a full model with peripheral receptors.")
             return np.zeros((self.lens_count, 0), dtype=np.intp)
 
         N = self.lens_count
         R = self.receptor_count
-        R_outer = min(R, 6)
         lens_dirs = self._lens_directions
 
-        cartridge = np.zeros((N, R_outer), dtype=np.intp)
+        cartridge = np.zeros((N, len(peripheral)), dtype=np.intp)
 
-        for k in range(R_outer):
-            # Directions of receptor type k across all lenses
-            type_k_dirs = self.receptor_data['direction'][k::R]
-            tree = KDTree(type_k_dirs)
+        for col, receptor_idx in enumerate(peripheral):
+            # Directions of this receptor type across all lenses
+            type_dirs = self.receptor_data['direction'][receptor_idx::R]
+            tree = KDTree(type_dirs)
             _, indices = tree.query(lens_dirs)
-            cartridge[:, k] = indices
+            cartridge[:, col] = indices
 
         self._cartridge_map = cartridge
         return cartridge
@@ -598,17 +598,15 @@ class ReceptorArray(_ReceptorProxyMixin):
     def cartridge_global_indices(self) -> np.ndarray:
         # TODO: rename this
         """
-        Returns (N, R_outer) array of global receptor indices (for neural superposition).
+        Returns (N, R_periph) array of global receptor indices (for neural superposition).
         """
         if self._cartridge_map is None:
             self.build_cartridge_map()
 
         R = self.receptor_count
-        R_outer = self._cartridge_map.shape[1]
+        peripheral = np.asarray(self._kernel.peripheral_indices)
 
-        type_offsets = np.arange(R_outer)
-
-        return self._cartridge_map * R + type_offsets
+        return self._cartridge_map * R + peripheral
 
     # Actuation
 
@@ -643,8 +641,8 @@ class ReceptorArray(_ReceptorProxyMixin):
             lens_mask: Global lens indices to actuate. None = all.
         """
 
-        if self._kernel is None:
-            raise RuntimeError("Actuation requires a full model.")
+        if self.receptor_count < 2:
+            raise RuntimeError("Actuation requires a full model (R > 1).")
 
         kernel = self._kernel
         R = self.receptor_count

@@ -5,44 +5,8 @@ from scipy.spatial import KDTree
 
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT
 from insectvision.geometry.compound_eyes.datatypes import (
-    DEFAULT_ANGLE, _CLEAR_EYE_ID, _CLEAR_RECEPTOR_TYPE, _CLEAR_NEIGHBOURS, _CLEAR_LENS_INDEX, _CLEAR_CHIRALITY
+    _CLEAR_EYE_ID, _CLEAR_RECEPTOR_TYPE, _CLEAR_NEIGHBOURS, _CLEAR_LENS_INDEX, _CLEAR_CHIRALITY
 )
-
-
-# read write: can be got or set at any scope
-_RW_FIELDS = (
-    'tau', 'sensitivity',
-    'acceptance_tilt', 'acceptance_major', 'acceptance_minor',
-    'acceptance_rad', 'acceptance_deg',
-    'eye_id', 'receptor_type', 'neighbours_count', 'lens_id', 'chirality'
-)
-
-# derived angular quantities (no meaningful setter)
-_RO_FIELDS = (
-    'azimuth_rad', 'azimuth_deg',
-    'elevation_rad', 'elevation_deg',
-)
-
-
-def _make_rw(name):
-    """Create a read-write property that delegates to the scoped Receptor proxy."""
-
-    def fget(self):
-        return getattr(self._receptor_proxy, name)
-
-    def fset(self, value):
-        setattr(self._receptor_proxy, name, value)
-
-    return property(fget, fset, doc=f"Forwarded receptor field: {name}")
-
-
-def _make_ro(name):
-    """Create a read-only property that delegates to the scoped Receptor proxy."""
-
-    def fget(self):
-        return getattr(self._receptor_proxy, name)
-
-    return property(fget, doc=f"Forwarded receptor field (read-only): {name}")
 
 
 class _ReceptorProxyMixin:
@@ -52,8 +16,7 @@ class _ReceptorProxyMixin:
     (subclasses implement `_receptor_proxy` returning a `Receptor``
         which indexes cover the receptors in scope)
 
-    Concerned properties are whitelisted so lens-level overrides
-    like `Ommatidium.position` keep their semantics
+    Lens-level overrides (e.g. `Ommatidium.position`) shadow these properties where needed.
     """
 
     @property
@@ -65,24 +28,131 @@ class _ReceptorProxyMixin:
         """Receptor view spanning every receptor in this scope."""
         return self._receptor_proxy
 
+    # Read-write: optics / temporal
 
-for _name in _RW_FIELDS:
-    setattr(_ReceptorProxyMixin, _name, _make_rw(_name))
+    @property
+    def tau(self) -> np.ndarray:
+        return self._receptor_proxy.tau
 
-for _name in _RO_FIELDS:
-    setattr(_ReceptorProxyMixin, _name, _make_ro(_name))
+    @tau.setter
+    def tau(self, value):
+        self._receptor_proxy.tau = value
 
-if DEFAULT_ANGLE == 'rad':
-    _ReceptorProxyMixin.lon = _ReceptorProxyMixin.longitude = _ReceptorProxyMixin.azimuth = _make_ro('azimuth_rad')
-    _ReceptorProxyMixin.lat = _ReceptorProxyMixin.latitude = _ReceptorProxyMixin.elevation = _make_ro('elevation_rad')
-    _ReceptorProxyMixin.rho = _ReceptorProxyMixin.acceptance = _make_rw('acceptance_rad')
-else:
-    _ReceptorProxyMixin.lon = _ReceptorProxyMixin.longitude = _ReceptorProxyMixin.azimuth = _make_ro('azimuth_deg')
-    _ReceptorProxyMixin.lat = _ReceptorProxyMixin.latitude = _ReceptorProxyMixin.elevation = _make_ro('elevation_deg')
-    _ReceptorProxyMixin.rho = _ReceptorProxyMixin.acceptance = _make_rw('acceptance_deg')
+    @property
+    def sensitivity(self) -> np.ndarray:
+        return self._receptor_proxy.sensitivity
 
-_ReceptorProxyMixin.rho_minor = _make_rw('acceptance_minor')
-_ReceptorProxyMixin.rho_major = _make_rw('acceptance_major')
+    @sensitivity.setter
+    def sensitivity(self, value):
+        self._receptor_proxy.sensitivity = value
+
+    @property
+    def acceptance_tilt(self) -> np.ndarray:
+        return self._receptor_proxy.acceptance_tilt
+
+    @acceptance_tilt.setter
+    def acceptance_tilt(self, value):
+        self._receptor_proxy.acceptance_tilt = value
+
+    @property
+    def acceptance_major(self) -> np.ndarray:
+        return self._receptor_proxy.acceptance_major
+
+    @acceptance_major.setter
+    def acceptance_major(self, value):
+        self._receptor_proxy.acceptance_major = value
+
+    @property
+    def acceptance_minor(self) -> np.ndarray:
+        return self._receptor_proxy.acceptance_minor
+
+    @acceptance_minor.setter
+    def acceptance_minor(self, value):
+        self._receptor_proxy.acceptance_minor = value
+
+    @property
+    def acceptance_rad(self) -> np.ndarray:
+        return self._receptor_proxy.acceptance_rad
+
+    @acceptance_rad.setter
+    def acceptance_rad(self, value):
+        self._receptor_proxy.acceptance_rad = value
+
+    @property
+    def acceptance_deg(self) -> np.ndarray:
+        return self._receptor_proxy.acceptance_deg
+
+    @acceptance_deg.setter
+    def acceptance_deg(self, value):
+        self._receptor_proxy.acceptance_deg = value
+
+    # Read-write: metadata
+
+    @property
+    def eye_id(self) -> np.ndarray:
+        return self._receptor_proxy.eye_id
+
+    @eye_id.setter
+    def eye_id(self, value):
+        self._receptor_proxy.eye_id = value
+
+    @property
+    def receptor_type(self) -> np.ndarray:
+        return self._receptor_proxy.receptor_type
+
+    @receptor_type.setter
+    def receptor_type(self, value):
+        self._receptor_proxy.receptor_type = value
+
+    @property
+    def neighbours_count(self) -> np.ndarray:
+        return self._receptor_proxy.neighbours_count
+
+    @neighbours_count.setter
+    def neighbours_count(self, value):
+        self._receptor_proxy.neighbours_count = value
+
+    @property
+    def lens_id(self) -> np.ndarray:
+        return self._receptor_proxy.lens_id
+
+    @lens_id.setter
+    def lens_id(self, value):
+        self._receptor_proxy.lens_id = value
+
+    @property
+    def chirality(self) -> np.ndarray:
+        return self._receptor_proxy.chirality
+
+    @chirality.setter
+    def chirality(self, value):
+        self._receptor_proxy.chirality = value
+
+    # Read-only: derived angular quantities
+
+    @property
+    def azimuth_rad(self) -> np.ndarray:
+        return self._receptor_proxy.azimuth_rad
+
+    @property
+    def azimuth_deg(self) -> np.ndarray:
+        return self._receptor_proxy.azimuth_deg
+
+    @property
+    def elevation_rad(self) -> np.ndarray:
+        return self._receptor_proxy.elevation_rad
+
+    @property
+    def elevation_deg(self) -> np.ndarray:
+        return self._receptor_proxy.elevation_deg
+
+    # Convenience aliases (always radians)
+
+    lon = longitude = azimuth = azimuth_rad
+    lat = latitude = elevation = elevation_rad
+    rho = acceptance = acceptance_rad
+    rho_minor = acceptance_minor
+    rho_major = acceptance_major
 
 
 class Receptor:
@@ -281,9 +351,9 @@ class Receptor:
     def elevation_deg(self) -> np.ndarray:
         return np.rad2deg(self.elevation_rad)
 
-    lon = longitude = azimuth = azimuth_rad if DEFAULT_ANGLE == 'rad' else azimuth_deg
-    lat = latitude = elevation = elevation_rad if DEFAULT_ANGLE == 'rad' else elevation_deg
-    rho = acceptance = acceptance_rad if DEFAULT_ANGLE == 'rad' else acceptance_deg
+    lon = longitude = azimuth = azimuth_rad
+    lat = latitude = elevation = elevation_rad
+    rho = acceptance = acceptance_rad
     rho_minor = acceptance_minor
     rho_major = acceptance_major
 
@@ -350,7 +420,7 @@ class Ommatidium(_ReceptorProxyMixin):
 
     @property
     def bundle_orientation(self) -> float:
-        """Rotation of rhabdomere bundle in tangent plane (radians).""" # TODO: maybe return degrees instead?
+        """Rotation of rhabdomere bundle in tangent plane (radians)."""
         return float(self._array._bundle_orientation[self._lens_index])
 
     def actuate(self, displacement_um: float, axial_um: float = 0.0):
@@ -370,7 +440,7 @@ class Ommatidium(_ReceptorProxyMixin):
 
 class Cartridge(_ReceptorProxyMixin):
     """
-    Neural superposition unit: The 6 outer receptors (R1-R6) from 6 different ommatidia
+    Neural superposition unit: peripheral receptors from neighbouring ommatidia
     that converge onto one lamina column.
     """
 
@@ -385,10 +455,13 @@ class Cartridge(_ReceptorProxyMixin):
     def _receptor_proxy(self) -> Receptor:
         return Receptor(self._array.receptor_data, self.receptor_indices, self._array)
 
-    def __getitem__(self, receptor_type: int) -> Receptor:
-        """``cartridge[k]`` returns the Receptor R{k+1} from the appropriate ommatidium."""
-        source_lens = self._array._cartridge_map[self._lens_index, receptor_type]
-        global_idx = source_lens * self._array.receptor_count + receptor_type
+    def __getitem__(self, col: int) -> Receptor:
+        """`cartridge[k]` returns the k-th peripheral receptor from the appropriate neighbour."""
+
+        peripheral = self._array.kernel.peripheral_indices
+        source_lens = self._array._cartridge_map[self._lens_index, col]
+        global_idx = source_lens * self._array.receptor_count + peripheral[col]
+
         return Receptor(self._array.receptor_data, global_idx, self._array)
 
     @property
@@ -396,14 +469,15 @@ class Cartridge(_ReceptorProxyMixin):
         """Global indices into ReceptorArray.receptor_data"""
         sources = self._array._cartridge_map[self._lens_index]
         R = self._array.receptor_count
-        return sources * R + np.arange(min(6, R))
+        peripheral = np.asarray(self._array.kernel.peripheral_indices)
+        return sources * R + peripheral
 
     @property
     def optical_axis(self) -> np.ndarray:
         return self._array._lens_directions[self._lens_index]
 
     def __len__(self) -> int:
-        return min(6, self._array.receptor_count)
+        return len(self._array.kernel.peripheral_indices)
 
     def __repr__(self):
         return f"<Cartridge(lens={self._lens_index}, inputs={len(self)})>"

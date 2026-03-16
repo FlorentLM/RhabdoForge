@@ -35,5 +35,3 @@ _CLEAR_NEIGHBOURS = np.uint32(0xFFFFF87F)
 _CLEAR_LENS_INDEX = np.uint32(0xF80007FF)
 
 _CLEAR_CHIRALITY = np.uint32(0xF7FFFFFF)
-
-DEFAULT_ANGLE = 'deg'   # TODO: get rid of this, and ensure unit consistency everywhere
