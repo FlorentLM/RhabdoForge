@@ -591,53 +591,69 @@ class ReceptorArray(_ReceptorProxyMixin):
     def build_cartridge_map(self) -> np.ndarray:
         """
         For each lens, compute which neighbour's receptor points at this lens's optical axis.
-        Returns (N, R_periph) array of global lens indices, where R_periph is defined by the kernel.
+        Returns (N, R) array of global lens indices.
+        Receptors not in `peripheral_indices` fallback to the home lens.
         """
         # TODO: This needs to be reworked
 
         peripheral = self._kernel.peripheral_indices
-        if self.receptor_count < 2 or len(peripheral) == 0:
-            warnings.warn("Cartridge map requires a full model with peripheral receptors.")
-            return np.zeros((self.lens_count, 0), dtype=np.intp)
-
-        N = self.lens_count
         R = self.receptor_count
-        cartridge = np.zeros((N, len(peripheral)), dtype=np.intp)
+        N = self.lens_count
+
+        if R < 2 or not peripheral:
+            warnings.warn("Cartridge map requires a full model with peripheral receptors.")
+            return np.zeros((N, 0), dtype=np.intp)
+
+        # all channels default to the home lens
+        cartridge = np.tile(np.arange(N)[:, np.newaxis], (1, R))
 
         eye_ids = self.receptor_data['metadata'][::R] & 0x07
         unique_eyes = np.unique(eye_ids)
 
+        invalid_count = 0
         for e_id in unique_eyes:
             mask = np.where(eye_ids == e_id)[0]
             if len(mask) == 0: continue
 
             lens_dirs = self._lens_directions[mask]
 
-            for col, receptor_idx in enumerate(peripheral):
+            # Distance threshold ~0.75x local IOA
+            threshold_dist = 2.0 * np.sin((self._ioa_major_rad[mask] * 0.75) / 2.0)
+
+            # Overwrite peripheral channels with neighbours
+            for receptor_idx in peripheral:
                 eye_receptors_start = mask * R + receptor_idx
                 type_dirs = self.receptor_data['direction'][eye_receptors_start]
 
                 tree = KDTree(type_dirs)
-                _, local_indices = tree.query(lens_dirs)
+                dists, local_indices = tree.query(lens_dirs)
 
-                cartridge[mask, col] = mask[local_indices]
+                # check for equator/boundary crossing
+                invalid = dists > threshold_dist
+                if np.any(invalid):
+                    invalid_count += np.sum(invalid)
+                    # Gracefully falling back tohome lens for the invalid ones
+                    local_indices[invalid] = np.arange(len(mask))[invalid]
+
+                cartridge[mask, receptor_idx] = mask[local_indices]
+
+        if invalid_count > 0:
+            warnings.warn(f"Neural superposition failed for {invalid_count} receptor connections. "
+                          "Geometry alignment exceeded the maximum IOA threshold (likely at the equator/boundaries). "
+                          "These have safely fallen back to apposition wiring (home lens).")
 
         self._cartridge_map = cartridge
         return cartridge
 
     @property
     def cartridge_global_indices(self) -> np.ndarray:
-        # TODO: rename this
         """
-        Returns (N, R_periph) array of global receptor indices (for neural superposition).
+        Returns (N, R) array of global receptor indices (for neural superposition).
         """
         if self._cartridge_map is None:
             self.build_cartridge_map()
 
-        R = self.receptor_count
-        peripheral = np.asarray(self._kernel.peripheral_indices)
-
-        return self._cartridge_map * R + peripheral
+        return self._cartridge_map * self.receptor_count + np.arange(R)
 
     # Actuation
 
