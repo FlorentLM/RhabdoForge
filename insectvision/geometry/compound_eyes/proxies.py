@@ -441,7 +441,7 @@ class Ommatidium(_ReceptorProxyMixin):
 class Cartridge(_ReceptorProxyMixin):
     """
     Neural superposition unit: peripheral receptors from neighbouring ommatidia
-    that converge onto one lamina column.
+    that converge onto one lamina column, plus the central receptor(s) from the home ommatidium.
     """
 
     def __init__(self, array: 'ReceptorArray', lens_index: int):
@@ -456,11 +456,14 @@ class Cartridge(_ReceptorProxyMixin):
         return Receptor(self._array.receptor_data, self.receptor_indices, self._array)
 
     def __getitem__(self, col: int) -> Receptor:
-        """`cartridge[k]` returns the k-th peripheral receptor from the appropriate neighbour."""
+        """`cartridge[k]` returns the k-th peripheral receptor, or the central receptor at the end."""
 
-        peripheral = self._array.kernel.peripheral_indices
+        peripheral = list(self._array.kernel.peripheral_indices)
+        center = self._array.kernel.center_index
+        cartridge_types = peripheral + [center]
+
         source_lens = self._array._cartridge_map[self._lens_index, col]
-        global_idx = source_lens * self._array.receptor_count + peripheral[col]
+        global_idx = source_lens * self._array.receptor_count + cartridge_types[col]
 
         return Receptor(self._array.receptor_data, global_idx, self._array)
 
@@ -469,15 +472,15 @@ class Cartridge(_ReceptorProxyMixin):
         """Global indices into ReceptorArray.receptor_data"""
         sources = self._array._cartridge_map[self._lens_index]
         R = self._array.receptor_count
-        peripheral = np.asarray(self._array.kernel.peripheral_indices)
-        return sources * R + peripheral
 
-    @property
-    def optical_axis(self) -> np.ndarray:
-        return self._array._lens_directions[self._lens_index]
+        peripheral = list(self._array.kernel.peripheral_indices)
+        center = self._array.kernel.center_index
+        cartridge_types = np.array(peripheral + [center])
+
+        return sources * R + cartridge_types
 
     def __len__(self) -> int:
-        return len(self._array.kernel.peripheral_indices)
+        return len(self._array.kernel.peripheral_indices) + 1
 
     def __repr__(self):
         return f"<Cartridge(lens={self._lens_index}, inputs={len(self)})>"
