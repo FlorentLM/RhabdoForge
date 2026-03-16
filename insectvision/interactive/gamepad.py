@@ -1,0 +1,176 @@
+import glfw
+from pyglm import glm
+from typing import Optional, Dict
+
+from insectvision.engine.world_utils import WORLD_UP, WORLD_DOWN
+from insectvision.interactive.utils import DisplayMode
+from insectvision.interactive.controls_interface import Controls
+
+
+class Gamepad(Controls):
+    """
+    Gamepad controller
+    """
+
+    def __init__(self,
+                 look_sensitivity: float = 240.0,  # degrees per second
+                 move_sensitivity: float = 1.0,
+                 invert_joystick_x: bool = False,
+                 invert_joystick_y: bool = False,
+                 deadzone: float = 0.30,
+                 ):
+
+        self.look_sensitivity = look_sensitivity
+        self.move_sensitivity = move_sensitivity
+        self.deadzone = deadzone
+
+        self._look_x_dir = -1.0 if invert_joystick_x else 1.0
+        self._look_y_dir = -1.0 if invert_joystick_y else 1.0
+
+        self._sun_orbit_speed = 60.0  # degrees per second
+        self._gamepad_id: Optional[int] = None
+        self._prev_buttons: Dict[int, bool] = {}
+        self._ctx = None
+
+    def setup(self, ctx):
+        self._ctx = ctx
+        self._prev_buttons.clear()
+        self._detect_gamepad()
+
+    def free(self):
+        self._ctx = None
+        self._gamepad_id = None
+        self._prev_buttons.clear()
+
+    def _detect_gamepad(self):
+        for jid in range(glfw.JOYSTICK_LAST + 1):
+            if glfw.joystick_is_gamepad(jid):
+                name = glfw.get_gamepad_name(jid)
+                print(f"Gamepad found: '{name}' (slot {jid})")
+                self._gamepad_id = jid
+                return
+        self._gamepad_id = None
+
+    def _set_deadzone(self, value: float) -> float:
+        dz = self.deadzone
+        if abs(value) < dz:
+            return 0.0
+        sign = 1.0 if value > 0 else -1.0
+        return sign * (abs(value) - dz) / (1.0 - dz)
+
+    def _button_pressed(self, state, button: int) -> bool:
+        current = bool(state.buttons[button])
+        prev = self._prev_buttons.get(button, False)
+        self._prev_buttons[button] = current
+        return current and not prev
+
+    def poll(self, ctx):
+        if self._gamepad_id is None:
+            return
+
+        if not glfw.joystick_is_gamepad(self._gamepad_id):
+            print(f"Gamepad lost")
+            self._gamepad_id = None
+            self._detect_gamepad()
+            return
+
+        state = glfw.get_gamepad_state(self._gamepad_id)
+        if state is None:
+            return
+
+        self._poll_axes(ctx, state)
+        self._poll_buttons(ctx, state)
+
+    def _poll_axes(self, ctx, state):
+        agent = ctx.agent
+        dt = ctx.delta_time
+
+        # Sticks
+        lx = self._set_deadzone(state.axes[glfw.GAMEPAD_AXIS_LEFT_X])
+        ly = self._set_deadzone(state.axes[glfw.GAMEPAD_AXIS_LEFT_Y])
+        rx = self._set_deadzone(state.axes[glfw.GAMEPAD_AXIS_RIGHT_X])
+        ry = self._set_deadzone(state.axes[glfw.GAMEPAD_AXIS_RIGHT_Y])
+
+        # Movement
+        move_direction = glm.vec3(0.0)
+        if abs(ly) > 0: move_direction += agent.forward * (-ly)
+        if abs(lx) > 0: move_direction += agent.right * lx
+
+        # Up/down
+        if state.buttons[glfw.GAMEPAD_BUTTON_X]:  # Square / X
+            move_direction += WORLD_DOWN
+        if state.buttons[glfw.GAMEPAD_BUTTON_A]:  # Cross / A
+            move_direction += WORLD_UP
+
+        if glm.length(move_direction) > 0:
+            speed = ctx.move_speed * self.move_sensitivity
+            agent.dt(dt).translate(glm.normalize(move_direction) * speed)
+
+        # Look (pitch/yaw)
+        if abs(rx) > 0 or abs(ry) > 0:
+            if ctx.sun_control_mode and ctx.scene and ctx.scene.sun:
+                sun = ctx.scene.sun
+                new_azimuth = sun.azimuth - (rx * self._sun_orbit_speed * dt)
+                new_elevation = sun.elevation - (ry * self._sun_orbit_speed * dt)
+                new_elevation = max(1.0, min(89.0, new_elevation))
+                sun.from_angles(new_azimuth, new_elevation, sun.distance)
+
+            elif ctx.view_mode == DisplayMode.Third_person:
+                ctx.observer.pan(
+                    azimuth_delta=-rx * self._look_x_dir * self.look_sensitivity * dt,
+                    elevation_delta=ry * self._look_y_dir * self.look_sensitivity * dt,
+                    degrees=True
+                )
+            else:
+                agent.rotate(
+                    yaw_delta=-rx * self._look_x_dir * self.look_sensitivity * dt,
+                    pitch_delta=ry * self._look_y_dir * self.look_sensitivity * dt,
+                    degrees=True
+                )
+
+        # Roll (shoulder buttons)
+        roll = 0.0
+
+        if state.buttons[glfw.GAMEPAD_BUTTON_LEFT_BUMPER] and state.buttons[glfw.GAMEPAD_BUTTON_RIGHT_BUMPER]:
+            ctx.reset_rotation()
+        elif state.buttons[glfw.GAMEPAD_BUTTON_LEFT_BUMPER]:
+            roll += 1.0
+        elif state.buttons[glfw.GAMEPAD_BUTTON_RIGHT_BUMPER]:
+            roll -= 1.0
+
+        if roll != 0.0:
+            agent.rotate(roll_delta=roll * self.look_sensitivity * dt, degrees=True)
+
+    def _poll_buttons(self, ctx, state):
+
+        # Right stick click to cycle camera views
+        if self._button_pressed(state, glfw.GAMEPAD_BUTTON_RIGHT_THUMB):
+            ctx.cycle_view_mode()
+
+        # Select to toggle HUD
+        if self._button_pressed(state, glfw.GAMEPAD_BUTTON_BACK):
+            ctx.toggle_hud()
+
+        # Left stick click to toggle sun
+        if self._button_pressed(state, glfw.GAMEPAD_BUTTON_LEFT_THUMB):
+            ctx.toggle_sun_control()
+
+        # Others
+        if self._button_pressed(state, glfw.GAMEPAD_BUTTON_B):  # Circle / B
+            ctx.toggle_voronoi()
+
+        if self._button_pressed(state, glfw.GAMEPAD_BUTTON_Y):  # Triangle / Y
+            ctx.toggle_projection_mode()
+
+        if self._button_pressed(state, glfw.GAMEPAD_BUTTON_START):
+            ctx.reset_position()
+
+        # D-Pad
+        if self._button_pressed(state, glfw.GAMEPAD_BUTTON_DPAD_UP):
+            ctx.increase_samples()
+        if self._button_pressed(state, glfw.GAMEPAD_BUTTON_DPAD_DOWN):
+            ctx.decrease_samples()
+        if self._button_pressed(state, glfw.GAMEPAD_BUTTON_DPAD_LEFT):
+            ctx.toggle_time_dithering()
+        # if self._button_pressed(state, glfw.GAMEPAD_BUTTON_DPAD_RIGHT):
+        #     ctx.toggle_projection_mode()
