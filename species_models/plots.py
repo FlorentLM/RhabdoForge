@@ -1,6 +1,152 @@
+from typing import Callable
 import numpy as np
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+from matplotlib import pyplot as plt
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
+from scipy.spatial import cKDTree
+
+from insectvision.utils.math import project_to_stereo
+from insectvision.utils.lattice_topology import psi6_from_adjacency, spacing_from_adjacency, delaunay_edges
+
+
+def plot_fitted_comparison(
+        pts_2d_raw: np.ndarray,
+        pts_2d_lattice: np.ndarray,
+        density_fn: Callable,
+        title: str = "Fitted ommatidia vs. raw data",
+):
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(16, 5.5))
+
+    # Panel 1: density field
+    pad = 0.1
+    x_lo, x_hi = pts_2d_raw[:, 0].min() - pad, pts_2d_raw[:, 0].max() + pad
+    y_lo, y_hi = pts_2d_raw[:, 1].min() - pad, pts_2d_raw[:, 1].max() + pad
+    gx, gy = np.meshgrid(np.linspace(x_lo, x_hi, 100),
+                          np.linspace(y_lo, y_hi, 100))
+    grid_pts = np.column_stack([gx.ravel(), gy.ravel()])
+    Z = density_fn(grid_pts).reshape(gx.shape)
+
+    im = ax1.contourf(gx, gy, Z, levels=20, cmap='viridis')
+    ax1.scatter(*pts_2d_raw.T, c='red', s=2, alpha=0.5, label='Raw data')
+    ax1.set_title("Density field")
+    ax1.set_aspect('equal')
+    ax1.legend(fontsize=8)
+    fig.colorbar(im, ax=ax1, label='Relative density')
+
+    # Panel 2: Lattice vs. raw
+    ax2.scatter(*pts_2d_raw.T, c='grey', s=6, alpha=0.5, marker='x', label='Raw data')
+    ax2.scatter(*pts_2d_lattice.T, c='green', s=4, alpha=0.8, label='Lloyd lattice')
+    ax2.set_title(f"Lattice overlay ({len(pts_2d_lattice)} pts)")
+    ax2.set_aspect('equal')
+    ax2.legend(fontsize=8)
+    ax2.grid(True, alpha=0.2)
+
+    # Panel 3: local spacing comparison
+    if len(pts_2d_lattice) > 7:
+        tree_lat = cKDTree(pts_2d_lattice)
+        d_lat, _ = tree_lat.query(pts_2d_lattice, k=7)
+        spacing_lat = d_lat[:, 1:].mean(axis=1)
+
+        tree_raw = cKDTree(pts_2d_raw)
+        d_raw, _ = tree_raw.query(pts_2d_raw, k=7)
+        spacing_raw = d_raw[:, 1:].mean(axis=1)
+
+        r_raw = np.linalg.norm(pts_2d_raw - pts_2d_raw.mean(axis=0), axis=1)
+        r_lat = np.linalg.norm(pts_2d_lattice - pts_2d_lattice.mean(axis=0), axis=1)
+
+        ax3.scatter(r_raw, spacing_raw, c='grey', s=4, alpha=0.4, marker='x', label='Raw')
+        ax3.scatter(r_lat, spacing_lat, c='green', s=4, alpha=0.8, label='Lloyd')
+        ax3.set_xlabel('Distance from centre')
+        ax3.set_ylabel('Local spacing')
+        ax3.set_title('Spacing profile')
+        ax3.legend(fontsize=8)
+        ax3.grid(True, alpha=0.3)
+
+    fig.suptitle(title, fontsize=13)
+    plt.tight_layout()
+    plt.show()
+
+    return fig
+
+
+def plot_lattice_3d(
+        dirs_3d: np.ndarray,
+        wireframe: bool = True,
+        color_by: str = 'spacing',
+        title: str = None,
+        point_size: float = 8.0,
+        edge_color: str = '0.4',
+        edge_alpha: float = 0.3,
+        edge_linewidth: float = 0.5,
+        max_edge_factor: float = 2.0,
+        cmap: str = 'plasma_r',
+):
+    """
+    3D scatter/wireframe plot of a lattice on the unit sphere.
+
+    Args:
+        dirs_3d: (N, 3) Unit directions
+        wireframe (bool): If True, draw Delaunay edges between neighbours
+        color_by (str): Optional
+            'spacing': colour points by local inter-ommatidial spacing
+               'psi6': colour by local hexatic order parameter
+        title (str): Optional title
+        point_size: float
+        edge_color (str or color): Colour for wireframe edges
+        edge_alpha: float
+        edge_linewidth: float
+        max_edge_factor (float): Edges longer than this times local spacing are pruned (hull artifacts)
+        cmap (str): Colormap name for scalar colouring
+    """
+
+    fig = plt.figure(figsize=(9, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    pts_2d, fwd, rgt, up = project_to_stereo(dirs_3d)
+
+    edges = None
+    adj = None
+    if (wireframe or color_by in ('spacing', 'psi6')) and len(dirs_3d) > 3:
+        edges = delaunay_edges(pts_2d, max_length_factor=max_edge_factor)
+        adj = [[] for _ in range(len(pts_2d))]
+        for a, b in edges:
+            adj[a].append(b)
+            adj[b].append(a)
+
+    c_values = None
+    c_label = None
+
+    if color_by == 'spacing' and adj is not None:
+        c_values = spacing_from_adjacency(pts_2d, adj)
+        c_label = 'Local spacing (stereo)'
+
+    elif color_by == 'psi6' and adj is not None:
+        c_values = psi6_from_adjacency(pts_2d, adj)
+        c_label = 'Hexatic order (ψ₆)'
+        cmap = 'RdYlGn'
+
+    if c_values is not None:
+        sc = ax.scatter(*dirs_3d.T, s=point_size, c=c_values, cmap=cmap, alpha=0.8, depthshade=False)
+        fig.colorbar(sc, ax=ax, label=c_label, shrink=0.6, pad=0.1)
+
+    else:
+        ax.scatter(*dirs_3d.T, s=point_size, c='0.35', alpha=0.6, depthshade=False)
+
+    if wireframe and edges is not None:
+        segments = []
+        for a, b in edges:
+            segments.append([dirs_3d[a], dirs_3d[b]])
+
+        lc = Line3DCollection(segments, colors=edge_color, linewidths=edge_linewidth, alpha=edge_alpha)
+
+        ax.add_collection3d(lc)
+
+    ax.set_box_aspect([1, 1, 1])
+
+    if title:
+        ax.set_title(title, fontsize=12)
+
+    return fig, ax
 
 
 def plot_eyes_3d(origins, directions, eye_id, title, arrow_length=0.1, show_sphere_projection=False):
@@ -135,4 +281,67 @@ def plot_eyes_3d(origins, directions, eye_id, title, arrow_length=0.1, show_sphe
 
     ax.legend(loc='upper right', fontsize=8)
     plt.tight_layout()
+    plt.show()
+
+
+def plot_density_2d(raw_pts_2d, lattice_pts_2d, rbf_func, mean_spacing):
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(14, 6))
+
+    padding = 0.1
+    x_min, x_max = raw_pts_2d[:, 0].min() - padding, raw_pts_2d[:, 0].max() + padding
+    y_min, y_max = raw_pts_2d[:, 1].min() - padding, raw_pts_2d[:, 1].max() + padding
+    gx, gy = np.meshgrid(np.linspace(x_min, x_max, 100), np.linspace(y_min, y_max, 100))
+    grid_pts = np.column_stack([gx.ravel(), gy.ravel()])
+
+    spacing_vals = rbf_func(grid_pts).reshape(gx.shape) * mean_spacing
+
+    im = ax1.contourf(gx, gy, spacing_vals, levels=20, cmap='viridis_r')
+    ax1.scatter(raw_pts_2d[:, 0], raw_pts_2d[:, 1], c='red', s=2, alpha=0.5, label='Raw data')
+    ax1.set_title("Inter-ommatidial spacing (stereographic)")
+    fig.colorbar(im, ax=ax1, label='Relative spacing')
+    ax1.legend()
+
+    ax2.scatter(lattice_pts_2d[:, 0], lattice_pts_2d[:, 1], s=5, c='black', edgecolors='none')
+    ax2.set_title(f"Procedural lattice")
+    ax2.set_aspect('equal')
+
+    ax3.scatter(raw_pts_2d[:, 0], raw_pts_2d[:, 1], c='black', s=2, alpha=0.5, label='Real ommatidia')
+    ax3.scatter(lattice_pts_2d[:, 0], lattice_pts_2d[:, 1], c='green', s=2, alpha=0.5, label='Procedural lattice')
+    ax3.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_density_3d(positions, directions, title="Visual density map"):
+
+    tree = cKDTree(directions)
+    dists, _ = tree.query(directions, k=7)
+    angular_spacing_deg = np.degrees(np.mean(dists[:, 1:], axis=1))
+
+    fig = plt.figure(figsize=(12, 10))
+    ax = fig.add_subplot(111, projection='3d')
+
+    sc = ax.scatter(positions[:, 0], positions[:, 2], positions[:, 1],
+                    c=angular_spacing_deg, cmap='plasma_r', s=20, alpha=0.8)
+
+    cbar = fig.colorbar(sc, ax=ax, shrink=0.5, aspect=10)
+    cbar.set_label('Inter-ommatidial angle $\Delta\phi$ [degrees]')
+
+    ax.set_xlabel('Lateral (X)')
+    ax.set_ylabel('Anterior-Posterior (Z)')
+    ax.set_zlabel('Dorsal-Ventral (Y)')
+    ax.set_title(title)
+
+    max_range = np.array([positions[:, 0].max() - positions[:, 0].min(),
+                          positions[:, 1].max() - positions[:, 1].min(),
+                          positions[:, 2].max() - positions[:, 2].min()]).max() / 2.0
+    mid_x = (positions[:, 0].max() + positions[:, 0].min()) * 0.5
+    mid_y = (positions[:, 1].max() + positions[:, 1].min()) * 0.5
+    mid_z = (positions[:, 2].max() + positions[:, 2].min()) * 0.5
+    ax.set_xlim(mid_x - max_range, mid_x + max_range)
+    ax.set_ylim(mid_z - max_range, mid_z + max_range)
+    ax.set_zlim(mid_y - max_range, mid_y + max_range)
+
     plt.show()

@@ -6,13 +6,14 @@ from typing import List
 import numpy as np
 from pyglm import glm
 
+from insectvision.utils.math import tangent_frames
+from insectvision.interactive.utils import DisplayMode
+from insectvision.geometry.compound_eyes import ReceptorArray
+
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight
 from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.engine.utils import WORLD_UP, WORLD_RIGHT
-from insectvision.geometry.compound_eyes import ReceptorArray
-from insectvision.interactive.utils import DisplayMode
 
 from .commons import BaseRenderer, BINDING_RECEPTORS, BINDING_COLORS, BINDING_STATE
 
@@ -24,17 +25,19 @@ def light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), sc
     center = glm.vec3(scene_center)
     light_pos = center + light.direction * scene_radius
 
-    dots = np.abs(glm.dot(glm.normalize(light.direction), WORLD_UP))
-    up = np.where(dots > 0.999, WORLD_RIGHT, WORLD_UP)
+    dir_np = np.array(light.direction)
+    _, up_np = tangent_frames(dir_np)
+
+    up = glm.vec3(*up_np)
 
     light_view = glm.lookAt(light_pos, center, up)
     light_proj = glm.ortho(
         -scene_radius, scene_radius,
         -scene_radius, scene_radius,
-        0.01, scene_radius * 2.0)
+        0.01, scene_radius * 2.0
+    )
 
     return light_proj * light_view
-
 
 
 class ShadowMapFBO:

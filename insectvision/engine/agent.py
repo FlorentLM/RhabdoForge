@@ -1,11 +1,8 @@
-import OpenGL
-OpenGL.ERROR_CHECKING = False
-
 from typing import Sequence
 import numpy as np
 from pyglm import glm
 
-from .utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD, DeltaTimeTransformer
+from .world_utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD, DeltaTimeTransformer
 from .movement import TransformMixin
 
 

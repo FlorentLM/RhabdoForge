@@ -1,5 +1,4 @@
 from typing import Any, Union
-import numpy as np
 from numpy.typing import ArrayLike
 from pyglm import glm
 
@@ -62,7 +61,7 @@ class DeltaTimeTransformer:
             trajectory: An instance of geometry.paths.Trajectory
             align_orientation: If True, calls lookat() (or equivalent) to face movement direction.
         """
-        new_pos, tangent = trajectory.advance(self._delta_time)
+        new_pos, tangent, right, up = trajectory.advance(self._delta_time)
 
         self._target.position = new_pos
 
@@ -83,54 +82,3 @@ class DeltaTimeTransformer:
         self._target.move_and_slide(scaled_translation)
         return self
 
-
-##
-
-
-def estimate_radii(pointcloud, k=2):
-    """
-    Estimates the radius for each point in a point cloud such that
-    spheres centered at these points would "touch" their nearest neighbours.
-
-    Args:
-        pointcloud (np.ndarray or trimesh.PointCloud): The input point cloud data.
-        k (int): The number of nearest neighbours to consider (excluding the point itself).
-                           Defaults to 2, which means it looks at the closest distinct point.
-
-    Returns:
-        numpy.ndarray: An array of estimated radii for each point.
-    """
-
-    import trimesh
-    from scipy.spatial import cKDTree
-
-    if isinstance(pointcloud, trimesh.PointCloud):
-        points = pointcloud.vertices
-    elif isinstance(pointcloud, np.ndarray):
-        points = pointcloud
-    else:
-        raise TypeError("Input 'pointcloud' must be a numpy array or trimesh.PointCloud.")
-
-    num_points = points.shape[0]
-    radii = np.zeros(num_points, dtype=np.float32)
-
-    if num_points == 0:
-        return radii
-
-    if k < 1:
-        raise ValueError("k must be at least 1.")
-
-    kdtree = cKDTree(points)
-
-    distances, _ = kdtree.query(points, k=k + 1)
-
-    for i in range(num_points):
-        # check if at least 1 neighbour
-        if len(distances[i]) > 1:
-            closest_neighbour_dist = distances[i][1] # (index 0 is to the point itself, so 0)
-            radii[i] = closest_neighbour_dist / 2.0
-        else:
-            # point has no neighbours (isolated point or very sparse cloud)
-            # or fewer than k + 1 points in total
-            radii[i] = 0.1  # default radius
-    return radii

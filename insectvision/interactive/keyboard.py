@@ -2,7 +2,7 @@ import glfw
 from pyglm import glm
 from typing import Optional, Tuple
 
-from insectvision.engine.utils import WORLD_UP, WORLD_DOWN
+from insectvision.engine.world_utils import WORLD_UP, WORLD_DOWN
 from insectvision.interactive.utils import DisplayMode
 from insectvision.interactive.controls_interface import Controls
 

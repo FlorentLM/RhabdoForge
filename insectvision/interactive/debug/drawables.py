@@ -321,7 +321,7 @@ class DebugPath(LineObject):
 
         src = self.source
         if hasattr(src, 'curve') and hasattr(src, 'progress'):
-            pos, tangent = src.curve.get_sample_at(src.progress * src.curve.total_length)
+            pos, tangent, right, up = src.curve.get_sample_at(src.progress * src.curve.total_length)
             model = glm.translate(glm.mat4(1.0), pos)
             sphere = dp.make_wire_sphere(radius=self.progress_radius, color=self.progress_color)
             r.submit_lines(sphere, model=model)

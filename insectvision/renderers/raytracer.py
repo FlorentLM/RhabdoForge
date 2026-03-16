@@ -8,11 +8,12 @@ from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
+from insectvision.interactive.utils import DisplayMode
+
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
 from insectvision.engine.shader_utils import write_pytinybvh_preamble, ShaderProgram
-from insectvision.interactive.utils import DisplayMode
 
 from .commons import BaseRenderer, TextureViewer,BINDING_RECEPTORS, BINDING_COLORS, BINDING_STATE, BINDING_RAYS_INTERMEDIATE
 

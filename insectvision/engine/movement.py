@@ -4,7 +4,8 @@ import numpy as np
 from numpy.typing import ArrayLike
 from pyglm import glm
 
-from .utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
+from .world_utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
+from insectvision.utils.math import tangent_frames
 
 
 class TransformMixin:
@@ -201,19 +202,30 @@ class TransformMixin:
         """
         Orient to look at a target position.
         """
-        if not (hasattr(self, 'yaw') and hasattr(self, 'pitch')):
-            raise NotImplementedError(
-                f"{self.__class__.__name__} does not support lookat (requires yaw/pitch)"
-            )
-
         target_pos = glm.vec3(target_pos)
 
         if glm.distance(target_pos, self.position) < 1e-6:
             return self
 
         direction = glm.normalize(target_pos - self.position)
-        self.pitch = glm.degrees(glm.asin(glm.clamp(direction.y, -1.0, 1.0)))
-        self.yaw = glm.degrees(glm.atan2(direction.x, -direction.z))
+
+        # Agent-style (Euler angles)
+        if hasattr(self, 'yaw') and hasattr(self, 'pitch'):
+            self.pitch = glm.degrees(glm.asin(glm.clamp(direction.y, -1.0, 1.0)))
+            self.yaw = glm.degrees(glm.atan2(direction.x, -direction.z))
+
+        # Instance-style (transform matrix)
+        elif hasattr(self, 'transform'):
+
+            dir_np = np.array(direction)
+            right_np, up_np = tangent_frames(dir_np)
+
+            self.transform[0] = glm.vec4(*right_np, 0.0)
+            self.transform[1] = glm.vec4(*up_np, 0.0)
+            self.transform[2] = glm.vec4(*dir_np, 0.0)
+
+        else:
+            raise NotImplementedError(f"{self.__class__.__name__} does not support lookat")
 
         return self
 
@@ -344,13 +356,12 @@ class Curve:
         self.cumulative_dists = np.concatenate(([0.0], np.cumsum(self.segment_lengths)))
         self.total_length = self.cumulative_dists[-1]
 
-    def get_sample_at(self, distance: float) -> tuple[glm.vec3, glm.vec3]:
+    def get_sample_at(self, distance: float) -> tuple[glm.vec3, glm.vec3, glm.vec3, glm.vec3]:
         """
         Returns (position, tangent) at a specific distance along the curve.
         """
-        # Clamp distance
-        dist = np.clip(distance, 0.0, self.total_length)
 
+        dist = np.clip(distance, 0.0, self.total_length)
         # idx will is the index of the point *after* the current distance
         idx = np.searchsorted(self.cumulative_dists, dist)
 
@@ -387,7 +398,9 @@ class Curve:
         else:
             tangent_np = np.array([0, 0, 1], dtype=np.float32)
 
-        return glm.vec3(pos_np), glm.vec3(tangent_np)
+        right_np, up_np = tangent_frames(tangent_np)
+
+        return glm.vec3(pos_np), glm.vec3(tangent_np), glm.vec3(right_np), glm.vec3(up_np)
 
 
 class Trajectory:
@@ -402,7 +415,7 @@ class Trajectory:
         self._current_dist = start_offset
         self._finished = False
 
-    def advance(self, delta_time: float) -> tuple[glm.vec3, glm.vec3]:
+    def advance(self, delta_time: float) -> tuple[glm.vec3, glm.vec3, glm.vec3, glm.vec3]:
         """
         Advances the internal state by delta_time * speed.
         Returns (new_position, new_tangent).

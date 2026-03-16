@@ -4,7 +4,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.collections import EllipseCollection
 import matplotlib.patches as patches
 
-from species_models.utils import spherical_to_cartesian
+from insectvision.utils.math import spherical_to_cartesian
 
 
 def plot_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):

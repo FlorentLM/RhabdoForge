@@ -2,7 +2,7 @@ import numpy as np
 from scipy.interpolate import interp1d, Akima1DInterpolator
 from species_models.bee_Sturzl2010.plots_Sturzl2010 import plot_eye_zones, plot_ortho_projection, plot_receptive_fields
 from species_models.plots import plot_eyes_3d
-from species_models.utils import spherical_to_cartesian
+from insectvision.utils.math import spherical_to_cartesian
 
 # Exact replica of model from Stürlz et al., 2010 (10.1088/1748-3182/5/3/036002) with smooth boundary interpolation.
 # Azimuth values taken from https://github.com/BioroboticsLab/bee_view/blob/master/data/azimuth_max.csv

@@ -5,7 +5,7 @@ from numpy.typing import ArrayLike
 import numpy as np
 from pyglm import glm
 
-from .utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
+from .world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
 
 DIR_LIGHT_DTYPE = np.dtype([

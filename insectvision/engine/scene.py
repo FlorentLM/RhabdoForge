@@ -1,22 +1,6 @@
 import OpenGL
 OpenGL.ERROR_CHECKING = False
-from OpenGL.GL import (
-    ctypes,
-    glGenVertexArrays, glGenBuffers,
-    glEnableVertexAttribArray, glVertexAttribPointer, glGetUniformLocation,
-    glBindVertexArray, glBindBuffer, glBindTexture,
-    glDepthFunc, glDrawElements,
-    glUseProgram, glEnable, glDisable,
-    glUniformMatrix4fv, glUniform1i,
-    glActiveTexture, glBufferData,
-    GL_TEXTURE0, GL_TEXTURE_CUBE_MAP, GL_ELEMENT_ARRAY_BUFFER, GL_UNSIGNED_INT, GL_CULL_FACE,
-    GL_TRIANGLES, GL_LESS, GL_LEQUAL, GL_FLOAT, GL_ARRAY_BUFFER, GL_STATIC_DRAW, glGenTextures, glTexImage2D,
-    GL_RGBA, glTexParameteri, GL_TEXTURE_MAG_FILTER, GL_LINEAR, GL_TEXTURE_MIN_FILTER,
-    GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE, GL_TEXTURE_WRAP_R,
-    GL_TEXTURE_CUBE_MAP_POSITIVE_X, GL_TEXTURE_CUBE_MAP_NEGATIVE_X, GL_TEXTURE_CUBE_MAP_POSITIVE_Y,
-    GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, GL_TEXTURE_CUBE_MAP_POSITIVE_Z, GL_TEXTURE_CUBE_MAP_NEGATIVE_Z,
-    GL_SRGB8, GL_UNSIGNED_BYTE
-)
+from OpenGL.GL import *
 
 from typing import Dict, List, Optional, Union, Sequence, Set
 from numpy.typing import ArrayLike
@@ -30,9 +14,9 @@ from pyglm import glm
 from .lights import Sun, Light, DirectionalLight, PointLight, AreaLight
 from .movement import TransformMixin
 from .shader_utils import ShaderProgram
-from .utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
+from .world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
-from insectvision.geometry.primitives import CUBE_VERTICES, CUBE_INDICES
+from insectvision.geometry.meshes import CUBE_VERTICES, CUBE_INDICES
 
 
 def load_cubemap(folder_path):

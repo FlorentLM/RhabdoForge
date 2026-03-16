@@ -8,12 +8,13 @@ from typing import Optional, Tuple, Callable, Dict, List, Union
 
 from .scene import Scene
 from .agent import Agent, OrbitCamera
-from insectvision.interactive.utils import DisplayMode
 
+from insectvision.interactive.utils import DisplayMode
 from insectvision.interactive.controls_interface import Controls
-from insectvision.renderers.commons import BaseRenderer, EyeProjection
 from insectvision.interactive.hud import HUD
 from insectvision.interactive.debug import DebugOverlay
+
+from insectvision.renderers.commons import BaseRenderer, EyeProjection
 
 
 class Context:
@@ -51,14 +52,13 @@ class Context:
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_FRAMEBUFFER_SRGB)  # we want linear (non-gamma corrected)
 
-        self.agent: Optional[Agent] = None
-        self.renderer: Optional[BaseRenderer] = None
-        self.scene: Optional[Scene] = None
-        self.observer: Optional[OrbitCamera] = None
-        self.view_mode: Optional[DisplayMode] = None
-        self.hud: Optional[HUD] = None
-
-        self.debug: Optional[DebugOverlay] = DebugOverlay() if debug_overlay else None
+        self.agent: Optional['Agent'] = None
+        self.renderer: Optional['BaseRenderer'] = None
+        self.scene: Optional['Scene'] = None
+        self.observer: Optional['OrbitCamera'] = None
+        self.view_mode: Optional['DisplayMode'] = None
+        self.hud: Optional['HUD'] = None
+        self.debug: Optional['DebugOverlay'] = DebugOverlay() if debug_overlay else None
 
         self.last_frame_time: float = 0.0
         self._delta_time: float = 1e-12
@@ -252,7 +252,7 @@ class Context:
 
     # Interactive loop
 
-    def run_interactive(self, agent: Agent, scene: Scene, renderer: BaseRenderer,
+    def run_interactive(self, agent: Agent, scene: Scene, renderer: 'BaseRenderer',
                         window_size=None, fps_limit=None, v_sync=None):
         """
         On first call, initialises and shows the window. Then checks if the interactive loop should continue.

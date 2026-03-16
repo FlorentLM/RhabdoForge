@@ -104,90 +104,66 @@ def sphere_vertices(stacks=16, sectors=32):
     return np.array(triangle_indices, dtype=np.float32).flatten()
 
 
-def estimate_lod(n_vertices: int) -> int:
-    """
-    LoD for icosphere subdivision to approximate `nb_vertices`.
-    """
-    if n_vertices < 12:
-        return 1
-    return int(np.round(np.sqrt((n_vertices - 2) / 10.0)))
+## _____________________________________________________________________________________________________________________
 
 
-def icosahedron_faces() -> np.ndarray:
-    """
-    Base z-axis-aligned icosahedron.
-    Returns (20, 3, 3) face vertices.
-    """
+CUBE_VERTICES = np.array((
+    # Position           # UV Coords
 
-    G = (1 + np.sqrt(5)) / 2.0
+    -1.0, -1.0, -1.0,    0.0, 0.0,  # 0
+     1.0, -1.0, -1.0,    1.0, 0.0,  # 1
+     1.0,  1.0, -1.0,    1.0, 1.0,  # 2
+    -1.0,  1.0, -1.0,    0.0, 1.0,  # 3
 
-    p = np.array([
-        [G, -G, -G, G, 1, 1, -1, -1, 0, 0, 0, 0],
-        [0, 0, 0, 0, G, -G, -G, G, 1, 1, -1, -1],
-        [1, 1, -1, -1, 0, 0, 0, 0, G, -G, -G, G]
-    ], dtype=np.float32).T
+    -1.0, -1.0,  1.0,    0.0, 0.0,  # 4
+     1.0, -1.0,  1.0,    1.0, 0.0,  # 5
+     1.0,  1.0,  1.0,    1.0, 1.0,  # 6
+    -1.0,  1.0,  1.0,    0.0, 1.0,  # 7
 
-    p /= np.linalg.norm(p[0])
-    ang = np.arctan(p[0, 0] / p[0, 2])
+    -1.0, -1.0, -1.0,    1.0, 0.0,  # 8
+    -1.0,  1.0, -1.0,    1.0, 1.0,  # 9
+    -1.0,  1.0,  1.0,    0.0, 1.0,  # 10
+    -1.0, -1.0,  1.0,    0.0, 0.0,  # 11
 
-    ca, sa = np.cos(ang), np.sin(ang)
-    rot = np.array([[ca, 0, -sa], [0, 1, 0], [sa, 0, ca]])
-    p = np.inner(rot, p).T
-    p = p[[0, 3, 4, 8, -1, 5, -2, -3, 7, 1, 6, 2]]
+     1.0, -1.0, -1.0,    0.0, 0.0,  # 12
+     1.0,  1.0, -1.0,    0.0, 1.0,  # 13
+     1.0,  1.0,  1.0,    1.0, 1.0,  # 14
+     1.0, -1.0,  1.0,    1.0, 0.0,  # 15
 
-    tri = np.array([
-        [1, 2, 3, 4, 5, 6, 2, 7, 2, 8, 3, 9, 10, 10, 6, 6, 7, 8, 9, 10],
-        [2, 3, 4, 5, 1, 7, 1, 8, 8, 9, 9, 10, 5, 6, 1, 11, 11, 11, 11, 11],
-        [0, 0, 0, 0, 0, 1, 7, 2, 3, 3, 4, 4, 4, 5, 5, 7, 8, 9, 10, 6]
-    ]).T
-    return p[tri]
+    -1.0, -1.0, -1.0,    0.0, 1.0,  # 16
+     1.0, -1.0, -1.0,    1.0, 1.0,  # 17
+     1.0, -1.0,  1.0,    1.0, 0.0,  # 18
+    -1.0, -1.0,  1.0,    0.0, 0.0,  # 19
 
+    -1.0,  1.0, -1.0,    0.0, 0.0,  # 20
+     1.0,  1.0, -1.0,    1.0, 0.0,  # 21
+     1.0,  1.0,  1.0,    1.0, 1.0,  # 22
+    -1.0,  1.0,  1.0,    0.0, 1.0,  # 23
 
-def barycentric_coords(n_subdiv: int) -> np.ndarray:
-    """
-    Barycentric coordinates for subdivided reference triangle.
-    """
+), dtype=np.float32)
 
-    vals = np.linspace(0, 1, n_subdiv + 1)
-    num = int((n_subdiv + 1) * (n_subdiv + 2) / 2)
-    bc = np.zeros((num, 3))
+CUBE_INDICES = np.array((
+    # Back face (-Z)
+    0, 3, 2,   2, 1, 0,
 
-    shifts = np.arange(n_subdiv + 1, 0, -1)
-    starts = np.zeros(n_subdiv + 1, dtype=int)
-    starts[1:] = np.cumsum(shifts[:-1])
-    stops = starts + shifts
+    # Front face (+Z)
+    4, 5, 6,   6, 7, 4,
 
-    for i, (s, e, sh) in enumerate(zip(starts, stops, shifts)):
-        bc[s:e, 0] = vals[sh - 1::-1]
-        bc[s:e, 1] = vals[:sh]
-        bc[s:e, 2] = vals[i]
-    return bc
+    # Left face (-X)
+    11, 10, 9,   9, 8, 11,
 
+    # Right face (+X)
+    12, 13, 14,   14, 15, 12,
 
-def subdivide_icosahedron(n_subdiv: int) -> np.ndarray:
-    """
-    Subdivide icosahedron via barycentric interpolation onto unit sphere.
-    """
+    # Bottom face (-Y)
+    19, 16, 17,   17, 18, 19,
 
-    verts = icosahedron_faces()
-    bary = barycentric_coords(n_subdiv)
+    # Top face (+Y)
+    20, 23, 22,   22, 21, 20
+), dtype=np.uint32)
 
-    all_v = np.einsum('ij,kjl->kil', bary, verts).reshape(-1, 3)
-    all_v /= np.linalg.norm(all_v, axis=1)[:, np.newaxis]
-    _, iu = np.unique(np.round(all_v, 6), axis=0, return_index=True)
+CONE_VERTICES = cone_vertices()
 
-    return all_v[iu].astype(np.float32)
+HEMISPHERE_VERTICES = hemisphere_vertices()
 
-
-def fibonacci_sphere(samples: int) -> np.ndarray:
-    """
-    Uniform points on unit sphere (Fibonacci method).
-    """
-
-    phi = np.pi * (3.0 - np.sqrt(5.0))
-    i = np.arange(samples)
-    y = 1 - (i / float(samples - 1)) * 2
-    r = np.sqrt(1 - y * y)
-    theta = phi * i
-
-    return np.column_stack([np.cos(theta) * r, y, np.sin(theta) * r])
+SPHERE_VERTICES = sphere_vertices()

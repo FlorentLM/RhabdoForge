@@ -5,15 +5,15 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 
+from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT
+from insectvision.utils.math import normalise_vectors, tangent_frames, fibonacci_sphere, icosphere
+
 from .datatypes import RECEPTOR_DTYPE, LENS_DTYPE
 from .kernel import RhabdomereKernel
 from .proxies import Eye, Ommatidium, Cartridge, _ReceptorProxyMixin
-from .eye_utils import tangent_frames
-from insectvision.geometry.geom_utils import estimate_lod, subdivide_icosahedron, fibonacci_sphere
-from ...engine.utils import WORLD_UP, WORLD_RIGHT
 
 
-# Math and build helpers
+# Build helpers
 
 def _get_lens_geometry(
         directions: Optional[ArrayLike],
@@ -30,21 +30,11 @@ def _get_lens_geometry(
         raise ValueError("Requires either 'directions' or 'ommatidia_count'.")
 
     if directions is not None:
-        dirs = np.asarray(directions, dtype=np.float32)
+        dirs = np.asarray(directions)
     else:
-        if icosphere_method:
-            lod = estimate_lod(ommatidia_count)
-            dirs = subdivide_icosahedron(lod).astype(np.float32)
-            if abs(ommatidia_count - len(dirs)) > 1:
-                print(f"Note: {len(dirs)} ommatidia for subdivision level {lod}.")
-        else:
-            dirs = fibonacci_sphere(ommatidia_count).astype(np.float32)
-
+        dirs = icosphere(ommatidia_count) if icosphere_method else fibonacci_sphere(ommatidia_count)
+    dirs = normalise_vectors(dirs).astype(np.float32)
     N = len(dirs)
-
-    # Normalise lens directions
-    norms = np.linalg.norm(dirs, axis=1, keepdims=True)
-    dirs = np.divide(dirs, norms, out=dirs, where=norms != 0)
 
     if positions is not None:
         pos = np.asarray(positions, dtype=np.float32)
@@ -102,8 +92,7 @@ def _get_receptors_geometry(
 
     # Receptor direction: from tip through lens centre = -world_tip
     rec_dirs = -world_tip
-    norms = np.linalg.norm(rec_dirs, axis=1, keepdims=True)
-    np.divide(rec_dirs, norms, out=rec_dirs, where=norms != 0)
+    rec_dirs = normalise_vectors(rec_dirs)
 
     # Receptor position: lens + tip offset
     rec_pos = np.repeat(lens_pos, R, axis=0) + world_tip
@@ -174,6 +163,8 @@ def _get_lattice_properties(
     """
     Estimate local lattice properties from lens positions.
     """
+    # TODO: This needs to use the math and lattice_topology helpers
+
 
     N = len(directions)
     if N <= k:
@@ -183,8 +174,7 @@ def _get_lattice_properties(
     # Physical direction vectors from common centre
     eye_center = np.mean(positions, axis=0)
     phys_dirs = positions - eye_center
-    norms = np.linalg.norm(phys_dirs, axis=1, keepdims=True)
-    np.divide(phys_dirs, norms, out=phys_dirs, where=norms != 0)
+    phys_dirs = normalise_vectors(phys_dirs)
 
     phys_kdtree = KDTree(phys_dirs)
     distances, indices = phys_kdtree.query(phys_dirs, k=k + 1)
@@ -201,13 +191,11 @@ def _get_lattice_properties(
     nb_counts = np.sum(is_immediate, axis=1)
 
     # Local tangent planes
-    dot_up = np.abs(phys_dirs @ WORLD_UP)
-    is_polar = dot_up > 0.999
-    ref_ups = np.where(is_polar[:, np.newaxis], WORLD_RIGHT, WORLD_UP)
-
-    local_y = ref_ups - phys_dirs * np.sum(phys_dirs * ref_ups, axis=1, keepdims=True)
-    local_y /= np.linalg.norm(local_y, axis=1, keepdims=True)
-    local_x = np.cross(local_y, phys_dirs)
+    local_x, local_y = tangent_frames(
+        phys_dirs,
+        world_up=WORLD_UP,
+        world_right=WORLD_RIGHT
+    )
 
     nb_phys = phys_dirs[nb_indices]
     delta = nb_phys - phys_dirs[:, np.newaxis, :]

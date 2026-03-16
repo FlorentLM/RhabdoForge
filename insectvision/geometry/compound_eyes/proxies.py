@@ -3,7 +3,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 
-from insectvision.engine.utils import WORLD_UP, WORLD_RIGHT
+from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT
 from insectvision.geometry.compound_eyes.datatypes import (
     DEFAULT_ANGLE, _CLEAR_EYE_ID, _CLEAR_RECEPTOR_TYPE, _CLEAR_NEIGHBOURS, _CLEAR_LENS_INDEX, _CLEAR_CHIRALITY
 )

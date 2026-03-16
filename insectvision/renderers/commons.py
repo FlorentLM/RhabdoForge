@@ -10,13 +10,14 @@ from typing import Optional
 import numpy as np
 from pyglm import glm
 
-from insectvision.geometry import CONE_VERTICES, SPHERE_VERTICES
+from insectvision.interactive.utils import DisplayMode
+
+from insectvision.geometry.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.geometry.compound_eyes import ReceptorArray, VisualOutput
 
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
 from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.interactive.utils import DisplayMode
 
 
 # Core SSBO bindings (receptors data, rays results, etc)
