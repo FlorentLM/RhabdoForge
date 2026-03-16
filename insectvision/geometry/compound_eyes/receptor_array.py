@@ -449,7 +449,7 @@ class ReceptorArray(_ReceptorProxyMixin):
         self._kdtree_positions = KDTree(rec_pos) if R == 1 else None
         self._eye_cache = {}
 
-        if R == 1:
+        if R > 1:
             self.build_cartridge_map()
         else:
             self._cartridge_map = None
