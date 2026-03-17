@@ -1,7 +1,5 @@
 from typing import Tuple
-
 import numpy as np
-
 from insectvision.compound_eyes import Eye
 
 

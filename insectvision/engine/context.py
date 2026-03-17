@@ -4,7 +4,7 @@ from OpenGL.GL import *
 
 import glfw
 import time
-from typing import Optional, Tuple, Callable, Dict, List, Union
+from typing import TYPE_CHECKING, Optional, Tuple, Callable, Dict, List, Union
 
 from .scene import Scene
 from .agent import Agent, OrbitCamera
@@ -14,7 +14,8 @@ from insectvision.interactive.controls_interface import Controls
 from insectvision.interactive.hud import HUD
 from insectvision.interactive.debug import DebugOverlay
 
-from insectvision.renderers.commons import BaseRenderer, EyeProjection
+if TYPE_CHECKING:
+    from insectvision.renderers.commons import BaseRenderer
 
 
 class Context:
@@ -199,6 +200,8 @@ class Context:
         self.renderer.tiled_mode = not self.renderer.tiled_mode
 
     def toggle_projection_mode(self):
+        from insectvision.renderers.commons import EyeProjection
+
         self.renderer.projection_mode = (
             EyeProjection.Physical
             if self.renderer.projection_mode == EyeProjection.Acceptance

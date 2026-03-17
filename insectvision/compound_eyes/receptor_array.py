@@ -5,12 +5,12 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import KDTree
 
-from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT
-from insectvision.utils.math import normalise_vectors, tangent_frames, fibonacci_sphere, icosphere
-
 from .datatypes import RECEPTOR_DTYPE, LENS_DTYPE
 from .kernel import RhabdomereKernel
 from .proxies import Eye, Ommatidium, Cartridge, _ReceptorProxyMixin
+
+from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT
+from insectvision.utils.math import normalise_vectors, tangent_frames, fibonacci_sphere, icosphere
 
 
 # Build helpers

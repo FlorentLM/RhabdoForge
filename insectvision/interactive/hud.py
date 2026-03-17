@@ -6,12 +6,11 @@ from pathlib import Path
 from collections import deque
 import numpy as np
 import json
-
 from PIL import Image
 from pyglm import glm
 
 from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.renderers import Raytracer, Pathtracer
+
 
 
 def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fonts', color=(255, 255, 255, 255)):
@@ -253,6 +252,7 @@ class HUD:
         self._update_controls_text()
 
     def _update_controls_text(self):
+        from insectvision.renderers import Raytracer
 
         sample_label = "rays" if self.ctx.renderer and isinstance(self.ctx.renderer, Raytracer) else "samples"
 
@@ -290,6 +290,7 @@ class HUD:
         self._controls_fg_verts = np.array(fg_verts, dtype=np.float32) if fg_verts else None
 
     def _update_text_vertices(self):
+        from insectvision.renderers import Raytracer, Pathtracer
 
         current_time = self.ctx.current_time
 
