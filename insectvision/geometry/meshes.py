@@ -167,3 +167,10 @@ CONE_VERTICES = cone_vertices()
 HEMISPHERE_VERTICES = hemisphere_vertices()
 
 SPHERE_VERTICES = sphere_vertices()
+
+
+def plane_vertices(v0, v1, v2, v3):
+    vertices = np.array([v0, v1, v2, v3], dtype=np.float32)
+    indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32)
+    uv_coords = np.array([[0, 0], [0, 1], [1, 1], [1, 0]], dtype=np.float32)
+    return vertices, uv_coords, indices
