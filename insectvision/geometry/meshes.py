@@ -104,6 +104,64 @@ def sphere_vertices(stacks=16, sectors=32):
     return np.array(triangle_indices, dtype=np.float32).flatten()
 
 
+## Full geometry (vertices, uv, indices)
+
+
+def plane_geom(v0, v1, v2, v3):
+    vertices = np.array([v0, v1, v2, v3], dtype=np.float32)
+    indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32)
+    uv_coords = np.array([[0, 0], [0, 1], [1, 1], [1, 0]], dtype=np.float32)
+    return vertices, uv_coords, indices
+
+
+def cylinder_geom(radius, height, segments=64, inwards=False):
+    """
+    Generate an (upright) open cylinder mesh.
+
+    Parameters:
+        radius (float): radius of the cylinder
+        height (float): height of the cylinder
+        segments (int): Number of radial segments
+        inwards (bool): If True, normals face inwards
+    """
+    vertices = []
+    uv_coords = []
+
+    for i in range(segments + 1):
+        u = i / segments
+        theta = 2.0 * np.pi * u
+
+        # circle on the X-Z plane
+        x = radius * np.cos(theta)
+        z = radius * np.sin(theta)
+
+        vertices.append([x, 0.0, z])
+        uv_coords.append([u, 0.0])
+
+        vertices.append([x, height, z])
+        uv_coords.append([u, 1.0])
+
+    vertices = np.array(vertices, dtype=np.float32)
+    uv_coords = np.array(uv_coords, dtype=np.float32)
+
+    indices = []
+    for i in range(segments):
+        idx0 = i * 2
+        idx1 = i * 2 + 1
+        idx2 = (i + 1) * 2
+        idx3 = (i + 1) * 2 + 1
+
+        if inwards:
+            indices.append([idx0, idx2, idx1])
+            indices.append([idx1, idx2, idx3])
+        else:
+            indices.append([idx0, idx1, idx2])
+            indices.append([idx1, idx3, idx2])
+
+    indices = np.array(indices, dtype=np.uint32)
+    return vertices, uv_coords, indices
+
+
 ## _____________________________________________________________________________________________________________________
 
 
@@ -167,10 +225,3 @@ CONE_VERTICES = cone_vertices()
 HEMISPHERE_VERTICES = hemisphere_vertices()
 
 SPHERE_VERTICES = sphere_vertices()
-
-
-def plane_vertices(v0, v1, v2, v3):
-    vertices = np.array([v0, v1, v2, v3], dtype=np.float32)
-    indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32)
-    uv_coords = np.array([[0, 0], [0, 1], [1, 1], [1, 0]], dtype=np.float32)
-    return vertices, uv_coords, indices

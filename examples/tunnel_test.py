@@ -1,97 +1,17 @@
 from dataclasses import dataclass, field
-from typing import Tuple, List, Dict
+from typing import List, Dict
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 from insectvision.engine import Context, Agent, Scene, Asset
-
-from insectvision.geometry.compound_eyes import ReceptorArray, Eye
+from insectvision.compound_eyes import ReceptorArray
 from insectvision.renderers import Raytracer
 from insectvision.renderers.commons import Colormap
 from insectvision.interactive.debug import AxesGizmo, DebugGrid, DebugBox
-
-
-# TODO: These should go to the geometry submodule
-
-def checkerboard_texture(width, height, block_size=1, ratio=0.5):
-    low_res_w = width // block_size
-    low_res_h = height // block_size
-    random_grid = np.random.random((low_res_w, low_res_h))
-    small_pattern = (random_grid < ratio).astype(np.uint8) * 255
-    pattern = np.repeat(np.repeat(small_pattern, block_size, axis=0), block_size, axis=1)
-    return pattern.astype(np.uint8)
-
-
-def create_plane(v0, v1, v2, v3):
-    vertices = np.array([v0, v1, v2, v3], dtype=np.float32)
-    indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32)
-    uv_coords = np.array([[0, 0], [0, 1], [1, 1], [1, 0]], dtype=np.float32)
-    return vertices, uv_coords, indices
-
-
-class HassensteinReichardtEMD:
-    """
-    Elementary Motion Detector based on Hassenstein-Reichardt correlator.
-
-    - GPU temporal accumulation: Photoreceptors (R1-R6) - low-pass integration
-    - Python high-pass: Lamina monopolar cells (L1/L2) - Luminance adaptation
-    - Python delay/correlator: Medulla (e.g., Mi1/Tm3 to T4/T5) - Delay and multiplication
-    """
-
-    def __init__(self,
-            eye: Eye, direction: Tuple[float, float, float],
-            delay_hz: float = 8.0,
-            highpass_hz: float = 2.0
-        ):
-        self.eye = eye
-
-        # Convert Hz to time constants
-        self.tau_delay = 1.0 / (2.0 * np.pi * delay_hz)
-        self.tau_hp = 1.0 / (2.0 * np.pi * highpass_hz)
-
-        self.targets, self.weights = eye.directed_neighbours(
-            direction=direction, k=1, coordinate='cartesian', return_weights=True
-        )
-
-        self._mean_lum = None   # For high-pass L1/L2 adaptation
-        self._delayed_A = None  # LP[A(t)] (correlator)
-        self._delayed_B = None  # LP[B(t)] (correlator)
-
-    def process(self, ommatidia_data: np.ndarray, dt: float) -> np.ndarray:
-        # GPU output (must be already R1-R6 low-pass filtered)
-        eye_data = ommatidia_data[self.eye.global_indices]
-        luminance = eye_data[:, :3].mean(axis=1)
-
-        # Lamina L1/L2 high-pass equivalent (luminance adaptation / contrast)
-        alpha_hp = dt / (self.tau_hp + dt)
-        if self._mean_lum is None:
-            self._mean_lum = luminance.copy()
-        else:
-            self._mean_lum += alpha_hp * (luminance - self._mean_lum)
-
-        # Convert to contrast (removes DC, normalises by local mean)
-        contrast = (luminance - self._mean_lum) / (self._mean_lum + 1e-6)
-
-        # Medulla delay lines
-        alpha_delay = dt / (self.tau_delay + dt)
-
-        signal_A = contrast  # direct channel
-        signal_B = contrast[self.targets]  # neighbour channel
-
-        if self._delayed_A is None:
-            self._delayed_A = signal_A.copy()
-            self._delayed_B = signal_B.copy()
-            return np.zeros(len(self.eye), dtype=np.float32)
-
-        # Update delay lines
-        self._delayed_A += alpha_delay * (signal_A - self._delayed_A)
-        self._delayed_B += alpha_delay * (signal_B - self._delayed_B)
-
-        # Correlator: preferred arm - anti-preferred arm
-        motion = signal_B * self._delayed_A - signal_A * self._delayed_B
-
-        return motion * self.weights
+from insectvision.geometry import plane_geom
+from insectvision.geometry.materials_utils import checkerboard_texture
+from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD
 
 
 @dataclass
@@ -105,24 +25,31 @@ class RunLog:
     yaw: List[float] = field(default_factory=list)
 
 
-## Environment
+def random_tunnel_start(tunnel_width: float, tunnel_height: float, randomise_height=False):
+    start_x = (np.random.rand() - 0.5) * tunnel_width
+    start_y = np.random.rand() * tunnel_height if randomise_height else tunnel_height / 2.0
+    return start_x, start_y, 0.0
+
+
+## Setup test environment
 
 context = Context(window_size=(1280, 720), fps_limit=None, v_sync=False)
-scene = Scene(background_color=(0.15, 0.15, 0.3))
 
+scene = Scene(background_color=(0.15, 0.15, 0.3))
 scene.add_skybox('assets/textures/bright_day_nosun')
 
+# Tunnel props
 w, h, l = 5.0, 5.0, 150.0
-
 block_size = 8
 checkerboard_ratio = 0.5
 texture_res = 512, 15360
 
 
-v_left, uv_left, idx_left = create_plane(
+# Left wall
+v_left, uv_left, idx_left = plane_geom(
     [-w/2.0, 0.0, -l], [-w/2.0,  h, -l], [-w/2.0,  h, 0.0], [-w/2.0, 0.0, 0.0]
 )
-left_pattern = checkerboard_texture(*texture_res, block_size=block_size, ratio=checkerboard_ratio)
+left_pattern = checkerboard_texture(*texture_res, block_size=block_size * 4, ratio=checkerboard_ratio)
 left_wall = Asset.from_arrays(
     name='left_wall',
     vertices=v_left,
@@ -132,8 +59,8 @@ left_wall = Asset.from_arrays(
 )
 scene.add_instance(left_wall)
 
-
-v_right, uv_right, idx_right = create_plane(
+# Right wall
+v_right, uv_right, idx_right = plane_geom(
     [w/2.0, 0.0, 0.0], [w/2.0,  h, 0.0], [w/2.0,  h, -l], [w/2.0, 0.0, -l]
 )
 right_pattern = checkerboard_texture(*texture_res, block_size=block_size, ratio=checkerboard_ratio)
@@ -147,7 +74,8 @@ right_wall = Asset.from_arrays(
 scene.add_instance(right_wall)
 
 
-v_bottom, uv_bottom, idx_bottom = create_plane(
+# Floor
+v_bottom, uv_bottom, idx_bottom = plane_geom(
     [-w/2.0, 0.0, 0.0], [w/2.0,  0.0, 0.0], [w/2.0,  0.0, -l], [-w/2.0, 0.0, -l]
 )
 bottom_pattern = checkerboard_texture(*texture_res, block_size=block_size, ratio=checkerboard_ratio)
@@ -161,7 +89,8 @@ bottom_wall = Asset.from_arrays(
 scene.add_instance(bottom_wall)
 
 
-v_top, uv_top, idx_top = create_plane(
+# Ceiling
+v_top, uv_top, idx_top = plane_geom(
     [-w/2.0, h, 0.0], [w/2.0,  h, 0.0], [w/2.0,  h, -l], [-w/2.0, h, -l]
 )
 top_pattern = checkerboard_texture(*texture_res, block_size=block_size, ratio=checkerboard_ratio)
@@ -174,28 +103,20 @@ top_wall = Asset.from_arrays(
 )
 scene.add_instance(top_wall)
 
-##
 
-eye_array = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
-eye_array.scale(0.01)
+## Setup eye model and agent
 
-eye_array.tau = 0.012
+receptor_array = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+receptor_array.scale(0.01)
+receptor_array.tau = 0.012   # 12 ms time accumulation
 
-
-left_eye = eye_array.eye(0)
-right_eye = eye_array.eye(1)
-
-
-def random_tunnel_start(tunnel_width: float, tunnel_height: float, randomise_height=False):
-    start_x = (np.random.rand() - 0.5) * tunnel_width
-    start_y = np.random.rand() * tunnel_height if randomise_height else tunnel_height / 2.0
-    return start_x, start_y, 0.0
-
+left_eye = receptor_array.eye(0)
+right_eye = receptor_array.eye(1)
 
 agent = Agent()
 
 renderer = Raytracer(
-    receptor_array=eye_array, scene=scene,
+    receptor_array=receptor_array, scene=scene,
     nb_samples=512,
     time_dithering=True,
     quasi_random=True,
@@ -203,32 +124,37 @@ renderer = Raytracer(
 )
 renderer.heatmap_enabled = True
 
+# Add some debug stuff, hide HUD
 context.debug.add(DebugGrid(size=1000.0, step=5.0))
 context.debug.add(AxesGizmo(size=0.4))
 
 for blas in renderer._scene_baked.BLASes:
     context.debug.add(DebugBox(blas))
 
-##
 
-test_direction = (0.0, 0.0, 1.0)  # front to back
+## Run
+
 saved_runs: Dict[str, RunLog] = {}
 modes = ["Non-holonomic (yaw steering)", "Holonomic (lateral shift)"]
 
-
-##
-
 for mode in modes:
-
-    print(f"Run: {mode}")
+    print(f"Running {mode} mode...")
 
     agent.position = random_tunnel_start(w, h, randomise_height=True)
     agent.yaw = 0.0
     agent.pitch = 0.0
     agent.roll = 0.0
 
-    left_emd = HassensteinReichardtEMD(eye=left_eye, direction=test_direction)
-    right_emd = HassensteinReichardtEMD(eye=right_eye, direction=test_direction)
+    left_emd = HassensteinReichardtEMD(
+        eye=left_eye,
+        direction=(-1.0, 0.0, 0.0),  # decreasing Azimuth
+        coordinate='spherical'
+    )
+    right_emd = HassensteinReichardtEMD(
+        eye=right_eye,
+        direction=(1.0, 0.0, 0.0),  # increasing Azimuth
+        coordinate='spherical'
+    )
 
     log = RunLog()
     saved_runs[mode] = log
@@ -237,10 +163,11 @@ for mode in modes:
     flight_speed = 3.5 # m/s
 
     while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
+        context.hud.show = False
 
         context.input()
 
-        dt = 1/120.0
+        dt = 1/200.0
         sim_time += dt
 
         view = renderer.get_visual_output(agent)
@@ -260,7 +187,7 @@ for mode in modes:
         # Controller
         if mode == "Non-holonomic (yaw steering)":
             # Direct proportional control
-            yaw_gain = 25.0
+            yaw_gain = 10.0
             damping_gain = 5.0
 
             turn_rate = error * yaw_gain - agent.yaw * damping_gain
@@ -270,7 +197,7 @@ for mode in modes:
 
         elif mode == "Holonomic (lateral shift)":
             # Negative gain: wall closer (error > 0) -> strafe left (-X)
-            strafe_gain = -1.5
+            strafe_gain = -1.0
             strafe_speed = error * strafe_gain
 
             agent.dt(dt).translate(agent.forward * flight_speed + agent.right * strafe_speed)
@@ -307,7 +234,8 @@ for mode in modes:
 
 context.free()
 
-##
+
+## Plot results
 
 n_runs = len(saved_runs)
 
