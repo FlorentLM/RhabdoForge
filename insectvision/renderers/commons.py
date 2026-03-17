@@ -13,7 +13,7 @@ from pyglm import glm
 from insectvision.interactive.utils import DisplayMode
 
 from insectvision.geometry.meshes import CONE_VERTICES, SPHERE_VERTICES
-from insectvision.geometry.compound_eyes import ReceptorArray, VisualOutput
+from insectvision.compound_eyes import ReceptorArray, VisualOutput
 
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene

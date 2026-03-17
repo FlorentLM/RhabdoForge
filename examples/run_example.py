@@ -2,7 +2,7 @@ import numpy as np
 
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.geometry.meshes import CUBE_VERTICES, CUBE_INDICES
-from insectvision.geometry.compound_eyes import ReceptorArray
+from insectvision.compound_eyes import ReceptorArray
 from insectvision.renderers import Rasterizer, Raytracer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
 

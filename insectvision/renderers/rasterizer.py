@@ -8,7 +8,7 @@ from pyglm import glm
 
 from insectvision.utils.math import tangent_frames
 from insectvision.interactive.utils import DisplayMode
-from insectvision.geometry.compound_eyes import ReceptorArray
+from insectvision.compound_eyes import ReceptorArray
 
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType

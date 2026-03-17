@@ -2,7 +2,7 @@ from pathlib import Path
 
 from insectvision.engine import Context, Agent, Scene
 from insectvision.engine.movement import Curve, Trajectory, extract_obj_curves
-from insectvision.geometry.compound_eyes import ReceptorArray
+from insectvision.compound_eyes import ReceptorArray
 from insectvision.renderers import Raytracer
 
 
