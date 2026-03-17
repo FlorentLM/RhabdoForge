@@ -155,7 +155,7 @@ def _get_acceptance_angles(
     full_acceptance = np.sqrt(diffraction ** 2 + geometric ** 2)    # (R,)
 
     acc_1d = np.tile(full_acceptance, N)
-
+    # TODO: Elliptical acceptance angles here too?
     return np.column_stack([acc_1d, acc_1d])
 
 
@@ -736,9 +736,6 @@ class ReceptorArray(_ReceptorProxyMixin):
         # Add lateral displacement along the world actuation vector
         rot_dx += lat[:, np.newaxis] * act_dx[:, np.newaxis]
         rot_dy += lat[:, np.newaxis] * act_dy[:, np.newaxis]
-
-        if self._local_right is None:
-            self._local_right, self._local_up = tangent_frames(self._lens_directions)
 
         lr = self._local_right[lens_mask]
         lu = self._local_up[lens_mask]
