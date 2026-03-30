@@ -31,10 +31,12 @@ def tangent_frames(directions: ArrayLike, world_up=None, world_right=None):
     is_polar = dots > 0.999
     ref_ups = np.where(is_polar[:, np.newaxis], world_right, world_up)
 
-    right = np.cross(ref_ups, fwd)
+    # Right-handed orthonormal basis
+    right = np.cross(fwd, ref_ups)
     right = normalise_vectors(right)
 
-    up = np.cross(fwd, right)
+    up = np.cross(right, fwd)
+    up = normalise_vectors(up)
 
     if is_1d:
         return right[0], up[0]
@@ -198,11 +200,11 @@ def icosphere(points: int) -> np.ndarray:
     """
     Uniform icosphere (icosahedron subdivision method).
     """
-    lod = np.round(np.sqrt((np.max(points, 12) - 2) / 10.0))
+    lod = int(np.round(np.sqrt((max(points, 12) - 2) / 10.0)))
     dirs = subdivide_icosahedron(lod).astype(np.float32)
 
     if np.abs(points - len(dirs)) > 1:
-        print(f"Note: {len(dirs)} ommatidia for subdivision level {int(lod)}.")
+        print(f"Note: {len(dirs)} ommatidia for subdivision level {lod}.")
 
     return dirs
 
