@@ -398,6 +398,13 @@ class BaseRenderer(ABC):
             self._heatmap_shader = ShaderProgram(vert_path='voronoiHeatmap.vert', frag_path='voronoiHeatmap.frag')
         return self._heatmap_shader
 
+    def update_asset_texture(self, asset: 'Asset'):
+        """
+        Update a texture on the GPU for given Asset.
+        Subclasses should override this
+        """
+        pass
+
     # TODO: These two methods might be replaced / reworked. They will do for now
     def set_heatmap_data(
         self,

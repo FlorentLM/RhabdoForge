@@ -1,4 +1,6 @@
 import OpenGL
+from PIL import Image
+
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
@@ -298,12 +300,14 @@ class RasterMesh:
 
         img = asset.texture_image
         if img is None:
+            self.tex_width = 0
+            self.tex_height = 0
             return 0
 
         # Convert to RGBA just to be sure
         img = img.convert("RGBA")
         img_data = img.tobytes()
-        width, height = img.size
+        self.tex_width, self.tex_height = img.size
 
         tex_id = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, tex_id)
@@ -313,7 +317,7 @@ class RasterMesh:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
 
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, width, height, 0,
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, self.tex_width, self.tex_height, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, img_data)
         glGenerateMipmap(GL_TEXTURE_2D)
 
@@ -446,6 +450,32 @@ class RasterSceneBaker:
                 renderables_list.append(RasterInstance(baked_asset, instance.transform, instance.properties))
 
         return renderables_list
+
+    def update_asset_texture(self, asset: Asset):
+        """Replace a raster mesh texture without rebuilding the VAO."""
+
+        raster_mesh = self._raster_asset_cache.get(asset.id)
+        if not raster_mesh or not raster_mesh.has_texture:
+            print(f"Warning: Asset '{asset.name}' has no baked texture to update.")
+            return
+
+        img = asset.texture_image
+        if img is None:
+            return
+
+        if img.size != (raster_mesh.tex_width, raster_mesh.tex_height):
+            img = img.resize((raster_mesh.tex_width, raster_mesh.tex_height), Image.Resampling.LANCZOS)
+
+        img_data = img.convert("RGBA").tobytes()
+
+        glBindTexture(GL_TEXTURE_2D, raster_mesh.texture)
+        glTexSubImage2D(
+            GL_TEXTURE_2D, 0,
+            0, 0, raster_mesh.tex_width, raster_mesh.tex_height,
+            GL_RGBA, GL_UNSIGNED_BYTE, img_data
+        )
+        glGenerateMipmap(GL_TEXTURE_2D)
+        glBindTexture(GL_TEXTURE_2D, 0)
 
     def free(self):
         for raster_asset in self._raster_asset_cache.values():
@@ -841,6 +871,10 @@ class Rasterizer(BaseRenderer):
 
         if view_mode == DisplayMode.Third_person:
             self._draw_eye_model(point_of_view, agent)
+
+    def update_asset_texture(self, asset: Asset):
+        """Update a texture on the GPU for given Asset."""
+        self._scene_baked.update_asset_texture(asset)
 
     def free(self):
         self._scene_baked.free()

@@ -11,7 +11,7 @@ from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 from insectvision.interactive.utils import DisplayMode
 
 from insectvision.engine.agent import Agent
-from insectvision.engine.scene import Scene, AssetType
+from insectvision.engine.scene import Scene, AssetType, Asset
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
 from insectvision.engine.shader_utils import write_pytinybvh_preamble, ShaderProgram
 
@@ -198,29 +198,29 @@ class RaytracingSceneBaker:
 
         # Collect textures from assets that have them
         texture_images = []
-        asset_to_tex_idx = {}
+        self.asset_to_tex_idx = {}
 
         for asset in mesh_assets:
             if asset.has_texture:
                 img = asset.texture_image  # lazy loads if needed
                 if img is not None:
-                    asset_to_tex_idx[asset.id] = len(texture_images)
+                    self.asset_to_tex_idx[asset.id] = len(texture_images)
                     texture_images.append(img)
                 else:
-                    asset_to_tex_idx[asset.id] = None
+                    self.asset_to_tex_idx[asset.id] = None
             else:
-                asset_to_tex_idx[asset.id] = None
+                self.asset_to_tex_idx[asset.id] = None
 
         # Create texture array if we have any
         if texture_images:
-            target_w, target_h = texture_images[0].size
-            print(f"Creating texture array: {len(texture_images)} textures at {target_w}x{target_h}")
+            self.tex_width, self.tex_height = texture_images[0].size
+            print(f"Creating texture array: {len(texture_images)} textures at {self.tex_width}x{self.tex_height}")
 
             tex_ids = []
             for i, img in enumerate(texture_images):
-                if img.size != (target_w, target_h):
+                if img.size != (self.tex_width, self.tex_height):
                     print(f"  Resizing texture {i} from {img.size}")
-                    img = img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                    img = img.resize((self.tex_width, self.tex_height), Image.Resampling.LANCZOS)
 
                 img_data = img.convert("RGBA").tobytes()
 
@@ -230,7 +230,7 @@ class RaytracingSceneBaker:
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, target_w, target_h, 0,
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, self.tex_width, self.tex_height, 0,
                              GL_RGBA, GL_UNSIGNED_BYTE, img_data)
                 tex_ids.append(tex_id)
 
@@ -242,7 +242,7 @@ class RaytracingSceneBaker:
 
         for asset in mesh_assets:
             idx = self.material_map[asset.id]
-            tex_idx = asset_to_tex_idx[asset.id]
+            tex_idx = self.asset_to_tex_idx[asset.id]
 
             # Texture index (0xFFFFFFFF = no texture)
             mat_data[idx, 0] = tex_idx if tex_idx is not None else 0xFFFFFFFF
@@ -259,6 +259,38 @@ class RaytracingSceneBaker:
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.materials_ssbo)
         glBufferData(GL_SHADER_STORAGE_BUFFER, mat_data.nbytes, mat_data, GL_STATIC_DRAW)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
+    def update_asset_texture(self, asset: 'Asset'):
+        """
+        Update a texture on the GPU for given Asset.
+        (only works if the asset already had a texture when the scene was baked)
+        """
+        if self.tex_array == 0:
+            return
+
+        tex_idx = self.asset_to_tex_idx.get(asset.id)
+        if tex_idx is None:
+            print(f"Warning: Asset '{asset.name}' did not have a texture when the scene was baked. "
+                  f"Texture updates need the asset to be initialised with a texture.")
+            return
+
+        img = asset.texture_image
+        if img is None:
+            return
+
+        if img.size != (self.tex_width, self.tex_height):
+            img = img.resize((self.tex_width, self.tex_height), Image.Resampling.LANCZOS)
+
+        img_data = img.convert("RGBA").tobytes()
+
+        glBindTexture(GL_TEXTURE_2D_ARRAY, self.tex_array)
+        glTexSubImage3D(
+            GL_TEXTURE_2D_ARRAY, 0,
+            0, 0, tex_idx,  # xoffset, yoffset, zoffset (the layer index)
+            self.tex_width, self.tex_height, 1,  # width, height, depth (1 layer deep)
+            GL_RGBA, GL_UNSIGNED_BYTE, img_data
+        )
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
     def _build_BLASes(self):
 
@@ -708,6 +740,10 @@ class Raytracer(BaseRenderer):
     def lights_count(self) -> int:
         baker = self._scene_baked
         return baker.num_directional_lights + baker.num_point_lights + baker.num_area_lights
+
+    def update_asset_texture(self, asset: 'Asset'):
+        """Update a texture on the GPU for given Asset."""
+        self._scene_baked.update_asset_texture(asset)
 
     def estimate_vram_usage(self) -> float:
         """Override base method to provide a more accurate VRAM estimate for the raytracer."""
