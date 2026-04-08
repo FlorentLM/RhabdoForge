@@ -46,7 +46,7 @@ def main():
         # Make the agent follow the trajectory
         agent.dt(context.delta_time).follow(agent_path, align_orientation=True)
 
-        view = eye_renderer.get_visual_output(agent)
+        view = eye_renderer.get_output(agent)
 
         context.draw()
 

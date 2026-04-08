@@ -122,7 +122,7 @@ renderer = Raytracer(
     quasi_random=True,
     enable_shadows=False
 )
-renderer.heatmap_enabled = True
+renderer.overlay_enabled = True
 
 # Add some debug stuff, hide HUD
 context.debug.add(DebugGrid(size=1000.0, step=5.0))
@@ -170,8 +170,7 @@ for mode in modes:
         dt = 1/200.0
         sim_time += dt
 
-        view = renderer.get_visual_output(agent)
-        ommatidia_data = view.per_ommatidium
+        visual_output = renderer.get_output(agent)
 
         left_motion = left_emd.process(ommatidia_data, dt)
         right_motion = right_emd.process(ommatidia_data, dt)
@@ -187,7 +186,7 @@ for mode in modes:
         # Controller
         if mode == "Non-holonomic (yaw steering)":
             # Direct proportional control
-            yaw_gain = 10.0
+            yaw_gain = 30.0
             damping_gain = 5.0
 
             turn_rate = error * yaw_gain - agent.yaw * damping_gain
@@ -217,7 +216,7 @@ for mode in modes:
         log.right_flow.append(mean_right)
         log.yaw.append(float(agent.yaw))
 
-        renderer.set_heatmap_eyes(
+        renderer.set_overlay(
             {left_eye: left_motion, right_eye: right_motion},
             colormap=Colormap.Diverging, compression=1.0
         )
