@@ -8,6 +8,13 @@ def normalise_vectors(vectors: ArrayLike):
     return np.divide(vectors, norms, out=vectors, where=norms != 0)
 
 
+def project_to_tangent(vectors: np.ndarray, normals: np.ndarray) -> np.ndarray:
+    """Project world-space vectors to tangent planes defined by unit normals."""
+
+    dots = np.sum(vectors * normals, axis=-1, keepdims=True)
+    return vectors - dots * normals
+
+
 def tangent_frames(directions: ArrayLike, world_up=None, world_right=None):
     """
     Computes orthonormal basis vectors (right, up) for given direction vectors.
@@ -220,5 +227,3 @@ def fibonacci_sphere(points: int) -> np.ndarray:
     theta = phi * i
 
     return np.column_stack([np.cos(theta) * r, y, np.sin(theta) * r])
-
-
