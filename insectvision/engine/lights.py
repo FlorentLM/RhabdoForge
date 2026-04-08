@@ -59,18 +59,22 @@ class Light(ABC):
                  color: Sequence[float] = (1.0, 1.0, 1.0),
                  intensity: float = 1.0,
                  cast_shadows: bool = True,
-                 enabled: bool = True):
+                 active: bool = True):
         """
         Args:
             color: RGB colour of the light
             intensity: Brightness multiplier
             cast_shadows: Whether this light casts shadows
-            enabled: Whether this light contributes to the scene
+            active: Whether this light contributes to the scene
         """
         self._color = glm.vec3(color)
         self._intensity = max(0.0, intensity)
         self.cast_shadows = cast_shadows
-        self.enabled = enabled
+        self._active = active
+
+    @property
+    def active(self) -> bool:
+        return self._active and self._intensity > 0.0
 
     @property
     @abstractmethod
