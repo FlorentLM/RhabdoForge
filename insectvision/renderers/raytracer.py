@@ -144,6 +144,9 @@ class RaytraceBaker:
         self.dir_lights_ssbo = None
         self.point_lights_ssbo = None
         self.area_lights_ssbo = None
+        self._nb_dir_lights = 0
+        self._nb_point_lights = 0
+        self._nb_area_lights = 0
 
         # CPU-side data
         self.gpu_inst_info: Optional[np.ndarray] = None
@@ -169,9 +172,14 @@ class RaytraceBaker:
     # Main packing methods
 
     def _pack_lights(self):
+
         dir_l = [l for l in self.scene.directional_lights if l.active]
         point_l = [l for l in self.scene.point_lights if l.active]
         area_l = [l for l in self.scene.area_lights if l.active]
+
+        self._nb_dir_lights = len(dir_l)
+        self._nb_point_lights = len(point_l)
+        self._nb_area_lights = len(area_l)
 
         def _pack(lights, dtype):
             return np.concatenate([l.pack() for l in lights]) if lights else np.zeros(1, dtype=dtype)
@@ -631,12 +639,11 @@ class Raytracer(BaseRenderer):
 
         defines = set()
 
-        for count, name in (
+        for count, name in [
             (self._baker._nb_dir_lights, 'DIRECTIONAL'),
             (self._baker._nb_point_lights, 'POINT'),
-            (self._baker._nb_area_lights, 'AREA'),
-        ):
-
+            (self._baker._nb_area_lights, 'AREA')
+        ]:
             if count >= 1:
                 defines.add(f'HAS_{name}_LIGHT')
 
