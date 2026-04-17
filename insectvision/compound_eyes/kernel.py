@@ -12,38 +12,36 @@ class RhabdomereKernel:
 
     The offsets describe each rhabdomere's position behind the lens in the focal plane (micrometres).
 
-    - `nodal_distance_um`: physical distance from the lens inner surface (nodal point) to the rhabdomere tips (at rest).
+    - nodal_distance_um: physical distance from the lens inner surface (nodal point) to the rhabdomere tips (at rest).
         This is the lever arm that converts a lateral displacement (μm) into an angular shift.
         For Drosophila this is ~20-21 μm (Kemppainen et al. 2022, 10.1073/pnas.2109717119; Stavenga 2003, 10.1007/s00359-002-0370-2)
         https://github.com/JuusolaLab/Hyperacute_Stereopsis_paper/blob/main/CG-Compound-Eye/model_init.py#L213
 
-    - `main_axis`: the main structural axis of the bundle (longest axis, R3-R6 in Drosophila).
+    - main_axis: the main structural axis of the bundle (longest axis, R3-R6 in Drosophila).
 
-    - `optic_flow_offset_deg`: angular offset (from the main axis) of the optic flow alignment vector.
+    - optic_flow_offset_deg: angular offset (from the main axis) of the optic flow alignment vector.
         In Drosophila, alignment is about 81° off of the main axis (so roughly aligned with R2-R5 line.
 
-    - `saccade_axis_deg`: angular offset (from the main axis) of the microsaccade actuation direction.
+    - saccade_axis_deg: angular offset (from the main axis) of the microsaccade actuation direction.
         In Drosophila, microsaccade axis is about 28.6° off of the main axis, so roughly aligned with R1-R2-R3 line.
 
-     - `tau_ms`: Temporal integration in milliseconds. The receptor's output is an exponential moving average across
+    - tau_ms: Temporal integration in milliseconds. The receptor's output is an exponential moving average across
         this time. High values create 'motion blur'. Realistic values (0.012 sec = 12 ms for Drosophila) absorb noise
         from rays (particularly useful when used with quasi-random sampling).
 
-    - `sensitivity`: Photometric sensitivity: multiplicative weight on luminance, linear, fixed per receptor
-
-    # TODO: modeling light adaptation would be nice, but it would likely be a separate pass, *after* linear sensitivity
-
+    - sensitivity: Photometric sensitivity: multiplicative weight on luminance, linear, fixed per receptor
     """
+    # TODO: modeling light adaptation would be nice, but it would likely be a separate pass after linear sensitivity
 
     name: str = 'Simple'
 
-    # XY coords of rhabdomere tips in focal plane (R, 2)
+    # XY coords of rhabdomere tips in focal plane
     offsets_um: ArrayLike = field(
         default_factory=lambda: np.zeros((1, 2), dtype=np.float32)  # default single receptor at the centre
     )
 
     # Distance from lens nodal point to rhabdomere tips (lever arm for shift/optics)
-    nodal_distance_um: Optional[float] = None
+    nodal_distance_um: Optional[float] = 21.0
 
     # Rhabdomere waveguide diameters
     diameters_um: Union[float, ArrayLike] = 2.0
@@ -62,7 +60,7 @@ class RhabdomereKernel:
     peripheral_indices: Optional[List[int]] = None
     main_axis_indices: Tuple[int, int] = (0, 0)
 
-    # Tissue alignment axes (relative to main_axis)
+    # Alignment axes (relative to main_axis)
     flow_axis_deg: float = -81.0
     saccade_offset_deg: float = 0.0
 
@@ -108,23 +106,52 @@ class RhabdomereKernel:
         return self.offsets_um[self.center_index]
 
     @property
-    def main_axis_deg(self) -> float:
-        """
-        Angle of the main structural axis (e.g. R3-R6).
-        (0 for single receptors)
-        """
+    def main_axis_rad(self) -> float:
+        """Angle of the main structural axis in radians (e.g. R3-R6)."""
         i1, i2 = self.main_axis_indices
         if i1 == i2 or i2 >= self.count:
             return 0.0
         delta = self.offsets_um[i2] - self.offsets_um[i1]
-        return float(np.degrees(np.arctan2(delta[1], delta[0])))
+        return float(np.arctan2(delta[1], delta[0]))
+
+    @property
+    def main_axis_deg(self) -> float:
+        """Angle of the main structural axis in degrees (e.g. R3-R6)."""
+        return float(np.degrees(self.main_axis_rad))
+
+    @property
+    def flow_axis_rad(self) -> float:
+        """Optic flow alignment axis angle in radians."""
+        return self.main_axis_rad + float(np.deg2rad(self.flow_axis_deg))
+
+    @property
+    def saccade_axis_rad(self) -> float:
+        """Microsaccade actuation axis angle in radians."""
+
+        return self.main_axis_rad + float(np.deg2rad(self.saccade_offset_deg))
 
     @property
     def saccade_axis_deg(self) -> float:
-        """
-        Full actuation angle in the kernel's local frame (degrees).
-        """
+        """Microsaccade actuation axis angle in degrees."""
+
         return self.main_axis_deg + self.saccade_offset_deg
+
+    def rotated_offsets(
+            self,
+            chi: np.ndarray,
+            chirality: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Returns rotated and mirrored offsets by per-lens bundle orientation, for this kernel."""
+
+        cos_chi = np.cos(chi)[:, None]
+        sin_chi = np.sin(chi)[:, None]
+        
+        dx_chiral = self.offsets_um[:, 0][None, :] * chirality[:, None]
+        dy = self.offsets_um[:, 1]
+        
+        rot_dx = cos_chi * dx_chiral - sin_chi * dy[None, :]
+        rot_dy = sin_chi * dx_chiral + cos_chi * dy[None, :]
+        return rot_dx, rot_dy
 
     def plot(self):
 
