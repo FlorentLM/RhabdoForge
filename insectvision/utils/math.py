@@ -35,10 +35,10 @@ def tangent_frames(directions: ArrayLike, world_up=None, world_right=None):
     fwd = normalise_vectors(dirs)
 
     dots = np.abs(fwd @ world_up)
-    is_polar = dots > 0.999
-    ref_ups = np.where(is_polar[:, np.newaxis], world_right, world_up)
 
-    # Right-handed orthonormal basis
+    blend = np.clip((dots - 0.98) / (1.0 - 0.98), 0.0, 1.0)[:, np.newaxis]
+    ref_ups = (1.0 - blend) * world_up + blend * world_right
+
     right = np.cross(fwd, ref_ups)
     right = normalise_vectors(right)
 
