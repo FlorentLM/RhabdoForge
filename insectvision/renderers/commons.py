@@ -223,8 +223,15 @@ class BaseRenderer(ABC):
         # GPU-side history buffer (SSBO)
         self._colours_ssbo = _create_ssbo(data=None, size=frame_bytes * self._batch_size, usage=GL_DYNAMIC_DRAW)
 
-        # PBO and corresponding CPU buffer
-        self._colours_pbo = _create_pbo(data=None, size=frame_bytes, usage=GL_STREAM_READ)
+        # 2 Ping-Pong PBOs
+        self._pbos = [
+            _create_pbo(data=None, size=frame_bytes, usage=GL_STREAM_READ),
+            _create_pbo(data=None, size=frame_bytes, usage=GL_STREAM_READ)
+        ]
+        self._pbo_index = 0
+        self._fences = [0, 0]
+
+        # and corresponding CPU buffer
         self._colours_cpu_buffer = np.zeros((len(self._ra), 4), dtype=np.float32)
 
         # Receptors
@@ -571,23 +578,45 @@ class BaseRenderer(ABC):
 
             bytes_to_read = len(self._ra) * 16
 
+            # Copy to current PBO
+            current_pbo = self._pbos[self._pbo_index]
             glBindBuffer(GL_COPY_READ_BUFFER, self._colours_ssbo)
-            glBindBuffer(GL_COPY_WRITE_BUFFER, self._colours_pbo)
+            glBindBuffer(GL_COPY_WRITE_BUFFER, current_pbo)
             glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, bytes_to_read)
 
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, self._colours_pbo)
+            # Insert a sync fence to know when this copy finishes
+            if self._fences[self._pbo_index]:
+                glDeleteSync(self._fences[self._pbo_index])
+            self._fences[self._pbo_index] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
 
-            ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
-            ctypes.memmove(self._colours_cpu_buffer.ctypes.data, ptr, bytes_to_read)
+            # Read from the next PBO (which holds the previous frame)
+            next_pbo_index = (self._pbo_index + 1) % 2
+            next_pbo = self._pbos[next_pbo_index]
+            fence = self._fences[next_pbo_index]
 
-            glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+            out_array = np.zeros_like(self._colours_cpu_buffer)
 
-            return VisualOutput(self._colours_cpu_buffer.copy(), self._ra)
+            # If there's a fence, the previous frame has data to read
+            if fence:
+                glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000)
 
-            # TODO: this would be true zero-copy. should expose it. (but the buffer needs to be unmapped manually after use of raw_array
-            # raw_array = np.ctypeslib.as_array(ctypes.cast(ptr, ctypes.POINTER(ctypes.c_float)), shape=(len(self._ra), 4))
-            # return VisualOutput(raw_array, self._ra)
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, next_pbo)
+                ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
+
+                if ptr:
+                    ctypes.memmove(self._colours_cpu_buffer.ctypes.data, ptr, bytes_to_read)
+                    glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
+                    out_array = self._colours_cpu_buffer.copy()
+
+                else:
+                    print("Warning: Failed to map PBO. Context lost?")
+
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+
+            self._pbo_index = next_pbo_index
+
+            # TODO: Currently frame 1 returns zeros because it has no history, maybe return None?
+            return VisualOutput(out_array, self._ra)
 
         else:
             # Asynchronous path
@@ -599,8 +628,6 @@ class BaseRenderer(ABC):
             print(f"  > GPU batch is full. Flushing {self._batch_size} frames...")
             batch_result = self.flush()
             return VisualOutput(batch_result, self._ra)
-
-        # TODO: add third 'streaming async' mode with dual PBOs (ping pong) and GL sync fences
 
     def set_overlay(self,
         values: Union[Dict['Eye', np.array], np.array],
@@ -725,17 +752,24 @@ class BaseRenderer(ABC):
     def free(self):
         """Free GPU resources."""
 
+        for f in self._fences:
+            if f:
+                try:
+                    glDeleteSync(f)
+                except Exception:
+                    pass
+
         for buf in (
             self._receptors_data_ssbo,
             self._lens_data_ssbo,
             self._colours_ssbo,
-            self._colours_pbo,
             self._receptors_state_ssbo,
             self._lazy_overlay_ssbo,
             self._cartridge_ssbo,
             self._saccade_ssbo,
             self._lazy_lens_cones_vbo,
             self._lazy_lens_hemisph_vbo,
+            *self._pbos
         ):
             if buf:
                 glDeleteBuffers(1, [buf])
