@@ -45,17 +45,18 @@ void main() {
 
     vec3 output_color;
     float tau = receptor_data[receptor_idx].tau;
+    float radiance = (total_color.r + total_color.g + total_color.b) / 3.0;
 
     if (tau > 0.0) {
         // Exponential moving average (first-order low-pass)
         float alpha = dt / (tau + dt);
         vec3 prev = receptor_state[receptor_idx].rgb;
         output_color = mix(prev, total_color, alpha);
-        receptor_state[receptor_idx] = vec4(output_color, 1.0);
+        receptor_state[receptor_idx] = vec4(output_color, radiance);
     } else {
         output_color = total_color;
     }
 
     uint output_index = (frame_offset * nb_receptors) + receptor_idx;
-    history_data[output_index] = vec4(output_color, 1.0);
+    history_data[output_index] = vec4(output_color, radiance);
 }
