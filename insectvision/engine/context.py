@@ -200,12 +200,12 @@ class Context:
         self.renderer.tiled_mode = not self.renderer.tiled_mode
 
     def toggle_projection_mode(self):
-        from insectvision.renderers.commons import EyeProjection
+        from insectvision.renderers.commons import OmmatidiaProjection
 
         self.renderer.projection_mode = (
-            EyeProjection.Physical
-            if self.renderer.projection_mode == EyeProjection.Acceptance
-            else EyeProjection.Acceptance
+            OmmatidiaProjection.Position
+            if self.renderer.projection_mode == OmmatidiaProjection.OpticalAxis
+            else OmmatidiaProjection.OpticalAxis
         )
 
     def toggle_hud(self):
@@ -213,7 +213,7 @@ class Context:
             self.hud.show = not self.hud.show
 
     def toggle_heatmap(self):
-        self.renderer.heatmap_enabled = not self.renderer.heatmap_enabled
+        self.renderer.overlay_enabled = not self.renderer.overlay_enabled
 
     def toggle_sun_control(self):
         self.sun_control_mode = not self.sun_control_mode
@@ -228,12 +228,12 @@ class Context:
         self.renderer.dither()
 
     def increase_samples(self):
-        if hasattr(self.renderer, 'samples_per_receptor'):
-            self.renderer.samples_per_receptor *= 2
+        if hasattr(self.renderer, 'nb_samples'):
+            self.renderer.nb_samples *= 2
 
     def decrease_samples(self):
-        if hasattr(self.renderer, 'samples_per_receptor'):
-            self.renderer.samples_per_receptor = max(1, self.renderer.samples_per_receptor // 2)
+        if hasattr(self.renderer, 'nb_samples'):
+            self.renderer.nb_samples = max(1, self.renderer.nb_samples // 2)
 
     def increase_pixel_samples(self):
         if hasattr(self.renderer, 'samples_per_pixel'):

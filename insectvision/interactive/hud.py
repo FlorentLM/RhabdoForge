@@ -324,8 +324,8 @@ class HUD:
 
             pos = self.ctx.agent.position
 
-            nb_om = active_renderer.receptor_array.lens_count
-            nb_om_samples = active_renderer.samples_per_receptor
+            nb_om = active_renderer._ra.lens_count
+            nb_om_samples = active_renderer.nb_samples
             nb_px_samples = getattr(active_renderer, 'samples_per_pixel', 1)
 
             samples_pp_str = f', {nb_px_samples}/px' if has_pixels else ''
