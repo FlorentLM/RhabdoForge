@@ -563,18 +563,20 @@ class Skybox:
 
     def draw(self, projection_matrix, view_matrix):
 
+        shader = self.program
+        shader.use()
+
         glDepthFunc(GL_LEQUAL)  # changing depth function to LEQUAL is needed so the 1.0 depth passes
-        glUseProgram(self.program)
 
         # We are inside the skybox so we need to see the back-faces
         glDisable(GL_CULL_FACE)
 
-        glUniformMatrix4fv(glGetUniformLocation(self.program, "projection"), 1, False, glm.value_ptr(projection_matrix))
-        glUniformMatrix4fv(glGetUniformLocation(self.program, "view"), 1, False, glm.value_ptr(view_matrix))
+        glUniformMatrix4fv(shader.get_loc('projection'), 1, False, glm.value_ptr(projection_matrix))
+        glUniformMatrix4fv(shader.get_loc('view'), 1, False, glm.value_ptr(view_matrix))
 
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, self.texture_id)
-        glUniform1i(glGetUniformLocation(self.program, "skybox"), 0)
+        glUniform1i(shader.get_loc('skybox'), 0)
 
         glBindVertexArray(self.vao)
         glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, None)
@@ -582,6 +584,8 @@ class Skybox:
 
         glEnable(GL_CULL_FACE)  # Re-enable culling for the rest of the scene
         glDepthFunc(GL_LESS)  # restore default depth function
+
+        shader.stop()
 
 
 class Scene:
