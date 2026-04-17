@@ -186,15 +186,17 @@ class BaseRenderer(ABC):
     """
 
     def __init__(self,
-            receptor_array: ReceptorArray,
+            receptor_array: 'ReceptorArray',
+            agent: 'Agent',
             time_dithering: bool = True,
             nb_samples: int = 256,
             quasi_random: bool = False,
             batch_size: int = 1
         ):
 
-        self._ra: ReceptorArray = receptor_array
-        self.scene: Scene
+        self._ra: 'ReceptorArray' = receptor_array
+        self.agent: 'Agent' = agent
+        self.scene: 'Scene'
 
         # Estimate needed sizes and available memory
         frame_bytes = len(self._ra) * 16  # 16 bytes per vec4 (RGBA float)
@@ -432,7 +434,7 @@ class BaseRenderer(ABC):
 
         shader.stop()
 
-    def _draw_eye_thirdperson(self, observer_camera, agent):
+    def _draw_eye_thirdperson(self, observer_camera):
         """Third-person eye model (colours or scalar overlay)."""
 
         shader = self._tp_overlay_shader if self.overlay_enabled else self._tp_colour_shader
@@ -442,7 +444,7 @@ class BaseRenderer(ABC):
 
         view_matrix_np = np.array(observer_camera.view, dtype=np.float32)
         projection_matrix_np = np.array(observer_camera.projection, dtype=np.float32)
-        c2w_mat = glm.inverse(agent.view)
+        c2w_mat = glm.inverse(self.agent.view)
 
         glUniformMatrix4fv(shader.get_loc('view'), 1, True, view_matrix_np)
         glUniformMatrix4fv(shader.get_loc('projection'), 1, True, projection_matrix_np)
@@ -538,11 +540,11 @@ class BaseRenderer(ABC):
     # Main public methods
 
     @abstractmethod
-    def draw(self, view_mode: DisplayMode, point_of_view: Agent, agent: Agent):
+    def draw(self, view_mode: DisplayMode, point_of_view: Agent):
         # Each subclass implements its own rendering logic
         raise NotImplementedError
 
-    def get_output(self, agent: Agent, readback: bool = True) -> Optional['VisualOutput']:
+    def get_output(self, readback: bool = True) -> Optional['VisualOutput']:
         """
         Runs one frame of simulation.
             - batch_size = 1: Blocks and returns the current frame's data
@@ -555,7 +557,7 @@ class BaseRenderer(ABC):
             self._dither_counter += 1
 
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-        self._compute_colors(agent)
+        self._compute_colors()
         glFinish()
 
         self._frame_index += 1

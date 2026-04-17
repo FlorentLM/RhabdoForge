@@ -2,14 +2,14 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import Tuple, List, Dict, Optional, Set
+from typing import Tuple, List, Dict, Optional, Set, Union
 import numpy as np
 from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from insectvision.interactive.utils import DisplayMode
-
+from insectvision.compound_eyes import ReceptorArray
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType, Asset
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
@@ -520,8 +520,9 @@ class Raytracer(BaseRenderer):
 
     def __init__(
             self,
-            receptor_array,
-            scene: Scene,
+            receptor_array: 'ReceptorArray',
+            scene: 'Scene',
+            agent: 'Agent',
             time_dithering: bool = True,
             nb_samples: int = 256,
             quasi_random: bool = False,
@@ -537,7 +538,8 @@ class Raytracer(BaseRenderer):
         self._baker = RaytraceBaker(scene)
 
         super().__init__(
-            receptor_array,
+            receptor_array=receptor_array,
+            agent=agent,
             time_dithering=time_dithering,
             nb_samples=nb_samples,
             quasi_random=quasi_random,
@@ -727,7 +729,7 @@ class Raytracer(BaseRenderer):
 
     # Internal rendering logic and draw calls
 
-    def _raytrace_thirdperson(self, view_name: str, agent):
+    def _raytrace_thirdperson(self, view_name: str):
         """Shared dispatch for panoramic / perspective ray-traced views."""
 
         shader = self._get_view_shader(view_name)
@@ -742,18 +744,18 @@ class Raytracer(BaseRenderer):
         self._set_scene_uniforms(shader)
 
         glUniform1i(shader.get_loc('nb_samples'), self._samples_per_pixel)
-        c2w = glm.inverse(agent.view)
+        c2w = glm.inverse(self.agent.view)
         glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w))
 
         if view_name == 'perspective':
-            inv_proj = glm.inverse(agent.projection)
+            inv_proj = glm.inverse(self.agent.projection)
             glUniformMatrix4fv(shader.get_loc('inv_projection'), 1, False, glm.value_ptr(inv_proj))
 
         glDispatchCompute((res[0] + 15) // 16, (res[1] + 15) // 16, 1)
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
         shader.stop()
 
-    def _raytrace_receptors(self, agent):
+    def _raytrace_receptors(self):
         """Pass 1: ray-trace each receptor."""
 
         shader = self.raytrace_shader
@@ -769,7 +771,7 @@ class Raytracer(BaseRenderer):
         glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
         glUniform1i(shader.get_loc('use_quasi_random'), int(self._quasi_random))
 
-        c2w_mat = glm.inverse(agent.view)
+        c2w_mat = glm.inverse(self.agent.view)
         glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
         work_groups = (len(self._ra) * self._nb_samples + 63) // 64
@@ -801,12 +803,12 @@ class Raytracer(BaseRenderer):
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         shader.stop()
 
-    def _compute_colors(self, agent):
+    def _compute_colors(self):
 
         self._tick()
         self._baker.update()
 
-        self._raytrace_receptors(agent)
+        self._raytrace_receptors()
         self._reduction()
 
         # Cleanup bindings
@@ -818,7 +820,7 @@ class Raytracer(BaseRenderer):
 
     # Main public methods
 
-    def draw(self, view_mode: DisplayMode, point_of_view: Agent, agent: Agent = None):
+    def draw(self, view_mode: 'DisplayMode', point_of_view: Union['Agent', 'OrbitCamera']):
 
         if view_mode == DisplayMode.Compound:
             self._draw_eye_firstperson()
@@ -827,13 +829,13 @@ class Raytracer(BaseRenderer):
             view_name = 'panoramic' if view_mode == DisplayMode.Panoramic else 'perspective'
 
             self._baker.update()
-            self._raytrace_thirdperson(view_name, point_of_view)
+            self._raytrace_thirdperson(view_name)
 
             tex_id, _ = self._get_view_texture(view_name)
             self._tex_viewer.draw(tex_id)
 
         if view_mode == DisplayMode.Third_person:
-            self._draw_eye_thirdperson(point_of_view, agent)
+            self._draw_eye_thirdperson(point_of_view)
 
     # Public properties and methods
 
@@ -899,8 +901,9 @@ class Pathtracer(Raytracer):
     """
 
     def __init__(self,
-            receptor_array,
-            scene: Scene,
+            receptor_array: 'ReceptorArray',
+            scene: 'Scene',
+            agent: 'Agent',
             time_dithering: bool = True,
             nb_samples: int = 256,
             quasi_random: bool = False,
@@ -917,6 +920,7 @@ class Pathtracer(Raytracer):
         super().__init__(
             receptor_array=receptor_array,
             scene=scene,
+            agent=agent,
             time_dithering=time_dithering,
             nb_samples=nb_samples,
             quasi_random=quasi_random,

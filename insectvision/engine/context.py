@@ -298,9 +298,11 @@ class Context:
         if renderer is not self.renderer:
             self.renderer = renderer
             renderer.runs_interactive = True
+
         if agent is not self.agent:
             self.agent = agent
             self.observer = OrbitCamera(target=agent, distance=1.5, ratio=self._window_size[0] / self._window_size[1])
+
         if scene is not self.scene:
             self.scene = scene
 
@@ -342,7 +344,7 @@ class Context:
         else:
             pov = self.agent
 
-        self.renderer.draw(self.view_mode, pov, self.agent)
+        self.renderer.draw(self.view_mode, pov)
 
         if self.debug is not None and self.view_mode != DisplayMode.Panoramic: # TODO: debug projection in panoramic mode? idk if useful
             self.debug.draw(view=pov.view, proj=pov.projection)

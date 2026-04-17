@@ -26,7 +26,7 @@ def main():
     agent = Agent(position=(0.0, 0.0, 4.0))
 
     eye_renderer = Raytracer(
-        receptor_array=eye_model, scene=scene,
+        receptor_array=eye_model, scene=scene, agent=agent,
         nb_samples=16,
         time_dithering=False,
         enable_shadows=True
@@ -46,7 +46,7 @@ def main():
         # Make the agent follow the trajectory
         agent.dt(context.delta_time).follow(agent_path, align_orientation=True)
 
-        view = eye_renderer.get_output(agent)
+        view = eye_renderer.get_output()
 
         context.draw()
 

@@ -78,7 +78,7 @@ def main():
     batch_size = BATCH_SIZE if (HEADLESS and USE_ASYNC_BATCHING) else 1
 
     if USE_RAYTRACER:
-        eye_renderer = Raytracer(receptor_array=eye_model, scene=scene,
+        eye_renderer = Raytracer(receptor_array=eye_model, scene=scene, agent=agent,
                                  nb_samples=SAMPLES_PER_RECEPTOR,
                                  time_dithering=True,
                                  quasi_random=True,
@@ -92,7 +92,7 @@ def main():
                 context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
 
     else:
-        eye_renderer = Rasterizer(receptor_array=eye_model, scene=scene,
+        eye_renderer = Rasterizer(receptor_array=eye_model, scene=scene, agent=agent,
                                   nb_samples=SAMPLES_PER_RECEPTOR,
                                   time_dithering=False,
                                   batch_size=batch_size,
@@ -122,7 +122,7 @@ def main():
             dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
 
             # Get sensory data from the compound eye renderer
-            ommatidia_data = eye_renderer.get_output(agent)
+            view = eye_renderer.get_output()
 
             context.draw()  # this draws to the viewport, it can be omitted to run headless
 
@@ -142,11 +142,11 @@ def main():
             agent.translate(agent.forward * 0.05).rotate(yaw_delta=-0.5, pitch_delta=0, roll_delta=0, degrees=False)
 
             # Get sensory data from the compound eye renderer
-            view = eye_renderer.get_output(agent)
+            view = eye_renderer.get_output()
 
             # If the return value is not None, it's a valid chunk of data (either a single frame or a full batch)
             if view is not None:
-                all_ommatidia_data.append(view.per_ommatidium)
+                all_ommatidia_data.append(view.lenses)
 
             nb_frames += 1
 

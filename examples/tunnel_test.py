@@ -116,7 +116,7 @@ right_eye = receptor_array.eye(1)
 agent = Agent()
 
 renderer = Raytracer(
-    receptor_array=receptor_array, scene=scene,
+    receptor_array=receptor_array, scene=scene, agent=agent,
     nb_samples=512,
     time_dithering=True,
     quasi_random=True,
@@ -170,7 +170,7 @@ for mode in modes:
         dt = 1/200.0
         sim_time += dt
 
-        visual_output = renderer.get_output(agent)
+        visual_output = renderer.get_output()
 
         left_motion = left_emd.process(visual_output[left_eye].cartridges, dt)
         right_motion = right_emd.process(visual_output[right_eye].cartridges, dt)
