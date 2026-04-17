@@ -62,14 +62,14 @@ def main():
     # Setup eye model
 
     # eye_model = ReceptorArray(num_ommatidia=1962, force_isotropic=True)
-    eye_model = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+    # eye_model = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
     # eye_model = ReceptorArray.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
-    # eye_model = ReceptorArray.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
+    eye_model = ReceptorArray.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
 
     eye_model.scale(0.01)
 
     # Example setting time adaptation
-    eye_model.tau = 0.012   # 12 ms is good for Drosophila
+    eye_model.receptors.tau = 0.012   # 12 ms is good for Drosophila
 
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))
@@ -80,8 +80,8 @@ def main():
     if USE_RAYTRACER:
         eye_renderer = Raytracer(receptor_array=eye_model, scene=scene,
                                  nb_samples=SAMPLES_PER_RECEPTOR,
-                                 time_dithering=False,
-                                 quasi_random=False,
+                                 time_dithering=True,
+                                 quasi_random=True,
                                  enable_direct=True,
                                  enable_shadows=True,
                                  enable_ambient=True)

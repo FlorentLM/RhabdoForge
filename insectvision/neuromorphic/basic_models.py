@@ -1,5 +1,6 @@
-from typing import Tuple
 import numpy as np
+from numpy.typing import ArrayLike
+
 from insectvision.compound_eyes import Eye
 
 
@@ -13,7 +14,8 @@ class HassensteinReichardtEMD:
     """
 
     def __init__(self,
-            eye: Eye, direction: Tuple[float, float, float],
+            eye: Eye,
+            direction: ArrayLike,
             delay_hz: float = 8.0,
             highpass_hz: float = 2.0,
             coordinate='cartesian'
@@ -24,27 +26,30 @@ class HassensteinReichardtEMD:
         self.tau_delay = 1.0 / (2.0 * np.pi * delay_hz)
         self.tau_hp = 1.0 / (2.0 * np.pi * highpass_hz)
 
-        self.targets, self.weights = eye.directed_neighbours(
+        # Lens-level directed neighbours (eye-local indices)
+        self.targets, self.weights = eye.lenses.directed_neighbours(
             direction=direction, k=1, coordinate=coordinate, return_weights=True
         )
 
-        self._mean_lum = None   # For high-pass L1/L2 adaptation
-        self._delayed_A = None  # LP[A(t)] (correlator)
-        self._delayed_B = None  # LP[B(t)] (correlator)
+        self._mean_lum = None   # High-pass state (L1/L2 adaptation)
+        self._delayed_A = None  # Delay line A (correlator)
+        self._delayed_B = None  # Delay line B (correlator)
 
-    def process(self, ommatidia_data: np.ndarray, dt: float) -> np.ndarray:
+    def process(self, view, dt: float) -> np.ndarray:
+        """
+        Process one frame.
+        """
 
-        # GPU output (must be already low-pass filtered)
-        eye_data = ommatidia_data[self.eye.global_indices]
-        luminance = eye_data[:, :3].mean(axis=1)
+        # Cartridge luminance: neural superposition pools R receptors per column
+        luminance = view[:, :, :3].mean(axis=(1, 2))
 
         # Lamina L1/L2 high-pass equivalent (luminance adaptation / contrast)
         alpha_hp = dt / (self.tau_hp + dt)
         if self._mean_lum is None:
             self._mean_lum = luminance.copy()
             return np.zeros(len(self.eye), dtype=np.float32)
-        else:
-            self._mean_lum += alpha_hp * (luminance - self._mean_lum)
+
+        self._mean_lum += alpha_hp * (luminance - self._mean_lum)
 
         # Convert to contrast (removes DC, normalises by local mean)
         contrast = (luminance - self._mean_lum) / (self._mean_lum + 1e-6)
@@ -52,8 +57,8 @@ class HassensteinReichardtEMD:
         # Medulla delay lines
         alpha_delay = dt / (self.tau_delay + dt)
 
-        signal_A = contrast  # direct channel
-        signal_B = contrast[self.targets]  # neighbour channel
+        signal_A = contrast                    # direct channel
+        signal_B = contrast[self.targets]      # neighbour channel (eye-local indexing)
 
         if self._delayed_A is None:
             self._delayed_A = signal_A.copy()

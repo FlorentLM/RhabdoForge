@@ -49,7 +49,7 @@ texture_res = 512, 15360
 v_left, uv_left, idx_left = plane_geom(
     [-w/2.0, 0.0, -l], [-w/2.0,  h, -l], [-w/2.0,  h, 0.0], [-w/2.0, 0.0, 0.0]
 )
-left_pattern = checkerboard_texture(*texture_res, block_size=block_size * 4, ratio=checkerboard_ratio)
+left_pattern = checkerboard_texture(*texture_res, block_size=block_size, ratio=checkerboard_ratio)
 left_wall = Asset.from_arrays(
     name='left_wall',
     vertices=v_left,
@@ -108,7 +108,7 @@ scene.add_instance(top_wall)
 
 receptor_array = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
 receptor_array.scale(0.01)
-receptor_array.tau = 0.012   # 12 ms time accumulation
+receptor_array.receptors.tau = 0.012   # 12 ms time accumulation
 
 left_eye = receptor_array.eye(0)
 right_eye = receptor_array.eye(1)
@@ -127,9 +127,9 @@ renderer.overlay_enabled = True
 # Add some debug stuff, hide HUD
 context.debug.add(DebugGrid(size=1000.0, step=5.0))
 context.debug.add(AxesGizmo(size=0.4))
-
-for blas in renderer._scene_baked.BLASes:
-    context.debug.add(DebugBox(blas))
+#
+# for blas in renderer._baker.BLASes:
+#     context.debug.add(DebugBox(blas))
 
 
 ## Run
@@ -172,8 +172,8 @@ for mode in modes:
 
         visual_output = renderer.get_output(agent)
 
-        left_motion = left_emd.process(ommatidia_data, dt)
-        right_motion = right_emd.process(ommatidia_data, dt)
+        left_motion = left_emd.process(visual_output[left_eye].cartridges, dt)
+        right_motion = right_emd.process(visual_output[right_eye].cartridges, dt)
 
         mean_left = float(np.mean(left_motion))
         mean_right = float(np.mean(right_motion))
