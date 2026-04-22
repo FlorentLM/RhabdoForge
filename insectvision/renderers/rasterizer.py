@@ -1,11 +1,10 @@
 import OpenGL
-from PIL import Image
-
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import List
+from typing import List, Union
 import numpy as np
+from PIL import Image
 from pyglm import glm
 
 from insectvision.utils.math import tangent_frames
@@ -16,13 +15,11 @@ from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight
 from insectvision.engine.shader_utils import ShaderProgram
+from insectvision.renderers.commons import BaseRenderer
 
-from .commons import BaseRenderer, BINDING_RECEPTORS, BINDING_COLORS, BINDING_STATE
 
-
-##
-
-def light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
+def _get_light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
+    """Computes the orthographic projection and view matrix for a directional light."""
 
     center = glm.vec3(scene_center)
     light_pos = center + light.direction * scene_radius
@@ -50,14 +47,13 @@ class ShadowMapFBO:
     def __init__(self, resolution: int = 2048):
         self.resolution = resolution
         self.fbo_id = 0
-        self.depth_texture = 0
+        self.depth_tex = 0
         self._create()
 
     def _create(self):
-
         # Depth texture with hardware PCF comparison
-        self.depth_texture = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, self.depth_texture)
+        self.depth_tex = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self.depth_tex)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, self.resolution, self.resolution, 0,
                      GL_DEPTH_COMPONENT, GL_FLOAT, None)
 
@@ -76,7 +72,7 @@ class ShadowMapFBO:
         self.fbo_id = glGenFramebuffers(1)
         glBindFramebuffer(GL_FRAMEBUFFER, self.fbo_id)
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                               GL_TEXTURE_2D, self.depth_texture, 0)
+                               GL_TEXTURE_2D, self.depth_tex, 0)
         glDrawBuffer(GL_NONE)
         glReadBuffer(GL_NONE)
 
@@ -100,28 +96,29 @@ class ShadowMapFBO:
         Bind the depth texture for sampling in colour shaders.
         """
         glActiveTexture(GL_TEXTURE0 + unit)
-        glBindTexture(GL_TEXTURE_2D, self.depth_texture)
+        glBindTexture(GL_TEXTURE_2D, self.depth_tex)
 
     def free(self):
-
         if self.fbo_id:
             glDeleteFramebuffers(1, [self.fbo_id])
 
-        if self.depth_texture:
-            glDeleteTextures(1, [self.depth_texture])
+        if self.depth_tex:
+            glDeleteTextures(1, [self.depth_tex])
 
 
 class CubemapFBO:
+    """
+    FBO for rendering the scene into an omnidirectional cubemap.
+    """
 
     def __init__(self, resolution=256):
-
         self.resolution = resolution
 
         # Create FBO and Color cubemap texture
         self.fbo_id = glGenFramebuffers(1)
-        self.texture_id = glGenTextures(1)
+        self.tex_id = glGenTextures(1)
 
-        glBindTexture(GL_TEXTURE_CUBE_MAP, self.texture_id)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, self.tex_id)
         for i in range(6):
             glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGBA8,
                          self.resolution, self.resolution, 0, GL_RGBA, GL_UNSIGNED_BYTE, None)
@@ -136,8 +133,8 @@ class CubemapFBO:
         glGenerateMipmap(GL_TEXTURE_CUBE_MAP)
 
         # Create the Depth Renderbuffer
-        self.depth_buffer_id = glGenRenderbuffers(1)
-        glBindRenderbuffer(GL_RENDERBUFFER, self.depth_buffer_id)
+        self.depth_id = glGenRenderbuffers(1)
+        glBindRenderbuffer(GL_RENDERBUFFER, self.depth_id)
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, self.resolution, self.resolution)
 
         # Attach textures/buffers to the FBO
@@ -145,8 +142,8 @@ class CubemapFBO:
 
         # Attach just one face initially to make the FBO 'complete'
         # The render loop will correctly attach the other faces as needed
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X, self.texture_id, 0)
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self.depth_buffer_id)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X, self.tex_id, 0)
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self.depth_id)
 
         # Check if the FBO is complete
         status = glCheckFramebufferStatus(GL_FRAMEBUFFER)
@@ -166,12 +163,15 @@ class CubemapFBO:
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
     def free(self):
-        glDeleteFramebuffers(1, [self.fbo_id])
-        glDeleteTextures(1, [self.texture_id])
-        glDeleteRenderbuffers(1, [self.depth_buffer_id])
+        if self.fbo_id:
+            glDeleteFramebuffers(1, [self.fbo_id])
+        if self.tex_id:
+            glDeleteTextures(1, [self.tex_id])
+        if self.depth_id:
+            glDeleteRenderbuffers(1, [self.depth_id])
 
 
-class EquirectangularCubemap:
+class PanoramicViewer:
     """
     A simple asset to render a cubemap to the screen as a panoramic (equirectangular) view.
     """
@@ -195,16 +195,13 @@ class EquirectangularCubemap:
             self._vao = glGenVertexArrays(1)
         return self._vao
 
-    def draw(self, cubemap_texture_id):
-        """
-        Draws the panoramic view of the given cubemap.
-        """
-
+    def draw(self, cubemap_tex_id):
+        """Draws the panoramic view of the given cubemap."""
         self.shader.use()
 
         # Bind the cubemap texture we want to inspect
         glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_texture_id)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_tex_id)
         glUniform1i(self.shader.get_loc("cubemap"), 0)
 
         # Draw a full-screen triangle
@@ -217,7 +214,6 @@ class EquirectangularCubemap:
 
     def free(self):
         """Frees the GPU resources (shader and VAO)."""
-
         if self._shader:
             self._shader.free()
         if self._vao:
@@ -232,22 +228,18 @@ class RasterMesh:
     Holds OpenGL resources.
     """
 
-    def __init__(self, asset: Asset, vert_shader_path, frag_shader_path):
+    def __init__(self, asset: Asset, vert_path: str, frag_path: str):
+        self.asset_id = asset.id
+        self.draw_count = asset.indices.size
 
-        self.source_asset_id = asset.id
+        self.shaders = ShaderProgram(vert_path=vert_path, frag_path=frag_path)
 
-        self.vertices = asset.vertices
-        self.indices = asset.indices
-        self.draw_count = self.indices.size
-
-        self.shaders = ShaderProgram(vert_path=vert_shader_path, frag_path=frag_shader_path)
-
-        self.texture = self._load_texture_from_asset(asset)
+        self.texture = self._load_texture(asset)
         self.has_texture = self.texture != 0
         self.base_color = asset.material.base_color.copy()  # Store base colour for fallback
 
-        positions = self.vertices[:, :3]
-        self.normals = self._compute_vertex_normals(positions, self.indices)
+        positions = asset.vertices[:, :3]
+        self.normals = self._compute_normals(positions, asset.indices)
 
         self.vao = glGenVertexArrays(1)
         glBindVertexArray(self.vao)
@@ -255,20 +247,19 @@ class RasterMesh:
         # Vertex Buffer Object (VBO) for vertex data
         self.vbo = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
-        glBufferData(GL_ARRAY_BUFFER, self.vertices.nbytes, self.vertices, GL_STATIC_DRAW)
+        glBufferData(GL_ARRAY_BUFFER, asset.vertices.nbytes, asset.vertices, GL_STATIC_DRAW)
 
         # Element Buffer Object (EBO) for index data
         self.ebo = glGenBuffers(1)
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.ebo)
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, self.indices.nbytes, self.indices, GL_STATIC_DRAW)
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, asset.indices.nbytes, asset.indices, GL_STATIC_DRAW)
 
         # Vertex attribute pointers
-        vertex_size_bytes = self.vertices.itemsize * 5
+        v_stride = asset.vertices.itemsize * 5
         glEnableVertexAttribArray(0)
-        glVertexAttribPointer(0, 3, GL_FLOAT, False, vertex_size_bytes, ctypes.c_void_p(0))
+        glVertexAttribPointer(0, 3, GL_FLOAT, False, v_stride, ctypes.c_void_p(0))
         glEnableVertexAttribArray(1)
-        glVertexAttribPointer(1, 2, GL_FLOAT, False, vertex_size_bytes,
-                              ctypes.c_void_p(self.vertices.itemsize * 3))
+        glVertexAttribPointer(1, 2, GL_FLOAT, False, v_stride, ctypes.c_void_p(asset.vertices.itemsize * 3))
 
         self.nbo = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self.nbo)
@@ -279,8 +270,7 @@ class RasterMesh:
         glBindVertexArray(0)
 
     @staticmethod
-    def _compute_vertex_normals(positions, faces):
-
+    def _compute_normals(positions, faces):
         normals = np.zeros_like(positions, dtype=np.float32)
         flat_faces = faces.ravel().reshape(-1, 3) if faces.ndim == 1 else faces
 
@@ -296,18 +286,17 @@ class RasterMesh:
         normals /= np.maximum(lengths, 1e-8)
         return normals.astype(np.float32)
 
-    def _load_texture_from_asset(self, asset):
-
+    def _load_texture(self, asset):
         img = asset.texture_image
         if img is None:
-            self.tex_width = 0
-            self.tex_height = 0
+            self.tex_w = 0
+            self.tex_h = 0
             return 0
 
         # Convert to RGBA just to be sure
         img = img.convert("RGBA")
         img_data = img.tobytes()
-        self.tex_width, self.tex_height = img.size
+        self.tex_w, self.tex_h = img.size
 
         tex_id = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, tex_id)
@@ -317,7 +306,7 @@ class RasterMesh:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
 
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, self.tex_width, self.tex_height, 0,
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, self.tex_w, self.tex_h, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, img_data)
         glGenerateMipmap(GL_TEXTURE_2D)
 
@@ -326,7 +315,6 @@ class RasterMesh:
         return tex_id
 
     def free(self):
-
         glDeleteVertexArrays(1, [self.vao])
         glDeleteBuffers(1, [self.vbo])
         glDeleteBuffers(1, [self.nbo])
@@ -344,12 +332,11 @@ class RasterPoints:
     Holds OpenGL resources.
     """
 
-    def __init__(self, asset: Asset, vert_shader_path: str, frag_shader_path: str):
-
-        self.source_asset_id = asset.id
+    def __init__(self, asset: Asset, vert_path: str, frag_path: str):
+        self.asset_id = asset.id
         self.draw_count = asset._nb_points
 
-        self.shaders = ShaderProgram(vert_path=vert_shader_path, frag_path=frag_shader_path)
+        self.shaders = ShaderProgram(vert_path=vert_path, frag_path=frag_path)
         self.vao = glGenVertexArrays(1)
         self.vbo = glGenBuffers(1)
 
@@ -373,9 +360,9 @@ class RasterPoints:
         glVertexAttribPointer(color_loc, 3, GL_FLOAT, False, stride, ctypes.c_void_p(packed_data.itemsize * 3))
 
         # Vertex attribute for radius
-        radius_loc = glGetAttribLocation(self.shaders.program_id, "radius")
-        glEnableVertexAttribArray(radius_loc)
-        glVertexAttribPointer(radius_loc, 1, GL_FLOAT, False, stride, ctypes.c_void_p(packed_data.itemsize * 6))
+        rad_loc = glGetAttribLocation(self.shaders.program_id, "radius")
+        glEnableVertexAttribArray(rad_loc)
+        glVertexAttribPointer(rad_loc, 1, GL_FLOAT, False, stride, ctypes.c_void_p(packed_data.itemsize * 6))
 
         glBindVertexArray(0)
 
@@ -395,67 +382,66 @@ class RasterInstance:
         self.properties = properties
 
 
-class RasterSceneBaker:
+class RasterBaker:
     """
     Creates and caches OpenGL vertex arrays (VAOs) for each unique asset in the scene.
     """
 
     def __init__(self, scene: Scene, enable_shadows: bool = False):
-
         self.scene = scene
 
-        self._raster_asset_cache = {}
+        self._cache = {}
 
-        self._shadow_mesh_shader = None
-        self._shadow_points_shader = None
+        self._shadow_mesh = None
+        self._shadow_points = None
 
         self._bake_assets()
 
         if enable_shadows:
-            self._compile_shadow_shaders()
+            self._compile_shadows()
 
     def _bake_assets(self):
         print("Baking rasterizer assets...")
 
         for asset in self.scene.assets.values():
 
-            if asset.id in self._raster_asset_cache:
+            if asset.id in self._cache:
                 continue
 
             if asset.asset_type == AssetType.Mesh:
-                self._raster_asset_cache[asset.id] = RasterMesh(
+                self._cache[asset.id] = RasterMesh(
                     asset, 'meshRaster.vert', 'meshRaster.frag'
                 )
 
             elif asset.asset_type == AssetType.Points:
-                self._raster_asset_cache[asset.id] = RasterPoints(
+                self._cache[asset.id] = RasterPoints(
                     asset, 'pointcloudRaster.vert', 'pointcloudRaster.frag'
                 )
 
         print("Rasterizer asset baking complete.")
 
-    def _compile_shadow_shaders(self):
+    def _compile_shadows(self):
         print("Compiling shadow depth shaders...")
-        self._shadow_mesh_shader = ShaderProgram(vert_path='shadowDepthMesh.vert', frag_path='shadowDepth.frag')
-        self._shadow_points_shader = ShaderProgram(vert_path='shadowDepthPointcloud.vert', frag_path='shadowDepth.frag')
+        self._shadow_mesh = ShaderProgram(vert_path='shadowDepthMesh.vert', frag_path='shadowDepth.frag')
+        self._shadow_points = ShaderProgram(vert_path='shadowDepthPointcloud.vert', frag_path='shadowDepth.frag')
 
     @property
     def renderables(self) -> List[RasterInstance]:
         renderables_list = []
 
         for instance in self.scene.instances:
-            baked_asset = self._raster_asset_cache.get(instance.asset.id)
+            baked_asset = self._cache.get(instance.asset.id)
 
             if baked_asset:
                 renderables_list.append(RasterInstance(baked_asset, instance.transform, instance.properties))
 
         return renderables_list
 
-    def update_asset_texture(self, asset: Asset):
+    def update_texture(self, asset: Asset):
         """Replace a raster mesh texture without rebuilding the VAO."""
+        mesh = self._cache.get(asset.id)
 
-        raster_mesh = self._raster_asset_cache.get(asset.id)
-        if not raster_mesh or not raster_mesh.has_texture:
+        if not mesh or not mesh.has_texture:
             print(f"Warning: Asset '{asset.name}' has no baked texture to update.")
             return
 
@@ -463,31 +449,31 @@ class RasterSceneBaker:
         if img is None:
             return
 
-        if img.size != (raster_mesh.tex_width, raster_mesh.tex_height):
-            img = img.resize((raster_mesh.tex_width, raster_mesh.tex_height), Image.Resampling.LANCZOS)
+        if img.size != (mesh.tex_w, mesh.tex_h):
+            img = img.resize((mesh.tex_w, mesh.tex_h), Image.Resampling.LANCZOS)
 
         img_data = img.convert("RGBA").tobytes()
 
-        glBindTexture(GL_TEXTURE_2D, raster_mesh.texture)
+        glBindTexture(GL_TEXTURE_2D, mesh.texture)
         glTexSubImage2D(
             GL_TEXTURE_2D, 0,
-            0, 0, raster_mesh.tex_width, raster_mesh.tex_height,
+            0, 0, mesh.tex_w, mesh.tex_h,
             GL_RGBA, GL_UNSIGNED_BYTE, img_data
         )
         glGenerateMipmap(GL_TEXTURE_2D)
         glBindTexture(GL_TEXTURE_2D, 0)
 
     def free(self):
-        for raster_asset in self._raster_asset_cache.values():
+        for raster_asset in self._cache.values():
             raster_asset.free()
 
-        self._raster_asset_cache.clear()
+        self._cache.clear()
 
-        if self._shadow_mesh_shader:
-            self._shadow_mesh_shader.free()
+        if self._shadow_mesh:
+            self._shadow_mesh.free()
 
-        if self._shadow_points_shader:
-            self._shadow_points_shader.free()
+        if self._shadow_points:
+            self._shadow_points.free()
 
 
 class Rasterizer(BaseRenderer):
@@ -495,8 +481,9 @@ class Rasterizer(BaseRenderer):
     SHADOW_TEX_UNIT = 1
 
     def __init__(self,
-            receptor_array: ReceptorArray,
-            scene: Scene,
+            receptor_array: 'ReceptorArray',
+            scene: 'Scene',
+            agent: Agent,
             time_dithering: bool = False,
             nb_samples: int = 256,
             quasi_random: bool = False,
@@ -505,60 +492,54 @@ class Rasterizer(BaseRenderer):
             enable_direct: bool = False,
             enable_shadows: bool = False,
             enable_ambient: bool = False,
-            shadow_resolution: int = 2048,
+            shadow_res: int = 2048,
             shadow_radius: float = 50.0
         ):
 
+        self._ra = receptor_array
+        self._baker = RasterBaker(scene, enable_shadows=enable_shadows)
         self.scene = scene
+
+        self._cubemap_fbo = CubemapFBO(resolution=cubemap_res)
+        self._cubemap_sampler = ShaderProgram(comp_path='ommatidiaRasterizer.comp')
+        self._cubemap_proj_mat = Agent(fov=90.0, ratio=1.0).projection  # 90 degrees view proj matrix for each cube face
+
+        # TODO: Move these to base (and the shaders out of the raytracing folder)
+        self.reduction_shader = ShaderProgram(comp_path='shaders/raytracing/raysReduction.comp')
+        self.actuation_shader = ShaderProgram(comp_path='shaders/raytracing/actuation.comp')
 
         # Global lighting controls
         self.enable_direct = enable_direct
         self.enable_shadows = enable_shadows
         self.enable_ambient = enable_ambient
+
         self.ambient_intensity = 0.3
-        self.ambient_color = (0.4, 0.45, 0.5)   # TODO: derive ambient from the cubemap instead
+        self.ambient_color = (0.4, 0.45, 0.5)  # TODO: derive ambient from the cubemap instead
 
-        self._scene_baked = RasterSceneBaker(scene, enable_shadows=self.enable_shadows)
-        self._cubemap_fbo = CubemapFBO(resolution=cubemap_res)
-
-        self._shadow_map = None
-        self._light_space_matrix = glm.mat4(1.0)
+        self._shadow_map = ShadowMapFBO(resolution=shadow_res) if self.enable_shadows else None
         self._shadow_radius = shadow_radius
 
         self.shadow_bias = 0.002
         self.shadow_darkness = 0.3
-        self.shadow_splat_scale = 1.5
+        self.shadow_splat = 1.5
+        self._light_mat = glm.mat4(1.0)
 
-        if self.enable_shadows:
-            self._shadow_map = ShadowMapFBO(resolution=shadow_resolution)
-            print(f"Shadow mapping enabled ({shadow_resolution}x{shadow_resolution}, radius={shadow_radius})")
+        self._baker = RasterBaker(scene, enable_shadows=enable_shadows)
 
-        # super *after* creating the scene for correct VRAM usage computation :)
         super().__init__(
-            receptor_array,
+            receptor_array=receptor_array,
+            agent=agent,
             time_dithering=time_dithering,
             nb_samples=nb_samples,
             quasi_random=quasi_random,
             batch_size=batch_size,
         )
 
-        self._rasterizer_shader = ShaderProgram(comp_path='ommatidiaRasterizer.comp')
+        self._pano_viewer = PanoramicViewer()
 
-        # simple 90 degrees view projection matrix for each cube face
-        self._proj_mat = Agent(fov=90.0, ratio=1.0).projection
+    # Various internal helpers
 
-        self._raster_panoramic = EquirectangularCubemap()
-
-    @property
-    def samples_per_receptor(self):
-        return self._samples_per_receptor
-
-    @samples_per_receptor.setter
-    def samples_per_receptor(self, value):
-        self._samples_per_receptor = int(min(32768, max(1, value)))
-
-    def estimate_vram_usage(self):
-
+    def _estim_vram_use(self):
         # Cubemap is RGBA8 (4 bytes) * 6 faces
         cubemap_mb = (self._cubemap_fbo.resolution ** 2 * 4 * 6) / (1024 * 1024)
 
@@ -570,51 +551,63 @@ class Rasterizer(BaseRenderer):
         scene_assets_mb = 50.0
         return cubemap_mb + shadow_mb + scene_assets_mb
 
-    @property
-    def primary_directional_light(self):
-        for l in self.scene.directional_lights:
-            if l.enabled and l.intensity > 0:
-                return l
-        return None
+    # Internal helpers for GL resource binding
 
-    def _render_shadow_pass(self, agent):
+    def _set_shadow_uniforms(self, shader: ShaderProgram):
+        has_shadow = self.enable_shadows and self._shadow_map and self._primary_light is not None
+        glUniform1i(shader.get_loc('enable_shadows'), int(has_shadow))
 
-        light = self.primary_directional_light
+        if has_shadow:
+            glUniform1f(shader.get_loc('shadow_bias'), self.shadow_bias)
+
+            glUniformMatrix4fv(
+                shader.get_loc('light_space_matrix'),
+                1,
+                False,
+                glm.value_ptr(self._light_mat)
+            )
+
+            self._shadow_map.bind_texture(unit=self.SHADOW_TEX_UNIT)
+            glUniform1i(shader.get_loc('shadow_map'), self.SHADOW_TEX_UNIT)
+
+    # Internal rendering logic and draw calls
+
+    def _render_shadow_pass(self):
+        light = self._primary_light
         if light is None:
             return
 
-        self._light_space_matrix = light_space_matrix(
+        self._light_mat = _get_light_space_matrix(
             light=light,
-            scene_center=(agent.position.x, agent.position.y, agent.position.z),
-            scene_radius=self._shadow_radius)
+            scene_center=(self.agent.position.x, self.agent.position.y, self.agent.position.z),
+            scene_radius=self._shadow_radius
+        )
 
-        lsm_ptr = glm.value_ptr(self._light_space_matrix)
+        lsm_ptr = glm.value_ptr(self._light_mat)
         self._shadow_map.bind()
 
         glEnable(GL_POLYGON_OFFSET_FILL)
         glPolygonOffset(2.0, 4.0)
 
-        renderables_list = self._scene_baked.renderables
+        renderables_list = self._baker.renderables
 
         # Meshes
-        mesh_shader = self._scene_baked._shadow_mesh_shader
+        mesh_shader = self._baker._shadow_mesh
         mesh_shader.use()
 
         glUniformMatrix4fv(mesh_shader.get_loc('light_space_matrix'), 1, False, lsm_ptr)
-        glUniform1i(mesh_shader.get_loc('is_point_cloud'), 0)
 
         for inst in renderables_list:
             if not isinstance(inst.asset, RasterMesh):
                 continue
-            glUniformMatrix4fv(mesh_shader.get_loc('model'), 1, False,
-                               glm.value_ptr(inst.transform))
+            glUniformMatrix4fv(mesh_shader.get_loc('model'), 1, False, glm.value_ptr(inst.transform))
             glBindVertexArray(inst.asset.vao)
             glDrawElements(GL_TRIANGLES, inst.asset.draw_count, GL_UNSIGNED_INT, None)
 
         mesh_shader.stop()
 
         # Point clouds (splats)
-        pts_shader = self._scene_baked._shadow_points_shader
+        pts_shader = self._baker._shadow_points
         pts_shader.use()
 
         glUniformMatrix4fv(pts_shader.get_loc('light_space_matrix'), 1, False, lsm_ptr)
@@ -625,10 +618,9 @@ class Rasterizer(BaseRenderer):
         for inst in renderables_list:
             if not isinstance(inst.asset, RasterPoints):
                 continue
-            radius_scale = inst.properties.get('radius_scale', 1.0) * pixel_mult * self.shadow_splat_scale
-            glUniform1f(pts_shader.get_loc('radius_scale'), radius_scale)
-            glUniformMatrix4fv(pts_shader.get_loc('model'), 1, False,
-                               glm.value_ptr(inst.transform))
+            rad_scale = inst.properties.get('radius_scale', 1.0) * pixel_mult * self.shadow_splat
+            glUniform1f(pts_shader.get_loc('radius_scale'), rad_scale)
+            glUniformMatrix4fv(pts_shader.get_loc('model'), 1, False, glm.value_ptr(inst.transform))
             glBindVertexArray(inst.asset.vao)
             glDrawArrays(GL_POINTS, 0, inst.asset.draw_count)
 
@@ -640,45 +632,26 @@ class Rasterizer(BaseRenderer):
 
         self._shadow_map.unbind()
 
-    def _set_shadow_uniforms(self, shader: ShaderProgram):
-
-        has_shadow = self.enable_shadows and self._shadow_map and self.primary_directional_light is not None
-        glUniform1i(shader.get_loc('enable_shadows'), int(has_shadow))
-
-        if has_shadow:
-            glUniform1f(shader.get_loc('shadow_bias'), self.shadow_bias)
-
-            glUniformMatrix4fv(
-                shader.get_loc('light_space_matrix'),
-                1,
-                False,
-                glm.value_ptr(self._light_space_matrix)
-            )
-
-            self._shadow_map.bind_texture(unit=self.SHADOW_TEX_UNIT)
-            glUniform1i(shader.get_loc('shadow_map'), self.SHADOW_TEX_UNIT)
-
-    def _render_instance(self, instance: RasterInstance, view_matrix, projection_matrix):
+    def _render_instance(self, inst: RasterInstance, view_mat, proj_mat):
         """Renders a single RasterInstance."""
-
-        asset = instance.asset
+        asset = inst.asset
         asset.shaders.use()
 
         glBindVertexArray(asset.vao)
 
-        cam_mat = projection_matrix * view_matrix
+        cam_mat = proj_mat * view_mat
         glUniformMatrix4fv(asset.shaders.get_loc("camera"), 1, False, glm.value_ptr(cam_mat))
-        glUniformMatrix4fv(asset.shaders.get_loc("model"), 1, False, glm.value_ptr(instance.transform))
+        glUniformMatrix4fv(asset.shaders.get_loc("model"), 1, False, glm.value_ptr(inst.transform))
 
         if isinstance(asset, RasterMesh):
 
             # Normal matrix for lighting
-            normal_mat = glm.transpose(glm.inverse(glm.mat3(instance.transform)))
-            normal_np = np.array(normal_mat, dtype=np.float32).reshape(3, 3)
-            glUniformMatrix3fv(asset.shaders.get_loc("normal_matrix"), 1, True, normal_np)
+            norm_mat = glm.transpose(glm.inverse(glm.mat3(inst.transform)))
+            norm_np = np.array(norm_mat, dtype=np.float32).reshape(3, 3)
+            glUniformMatrix3fv(asset.shaders.get_loc("normal_matrix"), 1, True, norm_np)
 
             # Directional light (independent of shadows)
-            light = self.primary_directional_light if self.enable_direct else None
+            light = self._primary_light if self.enable_direct else None
             glUniform1i(asset.shaders.get_loc("enable_ambient"), int(light is not None))
 
             if light is not None:
@@ -706,8 +679,8 @@ class Rasterizer(BaseRenderer):
             glEnable(GL_PROGRAM_POINT_SIZE)
 
             pixel_mult = 25.0
-            radius_scale = instance.properties.get('radius_scale', 1.0) * pixel_mult
-            glUniform1f(asset.shaders.get_loc("radius_scale"), radius_scale)
+            rad_scale = inst.properties.get('radius_scale', 1.0) * pixel_mult
+            glUniform1f(asset.shaders.get_loc("radius_scale"), rad_scale)
 
             self._set_shadow_uniforms(asset.shaders)
             glUniform1f(asset.shaders.get_loc("shadow_darkness"), self.shadow_darkness)
@@ -719,73 +692,70 @@ class Rasterizer(BaseRenderer):
         glBindVertexArray(0)
         asset.shaders.stop()
 
-    def _render_to_cubemap(self, agent):
+    def _render_to_cubemap(self):
         """Pass 1: renders to the cubemap."""
 
         main_viewport = glGetIntegerv(GL_VIEWPORT)
 
         if self.enable_shadows and self._shadow_map:
-            self._render_shadow_pass(agent)
+            self._render_shadow_pass()
 
         self._cubemap_fbo.bind()
 
-        # look-at directions and 'up' vectors for each face must correspond to the OpenGL cubemap coordinate system:
-        #  - GL_TEXTURE_CUBE_MAP_POSITIVE_X  ->  Right
-        #  - GL_TEXTURE_CUBE_MAP_NEGATIVE_X  ->  Left
-        #  - GL_TEXTURE_CUBE_MAP_POSITIVE_Y  ->  Up
-        #  - GL_TEXTURE_CUBE_MAP_NEGATIVE_Y  ->  Down
-        #  - GL_TEXTURE_CUBE_MAP_POSITIVE_Z  ->  Back
-        #  - GL_TEXTURE_CUBE_MAP_NEGATIVE_Z  ->  Front
-        #
-        # Note: the agent's local vectors are used to maintain its orientation (roll)
+        # Look-at directions and 'up' vectors for each face:
+
+        # GL_TEXTURE_CUBE_MAP_POSITIVE_X  ->  Right
+        # GL_TEXTURE_CUBE_MAP_NEGATIVE_X  ->  Left
+        # GL_TEXTURE_CUBE_MAP_POSITIVE_Y  ->  Up
+        # GL_TEXTURE_CUBE_MAP_NEGATIVE_Y  ->  Down
+        # GL_TEXTURE_CUBE_MAP_POSITIVE_Z  ->  Back
+        # GL_TEXTURE_CUBE_MAP_NEGATIVE_Z  ->  Front
 
         look_dirs = [
-            agent.right,  # For +X face (index 0), we look to the agent's right
-            agent.left,  # For -X face (index 1), we look to the agent's left
-            agent.up,  # For +Y face (index 2), we look up
-            agent.down,  # For -Y face (index 3), we look down
-            agent.backward,  # For +Z face (index 4), we look backward
-            agent.forward,  # For -Z face (index 5), we look forward
+            self.agent.right,     # For +X, camera looks towards the agent's right
+            self.agent.left,      # For -X, camera looks towards the agent's left
+            self.agent.up,        # For +Y, camera looks up
+            self.agent.down,      # For -Y, camera looks down
+            self.agent.backward,  # For +Z, camera looks backward
+            self.agent.forward,   # For -Z, camera looks forward
         ]
 
-        # The 'up' vectors for each look-at direction
         ups = [
-            agent.down,  # Up for looking right/left is agent's down
-            agent.down,
-            agent.backward,  # Up for looking up is agent's backward
-            agent.forward,  # Up for looking down is agent's forward
-            agent.down,  # Up for looking backward/forward is agent's down
-            agent.down,
+            self.agent.down,      # Up for looking right/left is agent's down
+            self.agent.down,
+            self.agent.backward,  # Up for looking up is agent's backward
+            self.agent.forward,   # Up for looking down is agent's forward
+            self.agent.down,      # Up for looking backward/forward is agent's down
+            self.agent.down,
         ]
 
-        bg = self.scene.background_color
-        glClearColor(bg[0], bg[1], bg[2], 1.0)
+        r, g, b = self.scene.background_color
+        glClearColor(r, g, b, 1.0)
 
         for i in range(6):
-            # Attach the correct face of the cubemap texture for rendering
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                    GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
-                                   self._cubemap_fbo.texture_id, 0)
+                                   self._cubemap_fbo.tex_id, 0)
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
             view = glm.lookAt(
-                glm.vec3(agent.position),
-                glm.vec3(agent.position + look_dirs[i]),  # target point is eye + direction
+                glm.vec3(self.agent.position),
+                glm.vec3(self.agent.position + look_dirs[i]),  # target point is eye + direction
                 glm.vec3(ups[i])
             )
 
             # Draw skybox first into the cubemap face
-            if self._scene_baked.scene.skybox is not None:
-                self._scene_baked.scene.skybox.draw(self._proj_mat, view)
+            if self._baker.scene.skybox is not None:
+                self._baker.scene.skybox.draw(self._cubemap_proj_mat, view)
 
-            for instance in self._scene_baked.renderables:
-                self._render_instance(instance, view, self._proj_mat)
+            for instance in self._baker.renderables:
+                self._render_instance(instance, view, self._cubemap_proj_mat)
 
         self._cubemap_fbo.unbind()
 
         # Regenerate mipmaps after rendering to the cubemap
-        glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.texture_id)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.tex_id)
         glGenerateMipmap(GL_TEXTURE_CUBE_MAP)
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
 
@@ -793,95 +763,95 @@ class Rasterizer(BaseRenderer):
         glViewport(main_viewport[0], main_viewport[1], main_viewport[2], main_viewport[3])
 
     def _sample_cubemap(self):
-        """Pass 2: samples the cubemap."""
+        """Pass 2: samples the cubemap into the intermediate ray_results buffer."""
+        shader = self._cubemap_sampler
+        shader.use()
 
-        self._rasterizer_shader.use()
+        # Dynamic buffer for actuated directions and static (for positions)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
 
-        glUniform1i(self._rasterizer_shader.get_loc('nb_receptors'), self.total_receptors)
-        glUniform1i(self._rasterizer_shader.get_loc('nb_samples'), self.samples_per_receptor)
-        glUniform1f(self._rasterizer_shader.get_loc('time'), float(self._dither_counter))
+        # We write to the same intermediate buffer the raytracer uses
+        # TODO: Things must be moved to BaseRenderer
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.ray_results_ssbo)
 
-        # Quasi-random sampling
-        glUniform1i(self._rasterizer_shader.get_loc('use_quasi_random'), int(self._quasi_random))
-
-        # Photoreceptor temporal integration
-        glUniform1f(self._rasterizer_shader.get_loc('dt'), self._dt)
-
-        # Write into the history buffer circularly
-        frame_offset = self._frame_index % self._batch_size
-        glUniform1i(self._rasterizer_shader.get_loc('frame_index'), frame_offset)
-
-        # Bind input cubemap (texture unit 0)
         glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.texture_id)
-        glUniform1i(self._rasterizer_shader.get_loc('scene_cubemap'), 0)
+        glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.tex_id)
+        glUniform1i(shader.get_loc('scene_cubemap'), 0)
 
-        # Bind SSBOs
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, self.receptors_data_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, self.final_colors_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_STATE, self.receptor_state_ssbo)
+        glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
+        glUniform1f(shader.get_loc('dither_counter'), float(self._dither_counter))
 
-        # Dispatch the compute shader
-        # Divide the total number of receptors by the workgroup size (64)
-        work_groups_x = (self.total_receptors + 63) // 64
-        glDispatchCompute(work_groups_x, 1, 1)
-
-        # Wait for compute shader to finish writing to the SSBO
+        # Dispatch: one thread per sample (TotalReceptors * nb_samples)
+        total_work = len(self._ra) * self.nb_samples
+        glDispatchCompute((total_work + 63) // 64, 1, 1)
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+        shader.stop()
 
-        self._rasterizer_shader.stop()
-
-    def _compute_colors(self, agent):
-        """The core receptors rendering logic."""
-
+    def _compute_colors(self):
         self._tick()
+        self._render_to_cubemap()
 
-        # Pass 1: Render to cubemap
-        self._render_to_cubemap(agent)
-
-        # Pass 2: Sample from cubemap
         self._sample_cubemap()
+        self._reduction()
 
-        # Unbind resources
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, 0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, 0)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_STATE, 0)
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
+        self._actuation()
 
-    def draw(self, view_mode: DisplayMode, point_of_view: Agent, agent: Agent):
+    # Main public methods
+
+    def draw(self, view_mode: DisplayMode, point_of_view: Union['Agent', 'OrbitCamera']):
 
         if view_mode in (DisplayMode.Perspective, DisplayMode.Third_person):
             if self.enable_shadows and self._shadow_map:
-                self._render_shadow_pass(agent)
+                self._render_shadow_pass()
 
         if view_mode == DisplayMode.Compound:
-            self._draw_voronoi()
+            self._draw_eye_firstperson()
 
         elif view_mode == DisplayMode.Panoramic:
-            self._raster_panoramic.draw(self._cubemap_fbo.texture_id)
+            self._pano_viewer.draw(self._cubemap_fbo.tex_id)
 
         elif view_mode == DisplayMode.Perspective or view_mode == DisplayMode.Third_person:
 
-            if self._scene_baked.scene.skybox is not None:
-                self._scene_baked.scene.skybox.draw(point_of_view.projection, point_of_view.view)
+            if self._baker.scene.skybox is not None:
+                self._baker.scene.skybox.draw(point_of_view.projection, point_of_view.view)
 
-            for instance in self._scene_baked.renderables:
+            for instance in self._baker.renderables:
                 self._render_instance(instance, point_of_view.view, point_of_view.projection)
 
         if view_mode == DisplayMode.Third_person:
-            self._draw_eye_model(point_of_view, agent)
+            self._draw_eye_thirdperson(point_of_view)
 
-    def update_asset_texture(self, asset: Asset):
+    # Dynamic updates
+
+    def update_texture(self, asset: Asset):
         """Update a texture on the GPU for given Asset."""
-        self._scene_baked.update_asset_texture(asset)
+        self._baker.update_texture(asset)
+
+    # Public properties and methods
+
+    @property
+    def nb_samples(self):
+        return self._nb_samples
+
+    @nb_samples.setter
+    def nb_samples(self, value):
+        self._nb_samples = int(min(32768, max(1, value)))
+
+    @property
+    def _primary_light(self):
+        for l in self.scene.directional_lights:
+            if l.active and l.intensity > 0:
+                return l
+        return None
+
+    # Cleanup
 
     def free(self):
-        self._scene_baked.free()
-
-        self._rasterizer_shader.free()
+        self._baker.free()
+        self._cubemap_sampler.free()
         self._cubemap_fbo.free()
-        self._raster_panoramic.free()
+        self._pano_viewer.free()
 
         if self._shadow_map:
             self._shadow_map.free()

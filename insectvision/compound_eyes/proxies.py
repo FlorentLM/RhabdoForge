@@ -87,14 +87,12 @@ class LensView:
     @property
     def positions(self) -> np.ndarray:
         """Lens centre positions in head/world space."""
-
-        return self._ra._lens_positions[self._gi]
+        return self._ra.rcpt_static_data['position'][self._gi]
 
     @property
     def directions(self) -> np.ndarray:
         """Optical axis unit vectors."""
-
-        return self._ra._lens_directions[self._gi]
+        return self._ra.rcpt_dynamic_data['direction'][self._gi]
 
     @property
     def bundle_orientations(self) -> np.ndarray:
@@ -105,10 +103,8 @@ class LensView:
     @property
     def chirality(self) -> np.ndarray:
         """+1 normal, -1 mirrored (one value per lens)."""
-
         first_rec = self._gi * self._ra.receptor_count
-        is_mirrored = (self._ra.receptor_data['metadata'][first_rec] >> 27) & 0x01
-
+        is_mirrored = (self._ra.rcpt_static_data['metadata'][first_rec] >> 27) & 0x01
         return np.where(is_mirrored, -1, 1)
 
     @property
@@ -330,51 +326,51 @@ class ReceptorView:
 
     @property
     def positions(self) -> np.ndarray:
-        return self._ra.receptor_data['position'][self._gi]
+        return self._ra.rcpt_static_data['position'][self._gi]
 
     @positions.setter
     def positions(self, value):
-        self._ra.receptor_data['position'][self._gi] = np.asarray(value, dtype=np.float32)
+        self._ra.rcpt_static_data['position'][self._gi] = np.asarray(value, dtype=np.float32)
         self._ra.dirty_mask[self._gi] = True
 
     @property
     def directions(self) -> np.ndarray:
-        return self._ra.receptor_data['direction'][self._gi]
+        return self._ra.rcpt_dynamic_data['direction'][self._gi]
 
     @directions.setter
     def directions(self, value):
         d = normalise_vectors(np.atleast_2d(np.asarray(value, dtype=np.float32)))
-        self._ra.receptor_data['direction'][self._gi] = d
+        self._ra.rcpt_dynamic_data['direction'][self._gi] = d
         self._ra.dirty_mask[self._gi] = True
 
     # Optics
 
     @property
     def acceptance_minor(self) -> np.ndarray:
-        return self._ra.receptor_data['acc_axes'][self._gi, 0]
+        return self._ra.rcpt_dynamic_data['acc_axes'][self._gi, 0]
 
     @acceptance_minor.setter
     def acceptance_minor(self, value):
-        self._ra.receptor_data['acc_axes'][self._gi, 0] = value
+        self._ra.rcpt_dynamic_data['acc_axes'][self._gi, 0] = value
         self._ra.dirty_mask[self._gi] = True
 
     @property
     def acceptance_major(self) -> np.ndarray:
-        return self._ra.receptor_data['acc_axes'][self._gi, 1]
+        return self._ra.rcpt_dynamic_data['acc_axes'][self._gi, 1]
 
     @acceptance_major.setter
     def acceptance_major(self, value):
-        self._ra.receptor_data['acc_axes'][self._gi, 1] = value
+        self._ra.rcpt_dynamic_data['acc_axes'][self._gi, 1] = value
         self._ra.dirty_mask[self._gi] = True
 
     @property
     def acceptance_rad(self) -> np.ndarray:
         """(N, 2) acceptance axes in radians: [minor, major]."""
-        return self._ra.receptor_data['acc_axes'][self._gi]
+        return self._ra.rcpt_dynamic_data['acc_axes'][self._gi]
 
     @acceptance_rad.setter
     def acceptance_rad(self, value):
-        self._ra.receptor_data['acc_axes'][self._gi] = value
+        self._ra.rcpt_dynamic_data['acc_axes'][self._gi] = value
         self._ra.dirty_mask[self._gi] = True
 
     @property
@@ -387,98 +383,97 @@ class ReceptorView:
 
     @property
     def acceptance_tilt(self) -> np.ndarray:
-        return self._ra.receptor_data['acc_tilt'][self._gi]
+        return self._ra.rcpt_static_data['acc_tilt'][self._gi]
 
     @acceptance_tilt.setter
     def acceptance_tilt(self, value):
-        self._ra.receptor_data['acc_tilt'][self._gi] = np.asarray(value, dtype=np.float32)
+        self._ra.rcpt_static_data['acc_tilt'][self._gi] = np.asarray(value, dtype=np.float32)
         self._ra.dirty_mask[self._gi] = True
 
     @property
     def sensitivity(self) -> np.ndarray:
-        return self._ra.receptor_data['sensitivity'][self._gi]
+        return self._ra.rcpt_static_data['sensitivity'][self._gi]
 
     @sensitivity.setter
     def sensitivity(self, value):
-        self._ra.receptor_data['sensitivity'][self._gi] = np.asarray(value, dtype=np.float32)
+        self._ra.rcpt_static_data['sensitivity'][self._gi] = np.asarray(value, dtype=np.float32)
         self._ra.dirty_mask[self._gi] = True
 
     @property
     def tau(self) -> np.ndarray:
-        return self._ra.receptor_data['tau'][self._gi]
+        return self._ra.rcpt_static_data['tau'][self._gi]
 
     @tau.setter
     def tau(self, value):
-        self._ra.receptor_data['tau'][self._gi] = np.asarray(value, dtype=np.float32)
+        self._ra.rcpt_static_data['tau'][self._gi] = np.asarray(value, dtype=np.float32)
         self._ra.dirty_mask[self._gi] = True
 
     # Metadata
 
     @property
     def eye_id(self) -> np.ndarray:
-
-        return self._ra.receptor_data['metadata'][self._gi] & 0x07
+        return self._ra.rcpt_static_data['metadata'][self._gi] & 0x07
 
     @eye_id.setter
     def eye_id(self, value):
 
         value = np.asarray(value, dtype=np.uint32)
         indices = self._gi
-        cur = self._ra.receptor_data['metadata'][indices]
+        cur = self._ra.rcpt_static_data['metadata'][indices]
 
-        self._ra.receptor_data['metadata'][indices] = (cur & _CLEAR_EYE_ID) | (value & 0x07)
+        self._ra.rcpt_static_data['metadata'][indices] = (cur & _CLEAR_EYE_ID) | (value & 0x07)
         self._ra.dirty_mask[indices] = True
 
     @property
     def receptor_type(self) -> np.ndarray:
-        return (self._ra.receptor_data['metadata'][self._gi] >> 3) & 0x0F
+        return (self._ra.rcpt_static_data['metadata'][self._gi] >> 3) & 0x0F
 
     @receptor_type.setter
     def receptor_type(self, value):
 
         value = np.asarray(value, dtype=np.uint32)
         indices = self._gi
-        cur = self._ra.receptor_data['metadata'][indices]
+        cur = self._ra.rcpt_static_data['metadata'][indices]
 
-        self._ra.receptor_data['metadata'][indices] = (cur & _CLEAR_RECEPTOR_TYPE) | ((value & 0x0F) << 3)
+        self._ra.rcpt_static_data['metadata'][indices] = (cur & _CLEAR_RECEPTOR_TYPE) | ((value & 0x0F) << 3)
         self._ra.dirty_mask[indices] = True
 
     @property
     def neighbours_count(self) -> np.ndarray:
 
-        return (self._ra.receptor_data['metadata'][self._gi] >> 7) & 0x0F
+        return (self._ra.rcpt_static_data['metadata'][self._gi] >> 7) & 0x0F
 
     @neighbours_count.setter
     def neighbours_count(self, value):
 
         value = np.asarray(value, dtype=np.uint32)
         indices = self._gi
-        cur = self._ra.receptor_data['metadata'][indices]
+        cur = self._ra.rcpt_static_data['metadata'][indices]
 
-        self._ra.receptor_data['metadata'][indices] = (cur & _CLEAR_NEIGHBOURS) | ((value & 0x0F) << 7)
+        self._ra.rcpt_static_data['metadata'][indices] = (cur & _CLEAR_NEIGHBOURS) | ((value & 0x0F) << 7)
         self._ra.dirty_mask[indices] = True
 
     @property
     def lens_id(self) -> np.ndarray:
         """Parent ommatidium index in the animal-level lens array."""
 
-        return (self._ra.receptor_data['metadata'][self._gi] >> 11) & 0xFFFF
+        return (self._ra.rcpt_static_data['metadata'][self._gi] >> 11) & 0xFFFF
 
     @lens_id.setter
     def lens_id(self, value):
 
         value = np.asarray(value, dtype=np.uint32)
         indices = self._gi
-        cur = self._ra.receptor_data['metadata'][indices]
+        cur = self._ra.rcpt_static_data['metadata'][indices]
 
-        self._ra.receptor_data['metadata'][indices] = (cur & _CLEAR_LENS_INDEX) | ((value & 0xFFFF) << 11)
+        self._ra.rcpt_static_data['metadata'][indices] = (cur & _CLEAR_LENS_INDEX) | ((value & 0xFFFF) << 11)
         self._ra.dirty_mask[indices] = True
 
     @property
     def chirality(self) -> np.ndarray:
         """+1 normal, -1 mirrored."""
 
-        is_mirrored = (self._ra.receptor_data['metadata'][self._gi] >> 27) & 0x01
+        is_mirrored = (self._ra.rcpt_static_data['metadata'][self._gi] >> 27) & 0x01
 
         return np.where(is_mirrored, -1, 1)
 
@@ -487,10 +482,10 @@ class ReceptorView:
 
         value = np.asarray(value)
         indices = self._gi
-        cur = self._ra.receptor_data['metadata'][indices]
+        cur = self._ra.rcpt_static_data['metadata'][indices]
         is_mirrored = (value < 0).astype(np.uint32)
 
-        self._ra.receptor_data['metadata'][indices] = (cur & _CLEAR_CHIRALITY) | ((is_mirrored & 0x01) << 27)
+        self._ra.rcpt_static_data['metadata'][indices] = (cur & _CLEAR_CHIRALITY) | ((is_mirrored & 0x01) << 27)
         self._ra.dirty_mask[indices] = True
 
     # Angular convenience
@@ -563,7 +558,7 @@ class Ommatidium:
 
     @property
     def eye_id(self) -> int:
-        return int(self._ra.receptor_data['metadata'][self._rec_start] & 0x07)
+        return int(self._ra.rcpt_static_data['metadata'][self._rec_start] & 0x07)
 
     @property
     def bundle_orientation(self) -> float:

@@ -8,11 +8,9 @@
 
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-// Input: Receptors data
-layout(std430, binding = 0) readonly buffer OmmatidiaInputBuffer { ReceptorData receptors_data[]; };
-
-// Output: Ray results
-layout(std430, binding = 4) writeonly buffer RayResultBuffer { vec4 ray_results[]; };
+layout(std430, binding = 0) readonly buffer RcptStaticBlock  { ReceptorStatic  rcpt_static[]; };
+layout(std430, binding = 4) readonly buffer RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
+layout(std430, binding = 5) writeonly buffer RayResultBuffer { vec4 ray_results[]; };
 
 // Uniforms
 uniform uint dither_counter;
@@ -22,53 +20,52 @@ uniform bool use_quasi_random;
 
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
+    uint total_receptors = rcpt_static.length();
 
     // Stop if out of bounds
-    if (global_id >= (nb_samples * receptors_data.length())) {
+    if (global_id >= (nb_samples * total_receptors)) {
         return;
     }
 
-    uint receptor_idx = global_id / nb_samples;
+    uint rcpt_idx = global_id / nb_samples;
     uint sample_idx = global_id % nb_samples;
 
-    ReceptorData rcpt = receptors_data[receptor_idx];
+    ReceptorStatic rs = rcpt_static[rcpt_idx];
+    ReceptorDynamic rd = rcpt_dynamic[rcpt_idx];
 
-    uint base_seed = receptor_idx * 1973u + dither_counter * 26699u;
+    uint base_seed = rcpt_idx * 1973u + dither_counter * 26699u;
     uint rng_state = pcg_hash(base_seed + sample_idx * 749u);
 
     // Generate ray direction
-    vec3 rcpt_world_dir = (cam_to_world * vec4(rcpt.direction, 0.0)).xyz;
-    vec3 rcpt_world_pos = (cam_to_world * vec4(rcpt.position, 1.0)).xyz;
-    vec3 up = abs(rcpt_world_dir.y) > 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
-    vec3 tangent = normalize(cross(up, rcpt_world_dir));
-    vec3 bitangent = cross(rcpt_world_dir, tangent);
+    vec3 F = normalize((cam_to_world * vec4(rd.direction, 0.0)).xyz);
+    vec3 P = (cam_to_world * vec4(rs.position, 1.0)).xyz;
+    vec3 up = abs(F.y) > 0.99 ? vec3(1,0,0) : vec3(0,1,0);
+
+    // tangent and bitangent
+    vec3 T = normalize(cross(up, F));
+    vec3 B = cross(F, T);
 
     float r1, r2;
     if (use_quasi_random) {
         // Halton sequence
-        uint halton_idx = dither_counter * uint(nb_samples) + sample_idx + 1u;
-        float h1 = halton_sequence(halton_idx, 2u);
-        float h2 = halton_sequence(halton_idx, 3u);
+        uint halton_idx = dither_counter * uint(nb_samples) + sample_idx  + 1u;
+        uint hash = pcg_hash(rcpt_idx * 1973u);
 
-        // Per-receptor random offset to decorrelate spatial sampling
-        uint rcpt_hash = pcg_hash(receptor_idx * 1973u);
-        float offset1 = float(rcpt_hash & 0xFFFFu) / 65535.0;
-        float offset2 = float((rcpt_hash >> 16u) & 0xFFFFu) / 65535.0;
+        r1 = clamp(fract(halton_sequence(halton_idx, 2u) + float(hash & 0xFFFFu)/65535.0), 1e-6, 1.0);
+        r2 = fract(halton_sequence(halton_idx, 3u) + float((hash >> 16u) & 0xFFFFu)/65535.0);
 
-        r1 = clamp(fract(h1 + offset1), 1e-6, 1.0);  //log(0) in sampledir
-        r2 = fract(h2 + offset2);
     } else {
         // Regular randomness
         r1 = random_float(rng_state);
         r2 = random_float(rng_state);
     }
-    vec3 direction = sampledir(rcpt, tangent, bitangent, rcpt_world_dir, r1, r2);
+    vec3 direction = sampledir(rs, rd, T, B, F, r1, r2);
 
-    Ray r;
-    r.origin = rcpt_world_pos;
-    r.t = 1.0/0.0;
-    r.inv_direction = 1.0 / direction;
+    Ray ray;
+    ray.origin = P;
+    ray.t = 1.0/0.0;
+    ray.inv_direction = 1.0 / direction;
 
-    vec3 final_color = trace(r, rng_state);
+    vec3 final_color = trace(ray, rng_state);
     ray_results[global_id] = vec4(final_color, 1.0);
 }

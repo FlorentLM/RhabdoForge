@@ -1,0 +1,86 @@
+#version 430 core
+#include "commons.glsl"
+
+layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = 0)  readonly buffer RcptStaticBlock  { ReceptorStatic  rcpt_static[]; };
+layout(std430, binding = 1)  readonly buffer LensStaticBlock  { LensStatic      lens_static[]; };
+layout(std430, binding = 3)  readonly buffer EmaHistory       { vec4 ema_state[]; };
+layout(std430, binding = 4)  buffer          RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
+layout(std430, binding = 6)  buffer          LensDynamicBlock { LensDynamic     lens_dynamic[]; };
+
+// Uniforms
+uniform int nb_lenses;
+uniform int receptors_per_lens;
+uniform float dt;
+uniform float d_rest;
+uniform float diffraction_sq;
+uniform float acc_rest_geom_sq;
+uniform float tau_adapt;
+uniform float gain_lat;
+uniform float gain_ax;
+uniform float rate_off_fast;
+uniform float rate_on_slow;
+
+void main() {
+    uint lens_idx = gl_GlobalInvocationID.x;
+
+    if (lens_idx >= nb_lenses) {
+        return;
+    }
+
+    uint start_idx = lens_idx * receptors_per_lens;
+
+    // Average filtered radiance for this ommatidium
+    float lum = 0.0;
+    for (int r = 0; r < receptors_per_lens; r++) {
+        lum += ema_state[start_idx + r].w;
+    }
+    lum /= float(receptors_per_lens);
+
+    LensDynamic ld = lens_dynamic[lens_idx];
+
+    // Init baseline on first frame
+    if (ld.adapted_lum < 1e-6) {
+        ld.adapted_lum = lum;
+    }
+
+    // Dynamics
+    // Contrast is light change relative to the slow-moving baseline
+    float contrast = lum - ld.adapted_lum;
+
+    // Update baseline (leaky integrator)
+    ld.adapted_lum = mix(ld.adapted_lum, lum, dt / (tau_adapt + dt));
+
+    // Target displacement: contract/pull when light contrast OFF
+    float target_lat = (contrast < 0.0) ? (-contrast * gain_lat) : 0.0;
+    float target_ax  = (contrast < 0.0) ? (-contrast * gain_ax) : 0.0;
+
+    // Asymmetric rates: Fast contraction, slow relaxation
+    float rate_lat = (target_lat > ld.lateral_um) ? rate_off_fast : rate_on_slow;
+    float rate_ax  = (target_ax  > ld.axial_um)   ? rate_off_fast : rate_on_slow;
+
+    ld.lateral_um = mix(ld.lateral_um, target_lat, dt / (rate_lat + dt));
+    ld.axial_um   = mix(ld.axial_um,   target_ax,  dt / (rate_ax + dt));
+
+    lens_dynamic[lens_idx] = ld;
+
+    // Geometry update
+    LensStatic ls = lens_static[lens_idx];
+    float d_eff = max(d_rest - ld.axial_um, 1.0);
+
+    // Snyder optics scale
+    float geom_new_sq = acc_rest_geom_sq * ((d_rest * d_rest) / (d_eff * d_eff));
+    float acc_scale = sqrt(diffraction_sq + geom_new_sq) / sqrt(diffraction_sq + acc_rest_geom_sq);
+
+    for (int r = 0; r < receptors_per_lens; r++) {
+        uint rcpt_idx = start_idx + r;
+        ReceptorStatic rs = rcpt_static[rcpt_idx];
+
+        vec2 n_xy = rs.rot_offset + (ld.lateral_um * vec2(ls.sacc_local_x, ls.sacc_local_y));
+        vec3 tip = (n_xy.x * ls.right) + (n_xy.y * ls.up) + (-d_eff * ls.forward);
+
+        rcpt_dynamic[rcpt_idx].direction = normalize(-tip);
+        rcpt_dynamic[rcpt_idx].acc_axes = rs.rest_acc * acc_scale;
+    }
+}

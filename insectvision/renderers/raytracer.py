@@ -16,26 +16,26 @@ from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_
 from insectvision.engine.shader_utils import write_pytinybvh_preamble, ShaderProgram
 
 from .commons import (
-    BaseRenderer, TextureViewer, _create_ssbo,
-    BINDING_RECEPTORS, BINDING_COLORS, BINDING_STATE, BINDING_RAYS_INTERMEDIATE,
+    BaseRenderer, TextureViewer, _create_ssbo, BINDING_RCPT_STATIC,
+    BINDING_LENS_STATIC, BINDING_COLOR, BINDING_EMA_HIST, BINDING_RCPT_DYNAMIC, BINDING_RAYS_INTERMEDIATE, BINDING_LENS_DYNAMIC
 )
 
 
 # Scene geometry bindings
-BINDING_VERTICES     = 5
-BINDING_INDICES      = 6
-BINDING_MATERIALS    = 7
-BINDING_POINTS       = 8
-BINDING_BLAS_NODES   = 9
-BINDING_TLAS_NODES   = 10
-BINDING_INSTANCES    = 11
-BINDING_TLAS_INDICES = 12
-BINDING_BLAS_INDICES = 13
+BINDING_VERTICES     = 7 #5
+BINDING_INDICES      = 8 #6
+BINDING_MATERIALS    = 9 #7
+BINDING_POINTS       = 10 #8
+BINDING_BLAS_NODES   = 11 #9
+BINDING_TLAS_NODES   = 12 #10
+BINDING_INSTANCES    = 13 #11
+BINDING_TLAS_INDICES = 14 #12
+BINDING_BLAS_INDICES = 15 #13
 
 # Light bindings
-BINDING_LIGHT_DIR    = 14
-BINDING_LIGHT_POINT  = 15
-BINDING_LIGHT_AREA   = 16
+BINDING_LIGHT_DIR    = 16 #14
+BINDING_LIGHT_POINT  = 17 #15
+BINDING_LIGHT_AREA   = 18 #16
 
 RENDERABLE_INST_DTYPE = np.dtype([
     ('transform', np.float32, (4, 4)),
@@ -48,7 +48,7 @@ RENDERABLE_INST_DTYPE = np.dtype([
     ('prim_index_offset', np.uint32),
     ('radius_factor', np.float32),
     ('padding', np.uint32, 1),
-])  # total 160 bytes
+])  # 160 bytes
 
 
 ##
@@ -729,7 +729,7 @@ class Raytracer(BaseRenderer):
 
     # Internal rendering logic and draw calls
 
-    def _raytrace_thirdperson(self, view_name: str):
+    def _raytrace_thirdperson(self, view_name: str, pov: Union['Agent', 'OrbitCamera']):
         """Shared dispatch for panoramic / perspective ray-traced views."""
 
         shader = self._get_view_shader(view_name)
@@ -744,7 +744,7 @@ class Raytracer(BaseRenderer):
         self._set_scene_uniforms(shader)
 
         glUniform1i(shader.get_loc('nb_samples'), self._samples_per_pixel)
-        c2w = glm.inverse(self.agent.view)
+        c2w = glm.inverse(pov.view)
         glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w))
 
         if view_name == 'perspective':
@@ -761,7 +761,9 @@ class Raytracer(BaseRenderer):
         shader = self.raytrace_shader
         shader.use()
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, self._receptors_data_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self._lens_static_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.ray_results_ssbo)
 
         self._bind_scene_ssbos()
@@ -785,10 +787,10 @@ class Raytracer(BaseRenderer):
         shader = self.reduction_shader
         shader.use()
 
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.ray_results_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLORS, self._colours_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_STATE, self._receptors_state_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RECEPTORS, self._receptors_data_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self._color_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self._ema_history_ssbo)
 
         glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
         glUniform1i(shader.get_loc('nb_receptors'), len(self._ra))
@@ -803,20 +805,52 @@ class Raytracer(BaseRenderer):
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         shader.stop()
 
-    def _compute_colors(self):
+    def _actuation(self):
+        """Pass 3: actuation."""
 
+        k = self._ra.kernel
+        center_idx = k.center_index
+
+        if k.nodal_distance_um is not None:
+            shader = self.actuation_shader
+            shader.use()
+
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self._lens_static_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self._color_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self._ema_history_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_DYNAMIC, self._lens_dynamic_ssbo)
+
+            glUniform1i(shader.get_loc('nb_lenses'), self._ra.lens_count)
+            glUniform1i(shader.get_loc('receptors_per_lens'), self._ra.receptor_count)
+            glUniform1f(shader.get_loc('dt'), self._dt)
+
+            glUniform1f(shader.get_loc('d_rest'), k.nodal_distance_um)
+            lam_um = self._ra._wavelength_nm * 1e-3
+            glUniform1f(shader.get_loc('diffraction_sq'), (lam_um / k.lens_diameter_um) ** 2)
+            glUniform1f(shader.get_loc('acc_rest_geom_sq'), (k.diameters_um[center_idx] / k.nodal_distance_um) ** 2)
+
+            # Dynamics
+            # TODO: Expose these as properties
+            glUniform1f(shader.get_loc('tau_adapt'), 0.05)  # 50ms
+            glUniform1f(shader.get_loc('gain_lat'), 5.0)  # Pull strength lateral
+            glUniform1f(shader.get_loc('gain_ax'), 2.0)  # Pull strength axial
+            glUniform1f(shader.get_loc('rate_off_fast'), 0.01)  # 10 ms to contract
+            glUniform1f(shader.get_loc('rate_on_slow'), 0.1)  # 100 ms to relax
+
+            work_groups = (self._ra.lens_count + 63) // 64
+            glDispatchCompute(work_groups, 1, 1)
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+            shader.stop()
+
+    def _compute_colors(self, auto_actuated: bool = False): # TODO: Maybe move this option somewhere else
         self._tick()
         self._baker.update()
 
         self._raytrace_receptors()
         self._reduction()
-
-        # Cleanup bindings
-        for i in range(17):
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, 0)
-
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
+        self._actuation()
 
     # Main public methods
 
@@ -829,7 +863,7 @@ class Raytracer(BaseRenderer):
             view_name = 'panoramic' if view_mode == DisplayMode.Panoramic else 'perspective'
 
             self._baker.update()
-            self._raytrace_thirdperson(view_name)
+            self._raytrace_thirdperson(view_name, point_of_view)
 
             tex_id, _ = self._get_view_texture(view_name)
             self._tex_viewer.draw(tex_id)
@@ -884,7 +918,8 @@ class Raytracer(BaseRenderer):
             self._reduction_shader.free()
 
         tex_ids = list(self._view_textures.values())
-        if tex_ids: glDeleteTextures(len(tex_ids), tex_ids)
+        if tex_ids:
+            glDeleteTextures(len(tex_ids), tex_ids)
 
         self._tex_viewer.free()
         self._baker.free()

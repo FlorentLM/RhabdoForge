@@ -13,9 +13,11 @@ from insectvision.interactive.utils import DisplayMode
 from insectvision.interactive.controls_interface import Controls
 from insectvision.interactive.hud import HUD
 from insectvision.interactive.debug import DebugOverlay
+from insectvision.interactive.dashboard import Dashboard
 
 if TYPE_CHECKING:
     from insectvision.renderers.commons import BaseRenderer
+    from insectvision.compound_eyes import VisualOutput
 
 
 class Context:
@@ -59,6 +61,7 @@ class Context:
         self.observer: Optional['OrbitCamera'] = None
         self.view_mode: Optional['DisplayMode'] = None
         self.hud: Optional['HUD'] = None
+        self.dashboard: Optional['Dashboard'] = None
         self.debug: Optional['DebugOverlay'] = DebugOverlay() if debug_overlay else None
 
         self.last_frame_time: float = 0.0
@@ -255,8 +258,8 @@ class Context:
 
     # Interactive loop
 
-    def run_interactive(self, agent: Agent, scene: Scene, renderer: 'BaseRenderer',
-                        window_size=None, fps_limit=None, v_sync=None):
+    def run_interactive(self, agent: 'Agent', scene: 'Scene', renderer: 'BaseRenderer',
+                        window_size=None, fps_limit=None, v_sync=None, use_dashboard=False):
         """
         On first call, initialises and shows the window. Then checks if the interactive loop should continue.
         """
@@ -271,6 +274,9 @@ class Context:
 
             if v_sync is not None:
                 self._v_sync = bool(v_sync)
+
+            if use_dashboard:
+                self.dashboard = Dashboard(self)
 
             glfw.swap_interval(int(self._v_sync))
 
@@ -324,10 +330,12 @@ class Context:
         if self._controls is not None:
             self._controls.poll(self)
 
-    def draw(self):
+    def draw(self, view_data: Optional['VisualOutput'] = None):
 
         if not self._interactive_initialised:
             return
+
+        glfw.make_context_current(self.window)
 
         if self.scene:
             # convert to linear (non gamma-corrected)
@@ -354,6 +362,12 @@ class Context:
 
         glfw.swap_buffers(self.window)
 
+        if self.dashboard:
+            if not self.dashboard.render(view_data):
+                self.dashboard.free()
+                self.dashboard = None
+            glfw.make_context_current(self.window)
+
         if self._fps_limit > 0:
             frame_end_time = self.current_time
             elapsed_time = frame_end_time - self.last_frame_time
@@ -369,6 +383,8 @@ class Context:
             self.debug.free()
         if self.hud:
             self.hud.free()
+        if self.dashboard:
+            self.dashboard.free()
         glfw.terminate()
 
     @property

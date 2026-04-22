@@ -14,46 +14,48 @@ struct Material {
     uint pad0, pad1;
 };
 
-struct ReceptorData {
-    vec3 position;      // receptor position x, y, z
-    uint metadata;      // eye_id, R_type, neighbour_count, lens_id, pad
-    vec3 direction;     // receptor direction x, y, z
-    float acc_tilt;     // acceptance angle ellipse tilt
-    vec2 acc_axes;      // acceptance angle ellipse minor, major axes
-    float sensitivity;  // photometric response multiplier
-    float tau;          // temporal accumulation
-}; // 48 bytes
+// Lens static (read only)
+struct LensStatic {
+    vec3  right;        float sacc_local_x;
+    vec3  up;           float sacc_local_y;
+    vec3  forward;      float ioa_tilt;
+    vec2  ioa_axes;     vec2  padding;
+}; // 64 bytes
 
-struct LensData {
-    vec2 ioa_axes;      // lattice geometry axes (ellipse minor, major)
-    float tilt;         // lattice geometry orientation (ellipse tilt)
-    uint padding;
+// Lens dynamic
+struct LensDynamic {
+    float adapted_lum;
+    float lateral_um;
+    float axial_um;
+    float pad;
 }; // 16 bytes
 
-// Helper functions for unpacking
+// Receptor static (read only)
+struct ReceptorStatic {
+    vec3  position;     uint  metadata;
+    vec2  rest_acc;     vec2  rot_offset;
+    float acc_tilt;     float sensitivity;
+    float tau;          uint  cartridge_src;
+}; // 48 bytes
+
+// Receptor dynamic
+struct ReceptorDynamic {
+    vec3  direction;    float pad1;
+    vec2  acc_axes;     vec2  pad2;
+}; // 32 bytes
+
+
+// Metadata Unpacking
+uint unpack_eye_id(uint m)        { return m & 7u; }
+uint unpack_receptor_type(uint m) { return (m >> 3u) & 15u; }
+uint unpack_lens_id(uint m)       { return (m >> 11u) & 65535u; }
+float unpack_chirality(uint m)    { return ((m >> 27u) & 1u) == 1u ? -1.0 : 1.0; }
 
 vec4 unpack_color(uint packed_color) {
-    float r = float(packed_color & 255u) / 255.0;
-    float g = float((packed_color >> 8u) & 255u) / 255.0;
-    float b = float((packed_color >> 16u) & 255u) / 255.0;
-    float a = float((packed_color >> 24u) & 255u) / 255.0;
-    return vec4(r, g, b, a);
-}
-
-uint unpack_eye_id(ReceptorData rcpt) {
-    return rcpt.metadata & 7u; // bits 0-2
-}
-
-uint unpack_receptor_type(ReceptorData rcpt) {
-    return (rcpt.metadata >> 3u) & 15u; // bits 3-6
-}
-
-uint unpack_neighbours_count(ReceptorData rcpt) {
-    return (rcpt.metadata >> 7u) & 15u; // bits 7-10
-}
-
-uint unpack_lens_id(ReceptorData rcpt) {
-    return (rcpt.metadata >> 11u) & 65535u; // bits 11-26
+    return vec4(float(packed_color & 255u) / 255.0,
+                float((packed_color >> 8u) & 255u) / 255.0,
+                float((packed_color >> 16u) & 255u) / 255.0,
+                float((packed_color >> 24u) & 255u) / 255.0);
 }
 
 struct Triangle {
@@ -89,47 +91,16 @@ float halton_sequence(uint index, uint base) {
     return r;
 }
 
-// Generates a sample direction using 'true' Gaussian importance sampling
-// (as in, the distribution of samples directly matches the Gaussian acceptance function)
-//      - rcpt: The receptor data containing H and V acceptance angles
-//      - tangent, bitangent, forward: The basis vectors of the receptor's local frame
-//      - u1, u2: Two uniform random numbers in the range [0, 1]
-vec3 sampledir(
-    in ReceptorData rcpt,
-    in vec3 tangent,
-    in vec3 bitangent,
-    in vec3 forward,
-    in float u1,
-    in float u2
-) {
-    // Azimuthal angle phi (uniform)
+vec3 sampledir(in ReceptorStatic rs, in ReceptorDynamic rd, in vec3 T, in vec3 B, in vec3 F, in float u1, in float u2) {
     float phi = TWOPI * u2;
+    float angle_min = rd.acc_axes.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    float angle_maj = rd.acc_axes.y * sqrt(-log(u1) / GAUSS_CONSTANT_K);
 
-    // Importance sample the polar angle theta for each axis (minor and major)
-    // using the inverse CDF of the Gaussian distribution
-    float angle_minor = rcpt.acc_axes.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);
-    float angle_major = rcpt.acc_axes.y * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    vec2 p = vec2(tan(angle_min) * cos(phi), tan(angle_maj) * sin(phi));
+    float s = sin(rs.acc_tilt), c = cos(rs.acc_tilt);
+    vec2 tp = mat2(c, -s, s, c) * p;
 
-    // Using the same random number u1 for both maintains correlation and correctly
-    // forms an elliptical distribution from a circular one
-
-    // Convert these angles on the tangent plane to a 2D point on an axis-aligned ellipse
-    vec2 point_on_ellipse;
-    point_on_ellipse.x = tan(angle_minor) * cos(phi);
-    point_on_ellipse.y = tan(angle_major) * sin(phi);
-
-    // Rotate this 2D point by the receptor's elliptic tilt
-    float s = sin(rcpt.acc_tilt);
-    float c = cos(rcpt.acc_tilt);
-    mat2 rotation_matrix = mat2(c, -s, s, c);
-    vec2 tilted_point = rotation_matrix * point_on_ellipse;
-
-    // Project from tangent plane to unit sphere using the now-tilted point
-    vec3 sample_local = normalize(vec3(tilted_point, 1.0));
-
-    // Transform from local to world coordinates and return
-    return normalize(mat3(tangent, bitangent, forward) * sample_local);
+    return normalize(mat3(T, B, F) * normalize(vec3(tp, 1.0)));
 }
-
 
 #endif // COMMONS_GLSL

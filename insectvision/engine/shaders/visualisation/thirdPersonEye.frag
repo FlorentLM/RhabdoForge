@@ -6,24 +6,10 @@
 //                       acceptance mode shows per-eye ID colour
 // With OVERLAY_MODE: both modes show scalar data through a LUT
 
-flat in uint v_mode;
-flat in uint v_eye_id;
-in vec3 v_world_normal;
-
-uniform float albedo_boost = 1.0;
-
-out vec4 FragColor;
-
 #ifdef OVERLAY_MODE
-
-#include "colormaps.glsl"
-
-in float v_scalar;
-uniform int colormap;
-
+layout (location = 0) in float v_scalar;
 #else
-
-in vec3 v_color;
+layout (location = 0) in vec3  v_color;
 
 const vec4 EYE_COLORS[8] = vec4[](
     vec4(1.0, 0.2, 0.2, 0.25), // 0: Red
@@ -37,6 +23,16 @@ const vec4 EYE_COLORS[8] = vec4[](
 );
 
 #endif
+layout (location = 1) in vec2 v_local_pos;
+layout (location = 2) flat in int  v_instance_id;
+layout (location = 3) flat in uint v_mode;
+layout (location = 4) flat in uint v_eye_id;
+layout (location = 5) in vec3 v_world_normal;
+
+uniform float albedo_boost;
+uniform int selected_id;
+
+out vec4 FragColor;
 
 void main() {
     #ifdef OVERLAY_MODE
@@ -53,4 +49,19 @@ void main() {
         FragColor = vec4(clamp(lit_rgb, 0.0, 1.0), 1.0);
     }
     #endif
+
+    // Highlight one ommatidia
+    float is_selected = 1.0 - clamp(abs(float(v_instance_id - selected_id)), 0.0, 1.0);
+    float dist = length(v_local_pos);
+
+    float contour = smoothstep(0.85, 0.90, dist);
+
+    float inner_glow = 0.4;
+
+    vec3 highlight_color = vec3(1.0, 1.0, 0.0);
+    float total_highlight = is_selected * (contour + inner_glow);
+
+    vec3 final_rgb = mix(FragColor.rgb, highlight_color, total_highlight);
+
+    FragColor = vec4(final_rgb, 1.0);
 }

@@ -10,7 +10,7 @@ from insectvision.utils.math import (
     project_to_tangent,
 )
 
-from .datatypes import RECEPTOR_DTYPE, LENS_DTYPE
+from .datatypes import LENS_STATIC_DTYPE, LENS_DYNAMIC_DTYPE, RCPT_STATIC_DTYPE, RCPT_DYNAMIC_DTYPE
 from .kernel import RhabdomereKernel
 from .proxies import Eye, Ommatidium, Cartridge, LensView, ReceptorView
 
@@ -733,42 +733,52 @@ class ReceptorArray:
 
         # Fill main data structures
 
-        # Receptor data
-        self.receptor_data = np.zeros(N * R, dtype=RECEPTOR_DTYPE)
+        sacc = _saccades_field(chi, self._kernel, chirality_arr, dorsal_sign, local_right, local_up, lens_positions,
+                               self.eyes)
 
-        self.receptor_data['position'] = receptor_pos
-        self.receptor_data['direction'] = receptor_dirs
-        self.receptor_data['acc_axes'] = acc_axes
-        self.receptor_data['acc_tilt'] = np.repeat(
-            self._bundle_orientation + np.where(dorsal_sign < 0, np.pi, 0.0), R)
-        self.receptor_data['sensitivity'] = self._kernel.sensitivity  # TODO: per receptor type sensitivity
-        self.receptor_data['tau'] = self._kernel.tau_s  # TODO: per receptor type tau
-        self.receptor_data['metadata'] = _pack_metadata(N, R, e_ids, receptor_types, nb_counts, chirality_arr)
+        # Lens static
+        self.lens_static_data = np.zeros(N, dtype=LENS_STATIC_DTYPE)
+        self.lens_static_data['right'] = local_right
+        self.lens_static_data['sacc_x'] = np.sum(sacc * local_right, axis=1)
+        self.lens_static_data['up'] = local_up
+        self.lens_static_data['sacc_y'] = np.sum(sacc * local_up, axis=1)
+        self.lens_static_data['forward'] = lens_directions
+        self.lens_static_data['ioa_tilt'] = lattice_tilts
+        self.lens_static_data['ioa_axes'][:, 0] = ioa_minor
+        self.lens_static_data['ioa_axes'][:, 1] = ioa_major
 
-        # Lens data (for visualisation mostly)
-        self.lens_data = np.zeros(N, dtype=LENS_DTYPE)
+        # Lens dynamic
+        self.lens_dynamic_data = np.zeros(N, dtype=LENS_DYNAMIC_DTYPE)
 
-        self.lens_data['ioa_axes'][:, 0] = ioa_minor
-        self.lens_data['ioa_axes'][:, 1] = ioa_major
-        self.lens_data['tilt'] = lattice_tilts
+        # Receptor static
+        self.rcpt_static_data = np.zeros(N * R, dtype=RCPT_STATIC_DTYPE)
+        self.rcpt_static_data['position'] = receptor_pos
+        self.rcpt_static_data['metadata'] = _pack_metadata(N, R, e_ids, receptor_types, nb_counts, chirality_arr)
+        self.rcpt_static_data['rest_acc'] = acc_axes
 
-        self._rest_acc_axes = acc_axes.copy()  # reset values for acceptance angles
+        dorsal_offset = np.where(dorsal_sign < 0, np.pi, 0.0).astype(np.float32)
+        rot_dx, rot_dy = self._kernel.rotated_offsets(chi + dorsal_offset, chirality_arr)
+        self.rcpt_static_data['rot_offset'][:, 0] = rot_dx.ravel()
+        self.rcpt_static_data['rot_offset'][:, 1] = rot_dy.ravel()
 
-        with np.errstate(divide='ignore', invalid='ignore'):
-            self.eye_parameter_minor = self.receptor_data['acc_axes'][:, 0] / np.repeat(
-                self.lens_data['ioa_axes'][:, 0], R)
-            self.eye_parameter_major = self.receptor_data['acc_axes'][:, 1] / np.repeat(
-                self.lens_data['ioa_axes'][:, 1], R)
+        self.rcpt_static_data['acc_tilt'] = np.repeat(chi + dorsal_offset, R)
+        self.rcpt_static_data['sensitivity'] = self._kernel.sensitivity
+        self.rcpt_static_data['tau'] = self._kernel.tau_s
 
-        np.nan_to_num(self.eye_parameter_minor, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-        np.nan_to_num(self.eye_parameter_major, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+        # Default cartridge wiring: straight down
+        self.rcpt_static_data['cartridge_src'] = np.repeat(np.arange(N), R) * R + np.tile(np.arange(R), N)
+
+        # Receptor dynamic
+        self.rcpt_dynamic_data = np.zeros(N * R, dtype=RCPT_DYNAMIC_DTYPE)
+        self.rcpt_dynamic_data['direction'] = receptor_dirs
+        self.rcpt_dynamic_data['acc_axes'] = acc_axes
 
         self.dirty_mask = np.zeros(N * R, dtype=bool)
+        self.lens_dirty = False
 
         # Cached namespace views (invalidated by geometry changes)
         self._lenses_view = None
         self._receptors_view = None
-        self._cartridge_map = None
         self._saccade_cache = None
 
         if R > 1:
@@ -817,10 +827,10 @@ class ReceptorArray:
     # Overrides and internal helpers
 
     def __len__(self):
-        return len(self.receptor_data)
+        return len(self.rcpt_static_data)
 
     def __repr__(self):
-        return f"<ReceptorArray(lenses={self.lens_count}, R={self.receptor_count}, total={len(self.receptor_data)})>"
+        return f"<ReceptorArray(lenses={self.lens_count}, R={self.receptor_count}, total={len(self.rcpt_static_data)})>"
 
     @property
     def lenses(self) -> LensView:
@@ -842,7 +852,7 @@ class ReceptorArray:
         if self._receptors_view is None:
             self._receptors_view = ReceptorView(
                 ra=self,
-                receptor_indices=np.arange(len(self.receptor_data))
+                receptor_indices=np.arange(len(self))
             )
 
         return self._receptors_view
@@ -962,18 +972,11 @@ class ReceptorArray:
         return self.lenses.interommatidial_angles
 
     @property
-    def cartridge_map(self) -> np.ndarray:
-        if self._cartridge_map is None:
-            self.wire_cartridges()
-
-        return self._cartridge_map
-
-    @property
     def cartridge_indices(self) -> np.ndarray:
         """
         Returns (N, R) array of global receptor indices (for neural superposition).
         """
-        return self.cartridge_map * self.receptor_count + np.arange(self.receptor_count)
+        return self.rcpt_static_data['cartridge_src'].reshape(self.lens_count, self.receptor_count)
 
     # Animal-level spatial queries
 
@@ -1124,8 +1127,8 @@ class ReceptorArray:
         cartridge = np.tile(np.arange(N)[:, None], (1, R))
 
         if P == 0:
-            self._cartridge_map = cartridge
-            return cartridge
+            self.rcpt_static_data['cartridge_src'] = np.arange(len(self), dtype=np.uint32)
+            return
 
         # Centre and normalise rhabdomere kernel to match local lattice spacing
         rel_rhab_offsets = self._kernel.offsets_um - self._kernel.offsets_um[centre_rhab]
@@ -1247,118 +1250,90 @@ class ReceptorArray:
                 valid_mask = (cost_matrix[rhab_indices, om_indices] < assign_radius) & same_chirality[om_indices]
                 cartridge[i_glob, periph_rhab[rhab_indices[valid_mask]]] = neighb_indices[om_indices[valid_mask]]
 
-        self._cartridge_map = cartridge
+        flat_rcpt_indices = (cartridge * R + np.arange(R)).flatten()
+        self.rcpt_static_data['cartridge_src'] = flat_rcpt_indices.astype(np.uint32)
 
     # Rhabdomere actuation
 
     def actuate(self,
-            lateral_um: Union[float, ArrayLike] = 0.0,
-            axial_um: Union[float, ArrayLike] = 0.0,
-            to_actuate: Optional[ArrayLike] = None
-        ):
-        # TODO: This probably should be done purely on GPU
-
+                lateral_um: Union[float, ArrayLike] = 0.0,
+                axial_um: Union[float, ArrayLike] = 0.0,
+                to_actuate: Optional[ArrayLike] = None
+                ):
         """
-        Displace rhabdomeres via microsaccades.
-
-        Models the two components of rhabdomere actuation observed in vivo:
-        (Juusola et al. 2017, 10.7554/eLife.26117; Kemppainen et al. 2022, 10.1073/pnas.2109717119)
-
-        Lateral: rhabdomere tips move sideways in the focal plane
-            (typical range +/- 1.7 μm in Drosophila)
-
-        Axial: rhabdomeres contract away from the lens
-            This narrows the acceptance angle and widens the angular subtense of lateral offsets.
-            Typical range from ~8.1° to ~4.0° in Drosophila
-
-        The rhabdomeres are mechanically coupled, activating one receptor likely contracts and tilts its neighbours.
-
-        Both parameters are absolute from rest: calling actuate(0.0, 0.0) resets to the rest configuration.
-
-        Args:
-            lateral_um: Signed lateral focal-plane displacement (μm).
-                Scalar for uniform, or (n_mask,) per-lens.
-            axial_um: Axial contraction toward lens (μm), positive.
-                Scalar for uniform, or (n_mask,) per-lens.
-            to_actuate: Global lens indices to actuate. None = all.
+        Displace rhabdomeres manually from the CPU.
         """
 
         R = self.receptor_count
+
         d_rest = self._kernel.nodal_distance_um
         if d_rest is None:
-            raise ValueError("Can't actuate: kernel nodal distance is not set. "
-                             "Actuation requires physical optics parameters.")
+            raise ValueError("Can't actuate: kernel nodal distance is not set.")
 
         to_actuate = np.asarray(to_actuate) if to_actuate is not None else np.arange(self.lens_count)
         nb_actuated = len(to_actuate)
 
-        lateral_disp = np.broadcast_to(lateral_um, nb_actuated).copy()
-        axial_displ = np.broadcast_to(axial_um, nb_actuated).copy()
+        lateral_disp = np.broadcast_to(lateral_um, nb_actuated).astype(np.float32)
+        axial_displ = np.broadcast_to(axial_um, nb_actuated).astype(np.float32)
 
-        # Effective nodal distance after axial contraction
-        d_eff = d_rest - axial_displ
-        d_eff = np.maximum(d_eff, 1.0)  # clamped to a min of 1 μm (to avoid infinite acceptance angle)
+        # Update lens dynamic state
+        self.lens_dynamic_data['lateral_um'][to_actuate] = lateral_disp
+        self.lens_dynamic_data['axial_um'][to_actuate] = axial_displ
+        self.lens_dirty = True  # Flag to tell renderer to upload lens states
 
-        # Get kernel offsets at rest
-        dorsal_offset = np.where(self._dorsal_sign[to_actuate] < 0, np.pi, 0.0).astype(np.float32)
-        effective_chi = self._bundle_orientation[to_actuate] + dorsal_offset
-        rot_dx, rot_dy = self._kernel.rotated_offsets(
-            effective_chi, self.chirality[to_actuate].astype(np.float32)
-        )
+        # Effective nodal distance
+        d_eff = np.maximum(d_rest - axial_displ, 1.0)
 
-        saccade_vectors = self.saccade_field()
-        sacc = saccade_vectors[to_actuate]
-
-        lr = self._local_right[to_actuate]
-        lu = self._local_up[to_actuate]
-        fwd = self._lens_directions[to_actuate]
-
-        # Project world-space saccade vectors into local tangent frame
-        saccade_dx = np.sum(sacc * lr, axis=1)
-        saccade_dy = np.sum(sacc * lu, axis=1)
-
-        # Lateral displacement
-        rot_dx += lateral_disp[:, None] * saccade_dx[:, None]
-        rot_dy += lateral_disp[:, None] * saccade_dy[:, None]
-
-        # Rhabdomere tip vectors (per-lens nodal distance)
-        tip_pos_local = np.stack([
-            rot_dx,
-            rot_dy,
-            np.broadcast_to(-d_eff[:, None], (nb_actuated, R)).copy()
-        ], axis=-1)
-
-        # To world space
-        tip_pos_world = (
-                tip_pos_local[..., 0:1] * lr[:, None, :] +
-                tip_pos_local[..., 1:2] * lu[:, None, :] +
-                tip_pos_local[..., 2:3] * fwd[:, None, :]
-        )
+        # Fetch static invariants for the actuated lenses
+        l_stat = self.lens_static_data[to_actuate]
+        lr = l_stat['right']
+        lu = l_stat['up']
+        fwd = l_stat['forward']
+        sacc_x = l_stat['sacc_x']
+        sacc_y = l_stat['sacc_y']
 
         # Global receptor indices for all affected lenses
         global_affected_indices = (to_actuate[:, None] * R + np.arange(R)[None, :]).ravel()
 
-        # Directions change with lateral displ
-        new_dirs = -tip_pos_world
+        # Fetch static invariants for the affected receptors
+        r_stat = self.rcpt_static_data[global_affected_indices]
+
+        # Apply Lateral Displacement
+        lat_rep = np.repeat(lateral_disp, R)
+        sx_rep = np.repeat(sacc_x, R)
+        sy_rep = np.repeat(sacc_y, R)
+
+        new_x = r_stat['rot_offset'][:, 0] + lat_rep * sx_rep
+        new_y = r_stat['rot_offset'][:, 1] + lat_rep * sy_rep
+
+        # to 3D space
+        lr_rep = np.repeat(lr, R, axis=0)
+        lu_rep = np.repeat(lu, R, axis=0)
+        fwd_rep = np.repeat(fwd, R, axis=0)
+        deff_rep = np.repeat(d_eff, R)
+
+        tip_world = (new_x[:, None] * lr_rep +
+                     new_y[:, None] * lu_rep -
+                     deff_rep[:, None] * fwd_rep)
+
+        new_dirs = -tip_world
         norms = np.linalg.norm(new_dirs, axis=-1, keepdims=True)
         np.divide(new_dirs, norms, out=new_dirs, where=norms != 0)
-        self.receptor_data['direction'][global_affected_indices] = new_dirs.reshape(-1, 3)
 
-        # Acceptance angles change with axial displ (preserving anisotropy)
+        self.rcpt_dynamic_data['direction'][global_affected_indices] = new_dirs
+
+        # Update acceptance angles
         wavelength_um = self._wavelength_nm * 1e-3
-        diffraction = wavelength_um / self._kernel.lens_diameter_um
+        diffraction_sq = (wavelength_um / self._kernel.lens_diameter_um) ** 2
+        geom_rest_sq = (self._kernel.diameters_um / d_rest) ** 2
+        acc_rest = np.sqrt(diffraction_sq + geom_rest_sq)
 
-        geometric_rest = self._kernel.diameters_um[None, :] / d_rest
-        acc_rest = np.sqrt(diffraction ** 2 + geometric_rest ** 2)
+        geom_new_sq = (self._kernel.diameters_um[None, :] / d_eff[:, None]) ** 2
+        acc_new = np.sqrt(diffraction_sq + geom_new_sq)
 
-        geometric_new = self._kernel.diameters_um[None, :] / d_eff[:, None]
-        acc_new = np.sqrt(diffraction ** 2 + geometric_new ** 2)
+        scale = (acc_new / acc_rest).ravel()
 
-        scale = acc_new / acc_rest
-
-        current_rest = self._rest_acc_axes[global_affected_indices].reshape(nb_actuated, R, 2)
-        scaled = current_rest * scale[:, :, None]
-        self.receptor_data['acc_axes'][global_affected_indices] = scaled.reshape(-1, 2)
+        self.rcpt_dynamic_data['acc_axes'][global_affected_indices] = r_stat['rest_acc'] * scale[:, None]
 
         self.dirty_mask[global_affected_indices] = True
 
@@ -1373,14 +1348,13 @@ class ReceptorArray:
         self._lenses_view = None
         self._receptors_view = None
         self._saccade_cache = None
-        self._cartridge_map = None
 
     # Whole-array transforms (initial unit scaling, agent setup, etc)
 
     def scale(self, factor: float):
         """Scale all receptor and lens positions by a factor."""
 
-        self.receptor_data['position'] *= factor
+        self.rcpt_static_data['position'] *= factor
         self._lens_positions *= factor
         self._invalidate_spatial()
 
@@ -1391,11 +1365,16 @@ class ReceptorArray:
 
         vector = np.asarray(vector, dtype=np.float32)
 
-        self.receptor_data['position'] += vector
+        self.rcpt_static_data['position'] += vector
         self._lens_positions += vector
         self._invalidate_spatial()
 
         return self
+
+    @property
+    def cartridge_map(self) -> np.ndarray:
+        return self.rcpt_static_data['cartridge_src'].reshape(self.lens_count, self.receptor_count) // self.receptor_count
+
 
 
 ## Examples:
