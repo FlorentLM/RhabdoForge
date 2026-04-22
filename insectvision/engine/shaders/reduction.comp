@@ -32,34 +32,35 @@ void main() {
     }
 
     vec3 spec_sens = rcpt_static[rcpt_idx].sensitivity;
-    float adapt    = rcpt_dynamic[rcpt_idx].adaptation_state;
     float tau      = rcpt_static[rcpt_idx].tau;
 
     total_color = (nb_samples > 0) ? (total_color / float(nb_samples)) : total_color;
     total_color *= spec_sens;
-    total_color *= adapt;
 
-    float radiance = (total_color.r + total_color.g + total_color.b) / 3.0;
+    // radiance before adaptation
+    float raw_radiance = (total_color.r + total_color.g + total_color.b) / 3.0;
 
-    vec4 out_val;
+     vec4 ema_val;
     if (tau > 0.0 && dt > 0.0) {
-
         // Exponential moving average (first-order low-pass)
         float alpha = clamp(dt / (tau + dt), 0.0, 1.0);
         vec4 prev = ema_state[rcpt_idx];
 
-        // If prev is 0 (first frame) pop it to total_color instantly
+        // If prev is 0 (first frame) pop it instantly
         if (length(prev) < 1e-6) {
-            out_val = vec4(total_color, radiance);
+            ema_val = vec4(total_color, raw_radiance);
         } else {
             vec3 filtered_rgb = mix(prev.rgb, total_color, alpha);
-            float filtered_rad = mix(prev.w, radiance, alpha);
-            out_val = vec4(filtered_rgb, filtered_rad);
+            float filtered_rad = mix(prev.w, raw_radiance, alpha);
+            ema_val = vec4(filtered_rgb, filtered_rad);
         }
-        ema_state[rcpt_idx] = out_val;
+        ema_state[rcpt_idx] = ema_val;
     } else {
-        out_val = vec4(total_color, radiance);
+        ema_val = vec4(total_color, raw_radiance);
     }
+
+    float adapt = rcpt_dynamic[rcpt_idx].adaptation_state;
+    vec4 out_val = vec4(ema_val.rgb * adapt, ema_val.w * adapt);
 
     // frame offset logic for batched rendering
     uint out_idx = (frame_offset * nb_receptors) + rcpt_idx;

@@ -268,9 +268,9 @@ class BaseRenderer(ABC):
         self.sampling_results_ssbo: Optional[int] = None
         self._samples_per_pixel = 1  # raytracer subdivision hook, rasterizer ignores
 
-        # Reduction and actuation shaders (shared to rasterizer and raytracer)
+        # Reduction and dynamics shaders (shared to rasterizer and raytracer)
         self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp')
-        self.actuation_shader = ShaderProgram(comp_path='shaders/actuation.comp')
+        self.dynamics_shader = ShaderProgram(comp_path='shaders/eyeDynamics.comp')
 
         # Shared lighting flags (subclasses may override defaults before calling super)
         self.enable_direct = getattr(self, 'enable_direct', True)
@@ -479,13 +479,13 @@ class BaseRenderer(ABC):
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         shader.stop()
 
-    def _actuation(self):
+    def _eye_dynamics(self):
 
         k = self._ra.kernel
         center_idx = k.center_index
 
         if k.nodal_distance_um is not None:
-            shader = self.actuation_shader
+            shader = self.dynamics_shader
             shader.use()
 
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
@@ -505,12 +505,16 @@ class BaseRenderer(ABC):
             glUniform1f(shader.get_loc('acc_rest_geom_sq'), (k.diameters_um[center_idx] / k.nodal_distance_um) ** 2)
 
             # Dynamics
+            saccades_enabled = self._gpu_actuation
+
             # TODO: Expose these as properties
-            glUniform1f(shader.get_loc('tau_adapt'), 0.05)  # 50ms
-            glUniform1f(shader.get_loc('gain_lat'), 5.0)  # Pull strength lateral
-            glUniform1f(shader.get_loc('gain_ax'), 2.0)  # Pull strength axial
+            glUniform1f(shader.get_loc('tau_adapt'), 0.05)  # 50 ms
+            glUniform1f(shader.get_loc('gain_lat'), 5.0 if saccades_enabled else 0.0)  # Pull strength lateral
+            glUniform1f(shader.get_loc('gain_ax'),  2.0 if saccades_enabled else 0.0)  # Pull strength axial
             glUniform1f(shader.get_loc('rate_off_fast'), 0.01)  # 10 ms to contract
             glUniform1f(shader.get_loc('rate_on_slow'), 0.1)  # 100 ms to relax
+
+            glUniform1f(shader.get_loc('gain_biochem'), 0.1)
 
             work_groups = (self._ra.lens_count + 63) // 64
             glDispatchCompute(work_groups, 1, 1)
@@ -523,9 +527,7 @@ class BaseRenderer(ABC):
         self._tick()
         self._sample_scene()  # subclasses override: fill sampling_results_ssbo
         self._reduction()
-
-        if self._gpu_actuation:
-            self._actuation()
+        self._eye_dynamics()
 
     @abstractmethod
     def _sample_scene(self):
@@ -943,7 +945,7 @@ class BaseRenderer(ABC):
                 self._lazy_tp_colour_shader,
                 self._lazy_tp_overlay_shader,
                 self.reduction_shader,
-                self.actuation_shader
+                self.dynamics_shader
         ):
             if shader:
                 shader.free()

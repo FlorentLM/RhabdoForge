@@ -21,6 +21,8 @@ uniform float gain_lat;
 uniform float gain_ax;
 uniform float rate_off_fast;
 uniform float rate_on_slow;
+uniform float gain_biochem;
+
 
 void main() {
     uint lens_idx = gl_GlobalInvocationID.x;
@@ -46,13 +48,16 @@ void main() {
     }
 
     // Dynamics
-    // Contrast is light change relative to the slow-moving baseline
+
     float contrast = lum - ld.adapted_lum;
 
-    // Update baseline (leaky integrator)
+    // Update baseline (leaky integrator) every frame to adapt to light levels
     ld.adapted_lum = mix(ld.adapted_lum, lum, dt / (tau_adapt + dt));
 
-    // Target displacement: contract/pull when light contrast OFF
+    // Responses:
+
+    // Movement
+    // contract/pull when light contrast OFF
     float target_lat = (contrast < 0.0) ? (-contrast * gain_lat) : 0.0;
     float target_ax  = (contrast < 0.0) ? (-contrast * gain_ax) : 0.0;
 
@@ -65,7 +70,9 @@ void main() {
 
     lens_dynamic[lens_idx] = ld;
 
-    // Geometry update
+    // Biochemical gain
+    float target_gain = 1.0 / (1.0 + ld.adapted_lum * gain_biochem);
+
     LensStatic ls = lens_static[lens_idx];
     float d_eff = max(d_rest - ld.axial_um, 1.0);
 
@@ -82,5 +89,6 @@ void main() {
 
         rcpt_dynamic[rcpt_idx].direction = normalize(-tip);
         rcpt_dynamic[rcpt_idx].acc_axes = rs.rest_acc * acc_scale;
+        rcpt_dynamic[rcpt_idx].adaptation_state = target_gain;
     }
 }
