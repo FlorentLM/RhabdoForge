@@ -8,13 +8,15 @@ layout (location = 0) out vec4 FragColor;
 
 // Uniforms
 layout (binding = 0) uniform samplerCube cubemap;
+uniform bool false_colors;
+uniform bool uv_encoding;
 
 const float PI = 3.14159265359;
 const float HPI = PI * 0.5;
 
 void main()
 {
-    // Convert incoming UVs [0, 1] to screen position [-1, 1]
+    // Convert incoming uv [0, 1] to screen position [-1, 1]
      vec2 v_screen_pos = v_tex_coord * 2.0 - 1.0;
 
     // Convert the incoming screen position [-1, 1] into panoramic coordinates
@@ -30,5 +32,12 @@ void main()
     dir.z = -cos_lat * cos(longitude);
 
     // Sample the cubemap
-    FragColor = texture(cubemap, dir);
+    vec4 color = texture(cubemap, dir);
+
+    // Kill red channel if needed
+    if (uv_encoding || false_colors) {
+        color.r = 0.0;
+    }
+
+    FragColor = color;
 }

@@ -561,7 +561,7 @@ class Skybox:
 
         glBindVertexArray(0)
 
-    def draw(self, projection_matrix, view_matrix):
+    def draw(self, projection_matrix, view_matrix, simulate_insect_vision=False, uv_encoded_textures=False):
 
         shader = self.program
         shader.use()
@@ -573,6 +573,8 @@ class Skybox:
 
         glUniformMatrix4fv(shader.get_loc('projection'), 1, False, glm.value_ptr(projection_matrix))
         glUniformMatrix4fv(shader.get_loc('view'), 1, False, glm.value_ptr(view_matrix))
+        glUniform1i(shader.get_loc('false_colors'), int(simulate_insect_vision and not uv_encoded_textures))
+        glUniform1i(shader.get_loc('uv_encoding'), int(uv_encoded_textures))
 
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, self.texture_id)

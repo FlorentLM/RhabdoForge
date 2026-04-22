@@ -7,12 +7,15 @@ layout (location = 2) in vec3 fragWorldNormal;
 layout (location = 3) in vec4 fragLightSpacePos;
 
 // Output: Final color to framebuffer
-layout (location = 0) out vec4 finalColor;
+layout (location = 0) out vec4 FragColor;
 
 // Matrial
 layout (binding = 0) uniform sampler2D texture1;
 uniform bool has_texture;
 uniform vec4 base_color;
+
+uniform bool false_colors;
+uniform bool uv_encoding;
 
 // Shadow map
 layout (binding = 1) uniform sampler2DShadow shadow_map;
@@ -78,7 +81,7 @@ void main()
     }
 
     if (!enable_direct) {
-        finalColor = surface_color;
+        FragColor = surface_color;
         return;
     }
 
@@ -101,5 +104,12 @@ void main()
     // Final lit color
     vec3 lit = surface_color.rgb * (ambient + diffuse * (1.0 - shadow));
 
-    finalColor = vec4(lit, surface_color.a);
+    vec4 color = vec4(lit, surface_color.a);
+
+    if (uv_encoding || false_colors) {
+        // Drop the red channel (UV) for the human screen
+        color.r = 0.0;
+    }
+
+    FragColor = color;
 }

@@ -196,7 +196,7 @@ class PanoramicViewer:
             self._vao = glGenVertexArrays(1)
         return self._vao
 
-    def draw(self, cubemap_tex_id):
+    def draw(self, cubemap_tex_id, simulate_insect_vision=False, uv_encoded_textures=False):
         """Draws the panoramic view of the given cubemap."""
         self.shader.use()
 
@@ -204,6 +204,9 @@ class PanoramicViewer:
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_tex_id)
         glUniform1i(self.shader.get_loc("cubemap"), 0)
+
+        glUniform1i(self.shader.get_loc('false_colors'), int(simulate_insect_vision and not uv_encoded_textures))
+        glUniform1i(self.shader.get_loc('uv_encoding'), int(uv_encoded_textures))
 
         # Draw a full-screen triangle
         glBindVertexArray(self.vao)
@@ -628,7 +631,7 @@ class Rasterizer(BaseRenderer):
 
         self._shadow_map.unbind()
 
-    def _render_instance(self, inst: RasterInstance, view_mat, proj_mat):
+    def _render_instance(self, inst: RasterInstance, view_mat: np.ndarray, proj_mat: np.ndarray, to_screen: bool = False):
         """Renders a single RasterInstance."""
         asset = inst.asset
         asset.shaders.use()
@@ -638,6 +641,13 @@ class Rasterizer(BaseRenderer):
         cam_mat = proj_mat * view_mat
         glUniformMatrix4fv(asset.shaders.get_loc("camera"), 1, False, glm.value_ptr(cam_mat))
         glUniformMatrix4fv(asset.shaders.get_loc("model"), 1, False, glm.value_ptr(inst.transform))
+
+        # these toggles are only if drawing to the human screen
+        sim_insect = int(self.simulate_insect_vision and not self.uv_encoded_textures) if to_screen else 0
+        uv_enc = int(self.uv_encoded_textures) if to_screen else 0
+
+        glUniform1i(asset.shaders.get_loc('false_colors'), sim_insect)
+        glUniform1i(asset.shaders.get_loc('uv_encoding'), uv_enc)
 
         if isinstance(asset, RasterMesh):
 
@@ -746,7 +756,7 @@ class Rasterizer(BaseRenderer):
                 self._baker.scene.skybox.draw(self._cubemap_proj_mat, view)
 
             for instance in self._baker.renderables:
-                self._render_instance(instance, view, self._cubemap_proj_mat)
+                self._render_instance(instance, view, self._cubemap_proj_mat, to_screen=False)
 
         self._cubemap_fbo.unbind()
 
@@ -800,15 +810,15 @@ class Rasterizer(BaseRenderer):
             self._draw_eye_firstperson()
 
         elif view_mode == DisplayMode.Panoramic:
-            self._pano_viewer.draw(self._cubemap_fbo.tex_id)
+            self._pano_viewer.draw(self._cubemap_fbo.tex_id, self.simulate_insect_vision, self.uv_encoded_textures)
 
         elif view_mode == DisplayMode.Perspective or view_mode == DisplayMode.Third_person:
 
             if self._baker.scene.skybox is not None:
-                self._baker.scene.skybox.draw(point_of_view.projection, point_of_view.view)
+                self._baker.scene.skybox.draw(point_of_view.projection, point_of_view.view, self.simulate_insect_vision, self.uv_encoded_textures)
 
             for instance in self._baker.renderables:
-                self._render_instance(instance, point_of_view.view, point_of_view.projection)
+                self._render_instance(instance, point_of_view.view, point_of_view.projection, to_screen=True)
 
         if view_mode == DisplayMode.Third_person:
             self._draw_eye_thirdperson(point_of_view)
