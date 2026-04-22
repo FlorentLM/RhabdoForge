@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Union, Tuple, Sequence
+from typing import Optional, Union, Tuple, Sequence, List
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import linear_sum_assignment
@@ -9,10 +9,11 @@ from insectvision.utils.math import (
     normalise_vectors, tangent_frames, fibonacci_sphere, icosphere,
     project_to_tangent,
 )
-
-from .datatypes import LENS_STATIC_DTYPE, LENS_DYNAMIC_DTYPE, RCPT_STATIC_DTYPE, RCPT_DYNAMIC_DTYPE
-from .kernel import RhabdomereKernel
-from .proxies import Eye, Ommatidium, Cartridge, LensView, ReceptorView
+from insectvision.compound_eyes.datatypes import (
+    LENS_STATIC_DTYPE, LENS_DYNAMIC_DTYPE, RCPT_STATIC_DTYPE, RCPT_DYNAMIC_DTYPE
+)
+from insectvision.compound_eyes.kernel import RhabdomereKernel
+from insectvision.compound_eyes.proxies import Eye, Ommatidium, Cartridge, LensView, ReceptorView
 
 
 ## Build helpers
@@ -100,7 +101,7 @@ def _floodfill_yaws(yaws, chirality, eyes, lens_positions, local_right, local_up
 
 
 def _orient_rhabdomeres(
-        kernel: RhabdomereKernel,
+        kernel: 'RhabdomereKernel',
         lens_positions: np.ndarray,
         lens_directions: np.ndarray,
         local_right: np.ndarray,
@@ -210,7 +211,7 @@ def _orient_rhabdomeres(
 
 def _saccades_field(
         yaws: np.ndarray,
-        kernel: RhabdomereKernel,
+        kernel: 'RhabdomereKernel',
         chirality: np.ndarray,
         dorsal_sign: np.ndarray,
         local_right: np.ndarray,
@@ -319,7 +320,7 @@ def _receptors_geometry(
         lens_positions: np.ndarray,
         local_right: np.ndarray,
         local_up: np.ndarray,
-        kernel: RhabdomereKernel,
+        kernel: 'RhabdomereKernel',
         bundle_orientation: np.ndarray,
         chirality: np.ndarray,
         dorsal_sign: np.ndarray
@@ -376,7 +377,7 @@ def _receptors_geometry(
 
 def _acceptance_angles(
         lens_count: int,
-        kernel: RhabdomereKernel,
+        kernel: 'RhabdomereKernel',
         ioa_minor: np.ndarray,
         ioa_major: np.ndarray,
         wavelength_nm: float,
@@ -562,7 +563,7 @@ class ReceptorArray:
                  directions: Optional[ArrayLike] = None,
                  positions: Optional[ArrayLike] = None,
                  ommatidia_count: Optional[int] = None,
-                 kernel: Optional[RhabdomereKernel] = None,
+                 kernel: Optional['RhabdomereKernel'] = None,
                  bundle_orientation: Optional[ArrayLike] = None,
                  chirality: Optional[ArrayLike] = None,
                  eye_ids: Optional[Union[int, ArrayLike]] = None,
@@ -834,7 +835,7 @@ class ReceptorArray:
         return f"<ReceptorArray(lenses={self.lens_count}, R={self.receptor_count}, total={len(self.rcpt_static_data)})>"
 
     @property
-    def lenses(self) -> LensView:
+    def lenses(self) -> 'LensView':
         """Lens-level data (animal-level)."""
 
         if self._lenses_view is None:
@@ -847,7 +848,7 @@ class ReceptorArray:
         return self._lenses_view
 
     @property
-    def receptors(self) -> ReceptorView:
+    def receptors(self) -> 'ReceptorView':
         """Receptor-level data (animal-level)."""
 
         if self._receptors_view is None:
@@ -881,7 +882,7 @@ class ReceptorArray:
 
     # Eye / Ommatidium / Cartridge access
 
-    def eye(self, eye_id: int) -> Eye:
+    def eye(self, eye_id: int) -> 'Eye':
         """Eye view for eye_id (0-7)."""
 
         if eye_id not in self._eye_cache:
@@ -890,7 +891,7 @@ class ReceptorArray:
         return self._eye_cache[eye_id]
 
     @property
-    def eyes(self) -> list:
+    def eyes(self) -> List['Eye']:
         """List of Eye views for all eye_ids present."""
 
         return [self._eye_cache[eid] for eid in sorted(self._eye_cache)]
@@ -900,18 +901,18 @@ class ReceptorArray:
 
         return np.array(sorted(self._eye_cache), dtype=np.uint32)
 
-    def _eye_cache_by_lens(self, lens_index: int) -> Eye:
+    def _eye_cache_by_lens(self, lens_index: int) -> 'Eye':
         """Lookup which Eye owns a given lens (animal-level)."""
 
         eid = int(self._lens_eye_ids[lens_index])
         return self._eye_cache[eid]
 
-    def ommatidium(self, lens_index: int) -> Ommatidium:
+    def ommatidium(self, lens_index: int) -> 'Ommatidium':
         """Animal-level lens index -> Ommatidium group view."""
 
         return Ommatidium(self, lens_index)
 
-    def cartridge(self, lens_index: int) -> Cartridge:
+    def cartridge(self, lens_index: int) -> 'Cartridge':
         """Animal-level lens index -> Cartridge."""
 
         return Cartridge(self, lens_index)
@@ -933,7 +934,7 @@ class ReceptorArray:
         return max(eye.max_gap() for eye in self.eyes)
 
     @property
-    def kernel(self) -> Optional[RhabdomereKernel]:
+    def kernel(self) -> Optional['RhabdomereKernel']:
         return self._kernel
 
     @property

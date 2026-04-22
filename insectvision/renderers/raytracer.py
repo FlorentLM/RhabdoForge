@@ -2,24 +2,25 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import Tuple, List, Dict, Optional, Set, Union
+from typing import TYPE_CHECKING, Tuple, List, Dict, Optional, Set, Union
 import numpy as np
 from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from insectvision.interactive.utils import DisplayMode
-from insectvision.compound_eyes import ReceptorArray
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType, Asset
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
 from insectvision.engine.shader_utils import write_pytinybvh_preamble, ShaderProgram
 
-from .commons import (
-    BaseRenderer, TextureViewer, _create_ssbo, BINDING_RCPT_STATIC,
-    BINDING_LENS_STATIC, BINDING_COLOR, BINDING_EMA_HIST, BINDING_RCPT_DYNAMIC, BINDING_RAYS_INTERMEDIATE, BINDING_LENS_DYNAMIC
+from insectvision.renderers.commons import (
+    BaseRenderer, _create_ssbo,
+    BINDING_RCPT_STATIC, BINDING_LENS_STATIC, BINDING_RCPT_DYNAMIC, BINDING_RAYS_INTERMEDIATE
 )
 
+if TYPE_CHECKING:
+    from insectvision.compound_eyes import ReceptorArray
 
 # Scene geometry bindings
 BINDING_VERTICES     = 7 #5

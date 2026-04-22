@@ -6,17 +6,19 @@ import time
 import random
 from abc import ABC, abstractmethod
 from enum import IntEnum
-from typing import Optional, Union, Dict, Tuple
+from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple
 from numpy.typing import ArrayLike
 import numpy as np
 from pyglm import glm
 
 from insectvision.interactive.utils import DisplayMode
 from insectvision.geometry.meshes import CONE_VERTICES, SPHERE_VERTICES
-from insectvision.compound_eyes import ReceptorArray, VisualOutput, Eye
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
 from insectvision.engine.shader_utils import ShaderProgram
+
+if TYPE_CHECKING:
+    from insectvision.compound_eyes import ReceptorArray, Eye
 
 
 # SSBO bindings
@@ -696,6 +698,7 @@ class BaseRenderer(ABC):
             - batch_size = 1: Blocks and returns the current frame's data
             - batch_size > 1: Queues the frame on the GPU and returns None
         """
+        from insectvision.compound_eyes import VisualOutput
 
         self.update()
 

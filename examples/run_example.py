@@ -82,7 +82,7 @@ def main():
                                  nb_samples=SAMPLES_PER_RECEPTOR,
                                  time_dithering=True,
                                  quasi_random=True,
-                                 enable_actuation=False,
+                                 enable_actuation=True,
                                  enable_direct=True,
                                  enable_shadows=True,
                                  enable_ambient=True)

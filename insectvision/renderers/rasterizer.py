@@ -2,22 +2,21 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import List, Union
+from typing import TYPE_CHECKING, List, Union
 import numpy as np
 from PIL import Image
 from pyglm import glm
 
 from insectvision.utils.math import tangent_frames
 from insectvision.interactive.utils import DisplayMode
-from insectvision.compound_eyes import ReceptorArray
-
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight
 from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.renderers.commons import BaseRenderer, BINDING_RCPT_STATIC, BINDING_RCPT_DYNAMIC, \
-    BINDING_RAYS_INTERMEDIATE, TextureViewer
+from insectvision.renderers.commons import BaseRenderer, BINDING_RCPT_STATIC, BINDING_RCPT_DYNAMIC, BINDING_RAYS_INTERMEDIATE
 
+if TYPE_CHECKING:
+    from insectvision.compound_eyes import ReceptorArray
 
 def _get_light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
     """Computes the orthographic projection and view matrix for a directional light."""
