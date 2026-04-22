@@ -546,11 +546,6 @@ class Raytracer(BaseRenderer):
             batch_size=batch_size
         )
 
-        # Rays SSBO (allocated by nb_samples property)
-        self.ray_results_ssbo = None
-        self._nb_samples = 0
-        self.nb_samples = nb_samples
-
         # Global lighting controls
         self.enable_direct = enable_direct
         self.enable_shadows = enable_shadows
@@ -561,7 +556,6 @@ class Raytracer(BaseRenderer):
         # Lazy resource handles
         self._active_defines: Set[str] = set()
         self._raytrace_shader: Optional[ShaderProgram] = None
-        self._reduction_shader: Optional[ShaderProgram] = None
 
         self._view_shaders: Dict[str, ShaderProgram] = {}
         self._view_textures: Dict[str, int] = {}
@@ -581,12 +575,6 @@ class Raytracer(BaseRenderer):
                 defines=self._active_defines
             )
         return self._raytrace_shader
-
-    @property
-    def reduction_shader(self) -> ShaderProgram:
-        if self._reduction_shader is None:
-            self._reduction_shader = ShaderProgram(comp_path='shaders/raytracing/raysReduction.comp')
-        return self._reduction_shader
 
     def _get_view_shader(self, view_name: str) -> ShaderProgram:
         self._ensure_defines()
@@ -781,76 +769,9 @@ class Raytracer(BaseRenderer):
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         shader.stop()
 
-    def _reduction(self):
-        """Pass 2: reduction."""
-
-        shader = self.reduction_shader
-        shader.use()
-
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.ray_results_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self._color_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self._ema_history_ssbo)
-
-        glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
-        glUniform1i(shader.get_loc('nb_receptors'), len(self._ra))
-        glUniform1f(shader.get_loc('dt'), self._dt)
-
-        frame_offset = self._frame_index % self._batch_size
-        glUniform1i(shader.get_loc('frame_offset'), frame_offset)
-
-        work_groups = (len(self._ra) + 63) // 64
-        glDispatchCompute(work_groups, 1, 1)
-
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-        shader.stop()
-
-    def _actuation(self):
-        """Pass 3: actuation."""
-
-        k = self._ra.kernel
-        center_idx = k.center_index
-
-        if k.nodal_distance_um is not None:
-            shader = self.actuation_shader
-            shader.use()
-
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self._lens_static_ssbo)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self._color_ssbo)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self._ema_history_ssbo)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_DYNAMIC, self._lens_dynamic_ssbo)
-
-            glUniform1i(shader.get_loc('nb_lenses'), self._ra.lens_count)
-            glUniform1i(shader.get_loc('receptors_per_lens'), self._ra.receptor_count)
-            glUniform1f(shader.get_loc('dt'), self._dt)
-
-            glUniform1f(shader.get_loc('d_rest'), k.nodal_distance_um)
-            lam_um = self._ra._wavelength_nm * 1e-3
-            glUniform1f(shader.get_loc('diffraction_sq'), (lam_um / k.lens_diameter_um) ** 2)
-            glUniform1f(shader.get_loc('acc_rest_geom_sq'), (k.diameters_um[center_idx] / k.nodal_distance_um) ** 2)
-
-            # Dynamics
-            # TODO: Expose these as properties
-            glUniform1f(shader.get_loc('tau_adapt'), 0.05)  # 50ms
-            glUniform1f(shader.get_loc('gain_lat'), 5.0)  # Pull strength lateral
-            glUniform1f(shader.get_loc('gain_ax'), 2.0)  # Pull strength axial
-            glUniform1f(shader.get_loc('rate_off_fast'), 0.01)  # 10 ms to contract
-            glUniform1f(shader.get_loc('rate_on_slow'), 0.1)  # 100 ms to relax
-
-            work_groups = (self._ra.lens_count + 63) // 64
-            glDispatchCompute(work_groups, 1, 1)
-            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-            shader.stop()
-
-    def _compute_colors(self, auto_actuated: bool = False): # TODO: Maybe move this option somewhere else
-        self._tick()
+    def _sample_scene(self):
         self._baker.update()
-
         self._raytrace_receptors()
-        self._reduction()
-        self._actuation()
 
     # Main public methods
 
@@ -873,36 +794,6 @@ class Raytracer(BaseRenderer):
 
     # Public properties and methods
 
-    @property
-    def nb_samples(self):
-        return self._nb_samples
-
-    @nb_samples.setter
-    def nb_samples(self, value):
-
-        R = len(self._ra)
-
-        max_tot_samples = self._max_ssbo_bytes // 16
-        max_per_r = max(1, max_tot_samples // R)
-        value_clamped = int(np.clip(value, 1, max_per_r))
-
-        if value_clamped == self._nb_samples:
-            return
-
-        if value_clamped != value:
-            print(f"Warning: Clamped samples per receptor to {value_clamped} (HW limit is {max_per_r}).")
-
-        self._samples_per_pixel = 1
-        self._nb_samples = value_clamped
-
-        req_bytes = R * self._nb_samples * 16
-        print(f"Allocating ray result buffer for {R * self._nb_samples:,} samples ({req_bytes / (1024 * 1024):.2f} MB).")
-
-        if self.ray_results_ssbo:
-            glDeleteBuffers(1, [self.ray_results_ssbo])
-
-        self.ray_results_ssbo = _create_ssbo(data=None, size=req_bytes, usage=GL_DYNAMIC_DRAW)
-
     def update_texture(self, asset: 'Asset'):
         """Update a texture on the GPU for given Asset."""
 
@@ -911,11 +802,10 @@ class Raytracer(BaseRenderer):
     # Cleanup
 
     def free(self):
-        glDeleteBuffers(1, [self.ray_results_ssbo])
         self._invalidate_shaders()
 
-        if self._reduction_shader:
-            self._reduction_shader.free()
+        if self.reduction_shader:
+            self.reduction_shader.free()
 
         tex_ids = list(self._view_textures.values())
         if tex_ids:

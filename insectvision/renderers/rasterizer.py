@@ -15,7 +15,8 @@ from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight
 from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.renderers.commons import BaseRenderer
+from insectvision.renderers.commons import BaseRenderer, BINDING_RCPT_STATIC, BINDING_RCPT_DYNAMIC, \
+    BINDING_RAYS_INTERMEDIATE
 
 
 def _get_light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
@@ -489,42 +490,35 @@ class Rasterizer(BaseRenderer):
             quasi_random: bool = False,
             cubemap_res: int = 512,
             batch_size: int = 1,
-            enable_direct: bool = False,
-            enable_shadows: bool = False,
-            enable_ambient: bool = False,
+            enable_shadows: bool = True,
+            enable_ambient: bool = True,
+            enable_direct: bool = True,
             shadow_res: int = 2048,
             shadow_radius: float = 50.0
         ):
 
         self._ra = receptor_array
-        self._baker = RasterBaker(scene, enable_shadows=enable_shadows)
         self.scene = scene
+        self._baker = RasterBaker(scene, enable_shadows=enable_shadows)
 
         self._cubemap_fbo = CubemapFBO(resolution=cubemap_res)
         self._cubemap_sampler = ShaderProgram(comp_path='ommatidiaRasterizer.comp')
         self._cubemap_proj_mat = Agent(fov=90.0, ratio=1.0).projection  # 90 degrees view proj matrix for each cube face
 
-        # TODO: Move these to base (and the shaders out of the raytracing folder)
-        self.reduction_shader = ShaderProgram(comp_path='shaders/raytracing/raysReduction.comp')
-        self.actuation_shader = ShaderProgram(comp_path='shaders/raytracing/actuation.comp')
-
-        # Global lighting controls
+        # Lighting (before super so base can pick them up)
         self.enable_direct = enable_direct
         self.enable_shadows = enable_shadows
         self.enable_ambient = enable_ambient
-
         self.ambient_intensity = 0.3
         self.ambient_color = (0.4, 0.45, 0.5)  # TODO: derive ambient from the cubemap instead
 
-        self._shadow_map = ShadowMapFBO(resolution=shadow_res) if self.enable_shadows else None
+        # Shadow-specific (rasterizer only)
+        self._shadow_map = ShadowMapFBO(resolution=shadow_res) if enable_shadows else None
         self._shadow_radius = shadow_radius
-
         self.shadow_bias = 0.002
         self.shadow_darkness = 0.3
         self.shadow_splat = 1.5
         self._light_mat = glm.mat4(1.0)
-
-        self._baker = RasterBaker(scene, enable_shadows=enable_shadows)
 
         super().__init__(
             receptor_array=receptor_array,
@@ -772,7 +766,6 @@ class Rasterizer(BaseRenderer):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
 
         # We write to the same intermediate buffer the raytracer uses
-        # TODO: Things must be moved to BaseRenderer
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.ray_results_ssbo)
 
         glActiveTexture(GL_TEXTURE0)
@@ -788,14 +781,9 @@ class Rasterizer(BaseRenderer):
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         shader.stop()
 
-    def _compute_colors(self):
-        self._tick()
+    def _sample_scene(self):
         self._render_to_cubemap()
-
         self._sample_cubemap()
-        self._reduction()
-
-        self._actuation()
 
     # Main public methods
 
@@ -829,14 +817,6 @@ class Rasterizer(BaseRenderer):
         self._baker.update_texture(asset)
 
     # Public properties and methods
-
-    @property
-    def nb_samples(self):
-        return self._nb_samples
-
-    @nb_samples.setter
-    def nb_samples(self, value):
-        self._nb_samples = int(min(32768, max(1, value)))
 
     @property
     def _primary_light(self):

@@ -3,13 +3,13 @@ import numpy as np
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.geometry.meshes import CUBE_VERTICES, CUBE_INDICES
 from insectvision.compound_eyes import ReceptorArray
-from insectvision.renderers import Raytracer
+from insectvision.renderers import Rasterizer, Raytracer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
 
 
 def main():
 
-    USE_RAYTRACER = True
+    USE_RAYTRACER = False
     USE_POINT_CLOUD = True
 
     SAMPLES_PER_RECEPTOR = 16
@@ -77,19 +77,28 @@ def main():
     # Setup Renderers
     batch_size = BATCH_SIZE if (HEADLESS and USE_ASYNC_BATCHING) else 1
 
+    if USE_RAYTRACER:
+        eye_renderer = Raytracer(receptor_array=eye_model, scene=scene, agent=agent,
+                                 nb_samples=SAMPLES_PER_RECEPTOR,
+                                 time_dithering=True,
+                                 quasi_random=True,
+                                 enable_direct=True,
+                                 enable_shadows=True,
+                                 enable_ambient=True)
 
-    eye_renderer = Raytracer(receptor_array=eye_model, scene=scene, agent=agent,
-                             nb_samples=SAMPLES_PER_RECEPTOR,
-                             time_dithering=True,
-                             quasi_random=True,
-                             enable_direct=True,
-                             enable_shadows=True,
-                             enable_ambient=True)
+        # The BVH can also be displayed in debug
+        if SHOW_DEBUG_OBJECTS:
+            for blas in eye_renderer._scene_baked.BLASes:
+                context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
 
-    # The BVH can also be displayed in debug
-    if SHOW_DEBUG_OBJECTS:
-        for blas in eye_renderer._scene_baked.BLASes:
-            context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
+    else:
+        eye_renderer = Rasterizer(receptor_array=eye_model, scene=scene, agent=agent,
+                                  nb_samples=SAMPLES_PER_RECEPTOR,
+                                  time_dithering=False,
+                                  batch_size=batch_size,
+                                  enable_direct=True,
+                                  enable_shadows=True,
+                                  enable_ambient=True)
 
     # Example custom key binding:
     def toggle_halton():
@@ -105,7 +114,7 @@ def main():
 
     if not HEADLESS:
 
-        while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer, use_dashboard=False):
+        while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer):
 
             context.input()  # this processes mouse and keyboard, it can be omitted to run headless
 
@@ -115,7 +124,7 @@ def main():
             # Get sensory data from the compound eye renderer
             view = eye_renderer.get_output()
 
-            context.draw(view)  # this draws to the viewport, it can be omitted to run headless
+            context.draw()  # this draws to the viewport, it can be omitted to run headless
 
             nb_frames += 1
 

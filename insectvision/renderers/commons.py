@@ -241,8 +241,23 @@ class BaseRenderer(ABC):
         self._rcpt_dynamic_ssbo = _create_ssbo(data=self._ra.rcpt_dynamic_data, usage=GL_DYNAMIC_DRAW)
         self._lens_dynamic_ssbo = _create_ssbo(data=self._ra.lens_dynamic_data, usage=GL_DYNAMIC_DRAW)
 
-        # Add Actuation Shader
-        self.actuation_shader = ShaderProgram(comp_path='shaders/raytracing/actuation.comp')
+        # Ray results buffer
+        self.ray_results_ssbo: Optional[int] = None
+        self._samples_per_pixel = 1  # raytracer subdivision hook, rasterizer ignores
+
+        # Reduction and actuation shaders (shared to rasterizer and raytracer)
+        self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp')
+        self.actuation_shader = ShaderProgram(comp_path='shaders/actuation.comp')
+
+        # Shared lighting flags (subclasses may override defaults before calling super)
+        self.enable_direct = getattr(self, 'enable_direct', True)
+        self.enable_ambient = getattr(self, 'enable_ambient', True)
+        self.enable_shadows = getattr(self, 'enable_shadows', True)
+        self.ambient_intensity = getattr(self, 'ambient_intensity', 1.0)
+        self.sky_intensity = getattr(self, 'sky_intensity', 1.0)
+
+        self._nb_samples = 0
+        self.nb_samples = nb_samples  # triggers ray_results_ssbo allocation
 
         # Visualisation shaders (lazy-loaded)
         self._lazy_fp_colour_shader: Optional[int] = None    # 1st person colour mode
@@ -275,7 +290,6 @@ class BaseRenderer(ABC):
         self.projection_mode = OmmatidiaProjection.Position
         self.output_mode = EyeOutput.Ommatidium
 
-        self._nb_samples = nb_samples
         self._quasi_random = quasi_random  # Halton sampling for direction generation
         self._time_dithering = time_dithering
 
@@ -404,9 +418,77 @@ class BaseRenderer(ABC):
 
     # Internal rendering logic and draw calls
 
+    def _reduction(self):
+
+        shader = self.reduction_shader
+        shader.use()
+
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.ray_results_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self._color_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self._ema_history_ssbo)
+
+        glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
+        glUniform1i(shader.get_loc('nb_receptors'), len(self._ra))
+        glUniform1f(shader.get_loc('dt'), self._dt)
+
+        frame_offset = self._frame_index % self._batch_size
+        glUniform1i(shader.get_loc('frame_offset'), frame_offset)
+
+        work_groups = (len(self._ra) + 63) // 64
+        glDispatchCompute(work_groups, 1, 1)
+
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+        shader.stop()
+
+    def _actuation(self):
+
+        k = self._ra.kernel
+        center_idx = k.center_index
+
+        if k.nodal_distance_um is not None:
+            shader = self.actuation_shader
+            shader.use()
+
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self._lens_static_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self._color_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self._ema_history_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_DYNAMIC, self._lens_dynamic_ssbo)
+
+            glUniform1i(shader.get_loc('nb_lenses'), self._ra.lens_count)
+            glUniform1i(shader.get_loc('receptors_per_lens'), self._ra.receptor_count)
+            glUniform1f(shader.get_loc('dt'), self._dt)
+
+            glUniform1f(shader.get_loc('d_rest'), k.nodal_distance_um)
+            lam_um = self._ra._wavelength_nm * 1e-3
+            glUniform1f(shader.get_loc('diffraction_sq'), (lam_um / k.lens_diameter_um) ** 2)
+            glUniform1f(shader.get_loc('acc_rest_geom_sq'), (k.diameters_um[center_idx] / k.nodal_distance_um) ** 2)
+
+            # Dynamics
+            # TODO: Expose these as properties
+            glUniform1f(shader.get_loc('tau_adapt'), 0.05)  # 50ms
+            glUniform1f(shader.get_loc('gain_lat'), 5.0)  # Pull strength lateral
+            glUniform1f(shader.get_loc('gain_ax'), 2.0)  # Pull strength axial
+            glUniform1f(shader.get_loc('rate_off_fast'), 0.01)  # 10 ms to contract
+            glUniform1f(shader.get_loc('rate_on_slow'), 0.1)  # 100 ms to relax
+
+            work_groups = (self._ra.lens_count + 63) // 64
+            glDispatchCompute(work_groups, 1, 1)
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+            shader.stop()
+
+    def _compute_colors(self):
+        """Shared pipeline: tick → scene-specific sampling → reduce → actuate."""
+        self._tick()
+        self._sample_scene()  # subclass: fills ray_results_ssbo
+        self._reduction()
+        self._actuation()
+
     @abstractmethod
-    def _compute_colors(self, *args, **kwargs):
-        # Each subclass implements its own rendering logic
+    def _sample_scene(self):
+        """Subclass-specific: prepare scene and populate ray_results_ssbo."""
         raise NotImplementedError
 
     def _draw_eye_firstperson(self):
@@ -720,9 +802,29 @@ class BaseRenderer(ABC):
         return self._nb_samples
 
     @nb_samples.setter
-    @abstractmethod
     def nb_samples(self, value):
-        raise NotImplementedError
+        R = len(self._ra)
+
+        max_tot_samples = self._max_ssbo_bytes // 16
+        max_per_r = max(1, max_tot_samples // R)
+        value_clamped = int(np.clip(value, 1, max_per_r))
+
+        if value_clamped == self._nb_samples:
+            return
+
+        if value_clamped != value:
+            print(f"Warning: Clamped samples per receptor to {value_clamped} (HW limit is {max_per_r}).")
+
+        self._nb_samples = value_clamped
+
+        req_bytes = R * self._nb_samples * 16
+        print(
+            f"Allocating ray result buffer for {R * self._nb_samples:,} samples ({req_bytes / (1024 * 1024):.2f} MB).")
+
+        if self.ray_results_ssbo:
+            glDeleteBuffers(1, [self.ray_results_ssbo])
+
+        self.ray_results_ssbo = _create_ssbo(data=None, size=req_bytes, usage=GL_DYNAMIC_DRAW)
 
     @property
     def time_dithering(self):
@@ -781,6 +883,7 @@ class BaseRenderer(ABC):
             self._lazy_overlay_ssbo,
             self._lazy_lens_cones_vbo,
             self._lazy_lens_hemisph_vbo,
+            self.ray_results_ssbo,
             *self._pbos
         ):
             if buf:
@@ -797,7 +900,9 @@ class BaseRenderer(ABC):
                 self._lazy_fp_colour_shader,
                 self._lazy_fp_overlay_shader,
                 self._lazy_tp_colour_shader,
-                self._lazy_tp_overlay_shader
+                self._lazy_tp_overlay_shader,
+                self.reduction_shader,
+                self.actuation_shader
         ):
             if shader:
                 shader.free()

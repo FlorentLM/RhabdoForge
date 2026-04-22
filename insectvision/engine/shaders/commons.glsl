@@ -91,6 +91,17 @@ float halton_sequence(uint index, uint base) {
     return r;
 }
 
+uint pcg_hash(uint seed) {
+    uint state = seed * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float random_float(inout uint rng_state) {
+    rng_state = pcg_hash(rng_state);
+    return float(rng_state) / 4294967295.0;
+}
+
 vec3 sampledir(in ReceptorStatic rs, in ReceptorDynamic rd, in vec3 T, in vec3 B, in vec3 F, in float u1, in float u2) {
     float phi = TWOPI * u2;
     float angle_min = rd.acc_axes.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);

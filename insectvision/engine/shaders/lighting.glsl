@@ -6,6 +6,7 @@
 // HAS_POINT_LIGHT / MULTI_POINT
 // HAS_AREA_LIGHT / MULTI_AREA
 
+#include "commons.glsl"
 #include "bvh.glsl"
 
 const int MAX_LIGHTS_PER_PASS = 16;
@@ -78,19 +79,6 @@ layout(std430, binding = 18) readonly buffer AreaLightsBuffer {
     AreaLightData area_lights[];
 };
 #endif
-
-// ==================================== RNG ========================================================
-
-uint pcg_hash(uint seed) {
-    uint state = seed * 747796405u + 2891336453u;
-    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
-float random_float(inout uint rng_state) {
-    rng_state = pcg_hash(rng_state);
-    return float(rng_state) / 4294967295.0;
-}
 
 // ==================================== Sampling ===================================================
 
