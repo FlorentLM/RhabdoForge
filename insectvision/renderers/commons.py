@@ -190,7 +190,8 @@ class BaseRenderer(ABC):
             time_dithering: bool = True,
             nb_samples: int = 256,
             quasi_random: bool = False,
-            batch_size: int = 1
+            batch_size: int = 1,
+            enable_actuation: bool = False,     #TODO: might rename this
         ):
 
         self._ra: 'ReceptorArray' = receptor_array
@@ -242,7 +243,7 @@ class BaseRenderer(ABC):
         self._lens_dynamic_ssbo = _create_ssbo(data=self._ra.lens_dynamic_data, usage=GL_DYNAMIC_DRAW)
 
         # Ray results buffer
-        self.ray_results_ssbo: Optional[int] = None
+        self.sampling_results_ssbo: Optional[int] = None
         self._samples_per_pixel = 1  # raytracer subdivision hook, rasterizer ignores
 
         # Reduction and actuation shaders (shared to rasterizer and raytracer)
@@ -257,7 +258,7 @@ class BaseRenderer(ABC):
         self.sky_intensity = getattr(self, 'sky_intensity', 1.0)
 
         self._nb_samples = 0
-        self.nb_samples = nb_samples  # triggers ray_results_ssbo allocation
+        self.nb_samples = nb_samples  # triggers sampling_results_ssbo allocation
 
         # Visualisation shaders (lazy-loaded)
         self._lazy_fp_colour_shader: Optional[int] = None    # 1st person colour mode
@@ -283,6 +284,7 @@ class BaseRenderer(ABC):
         self._overlay_autorange_perc = 98 # percentile to reject outliers
 
         # States flags and other things
+        self._gpu_actuation = enable_actuation
         self._overlay_enabled = False
         self.runs_interactive = False
         self.tiled_mode = True
@@ -424,7 +426,7 @@ class BaseRenderer(ABC):
         shader.use()
 
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.ray_results_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.sampling_results_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self._color_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self._ema_history_ssbo)
 
@@ -479,16 +481,19 @@ class BaseRenderer(ABC):
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
             shader.stop()
 
-    def _compute_colors(self):
-        """Shared pipeline: tick → scene-specific sampling → reduce → actuate."""
+    def _main_render(self):
+        """Shared pipeline: tick -> scene-specific sampling -> reduce -> actuate."""
+        
         self._tick()
-        self._sample_scene()  # subclass: fills ray_results_ssbo
+        self._sample_scene()  # subclasses override: fill sampling_results_ssbo
         self._reduction()
-        self._actuation()
+
+        if self._gpu_actuation:
+            self._actuation()
 
     @abstractmethod
     def _sample_scene(self):
-        """Subclass-specific: prepare scene and populate ray_results_ssbo."""
+        """Subclass-specific: prepare scene and populate sampling_results_ssbo."""
         raise NotImplementedError
 
     def _draw_eye_firstperson(self):
@@ -660,7 +665,7 @@ class BaseRenderer(ABC):
             self._dither_counter += 1
 
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-        self._compute_colors()
+        self._main_render()
         glFinish()
 
         self._frame_index += 1
@@ -821,10 +826,10 @@ class BaseRenderer(ABC):
         print(
             f"Allocating ray result buffer for {R * self._nb_samples:,} samples ({req_bytes / (1024 * 1024):.2f} MB).")
 
-        if self.ray_results_ssbo:
-            glDeleteBuffers(1, [self.ray_results_ssbo])
+        if self.sampling_results_ssbo:
+            glDeleteBuffers(1, [self.sampling_results_ssbo])
 
-        self.ray_results_ssbo = _create_ssbo(data=None, size=req_bytes, usage=GL_DYNAMIC_DRAW)
+        self.sampling_results_ssbo = _create_ssbo(data=None, size=req_bytes, usage=GL_DYNAMIC_DRAW)
 
     @property
     def time_dithering(self):
@@ -883,7 +888,7 @@ class BaseRenderer(ABC):
             self._lazy_overlay_ssbo,
             self._lazy_lens_cones_vbo,
             self._lazy_lens_hemisph_vbo,
-            self.ray_results_ssbo,
+            self.sampling_results_ssbo,
             *self._pbos
         ):
             if buf:

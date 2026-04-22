@@ -82,6 +82,7 @@ def main():
                                  nb_samples=SAMPLES_PER_RECEPTOR,
                                  time_dithering=True,
                                  quasi_random=True,
+                                 enable_actuation=False,
                                  enable_direct=True,
                                  enable_shadows=True,
                                  enable_ambient=True)
@@ -96,6 +97,7 @@ def main():
                                   nb_samples=SAMPLES_PER_RECEPTOR,
                                   time_dithering=False,
                                   batch_size=batch_size,
+                                  enable_actuation=False,
                                   enable_direct=True,
                                   enable_shadows=True,
                                   enable_ambient=True)

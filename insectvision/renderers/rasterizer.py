@@ -185,7 +185,7 @@ class PanoramicViewer:
     def shader(self):
         if self._shader is None:
             self._shader = ShaderProgram(
-                vert_path='visualisation/fullscreen.vert', frag_path='visualisation/cubemapSampler.frag'
+                vert_path='visualisation/fullscreen.vert', frag_path='rasterizing/cubemapSampler.frag'
             )
         return self._shader
 
@@ -490,6 +490,7 @@ class Rasterizer(BaseRenderer):
             quasi_random: bool = False,
             cubemap_res: int = 512,
             batch_size: int = 1,
+            enable_actuation: bool = False,
             enable_shadows: bool = True,
             enable_ambient: bool = True,
             enable_direct: bool = True,
@@ -527,6 +528,7 @@ class Rasterizer(BaseRenderer):
             nb_samples=nb_samples,
             quasi_random=quasi_random,
             batch_size=batch_size,
+            enable_actuation=enable_actuation
         )
 
         self._pano_viewer = PanoramicViewer()
@@ -766,11 +768,12 @@ class Rasterizer(BaseRenderer):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
 
         # We write to the same intermediate buffer the raytracer uses
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.ray_results_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.sampling_results_ssbo)
 
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.tex_id)
         glUniform1i(shader.get_loc('scene_cubemap'), 0)
+        glUniform1i(shader.get_loc('use_quasi_random '), self._quasi_random)
 
         glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
         glUniform1f(shader.get_loc('dither_counter'), float(self._dither_counter))

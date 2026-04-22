@@ -528,6 +528,7 @@ class Raytracer(BaseRenderer):
             quasi_random: bool = False,
             pano_res: Optional[Tuple[int, int]] = (1024, 512),
             batch_size: int = 1,
+            enable_actuation: bool = False,
             enable_direct: bool = True,
             enable_shadows: bool = True,
             enable_ambient: bool = True,
@@ -543,7 +544,8 @@ class Raytracer(BaseRenderer):
             time_dithering=time_dithering,
             nb_samples=nb_samples,
             quasi_random=quasi_random,
-            batch_size=batch_size
+            batch_size=batch_size,
+            enable_actuation=enable_actuation
         )
 
         # Global lighting controls
@@ -752,7 +754,7 @@ class Raytracer(BaseRenderer):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self._lens_static_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.ray_results_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.sampling_results_ssbo)
 
         self._bind_scene_ssbos()
         self._bind_scene_textures(shader)
@@ -834,6 +836,7 @@ class Pathtracer(Raytracer):
             quasi_random: bool = False,
             pano_res: Tuple[int, int] = (1024, 512),
             batch_size: int = 1,
+            enable_actuation: bool = False,
             enable_shadows: bool = True,
             enable_ambient: bool = True,
             enable_direct: bool = True,
@@ -851,6 +854,7 @@ class Pathtracer(Raytracer):
             quasi_random=quasi_random,
             pano_res=pano_res,
             batch_size=batch_size,
+            enable_actuation=enable_actuation,
             enable_shadows=enable_shadows,
             enable_ambient=enable_ambient,
             enable_direct=enable_direct

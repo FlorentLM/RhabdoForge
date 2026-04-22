@@ -22,11 +22,11 @@ void main() {
         return;
     }
 
-    uint r_idx = global_id / nb_samples;
-    uint s_idx = global_id % nb_samples;
+    uint rcpt_idx = global_id / nb_samples;
+    uint sample_idx = global_id % nb_samples;
 
-    ReceptorStatic rs = rcpt_static[r_idx];
-    ReceptorDynamic rd = rcpt_dynamic[r_idx];
+    ReceptorStatic rs = rcpt_static[rcpt_idx];
+    ReceptorDynamic rd = rcpt_dynamic[rcpt_idx];
 
     // Reconstruct tangent frame from actuated direction
     vec3 F = rd.direction;
@@ -34,17 +34,21 @@ void main() {
     vec3 T = normalize(cross(up, F));
     vec3 B = cross(F, T);
 
-    uint rng = pcg_hash(r_idx * 1973u + uint(dither_counter) * 26699u + s_idx * 749u);
     float r1, r2;
-
     if (use_quasi_random) {
-        uint h_idx = uint(dither_counter) * uint(nb_samples) + s_idx + 1u;
-        uint hash = pcg_hash(r_idx * 1973u);
-        r1 = clamp(fract(halton_sequence(h_idx, 2u) + float(hash & 0xFFFFu)/65535.0), 1e-6, 1.0);
-        r2 = fract(halton_sequence(h_idx, 3u) + float((hash >> 16u) & 0xFFFFu)/65535.0);
+        // Halton sequence
+        uint halton_idx = uint(dither_counter) * uint(nb_samples) + sample_idx + 1u;
+        uint hash = pcg_hash(rcpt_idx * 1973u);
+
+        r1 = clamp(fract(halton_sequence(halton_idx, 2u) + float(hash & 0xFFFFu)/65535.0), 1e-6, 1.0);
+        r2 = fract(halton_sequence(halton_idx, 3u) + float((hash >> 16u) & 0xFFFFu)/65535.0);
+
     } else {
-        r1 = float(pcg_hash(rng)) / 4294967295.0;
-        r2 = float(pcg_hash(rng + 1u)) / 4294967295.0;
+        // Regular randomness
+        uint rng_state = pcg_hash(rcpt_idx * 1973u + uint(dither_counter) * 26699u + sample_idx * 749u);
+
+        r1 = random_float(rng_state);
+        r2 = random_float(rng_state);
     }
 
     vec3 sample_dir = sampledir(rs, rd, T, B, F, max(r1, 1e-6), r2);
