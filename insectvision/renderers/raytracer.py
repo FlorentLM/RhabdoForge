@@ -789,7 +789,7 @@ class Raytracer(BaseRenderer):
             self._raytrace_thirdperson(view_name, point_of_view)
 
             tex_id, _ = self._get_view_texture(view_name)
-            self._tex_viewer.draw(tex_id)
+            self._tex_viewer.draw(tex_id, self.simulate_insect_vision, self.uv_encoded_textures)
 
         if view_mode == DisplayMode.Third_person:
             self._draw_eye_thirdperson(point_of_view)

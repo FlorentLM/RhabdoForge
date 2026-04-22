@@ -34,14 +34,15 @@ struct LensDynamic {
 struct ReceptorStatic {
     vec3  position;     uint  metadata;
     vec2  rest_acc;     vec2  rot_offset;
-    float acc_tilt;     float sensitivity;
+    vec3  sensitivity;  float acc_tilt;
     float tau;          uint  cartridge_src;
-}; // 48 bytes
+    vec2  pad;
+}; // 64 bytes
 
 // Receptor dynamic
 struct ReceptorDynamic {
-    vec3  direction;    float pad1;
-    vec2  acc_axes;     vec2  pad2;
+    vec3  direction;    float adaptation_state;
+    vec2  acc_axes;     vec2  pad;
 }; // 32 bytes
 
 

@@ -4,10 +4,11 @@
 // One thread per receptor
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(std430, binding = 0) readonly buffer  RcptStaticBlock { ReceptorStatic rcpt_static[]; };
-layout(std430, binding = 2) writeonly buffer ColorOutput     { vec4 history_data[]; };
-layout(std430, binding = 3) buffer           EmaHistory      { vec4 ema_state[]; };
-layout(std430, binding = 5) readonly buffer  RayResults      { vec4 ray_results[]; };
+layout(std430, binding = 0) readonly buffer  RcptStaticBlock  { ReceptorStatic rcpt_static[]; };
+layout(std430, binding = 2) writeonly buffer ColorOutput      { vec4 history_data[]; };
+layout(std430, binding = 3) buffer           EmaHistory       { vec4 ema_state[]; };
+layout(std430, binding = 4) readonly buffer  RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
+layout(std430, binding = 5) readonly buffer  RayResults       { vec4 ray_results[]; };
 
 // Uniforms
 uniform int nb_samples;
@@ -30,11 +31,13 @@ void main() {
         total_color += ray_results[start_idx + i].rgb;
     }
 
-    float sensitivity   = rcpt_static[rcpt_idx].sensitivity;
-    float tau           = rcpt_static[rcpt_idx].tau;
+    vec3 spec_sens = rcpt_static[rcpt_idx].sensitivity;
+    float adapt    = rcpt_dynamic[rcpt_idx].adaptation_state;
+    float tau      = rcpt_static[rcpt_idx].tau;
 
     total_color = (nb_samples > 0) ? (total_color / float(nb_samples)) : total_color;
-    total_color *= sensitivity;
+    total_color *= spec_sens;
+    total_color *= adapt;
 
     float radiance = (total_color.r + total_color.g + total_color.b) / 3.0;
 

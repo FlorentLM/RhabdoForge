@@ -31,6 +31,8 @@ layout (location = 5) in vec3 v_world_normal;
 
 uniform float albedo_boost;
 uniform int selected_id;
+uniform bool false_colors;
+uniform bool uv_encoding;
 
 out vec4 FragColor;
 
@@ -46,6 +48,15 @@ void main() {
     } else {
         // Physical mode: simulation color
         vec3 lit_rgb = v_color * albedo_boost;
+
+        if (uv_encoding) {
+            // Channel 0 is UV -> make it look purple
+            lit_rgb = vec3(lit_rgb.r, lit_rgb.g, min(1.0, lit_rgb.b + lit_rgb.r));
+        } else if (false_colors) {
+            // Normal textures, but simulating an insect that can't see Red
+            lit_rgb = vec3(0.0, lit_rgb.g, lit_rgb.b);
+        }
+
         FragColor = vec4(clamp(lit_rgb, 0.0, 1.0), 1.0);
     }
     #endif

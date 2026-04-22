@@ -149,7 +149,7 @@ class TextureViewer:
             self._vao = glGenVertexArrays(1)
         return self._vao
 
-    def draw(self, texture_id):
+    def draw(self, texture_id, simulate_insect_vision=False, uv_encoded_textures=False):
         """Draws the given 2D texture to the screen."""
 
         self.shader.use()
@@ -159,6 +159,9 @@ class TextureViewer:
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, texture_id)
         glUniform1i(self.shader.get_loc("texture_sampler"), 0)
+
+        glUniform1i(self.shader.get_loc('false_colors'), int(simulate_insect_vision and not uv_encoded_textures))
+        glUniform1i(self.shader.get_loc('uv_encoding'), int(uv_encoded_textures))
 
         glBindVertexArray(self.vao)
         glDrawArrays(GL_TRIANGLES, 0, 3)
@@ -288,6 +291,8 @@ class BaseRenderer(ABC):
         self._overlay_enabled = False
         self.runs_interactive = False
         self.tiled_mode = True
+        self.simulate_insect_vision = False     # TODO: expose these (and generate UV-encoded assets for demo)
+        self.uv_encoded_textures = False
 
         self.projection_mode = OmmatidiaProjection.Position
         self.output_mode = EyeOutput.Ommatidium
@@ -411,6 +416,8 @@ class BaseRenderer(ABC):
         glUniform1i(shader.get_loc('selected_id'), self.selected_id)
         glUniform1i(shader.get_loc('frame_offset'), self._frame_index % self._batch_size)
         glUniform1f(shader.get_loc('albedo_boost'), 1.0)
+        glUniform1i(shader.get_loc('false_colors'), int(self.simulate_insect_vision and not self.uv_encoded_textures))
+        glUniform1i(shader.get_loc('uv_encoding'), int(self.uv_encoded_textures))
 
         if self.overlay_enabled:
             glUniform1f(shader.get_loc('overlay_data_min'), self._overlay_range[0])
@@ -429,6 +436,7 @@ class BaseRenderer(ABC):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.sampling_results_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self._color_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self._ema_history_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
 
         glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
         glUniform1i(shader.get_loc('nb_receptors'), len(self._ra))

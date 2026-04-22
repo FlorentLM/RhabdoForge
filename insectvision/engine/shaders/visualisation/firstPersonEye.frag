@@ -18,6 +18,8 @@ layout (location = 1) in vec2 v_local_pos;
 layout (location = 2) flat in int v_instance_id;
 
 uniform int selected_id;
+uniform bool false_colors;
+uniform bool uv_encoding;
 
 layout (location = 0) out vec4 FragColor;
 
@@ -26,6 +28,14 @@ void main() {
     vec3 base_rgb = apply_colormap(v_scalar, colormap);
     #else
     vec3 base_rgb = v_color;
+
+    if (uv_encoding) {
+        // Channel 0 is UV -> make it look purple
+        base_rgb = vec3(v_color.r, v_color.g, min(1.0, v_color.b + v_color.r));
+    } else if (false_colors) {
+        // Normal textures, but simulating an insect that can't see Red
+        base_rgb = vec3(0.0, v_color.g, v_color.b);
+    }
     #endif
 
     float is_selected = 1.0 - clamp(abs(float(v_instance_id - selected_id)), 0.0, 1.0);

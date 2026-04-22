@@ -762,8 +762,8 @@ class ReceptorArray:
         self.rcpt_static_data['rot_offset'][:, 1] = rot_dy.ravel()
 
         self.rcpt_static_data['acc_tilt'] = np.repeat(chi + dorsal_offset, R)
-        self.rcpt_static_data['sensitivity'] = self._kernel.sensitivity
         self.rcpt_static_data['tau'] = self._kernel.tau_s
+        self.rcpt_static_data['sensitivity'] = np.tile(self._kernel.sensitivity, (N, 1))
 
         # Default cartridge wiring: straight down
         self.rcpt_static_data['cartridge_src'] = np.repeat(np.arange(N), R) * R + np.tile(np.arange(R), N)
@@ -772,6 +772,7 @@ class ReceptorArray:
         self.rcpt_dynamic_data = np.zeros(N * R, dtype=RCPT_DYNAMIC_DTYPE)
         self.rcpt_dynamic_data['direction'] = receptor_dirs
         self.rcpt_dynamic_data['acc_axes'] = acc_axes
+        self.rcpt_dynamic_data['adaptation_state'] = 1.0
 
         self.dirty_mask = np.zeros(N * R, dtype=bool)
         self.lens_dirty = False
