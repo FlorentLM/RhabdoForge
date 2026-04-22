@@ -787,7 +787,7 @@ class Raytracer(BaseRenderer):
             self._raytrace_thirdperson(view_name, point_of_view)
 
             tex_id, _ = self._get_view_texture(view_name)
-            self._screen_surface.draw(
+            self.screen_surface.draw(
                 tex_id, is_cubemap=False,
                 simulate_insect_vision=self.simulate_insect_vision,
                 uv_encoded_textures=self.uv_encoded_textures
@@ -815,7 +815,9 @@ class Raytracer(BaseRenderer):
         if tex_ids:
             glDeleteTextures(len(tex_ids), tex_ids)
 
-        self._screen_surface.free()
+        if self._screen_surface:
+            self._screen_surface.free()
+
         self._baker.free()
         super().free()
 

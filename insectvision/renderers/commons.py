@@ -328,10 +328,16 @@ class BaseRenderer(ABC):
         # For visualisation only
         self.selected_id = -1
 
-        # Initialise the fullscreen texture to draw to
-        self._screen_surface = TextureViewer()
+        # Fullscreen texture to draw to
+        self._screen_surface: Optional[TextureViewer] = None
 
     # Internal properties for lazy loaded resources
+
+    @property
+    def screen_surface(self):
+        if self._screen_surface is None:
+            self._screen_surface = TextureViewer()
+        return self._screen_surface
 
     @property
     def _cones_vao(self):

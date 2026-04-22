@@ -754,7 +754,7 @@ class Rasterizer(BaseRenderer):
             self._draw_eye_firstperson()
 
         elif view_mode == DisplayMode.Panoramic:
-            self._screen_surface.draw(
+            self.screen_surface.draw(
                 self._cubemap_fbo.tex_id, is_cubemap=True,
                 simulate_insect_vision=self.simulate_insect_vision,
                 uv_encoded_textures=self.uv_encoded_textures
@@ -792,7 +792,9 @@ class Rasterizer(BaseRenderer):
         self._baker.free()
         self._cubemap_sampler.free()
         self._cubemap_fbo.free()
-        self._screen_surface.free()
+
+        if self._screen_surface:
+            self._screen_surface.free()
 
         if self._shadow_map:
             self._shadow_map.free()
