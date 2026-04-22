@@ -16,7 +16,7 @@ from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight
 from insectvision.engine.shader_utils import ShaderProgram
 from insectvision.renderers.commons import BaseRenderer, BINDING_RCPT_STATIC, BINDING_RCPT_DYNAMIC, \
-    BINDING_RAYS_INTERMEDIATE
+    BINDING_RAYS_INTERMEDIATE, TextureViewer
 
 
 def _get_light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
@@ -170,60 +170,6 @@ class CubemapFBO:
             glDeleteTextures(1, [self.tex_id])
         if self.depth_id:
             glDeleteRenderbuffers(1, [self.depth_id])
-
-
-class PanoramicViewer:
-    """
-    A simple asset to render a cubemap to the screen as a panoramic (equirectangular) view.
-    """
-
-    def __init__(self):
-        self._shader = None
-        self._vao = None
-
-    @property
-    def shader(self):
-        if self._shader is None:
-            self._shader = ShaderProgram(
-                vert_path='visualisation/fullscreen.vert', frag_path='rasterizing/cubemapSampler.frag'
-            )
-        return self._shader
-
-    @property
-    def vao(self):
-        if self._vao is None:
-            # A dummy VAO is sufficient as vertices are generated in the vertex shader
-            self._vao = glGenVertexArrays(1)
-        return self._vao
-
-    def draw(self, cubemap_tex_id, simulate_insect_vision=False, uv_encoded_textures=False):
-        """Draws the panoramic view of the given cubemap."""
-        self.shader.use()
-
-        # Bind the cubemap texture we want to inspect
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap_tex_id)
-        glUniform1i(self.shader.get_loc("cubemap"), 0)
-
-        glUniform1i(self.shader.get_loc('false_colors'), int(simulate_insect_vision and not uv_encoded_textures))
-        glUniform1i(self.shader.get_loc('uv_encoding'), int(uv_encoded_textures))
-
-        # Draw a full-screen triangle
-        glBindVertexArray(self.vao)
-        glDrawArrays(GL_TRIANGLES, 0, 3)
-
-        # Unbind
-        glBindVertexArray(0)
-        self.shader.stop()
-
-    def free(self):
-        """Frees the GPU resources (shader and VAO)."""
-        if self._shader:
-            self._shader.free()
-        if self._vao:
-            glDeleteVertexArrays(1, [self._vao])
-        self._shader = None
-        self._vao = None
 
 
 class RasterMesh:
@@ -534,8 +480,6 @@ class Rasterizer(BaseRenderer):
             enable_actuation=enable_actuation
         )
 
-        self._pano_viewer = PanoramicViewer()
-
     # Various internal helpers
 
     def _estim_vram_use(self):
@@ -810,7 +754,11 @@ class Rasterizer(BaseRenderer):
             self._draw_eye_firstperson()
 
         elif view_mode == DisplayMode.Panoramic:
-            self._pano_viewer.draw(self._cubemap_fbo.tex_id, self.simulate_insect_vision, self.uv_encoded_textures)
+            self._screen_surface.draw(
+                self._cubemap_fbo.tex_id, is_cubemap=True,
+                simulate_insect_vision=self.simulate_insect_vision,
+                uv_encoded_textures=self.uv_encoded_textures
+            )
 
         elif view_mode == DisplayMode.Perspective or view_mode == DisplayMode.Third_person:
 
@@ -844,7 +792,7 @@ class Rasterizer(BaseRenderer):
         self._baker.free()
         self._cubemap_sampler.free()
         self._cubemap_fbo.free()
-        self._pano_viewer.free()
+        self._screen_surface.free()
 
         if self._shadow_map:
             self._shadow_map.free()

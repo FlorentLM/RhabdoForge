@@ -130,18 +130,24 @@ def _create_vao(vertex_data: np.ndarray):
 ##
 
 class TextureViewer:
-    """A simple helper to render a 2D texture to a full-screen quad."""
+    """A helper to render a 2D texture (or Cubemap) to a fullscreen quad."""
 
     def __init__(self):
-        self._shader = None
+        self._shader_2d = None
+        self._shader_cube = None
         self._vao = None
 
     @property
-    def shader(self):
-        if self._shader is None:
-            print("Compiling fullscreen texture viewer shaders...")
-            self._shader = ShaderProgram(vert_path='fullscreen.vert', frag_path='textureSampler.frag')
-        return self._shader
+    def shader_2d(self):
+        if self._shader_2d is None:
+            self._shader_2d = ShaderProgram(vert_path='fullscreen.vert', frag_path='textureSampler.frag')
+        return self._shader_2d
+
+    @property
+    def shader_cube(self):
+        if self._shader_cube is None:
+            self._shader_cube = ShaderProgram(vert_path='fullscreen.vert', frag_path='cubemapSampler.frag')
+        return self._shader_cube
 
     @property
     def vao(self):
@@ -149,36 +155,49 @@ class TextureViewer:
             self._vao = glGenVertexArrays(1)
         return self._vao
 
-    def draw(self, texture_id, simulate_insect_vision=False, uv_encoded_textures=False):
-        """Draws the given 2D texture to the screen."""
+    def draw(self, texture_id, is_cubemap=False, simulate_insect_vision=False, uv_encoded_textures=False):
+        """Draws the given texture to the screen."""
 
-        self.shader.use()
+        shader = self.shader_cube if is_cubemap else self.shader_2d
+
+        shader.use()
         glDisable(GL_DEPTH_TEST)
         glDepthMask(GL_FALSE)
 
         glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, texture_id)
-        glUniform1i(self.shader.get_loc("texture_sampler"), 0)
+        if is_cubemap:
+            glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id)
+            glUniform1i(shader.get_loc("cubemap"), 0)
+        else:
+            glBindTexture(GL_TEXTURE_2D, texture_id)
+            glUniform1i(shader.get_loc("texture_sampler"), 0)
 
-        glUniform1i(self.shader.get_loc('false_colors'), int(simulate_insect_vision and not uv_encoded_textures))
-        glUniform1i(self.shader.get_loc('uv_encoding'), int(uv_encoded_textures))
+        # Pass toggles to the background shader
+        glUniform1i(shader.get_loc('false_colors'), int(simulate_insect_vision and not uv_encoded_textures))
+        glUniform1i(shader.get_loc('uv_encodeing'), int(uv_encoded_textures))
 
         glBindVertexArray(self.vao)
         glDrawArrays(GL_TRIANGLES, 0, 3)
 
         glBindVertexArray(0)
-        self.shader.stop()
+        shader.stop()
 
         glDepthMask(GL_TRUE)
         glEnable(GL_DEPTH_TEST)
         glClear(GL_DEPTH_BUFFER_BIT)
 
     def free(self):
-        if self._shader:
-            self._shader.free()
+        if self._shader_2d:
+            self._shader_2d.free()
+
+        if self._shader_cube:
+            self._shader_cube.free()
+
         if self._vao:
             glDeleteVertexArrays(1, [self._vao])
-        self._shader = None
+
+        self._shader_2d = None
+        self._shader_cube = None
         self._vao = None
 
 
@@ -308,6 +327,9 @@ class BaseRenderer(ABC):
 
         # For visualisation only
         self.selected_id = -1
+
+        # Initialise the fullscreen texture to draw to
+        self._screen_surface = TextureViewer()
 
     # Internal properties for lazy loaded resources
 
