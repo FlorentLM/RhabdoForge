@@ -2,11 +2,11 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import Optional, Dict
+from typing import Optional, Dict, Callable
 import numpy as np
 
 
-class BufferHandle:
+class BufferObject:
     """
     A wrapper around a GPU SSBO.
 
@@ -21,29 +21,54 @@ class BufferHandle:
           or dirty-tracking.
     """
 
+    BUFFER_TYPES = {
+        GL_SHADER_STORAGE_BUFFER: 'SSBO',
+        GL_PIXEL_PACK_BUFFER: 'PBO',
+        GL_ARRAY_BUFFER: 'VBO',
+        GL_ELEMENT_ARRAY_BUFFER: 'EBO'
+    }
+
     def __init__(
             self,
             name: str,
-            binding: int,
+            handle: int,
             dtype: np.dtype,
             count: int,
+            target: int = GL_SHADER_STORAGE_BUFFER,
             supports_async: bool = False,
-            _async_reader: Optional[callable] = None,
+            _async_reader: Optional['Callable'] = None,
     ):
 
         self.name = name
-        self.binding = binding
+        self.handle = handle
         self.dtype = np.dtype(dtype)
         self.count = count
+        self.target = target
         self._supports_async = supports_async
         self._async_reader = _async_reader
 
     def __repr__(self):
+
         return (
-            f"<BufferHandle name={self.name!r} SSBO bind={self.binding} "
-            f"count={self.count} dtype={self.dtype} "
-            f"{'(async)' if self._supports_async else '(sync)'}>"
+            f"<{self.BUFFER_TYPES.get(self.target, 'Unkown buffer')} "
+            f"{'(async)' if self._supports_async else '(sync)'} "
+            f'name={self.name!r} handle={self.handle} '
+            f'count={self.count} dtype={self.dtype}>'
         )
+
+    def bind(self, mode_override: Optional[int] = None):
+        """Standard binding."""
+        glBindBuffer(mode_override if mode_override is not None else self.target, self.handle)
+
+    def bind_base(self, binding: int):
+        """Binding for Indexed buffers (SSBOs)."""
+        # TODO: Binding points should be stored here and injected automatically in the Shader compiler
+        glBindBufferBase(self.target, binding, self.handle)
+
+    # TODO: Make a context manager instead? Or just ditch the unbind completely?
+    def unbind(self):
+        glBindBuffer(self.target, 0)
+        # pass
 
     @property
     def itemsize(self) -> int:
@@ -64,20 +89,18 @@ class BufferHandle:
         if start < 0 or count < 0 or (start + count) > self.count:
             raise IndexError(f"read range [{start}:{start + count}] out of bounds for {self.name} (count={self.count})")
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.binding)
-        data_bytes = glGetBufferSubData(
-            GL_SHADER_STORAGE_BUFFER,
-            start * self.itemsize,
-            count * self.itemsize
-        )
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-        return np.frombuffer(data_bytes, dtype=self.dtype).copy()
+        self.bind()
+        data_bytes = glGetBufferSubData(self.target, start * self.itemsize, count * self.itemsize)
+        ret = np.frombuffer(data_bytes, dtype=self.dtype).copy()
+        self.unbind()
+
+        return ret
 
     def read_async(self) -> np.ndarray:
         """
         Asynchronous read using the double-buffered PBO path. Only available
-        for buffers registered with `supports_async=True` (currently: colors).
-        Returns the previous frame's data — may be zeros on the first frame.
+        for buffers registered with `supports_async=True`.
+        Returns the previous frame's data (zeros on the first frame).
         """
         if not self._supports_async or self._async_reader is None:
             raise RuntimeError(f"Buffer '{self.name}' does not support async read. Use read() instead.")
@@ -102,20 +125,17 @@ class BufferHandle:
                 f"write range [{start}:{start + n}] out of bounds for {self.name} (count={self.count})"
             )
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.binding)
-        glBufferSubData(
-            GL_SHADER_STORAGE_BUFFER,
-            start * self.itemsize,
-            arr.nbytes,
-            arr.tobytes(),
-        )
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        self.bind()
+        glBufferSubData(self.target, start * self.itemsize, arr.nbytes, arr.tobytes())
+        self.unbind()
 
     def reset(self) -> None:
         """
         Zero-out the entire GPU buffer immediately.
         """
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.binding)
+
+        self.bind()
+
         try:
             # glClearBufferSubData is the fast path
             glClearBufferSubData(
@@ -130,15 +150,15 @@ class BufferHandle:
             zeros = np.zeros(self.count, dtype=self.dtype)
             glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.nbytes, zeros)
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        self.unbind()
 
 
 class BufferRegistry:
 
     def __init__(self):
-        self._buffers: Dict[str, BufferHandle] = {}
+        self._buffers: Dict[str, BufferObject] = {}
 
-    def __getitem__(self, name: str) -> BufferHandle:
+    def __getitem__(self, name: str) -> BufferObject:
         if name not in self._buffers:
             raise KeyError(
                 f"No buffer named {name!r}. Available: {sorted(self._buffers)}"
@@ -167,19 +187,19 @@ class BufferRegistry:
         name: str,
         dtype: np.dtype,
         count: int,
+        target: int = GL_SHADER_STORAGE_BUFFER,
         data: Optional[np.ndarray] = None,
         usage: int = GL_STATIC_DRAW,
         supports_async: bool = False,
         _async_reader: Optional[callable] = None,
-
-    ) -> BufferHandle:
+    ) -> BufferObject:
         """Create a new SSBO, allocate GPU memory, and register it."""
 
         itemsize = np.dtype(dtype).itemsize
         size_bytes = count * itemsize
 
-        binding = glGenBuffers(1)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, binding)
+        handle = glGenBuffers(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, handle)
 
         if data is not None:
             data_arr = np.ascontiguousarray(data)
@@ -189,10 +209,22 @@ class BufferRegistry:
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
-        handle = BufferHandle(name, binding, dtype, count, supports_async, _async_reader)
-        if handle.name in self._buffers:
-            raise KeyError(f"Buffer {handle.name!r} already registered.")
+        buf = BufferObject(
+            name=name,
+            handle=handle,
+            dtype=dtype,
+            count=count,
+            target=target,
+            supports_async=supports_async,
+            _async_reader=_async_reader
+        )
 
-        self._buffers[handle.name] = handle
+        if buf.name in self._buffers:
+            raise KeyError(f"Buffer {buf.name!r} already registered.")
 
-        return handle
+        self._buffers[buf.name] = buf
+
+        return buf
+
+
+# TODO: A UniformRegistry to manage uniforms similarly?

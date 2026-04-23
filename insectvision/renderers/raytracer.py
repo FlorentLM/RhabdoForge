@@ -160,6 +160,8 @@ class RaytraceBaker:
         self.tlas_indices_ssbo = None
         self.blas_indices_ssbo = None
 
+        # TODO: Use a BufferRegistry instance for all the BVH SSBOs
+
         # Lights
         self.dir_lights_ssbo = None
         self.point_lights_ssbo = None
@@ -167,6 +169,8 @@ class RaytraceBaker:
         self._nb_dir_lights = 0
         self._nb_point_lights = 0
         self._nb_area_lights = 0
+
+        # TODO: Use a BufferRegistry instance for the lights SSBOs
 
         # CPU-side data
         self.gpu_inst_info: Optional[np.ndarray] = None
@@ -769,10 +773,10 @@ class Raytracer(BaseRenderer):
         shader = self.raytrace_shader
         shader.use()
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.buffers['rays_intermediate'].binding)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self.buffers['rcpt_static'].binding)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self.buffers['lens_static'].binding)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self.buffers['rcpt_dynamic'].binding)
+        self.buffers['rays_intermediate'].bind_base(BINDING_RAYS_INTERMEDIATE)
+        self.buffers['rcpt_static'].bind_base(BINDING_RCPT_STATIC)
+        self.buffers['lens_static'].bind_base(BINDING_LENS_STATIC)
+        self.buffers['rcpt_dynamic'].bind_base(BINDING_RCPT_DYNAMIC)
 
         self._bind_scene_ssbos()
         self._bind_scene_textures(shader)

@@ -717,10 +717,10 @@ class Rasterizer(BaseRenderer):
         shader.use()
 
         # Dynamic buffer for actuated directions and static (for positions)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self.buffers['rcpt_static'].binding)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self.buffers['rcpt_dynamic'].binding)
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.buffers['rays_intermediate'].binding)
+        self.buffers['rcpt_static'].bind_base(BINDING_RCPT_STATIC)
+        self.buffers['rcpt_dynamic'].bind_base(BINDING_RCPT_DYNAMIC)
+        self.buffers['rays_intermediate'].bind_base(BINDING_RAYS_INTERMEDIATE)
 
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.tex_id)
