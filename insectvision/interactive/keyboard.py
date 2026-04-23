@@ -115,7 +115,7 @@ class KeyboardMouse(Controls):
         strafe_mode = glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS
         yaw_input = 0.0
 
-        if self.ctx.view_mode == DisplayMode.Third_person and not strafe_mode:
+        if self.ctx.display_mode == DisplayMode.Third_person and not strafe_mode:
             if glfw.get_key(window, glfw.KEY_A) == glfw.PRESS: yaw_input += 1.0
             if glfw.get_key(window, glfw.KEY_D) == glfw.PRESS: yaw_input -= 1.0
         else:
@@ -171,7 +171,7 @@ class KeyboardMouse(Controls):
             mouse_yaw = dx * self.mouse_sensitivity * self._mouse_x_dir
             mouse_pitch = dy * self.mouse_sensitivity * self._mouse_y_dir
 
-            if self.ctx.view_mode == DisplayMode.Third_person:
+            if self.ctx.display_mode == DisplayMode.Third_person:
                 self.ctx.observer.pan(mouse_yaw * 0.5, mouse_pitch * 0.5, degrees=True)
                 agent.rotate(
                     yaw_delta=yaw_input * self.keyboard_turn_speed,

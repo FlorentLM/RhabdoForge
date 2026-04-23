@@ -311,14 +311,14 @@ class HUD:
         sample_label = 'Rays' if is_ray_based else 'Samples'
 
         # Enums to readable strings
-        view_mode_str = self.ctx.view_mode.name.replace('_', ' ')
+        view_mode_str = self.ctx.display_mode.name.replace('_', ' ')
         proj_mode_str = self.ctx.renderer.projection_mode.name
 
         # Stats
         nb_om = self.ctx.renderer._ra.lens_count
         nb_om_samples = getattr(self.ctx.renderer, 'nb_samples', 1)
         nb_px_samples = getattr(self.ctx.renderer, 'samples_per_pixel', 1)
-        has_pixels = self.ctx.view_mode.name in ('Panoramic', 'Third_person')
+        has_pixels = self.ctx.display_mode.name in ('Panoramic', 'Third_person')
 
         # Bottom info line
         info_text = (

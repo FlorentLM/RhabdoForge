@@ -61,7 +61,7 @@ class Context:
         self.renderer: Optional['BaseRenderer'] = None
         self.scene: Optional['Scene'] = None
         self.observer: Optional['OrbitCamera'] = None
-        self.view_mode: Optional['DisplayMode'] = None
+        self.display_mode: Optional['DisplayMode'] = None
         self.hud: Optional['HUD'] = None
         self.dashboard: Optional['Dashboard'] = None
         self.debug: Optional['DebugOverlay'] = DebugOverlay() if debug_overlay else None
@@ -222,8 +222,9 @@ class Context:
 
     # Actions
 
-    def cycle_view_mode(self):
-        self.view_mode = (self.view_mode + 1) % 3
+    def cycle_display_mode(self):
+        next_mode = (self.display_mode.value + 1) % 3
+        self.display_mode = DisplayMode(next_mode)
 
     def toggle_voronoi(self):
         self.renderer.tiled_mode = not self.renderer.tiled_mode
@@ -314,7 +315,7 @@ class Context:
 
             self.observer = OrbitCamera(target=agent, distance=1.5, ratio=self._window_size[0] / self._window_size[1])
 
-            self.view_mode = DisplayMode.Compound
+            self.display_mode = DisplayMode.Compound
 
             self.hud = HUD(self)
 
@@ -375,16 +376,16 @@ class Context:
         glViewport(0, 0, self._window_size[0], self._window_size[1])
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        if self.view_mode == DisplayMode.Third_person:
+        if self.display_mode == DisplayMode.Third_person:
             self.observer.ratio = self._window_size[0] / self._window_size[1]
             self.observer.update()
             pov = self.observer
         else:
             pov = self.agent
 
-        self.renderer.draw(self.view_mode, pov)
+        self.renderer.draw(self.display_mode, pov)
 
-        if self.debug is not None and self.view_mode != DisplayMode.Panoramic: # TODO: debug projection in panoramic mode? idk if useful
+        if self.debug is not None and self.display_mode != DisplayMode.Panoramic: # TODO: debug projection in panoramic mode? idk if useful
             self.debug.draw(view=pov.view, proj=pov.projection)
 
         if self.hud:

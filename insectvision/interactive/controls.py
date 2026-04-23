@@ -48,7 +48,7 @@ class ActionRegistry:
             'Change camera',
             'Rendering',
             'Cycle through camera modes',
-            self.ctx.cycle_view_mode,
+            self.ctx.cycle_display_mode,
             'C',
             'R-Stick Click'
         )
