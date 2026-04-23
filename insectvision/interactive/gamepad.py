@@ -138,7 +138,7 @@ class Gamepad(Controls):
         if abs(ly) > 0:
             move_direction += agent.forward * (-ly)
 
-        if ctx.view_mode == DisplayMode.Third_person:
+        if ctx.display_mode == DisplayMode.Third_person:
             left_stick_yaw_delta = -lx * self.look_sensitivity * dt
         else:
             if abs(lx) > 0:
@@ -163,7 +163,7 @@ class Gamepad(Controls):
                 intensity_factor = 1.1 ** scroll_delta
                 sun.intensity = max(0.1, min(10.0, sun.intensity * intensity_factor))
 
-            elif ctx.view_mode == DisplayMode.Third_person:
+            elif ctx.display_mode == DisplayMode.Third_person:
                 zoom_factor = 0.9 ** scroll_delta
                 ctx.observer.zoom(zoom_factor)
 
@@ -180,7 +180,7 @@ class Gamepad(Controls):
                 if abs(left_stick_yaw_delta) > 0:
                     agent.rotate(yaw_delta=left_stick_yaw_delta, degrees=True)
 
-            elif ctx.view_mode == DisplayMode.Third_person:
+            elif ctx.display_mode == DisplayMode.Third_person:
                 ctx.observer.pan(
                     azimuth_delta=-rx * self._look_x_dir * self.look_sensitivity * dt,
                     elevation_delta=ry * self._look_y_dir * self.look_sensitivity * dt,
