@@ -16,13 +16,12 @@ uniform float dt;
 uniform float d_rest;
 uniform float diffraction_sq;
 uniform float acc_rest_geom_sq;
+uniform float tau_fast;
 uniform float tau_adapt;
+uniform float tau_relax;
 uniform float gain_lat;
 uniform float gain_ax;
-uniform float rate_off_fast;
-uniform float rate_on_slow;
 uniform float gain_biochem;
-
 
 void main() {
     uint lens_idx = gl_GlobalInvocationID.x;
@@ -49,24 +48,31 @@ void main() {
 
     // Dynamics
 
-    float contrast = lum - ld.adapted_lum;
+    // The saccades fires on fast positive transients (bright onsets)
 
-    // Update baseline (leaky integrator) every frame to adapt to light levels
+    // Init for first frame
+    if (ld.adapted_lum < 1e-6) {
+        ld.adapted_lum = lum;
+        ld.fast_lum    = lum;
+    }
+
+    // Update trackers
+    ld.fast_lum    = mix(ld.fast_lum,    lum, dt / (tau_fast  + dt));
     ld.adapted_lum = mix(ld.adapted_lum, lum, dt / (tau_adapt + dt));
 
-    // Responses:
+    // Saccade drive: rectified fast-positive contrast, normalised by baseline
+    float bright_drive = max(0.0, ld.fast_lum - ld.adapted_lum) /
+                         max(ld.adapted_lum, 1e-3);
 
-    // Movement
-    // contract/pull when light contrast OFF
-    float target_lat = (contrast < 0.0) ? (-contrast * gain_lat) : 0.0;
-    float target_ax  = (contrast < 0.0) ? (-contrast * gain_ax) : 0.0;
+    float target_lat = bright_drive * gain_lat;
+    float target_ax  = bright_drive * gain_ax;
 
-    // Asymmetric rates: Fast contraction, slow relaxation
-    float rate_lat = (target_lat > ld.lateral_um) ? rate_off_fast : rate_on_slow;
-    float rate_ax  = (target_ax  > ld.axial_um)   ? rate_off_fast : rate_on_slow;
+    // Drive sets the shape, rate limit only on the return
+    float rate_lat = (target_lat > ld.lateral_um) ? 0.0 : tau_relax;
+    float rate_ax  = (target_ax  > ld.axial_um)   ? 0.0 : tau_relax;
 
-    ld.lateral_um = mix(ld.lateral_um, target_lat, dt / (rate_lat + dt));
-    ld.axial_um   = mix(ld.axial_um,   target_ax,  dt / (rate_ax + dt));
+    ld.lateral_um = (rate_lat == 0.0) ? target_lat : mix(ld.lateral_um, target_lat, dt / (rate_lat + dt));
+    ld.axial_um   = (rate_ax  == 0.0) ? target_ax  : mix(ld.axial_um,   target_ax,  dt / (rate_ax  + dt));
 
     lens_dynamic[lens_idx] = ld;
 

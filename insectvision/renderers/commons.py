@@ -510,11 +510,16 @@ class BaseRenderer(ABC):
             saccades_enabled = self._gpu_actuation
 
             # TODO: Expose these as properties
-            glUniform1f(shader.get_loc('tau_adapt'), 0.05)  # 50 ms
-            glUniform1f(shader.get_loc('gain_lat'), 5.0 if saccades_enabled else 0.0)  # Pull strength lateral
-            glUniform1f(shader.get_loc('gain_ax'),  2.0 if saccades_enabled else 0.0)  # Pull strength axial
-            glUniform1f(shader.get_loc('rate_off_fast'), 0.01)  # 10 ms to contract
-            glUniform1f(shader.get_loc('rate_on_slow'), 0.1)  # 100 ms to relax
+            # Two-timescale drive
+            glUniform1f(shader.get_loc('tau_fast'), 0.005)  # 5 ms: fast saccade trigger
+            glUniform1f(shader.get_loc('tau_adapt'), 0.050)  # 50 ms: light adaptation baseline
+
+            # Saccade gains (in μm)
+            glUniform1f(shader.get_loc('gain_lat'), 3.0 if saccades_enabled else 0.0)  # μm per unit drive
+            glUniform1f(shader.get_loc('gain_ax'), 8.0 if saccades_enabled else 0.0)
+
+            # Mechanical relaxation (onset is drive-shaped)
+            glUniform1f(shader.get_loc('tau_relax'), 0.08)  # 80 ms elastic return
 
             glUniform1f(shader.get_loc('gain_biochem'), 0.1)
 

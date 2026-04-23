@@ -25,9 +25,9 @@ struct LensStatic {
 // Lens dynamic
 struct LensDynamic {
     float adapted_lum;
+    float fast_lum;
     float lateral_um;
     float axial_um;
-    float pad;
 }; // 16 bytes
 
 // Receptor static (read only)

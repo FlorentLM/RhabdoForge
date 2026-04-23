@@ -15,10 +15,10 @@ LENS_STATIC_DTYPE = np.dtype([
 ]) # 64 bytes
 
 LENS_DYNAMIC_DTYPE = np.dtype([
-    ('adapted_lum', np.float32),      # 4 bytes: temporal baseline for contrast detection
+    ('adapted_lum', np.float32),      # 4 bytes: slow baseline (~50 ms), gain adaptation
+    ('fast_lum', np.float32),         # 4 bytes: fast tracker (~5 ms), saccade drive
     ('lateral_um', np.float32),       # 4 bytes: current focal plane displacement (um)
     ('axial_um', np.float32),         # 4 bytes: current contraction (um)
-    ('pad', np.float32)               # 4 bytes of pdding
 ]) # 16 bytes
 
 
