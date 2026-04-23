@@ -179,7 +179,7 @@ class Dashboard:
                     self.ui_tags['view_mode'] = dpg.add_combo(
                         list(DisplayMode.__members__.keys()),
                         label='View Mode',
-                        default_value=self.ctx.view_mode.name,
+                        default_value=self.ctx.display_mode.name,
                         callback=self._set_view_mode
                     )
 
@@ -367,7 +367,7 @@ class Dashboard:
         self.history_intervals.append([self.current_frame, None, app_data])
 
     def _set_view_mode(self, sender, app_data):
-        self.ctx.view_mode = DisplayMode[app_data]
+        self.ctx.display_mode = DisplayMode[app_data]
 
     def _update_nb_samples(self, sender, app_data):
         self._main_thread_queue.append(lambda: setattr(self.ctx.renderer, 'nb_samples', app_data))
@@ -409,7 +409,7 @@ class Dashboard:
         dpg.set_value('ui_renderer_text', f'| Renderer: {renderer_name}')
 
         # Modes
-        view_str = self.ctx.view_mode.name.replace('_', ' ')
+        view_str = self.ctx.display_mode.name.replace('_', ' ')
         proj_str = self.ctx.renderer.projection_mode.name
         dpg.set_value('ui_view_text', f'View: {view_str}')
         dpg.set_value('ui_proj_text', f'| Proj: {proj_str}')
@@ -433,7 +433,7 @@ class Dashboard:
         # Interactive inputs sync
 
         # Rendering sync
-        dpg.set_value(self.ui_tags['view_mode'], self.ctx.view_mode.name)
+        dpg.set_value(self.ui_tags['view_mode'], self.ctx.display_mode.name)
         dpg.set_value(self.ui_tags['proj_mode'], self.ctx.renderer.projection_mode.name)
         dpg.set_value(self.ui_tags['tiled_mode'], self.ctx.renderer.tiled_mode)
         dpg.set_value(self.ui_tags['heatmap'], self.ctx.renderer.overlay_enabled)
