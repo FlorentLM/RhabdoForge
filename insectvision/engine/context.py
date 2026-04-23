@@ -26,14 +26,14 @@ class Context:
                  window_size: tuple = None,
                  debug_overlay: bool = True,
                  fps_limit: int = None,
-                 v_sync: bool = False,
+                 vsync: bool = False,
                  controls: Optional['Controls'] = None
-         ):
+                 ):
 
         self._window_size = window_size if window_size is not None else (1280, 720)
         self._fps_limit = fps_limit if fps_limit is not None else 0
         self._interactive_initialised = False
-        self._v_sync = v_sync
+        self._vsync = vsync
 
         if not glfw.init():
             raise Exception("GLFW can't be initialized")
@@ -50,7 +50,7 @@ class Context:
 
         glfw.make_context_current(self.window)
 
-        glfw.swap_interval(int(self._v_sync))
+        glfw.swap_interval(int(self._vsync))
 
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_FRAMEBUFFER_SRGB)  # we want linear (non-gamma corrected)
@@ -69,6 +69,7 @@ class Context:
 
         # Shared movement parameter
         self.move_speed: float = 3.0
+        self.mouse_captured: bool = True
 
         # Sun control mode
         self.sun_control_mode: bool = False
@@ -259,7 +260,7 @@ class Context:
     # Interactive loop
 
     def run_interactive(self, agent: 'Agent', scene: 'Scene', renderer: 'BaseRenderer',
-                        window_size=None, fps_limit=None, v_sync=None, use_dashboard=False):
+                        window_size=None, fps_limit=None, vsync=None, use_dashboard=False):
         """
         On first call, initialises and shows the window. Then checks if the interactive loop should continue.
         """
@@ -272,13 +273,13 @@ class Context:
             if fps_limit is not None:
                 self.fps_limit = fps_limit
 
-            if v_sync is not None:
-                self._v_sync = bool(v_sync)
+            if vsync is not None:
+                self._vsync = bool(vsync)
 
             if use_dashboard:
                 self.dashboard = Dashboard(self)
 
-            glfw.swap_interval(int(self._v_sync))
+            glfw.swap_interval(int(self._vsync))
 
             glfw.show_window(self.window)
 
@@ -410,9 +411,9 @@ class Context:
         self._fps_limit = max(0, value) if value else 0
 
     @property
-    def v_sync(self) -> bool:
-        return self._v_sync
+    def vsync(self) -> bool:
+        return self._vsync
 
-    @v_sync.setter
-    def v_sync(self, value: bool):
-        self._v_sync = bool(value)
+    @vsync.setter
+    def vsync(self, value: bool):
+        self._vsync = bool(value)

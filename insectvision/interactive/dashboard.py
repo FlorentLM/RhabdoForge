@@ -3,7 +3,7 @@ import numpy as np
 import collections
 
 from pyglm import glm
-from insectvision.renderers.commons import EyeOutput, OmmatidiaProjection
+from insectvision.renderers.commons import EyeOutput, OmmatidiaProjection, Colormap
 from insectvision.interactive.utils import DisplayMode
 
 
@@ -46,7 +46,7 @@ class Dashboard:
 
     def _setup_dpg(self):
         dpg.create_context()
-        dpg.create_viewport(title='InsectVision Dashboard', width=650, height=950)
+        dpg.create_viewport(title='InsectVision Dashboard', width=650, height=950, vsync=self.ctx.vsync)
         dpg.setup_dearpygui()
 
         ra = self.ctx.renderer._ra
@@ -54,10 +54,11 @@ class Dashboard:
 
         with dpg.window(label='Inspector', width=650, height=950, no_close=True, no_move=True, tag='main_window'):
 
-            with dpg.tab_bar():
+            with dpg.tab_bar(tag='main_tabs'):
 
                 # Tab 1: Plots
-                with dpg.tab(label="Plots"):
+                with dpg.tab(label='Plots', tag='tab_plots'):
+
                     dpg.add_spacer(height=5)
                     dpg.add_text('Ommatidium / Receptor Selection', color=[100, 255, 100])
                     self.omm_slider = dpg.add_slider_int(label="Lens ID", default_value=0, max_value=ra.lens_count - 1)
@@ -101,7 +102,34 @@ class Dashboard:
                         self.series_ax = dpg.add_line_series([], [], label="Axial", parent='y_axis_2')
                         dpg.set_axis_limits('y_axis_2', -2.0, 5.0)
 
-                # Tab 2: Rendering
+                # Tab 2: Dynamics
+                with dpg.tab(label='Dynamics'):
+                    dpg.add_spacer(height=5)
+                    dpg.add_text("Photomechanical Response", color=[255, 150, 100])
+
+                    dpg.add_checkbox(label="Enable Closed-Loop Saccades",
+                                     default_value = self.ctx.renderer._gpu_actuation,
+                                     callback = lambda s, a: setattr(self.ctx.renderer, '_gpu_actuation', a))
+
+                    dpg.add_separator()
+                    dpg.add_text("Shader Parameters (EyeDynamics.comp)", color=[100, 200, 255])
+
+                    def update_dyn_uniform(name, val):
+                        # TODO
+                        pass
+
+                    dpg.add_slider_float(label="Lateral Gain", default_value=3.0, min_value=0.0, max_value=10.0)
+                    dpg.add_slider_float(label="Axial Gain", default_value=8.0, min_value=0.0, max_value=20.0)
+                    dpg.add_slider_float(label="Tau Fast (ms)", default_value=5.0, min_value=1.0, max_value=50.0)
+
+                    dpg.add_separator()
+
+                    if dpg.add_button(label="Reset GPU States", width=-1):
+                        self._main_thread_queue.append(
+                        self.ctx.renderer.buffers['ema_state'].reset)
+                        self._main_thread_queue.append(self.ctx.renderer.buffers['lens_dynamic'].reset)
+
+                # Tab 3: Rendering
                 with dpg.tab(label='Rendering'):
                     dpg.add_spacer(height=5)
                     dpg.add_text('Display Modes', color=[100, 200, 255])
@@ -149,13 +177,37 @@ class Dashboard:
                         callback=lambda s, a: setattr(self.ctx.renderer, 'time_dithering', a)
                     )
 
-                    self.ui_tags['heatmap'] = dpg.add_checkbox(
-                        label='Heatmap Overlay (H)',
-                        default_value=self.ctx.renderer.overlay_enabled,
-                        callback=lambda s, a: setattr(self.ctx.renderer, 'overlay_enabled', a)
-                    )
+                    with dpg.group(horizontal=True):
+                        self.ui_tags['heatmap'] = dpg.add_checkbox(
+                            label='Heatmap Overlay (H)',
+                            default_value=self.ctx.renderer.overlay_enabled,
+                            callback=lambda s, a: setattr(self.ctx.renderer, 'overlay_enabled', a)
+                        )
 
-                # Tab 3: Environment
+                    with dpg.group(show=self.ctx.renderer.overlay_enabled):
+                        dpg.add_slider_float(
+                            label='Heatmap Compression',
+                            default_value=self.ctx.renderer._overlay_compression,
+                            min_value=0.1, max_value=2.0,
+                            callback=lambda s, a: setattr(self.ctx.renderer, '_overlay_compression', a)
+                            )
+
+                        dpg.add_combo(
+                            list(Colormap.__members__.keys()),
+                            label='Colormap',
+                            default_value=self.ctx.renderer._overlay_colormap.name,
+                            callback=lambda s, a: setattr(self.ctx.renderer, '_overlay_colormap', Colormap[a])
+                        )
+
+                        dpg.add_separator()
+                        dpg.add_checkbox(
+                            label='Mouse Locked (TAB)',
+                            default_value=self.ctx.mouse_captured,
+                            tag='ui_mouse_lock',
+                            callback=self._toggle_mouse_lock
+                        )
+
+                # Tab 4: Environment
                 with dpg.tab(label='Environment'):
                     dpg.add_spacer(height=5)
                     dpg.add_text('Lighting', color=[255, 200, 100])
@@ -195,7 +247,7 @@ class Dashboard:
                             callback=lambda s, a: setattr(self.ctx.scene.sun, 'intensity', a)
                         )
 
-                # Tab 4: agent / cam
+                # Tab 5: Agent / cam
                 with dpg.tab(label='Agent / Camera'):
                     dpg.add_spacer(height=5)
                     dpg.add_text('Movement', color=[200, 150, 255])
@@ -264,6 +316,12 @@ class Dashboard:
 
     # Callbacks
 
+    def _toggle_mouse_lock(self, sender, app_data):
+        import glfw
+        self.ctx.mouse_captured = app_data
+        mode = glfw.CURSOR_DISABLED if app_data else glfw.CURSOR_NORMAL
+        glfw.set_input_mode(self.ctx.window, glfw.CURSOR, mode)
+
     def _change_output_mode(self, sender, app_data):
         self.ctx.renderer.output_mode = EyeOutput[app_data]
         self.history_intervals[-1][1] = self.current_frame
@@ -324,8 +382,11 @@ class Dashboard:
         dpg.set_value(self.ui_tags['rot_p'], np.degrees(self.ctx.agent.pitch))
         dpg.set_value(self.ui_tags['rot_r'], np.degrees(self.ctx.agent.roll))
 
+        dpg.set_value('ui_mouse_lock', self.ctx.mouse_captured)
+
     # Main render
     def render(self, visual_output):
+
         if not self._initialised:
             self._setup_dpg()
 
@@ -340,6 +401,8 @@ class Dashboard:
         # Sync with stuff driven by keyboard
         self._sync_ui_state()
 
+        is_plotting = dpg.is_item_visible('tab_plots')
+
         ra = self.ctx.renderer._ra
         lens_id = dpg.get_value(self.omm_slider)
         mode = self.ctx.renderer.output_mode
@@ -350,7 +413,7 @@ class Dashboard:
         else:
             self.ctx.renderer.selected_id = lens_id
 
-        if visual_output is not None and lens_id < ra.lens_count:
+        if is_plotting and visual_output is not None and lens_id < ra.lens_count:
             if mode == EyeOutput.Raw:
                 start, end = lens_id * ra.receptor_count, (lens_id + 1) * ra.receptor_count
                 group = visual_output.receptors[start:end]

@@ -35,7 +35,10 @@ class KeyboardMouse(Controls):
 
         glfw.set_key_callback(ctx.window, self._on_key)
         glfw.set_scroll_callback(ctx.window, self._on_scroll)
-        glfw.set_input_mode(ctx.window, glfw.CURSOR, glfw.CURSOR_HIDDEN)
+        if ctx.mouse_captured:
+            glfw.set_input_mode(ctx.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+        else:
+            glfw.set_input_mode(ctx.window, glfw.CURSOR, glfw.CURSOR_NORMAL)
 
         self._last_mouse_pos = None
 
@@ -52,6 +55,14 @@ class KeyboardMouse(Controls):
         ctx = self._ctx
 
         if action == glfw.PRESS:
+            if key == glfw.KEY_TAB:
+                ctx.mouse_captured = not ctx.mouse_captured
+            if ctx.mouse_captured:
+                glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+            else:
+                glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_NORMAL)
+                self._last_mouse_pos = None
+
             if key == glfw.KEY_C:   ctx.cycle_view_mode()
             elif key == glfw.KEY_V: ctx.toggle_voronoi()
             elif key == glfw.KEY_P: ctx.toggle_projection_mode()
@@ -118,6 +129,9 @@ class KeyboardMouse(Controls):
             agent.dt(dt).translate(glm.normalize(move_direction) * ctx.move_speed)
 
         # Mouse
+
+        if not ctx.mouse_captured:
+            return
 
         current_mouse_pos = glfw.get_cursor_pos(window)
         if self._last_mouse_pos is None:

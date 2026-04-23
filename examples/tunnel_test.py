@@ -33,7 +33,7 @@ def random_tunnel_start(tunnel_width: float, tunnel_height: float, randomise_hei
 
 ## Setup test environment
 
-context = Context(window_size=(1280, 720), fps_limit=None, v_sync=False)
+context = Context(window_size=(1280, 720), fps_limit=None, vsync=False)
 
 scene = Scene(background_color=(0.15, 0.15, 0.3))
 scene.add_skybox('assets/textures/bright_day_nosun')
