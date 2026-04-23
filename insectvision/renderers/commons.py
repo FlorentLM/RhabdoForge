@@ -73,25 +73,6 @@ def _query_available_VRAM() -> int:
     return 0
 
 
-def _create_ssbo(data: Optional[ArrayLike] = None, size: Optional[int] = None, usage: int = GL_STATIC_DRAW) -> int:
-    """Create a new SSBO, upload data into it, and return the handle."""
-
-    if data is None and size is None:
-        raise AttributeError("SSBO size must be provided if data is not passed.")
-
-    if data is not None:
-        data = np.asarray(data)
-        if size is None:
-            size = data.nbytes
-
-    ssbo_bind = glGenBuffers(1)
-
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_bind)
-    glBufferData(GL_SHADER_STORAGE_BUFFER, size, data, usage)
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-    return ssbo_bind
-
-
 def _create_pbo(data: Optional[ArrayLike] = None, size: Optional[int] = None, usage: int = GL_STREAM_READ) -> int:
     """Create a new PBO, upload data into it, and return the handle."""
 
