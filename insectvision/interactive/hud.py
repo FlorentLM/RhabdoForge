@@ -236,10 +236,6 @@ class HUD:
         self.view_modes_names = {0: 'Compound eye', 1: 'Panoramic', 2: 'Third person', 3: 'Perspective'}
         self.proj_modes_names = {0: 'Layout', 1: 'Acceptance'}
 
-        # FPS tracking
-        self.frame_times = deque(maxlen=60)
-        self.last_fps_update_time = 0
-
         self.update_interval = 0.25  # update text every 250 ms
         self._last_update_time = 0
         self._info_text = ""
@@ -294,17 +290,8 @@ class HUD:
 
         current_time = self.ctx.current_time
 
-        self.frame_times.append(current_time)
-
         if current_time - self._last_update_time > self.update_interval:
             self._last_update_time = current_time
-
-            # Calculate FPS based on timestamps
-            if len(self.frame_times) > 1:
-                time_diff = self.frame_times[-1] - self.frame_times[0]
-                avg_fps = (len(self.frame_times) - 1) / time_diff if time_diff > 0 else 0
-            else:
-                avg_fps = 0
 
             active_renderer = self.ctx.renderer
 
@@ -333,7 +320,7 @@ class HUD:
             proj_mode = self.proj_modes_names[active_renderer.projection_mode]
 
             self._info_text = (
-                f'FPS: {avg_fps:>4.2f} | '
+                f'FPS: {self.ctx.fps:>4.2f} | '
                 f'Mode: {render_mode} | '
                 f'Ommatidia: {nb_om} | '
                 f'{sample_label}: {nb_om_samples}/om{samples_pp_str} | '

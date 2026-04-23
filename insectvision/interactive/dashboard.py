@@ -54,6 +54,19 @@ class Dashboard:
 
         with dpg.window(label='Inspector', width=650, height=950, no_close=True, no_move=True, tag='main_window'):
 
+            # Info panel
+
+            with dpg.group(tag='info_panel'):
+                with dpg.group(horizontal=True):
+                    dpg.add_text("FPS: 00.0", tag="ui_fps_text", color=[150, 255, 150])
+                    dpg.add_text("| Renderer: Unknown", tag="ui_renderer_text")
+
+                dpg.add_text("Pos: [0.00, 0.00, 0.00]", tag="ui_pos_text", color=[200, 200, 255])
+                dpg.add_text("Samples: 0/om | 0/px", tag="ui_samples_text")
+                dpg.add_separator()
+
+            # Tabs
+
             with dpg.tab_bar(tag='main_tabs'):
 
                 # Tab 1: Plots
@@ -105,26 +118,43 @@ class Dashboard:
                 # Tab 2: Dynamics
                 with dpg.tab(label='Dynamics'):
                     dpg.add_spacer(height=5)
-                    dpg.add_text("Photomechanical Response", color=[255, 150, 100])
+                    dpg.add_text('Photomechanical Response', color=[255, 150, 100])
 
-                    dpg.add_checkbox(label="Enable Closed-Loop Saccades",
-                                     default_value = self.ctx.renderer._gpu_actuation,
-                                     callback = lambda s, a: setattr(self.ctx.renderer, '_gpu_actuation', a))
-
-                    dpg.add_separator()
-                    dpg.add_text("Shader Parameters (EyeDynamics.comp)", color=[100, 200, 255])
-
-                    def update_dyn_uniform(name, val):
-                        # TODO
-                        pass
-
-                    dpg.add_slider_float(label="Lateral Gain", default_value=3.0, min_value=0.0, max_value=10.0)
-                    dpg.add_slider_float(label="Axial Gain", default_value=8.0, min_value=0.0, max_value=20.0)
-                    dpg.add_slider_float(label="Tau Fast (ms)", default_value=5.0, min_value=1.0, max_value=50.0)
+                    dpg.add_checkbox(label='Enable Rhabdomeres Actuation',
+                                     default_value = self.ctx.renderer.actuation,
+                                     callback = lambda s, a: setattr(self.ctx.renderer, 'actuation', a))
 
                     dpg.add_separator()
+                    dpg.add_text('Shader Parameters (EyeDynamics.comp)', color=[100, 200, 255])
 
-                    if dpg.add_button(label="Reset GPU States", width=-1):
+                    dpg.add_slider_float(
+                        label='Lateral Gain (um)',
+                        default_value=self.ctx.renderer.gain_lat,
+                        min_value=0.0, max_value=10.0,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'gain_lat', a)
+                    )
+                    dpg.add_slider_float(
+                        label='Axial Gain (um)',
+                        default_value=self.ctx.renderer.gain_ax,
+                        min_value=0.0, max_value=20.0,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'gain_ax', a)
+                    )
+                    dpg.add_slider_float(
+                        label='Tau Fast (s)',
+                        default_value=self.ctx.renderer.tau_fast,
+                        min_value=0.001, max_value=0.1,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'tau_fast', a)
+                    )
+                    dpg.add_slider_float(
+                        label='Tau Relaxation (s)',
+                        default_value=self.ctx.renderer.tau_relax,
+                        min_value=0.01, max_value=0.5,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'tau_relax', a)
+                    )
+
+                    dpg.add_separator()
+
+                    if dpg.add_button(label='Reset GPU States', width=-1):
                         self._main_thread_queue.append(
                         self.ctx.renderer.buffers['ema_state'].reset)
                         self._main_thread_queue.append(self.ctx.renderer.buffers['lens_dynamic'].reset)
@@ -354,6 +384,22 @@ class Dashboard:
     def _sync_ui_state(self):
         """Sync DPG widgets with Python states in case they were modified via keyboard."""
 
+        dpg.set_value('ui_fps_text', f'FPS: {self.ctx.fps:.1f}')
+
+        from insectvision.renderers import Raytracer, Pathtracer
+        r = self.ctx.renderer
+        r_type = 'Pathtracer' if isinstance(r, Pathtracer) else ('Raytracer' if isinstance(r, Raytracer) else 'Rasterizer')
+        dpg.set_value('ui_renderer_text', f'| Renderer: {r_type}')
+
+        # Position
+        agent_pos = self.ctx.agent.position
+        dpg.set_value('ui_pos_text', f'Pos: [{agent_pos.x:.2f}, {agent_pos.y:.2f}, {agent_pos.z:.2f}]')
+
+        # Samples
+        om_s = r.nb_samples
+        px_s = getattr(r, 'samples_per_pixel', 1)
+        dpg.set_value("ui_samples_text", f"Samples: {om_s}/om | {px_s}/px")
+
         # Rendering sync
         dpg.set_value(self.ui_tags['view_mode'], self.ctx.view_mode.name)
         dpg.set_value(self.ui_tags['proj_mode'], self.ctx.renderer.projection_mode.name)
@@ -373,14 +419,13 @@ class Dashboard:
             dpg.set_value(self.ui_tags['sun_intensity'], self.ctx.scene.sun.intensity)
 
         # Agent sync
-        pos = self.ctx.agent.position
-        dpg.set_value(self.ui_tags['pos_x'], pos.x)
-        dpg.set_value(self.ui_tags['pos_y'], pos.y)
-        dpg.set_value(self.ui_tags['pos_z'], pos.z)
+        dpg.set_value(self.ui_tags['pos_x'], agent_pos.x)
+        dpg.set_value(self.ui_tags['pos_y'], agent_pos.y)
+        dpg.set_value(self.ui_tags['pos_z'], agent_pos.z)
 
-        dpg.set_value(self.ui_tags['rot_y'], np.degrees(self.ctx.agent.yaw))
-        dpg.set_value(self.ui_tags['rot_p'], np.degrees(self.ctx.agent.pitch))
-        dpg.set_value(self.ui_tags['rot_r'], np.degrees(self.ctx.agent.roll))
+        dpg.set_value(self.ui_tags['rot_y'], self.ctx.agent.yaw)
+        dpg.set_value(self.ui_tags['rot_p'], self.ctx.agent.pitch)
+        dpg.set_value(self.ui_tags['rot_r'], self.ctx.agent.roll)
 
         dpg.set_value('ui_mouse_lock', self.ctx.mouse_captured)
 

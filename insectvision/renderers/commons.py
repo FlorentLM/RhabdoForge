@@ -290,6 +290,14 @@ class BaseRenderer(ABC):
         self.ambient_intensity = getattr(self, 'ambient_intensity', 1.0)
         self.sky_intensity = getattr(self, 'sky_intensity', 1.0)
 
+        # Dynamics
+        self.gain_lat = 3.0      # saccade lateral gain (μm) per unit drive
+        self.gain_ax = 8.0       # saccade axial gain (μm) per unit drive
+        self.tau_fast = 0.005    # 5 ms: fast saccade trigger
+        self.tau_adapt = 0.050   # 50 ms: light adaptation baseline
+        self.tau_relax = 0.080   # 80 ms: Mechanical relaxation (elastic return)
+        self.gain_biochem = 0.1
+
         # Visualisation shaders (lazy-loaded)
         self._lazy_fp_colour_shader: Optional[int] = None    # 1st person colour mode
         self._lazy_fp_overlay_shader: Optional[int] = None   # 1st person overlay mode
@@ -508,19 +516,12 @@ class BaseRenderer(ABC):
             # Dynamics
             saccades_enabled = self._gpu_actuation
 
-            # TODO: Expose these as properties
-            # Two-timescale drive
-            glUniform1f(shader.get_loc('tau_fast'), 0.005)  # 5 ms: fast saccade trigger
-            glUniform1f(shader.get_loc('tau_adapt'), 0.050)  # 50 ms: light adaptation baseline
-
-            # Saccade gains (in μm)
-            glUniform1f(shader.get_loc('gain_lat'), 3.0 if saccades_enabled else 0.0)  # μm per unit drive
-            glUniform1f(shader.get_loc('gain_ax'), 8.0 if saccades_enabled else 0.0)
-
-            # Mechanical relaxation (onset is drive-shaped)
-            glUniform1f(shader.get_loc('tau_relax'), 0.08)  # 80 ms elastic return
-
-            glUniform1f(shader.get_loc('gain_biochem'), 0.1)
+            glUniform1f(shader.get_loc('tau_fast'), self.tau_fast)
+            glUniform1f(shader.get_loc('tau_adapt'), self.tau_adapt)
+            glUniform1f(shader.get_loc('gain_lat'), self.gain_lat if saccades_enabled else 0.0)
+            glUniform1f(shader.get_loc('gain_ax'), self.gain_ax if saccades_enabled else 0.0)
+            glUniform1f(shader.get_loc('tau_relax'), self.tau_relax)
+            glUniform1f(shader.get_loc('gain_biochem'), self.gain_biochem)
 
             work_groups = (self._ra.lens_count + 63) // 64
             glDispatchCompute(work_groups, 1, 1)
@@ -913,6 +914,15 @@ class BaseRenderer(ABC):
     @overlay_enabled.setter
     def overlay_enabled(self, value: bool):
         self._overlay_enabled = bool(value)
+
+    @property
+    def actuation(self):
+        return self._gpu_actuation
+
+    @actuation.setter
+    def actuation(self, value: bool):
+        self._gpu_actuation = bool(value)
+        print(f"Rhabdomere actuation {'ENABLED' if self._time_dithering else 'DISABLED'}.")
 
     def dither(self):
         """Dither once (reshuffle the dither counter)"""

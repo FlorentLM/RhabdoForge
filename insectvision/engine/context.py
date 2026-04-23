@@ -5,6 +5,7 @@ from OpenGL.GL import *
 import glfw
 import time
 from typing import TYPE_CHECKING, Optional, Tuple, Callable, Dict, List, Union
+from collections import deque
 
 from .scene import Scene
 from .agent import Agent, OrbitCamera
@@ -34,6 +35,7 @@ class Context:
         self._fps_limit = fps_limit if fps_limit is not None else 0
         self._interactive_initialised = False
         self._vsync = vsync
+        self._frame_times = deque(maxlen=60)    # for FPS tracking
 
         if not glfw.init():
             raise Exception("GLFW can't be initialized")
@@ -100,6 +102,7 @@ class Context:
         """
         current_time = self.current_time
         self._delta_time = current_time - self.last_frame_time
+        self._frame_times.append(current_time)
         self.last_frame_time = current_time
 
     def reset_time(self):
@@ -107,6 +110,13 @@ class Context:
         Initialise last_frame_time right before a loop starts.
         """
         self.last_frame_time = self.current_time
+
+    @property
+    def fps(self) -> float:
+        """Average FPS over the last 60 frames."""
+        if len(self._frame_times) < 2:
+            return 0.0
+        return (len(self._frame_times) - 1) / (self._frame_times[-1] - self._frame_times[0])
 
     @property
     def delta_time(self) -> float:
