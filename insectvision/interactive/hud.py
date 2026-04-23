@@ -1,8 +1,10 @@
 import OpenGL
+
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 from pathlib import Path
+from collections import deque
 import numpy as np
 import json
 from PIL import Image
@@ -132,7 +134,7 @@ class FontRenderer:
 
         json_path = (atlas_dir / f'{font_name}.json')
         if not json_path.exists():
-            generate_font_atlas(font_name=font_name, font_size=10, output_dir=str(atlas_dir))
+            generate_font_atlas(font_name=font_name, font_size=22, output_dir=atlas_dir)
 
         with json_path.open(encoding="UTF-8") as f:
             data = json.load(f)
@@ -175,28 +177,22 @@ class FontRenderer:
         """
         Generates vertex data for a string and returns it as a list.
         """
-
         vertices = []
         cursor_x = x
         for char in text:
             if char in self.char_data:
                 data = self.char_data[char]
                 w, h = data['w'] * scale, data['h'] * scale
-
                 u0, v0, u1, v1 = data['uv_rect']
 
-                # Quad corners
-                bl = (cursor_x, y, u0, v1)          # bottom-Left
-                br = (cursor_x + w, y, u1, v1)      # bottom-Right
-                tr = (cursor_x + w, y + h, u1, v0)  # top-Right
-                tl = (cursor_x, y + h, u0, v0)      # top-Left
+                bl = (cursor_x, y, u0, v1)
+                br = (cursor_x + w, y, u1, v1)
+                tr = (cursor_x + w, y + h, u1, v0)
+                tl = (cursor_x, y + h, u0, v0)
 
-                # Triangle 1
                 vertices.extend(bl)
                 vertices.extend(br)
                 vertices.extend(tr)
-
-                # Triangle 2
                 vertices.extend(bl)
                 vertices.extend(tr)
                 vertices.extend(tl)
@@ -208,15 +204,13 @@ class FontRenderer:
         self.text_program.free()
         glDeleteVertexArrays(1, [self.vao])
         glDeleteBuffers(1, [self.vbo])
-        glDeleteTextures(1,[self.atlas_texture])
+        glDeleteTextures(1, [self.atlas_texture])
 
 
 class HUD:
     """
     Manages the rendering of all HUD elements.
     """
-
-    # TODO: Comment this class a bit more
 
     def __init__(self, context):
         self.ctx = context
@@ -231,20 +225,39 @@ class HUD:
 
         self.projection_matrix = glm.ortho(0, self.width, 0, self.height, -1.0, 1.0)
 
-        self.view_modes_names = {0: 'Compound eye', 1: 'Panoramic', 2: 'Third person', 3: 'Perspective'}
-        self.proj_modes_names = {0: 'Layout', 1: 'Acceptance'}
-
-        self.update_interval = 0.5  # update text every 500 ms
-
+        self.update_interval = 0.25  # update text every 250 ms
         self._last_update_time = 0
-        self._info_text = ""
+
         self._controls_text_lines = []
-        self._stats_text_lines =[]
-        self._info_shadow_verts, self._info_fg_verts = None, None
         self._controls_shadow_verts, self._controls_fg_verts = None, None
+        self._info_shadow_verts, self._info_fg_verts = None, None
         self._stats_shadow_verts, self._stats_fg_verts = None, None
 
         self._update_controls_text()
+
+    def _build_text_buffers(self, text_lines, x_align='left', y_start=10):
+        """Helper to generate Shadow and FG vertices for a block of text."""
+
+        shadow_verts, fg_verts = [], []
+        line_height = self.font_renderer.font_size * 1.1
+        margin = 10
+
+        for i, text in enumerate(text_lines):
+            y_pos = y_start + (i * line_height)
+
+            if x_align == 'right':
+                text_width = self.font_renderer.text_width(text)
+                x_pos = self.width - text_width - margin
+            else:
+                x_pos = margin
+
+            shadow_verts.extend(self.font_renderer.text_vertices(text, x_pos + 1, y_pos - 1))
+            fg_verts.extend(self.font_renderer.text_vertices(text, x_pos, y_pos))
+
+        return (
+            np.array(shadow_verts, dtype=np.float32) if shadow_verts else None,
+            np.array(fg_verts, dtype=np.float32) if fg_verts else None
+        )
 
     def _update_controls_text(self):
 
@@ -272,95 +285,76 @@ class HUD:
         lines.append('    ESC: Quit')
 
         self._controls_text_lines = reversed(lines)
-
-        shadow_verts, fg_verts = [], []
-        margin, line_height = 5, self.font_renderer.font_size
-
-        for i, text in enumerate(self._controls_text_lines):
-            y_pos = margin + (i * line_height)
-            shadow_verts.extend(self.font_renderer.text_vertices(text, margin + 1, y_pos - 1))
-            fg_verts.extend(self.font_renderer.text_vertices(text, margin, y_pos))
-
-        self._controls_shadow_verts = np.array(shadow_verts, dtype=np.float32) if shadow_verts else None
-        self._controls_fg_verts = np.array(fg_verts, dtype=np.float32) if fg_verts else None
+        self._controls_shadow_verts, self._controls_fg_verts = self._build_text_buffers(
+            self._controls_text_lines, x_align='left', y_start=10
+        )
 
     def _update_text_vertices(self):
+
         from insectvision.renderers import Raytracer, Pathtracer
 
         current_time = self.ctx.current_time
+        if current_time - self._last_update_time < self.update_interval:
+            return
+        self._last_update_time = current_time
 
-        if current_time - self._last_update_time > self.update_interval:
-            self._last_update_time = current_time
+        pos = self.ctx.agent.position
 
-            active_renderer = self.ctx.renderer
+        is_ray_based = isinstance(self.ctx.renderer, Raytracer)
+        if isinstance(self.ctx.renderer, Pathtracer):
+            renderer_name = 'Pathtracer'
+        elif is_ray_based:
+            renderer_name = 'Raytracer'
+        else:
+            renderer_name = 'Rasterizer'
 
-            is_ray_based = isinstance(active_renderer, Raytracer)
+        sample_label = 'Rays' if is_ray_based else 'Samples'
 
-            if is_ray_based and isinstance(active_renderer, Pathtracer):
-                render_mode = "Pathtracer"
-            elif is_ray_based:
-                render_mode = "Raytracer"
-            else:
-                render_mode = "Rasterizer"
-            sample_label = "Rays" if is_ray_based else "Samples"
+        # Enums to readable strings
+        view_mode_str = self.ctx.view_mode.name.replace('_', ' ')
+        proj_mode_str = self.ctx.renderer.projection_mode.name
 
-            view_mode = self.view_modes_names[self.ctx.view_mode]
+        # Stats
+        nb_om = self.ctx.renderer._ra.lens_count
+        nb_om_samples = getattr(self.ctx.renderer, 'nb_samples', 1)
+        nb_px_samples = getattr(self.ctx.renderer, 'samples_per_pixel', 1)
+        has_pixels = self.ctx.view_mode.name in ('Panoramic', 'Third_person')
 
-            has_pixels = view_mode in ('Panoramic', 'Third person')
+        # Bottom info line
+        info_text = (
+            f'FPS: {self.ctx.fps:5.1f} | '
+            f'Renderer: {renderer_name} | '
+            f'View: {view_mode_str} | '
+            f'Proj: {proj_mode_str} | '
+            f'Pos: [{pos.x:5.2f}, {pos.y:5.2f}, {pos.z:5.2f}]'
+        )
 
-            pos = self.ctx.agent.position
+        line_height = self.font_renderer.font_size * 1.1
+        self._info_shadow_verts, self._info_fg_verts = self._build_text_buffers(
+            [info_text], x_align='left', y_start=self.height - line_height
+        )
 
-            nb_om = active_renderer._ra.lens_count
-            nb_om_samples = active_renderer.nb_samples
-            nb_px_samples = getattr(active_renderer, 'samples_per_pixel', 1)
+        # Top-right scene stats
+        samples_pp_str = f", {nb_px_samples}/px" if has_pixels else ""
+        total_pp = f" (om) + {nb_px_samples * self.nb_px:,} (px)" if has_pixels else ""
 
-            samples_pp_str = f', {nb_px_samples}/px' if has_pixels else ''
+        stats_lines = [
+            f'Ommatidia: {nb_om:,}',
+            f'{sample_label}: {nb_om_samples}/om{samples_pp_str}',
+            f'Total {sample_label}: {nb_om * nb_om_samples:,}{total_pp}'
+        ]
 
-            proj_mode = self.proj_modes_names[active_renderer.projection_mode]
+        tot_tris = self.ctx.scene.total_triangles
+        if tot_tris > 0:
+            stats_lines.append(f'Triangles: {tot_tris:,}')
 
-            self._info_text = (
-                f'FPS: {self.ctx.fps:>4.2f} | '
-                f'Mode: {render_mode} | '
-                f'Ommatidia: {nb_om} | '
-                f'{sample_label}: {nb_om_samples}/om{samples_pp_str} | '
-                f'XYZ:[ {pos.x:>5.3f}, {pos.y:>5.3f}, {pos.z:>5.3f} ] | '
-                f'View mode: {view_mode} | '
-                f'Projection mode: {proj_mode}'
-                # f' | Sun: azm={self.ctx.renderer.sun.azimuth:.2f}, elv={self.ctx.renderer.sun.elevation:.2f}'
-            )
+        tot_points = self.ctx.scene.total_points
+        if tot_points > 0:
+            stats_lines.append(f'Points: {tot_points:,}')
 
-            margin, line_height = 10, self.font_renderer.font_size * 1.1
-            info_sv = self.font_renderer.text_vertices(self._info_text, margin + 1,
-                                                       self.height - line_height - 1)
-            info_fv = self.font_renderer.text_vertices(self._info_text, margin, self.height - line_height)
-            self._info_shadow_verts = np.array(info_sv, dtype=np.float32) if info_sv else None
-            self._info_fg_verts = np.array(info_fv, dtype=np.float32) if info_fv else None
-
-            # Scene stats
-            tri_count = self.ctx.scene.total_triangles
-            point_count = self.ctx.scene.total_points
-
-            total_pp = f' (om) + {nb_px_samples * self.nb_px:,} (px)' if has_pixels else ''
-
-            if point_count > 0:
-                self._stats_text_lines =[f'Total {sample_label}: {nb_om * nb_om_samples:,}{total_pp}',
-                                        f'Scene Triangles: {tri_count:,}',
-                                        f'Scene Points: {point_count:,}']
-            else:
-                self._stats_text_lines =[f'Total {sample_label}: {nb_om * nb_om_samples:,}{total_pp}',
-                                        f'Scene Triangles: {tri_count:,}']
-
-            stats_sv, stats_fv = [],[]
-
-            for i, text in enumerate(self._stats_text_lines):
-                text_width = self.font_renderer.text_width(text)
-                x_pos = self.width - text_width - margin
-                y_pos = margin + (i * line_height)
-                stats_sv.extend(self.font_renderer.text_vertices(text, x_pos + 1, y_pos - 1))
-                stats_fv.extend(self.font_renderer.text_vertices(text, x_pos, y_pos))
-
-            self._stats_shadow_verts = np.array(stats_sv, dtype=np.float32) if stats_sv else None
-            self._stats_fg_verts = np.array(stats_fv, dtype=np.float32) if stats_fv else None
+        self._stats_shadow_verts, self._stats_fg_verts = self._build_text_buffers(
+            stats_lines, x_align='right', y_start=10
+        )
 
     def draw(self):
 
@@ -369,8 +363,10 @@ class HUD:
 
         self._update_text_vertices()
 
-        all_shadow_verts =[v for v in (self._info_shadow_verts, self._controls_shadow_verts, self._stats_shadow_verts) if v is not None]
-        all_fg_verts =[v for v in (self._info_fg_verts, self._controls_fg_verts, self._stats_fg_verts) if v is not None]
+        all_shadow_verts = [v for v in (self._info_shadow_verts, self._controls_shadow_verts, self._stats_shadow_verts)
+                            if v is not None]
+        all_fg_verts = [v for v in (self._info_fg_verts, self._controls_fg_verts, self._stats_fg_verts) if
+                        v is not None]
 
         if not all_shadow_verts and not all_fg_verts:
             return

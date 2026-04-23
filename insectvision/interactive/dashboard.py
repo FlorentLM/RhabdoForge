@@ -61,8 +61,20 @@ class Dashboard:
                     dpg.add_text("FPS: 00.0", tag="ui_fps_text", color=[150, 255, 150])
                     dpg.add_text("| Renderer: Unknown", tag="ui_renderer_text")
 
+                with dpg.group(horizontal=True):
+                    dpg.add_text("View: Unknown", tag="ui_view_text", color=[200, 200, 200])
+                    dpg.add_text("| Proj: Unknown", tag="ui_proj_text", color=[200, 200, 200])
+
                 dpg.add_text("Pos: [0.00, 0.00, 0.00]", tag="ui_pos_text", color=[200, 200, 255])
-                dpg.add_text("Samples: 0/om | 0/px", tag="ui_samples_text")
+
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Ommatidia: 0", tag="ui_omm_text")
+                    dpg.add_text("| Samples: 0/om | 0/px", tag="ui_samples_text")
+
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Triangles: 0", tag="ui_tri_text", color=[255, 200, 150])
+                    dpg.add_text("| Points: 0", tag="ui_pts_text", color=[255, 200, 150])
+
                 dpg.add_separator()
 
             # Tabs
@@ -381,24 +393,47 @@ class Dashboard:
     def _sync_ui_state(self):
         """Sync DPG widgets with Python states in case they were modified via keyboard."""
 
-        dpg.set_value('ui_fps_text', f'FPS: {self.ctx.fps:.1f}')
-
+        # Info panel sync
         from insectvision.renderers import Raytracer, Pathtracer
-        r = self.ctx.renderer
-        r_type = 'Pathtracer' if isinstance(r, Pathtracer) else ('Raytracer' if isinstance(r, Raytracer) else 'Rasterizer')
-        dpg.set_value('ui_renderer_text', f'| Renderer: {r_type}')
+
+        # Renderer detection
+        is_ray_based = isinstance(self.ctx.renderer, Raytracer)
+        if isinstance(self.ctx.renderer, Pathtracer):
+            renderer_name = "Pathtracer"
+        elif is_ray_based:
+            renderer_name = "Raytracer"
+        else:
+            renderer_name = "Rasterizer"
+
+        dpg.set_value('ui_fps_text', f'FPS: {self.ctx.fps:5.1f}')
+        dpg.set_value('ui_renderer_text', f'| Renderer: {renderer_name}')
+
+        # Modes
+        view_str = self.ctx.view_mode.name.replace('_', ' ')
+        proj_str = self.ctx.renderer.projection_mode.name
+        dpg.set_value('ui_view_text', f'View: {view_str}')
+        dpg.set_value('ui_proj_text', f'| Proj: {proj_str}')
 
         # Position
-        agent_pos = self.ctx.agent.position
-        dpg.set_value('ui_pos_text', f'Pos: [{agent_pos.x:.2f}, {agent_pos.y:.2f}, {agent_pos.z:.2f}]')
+        pos = self.ctx.agent.position
+        dpg.set_value('ui_pos_text', f'Pos: [{pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}]')
 
-        # Samples
-        om_s = r.nb_samples
-        px_s = getattr(r, 'samples_per_pixel', 1)
-        dpg.set_value("ui_samples_text", f"Samples: {om_s}/om | {px_s}/px")
+        # Samples and ommatidia
+        nb_om = self.ctx.renderer._ra.lens_count
+        nb_om_samples = getattr(self.ctx.renderer, 'nb_samples', 1)
+        nb_px_samples = getattr(self.ctx.renderer, 'samples_per_pixel', 1)
+
+        dpg.set_value('ui_omm_text', f'Ommatidia: {nb_om:,}')
+        dpg.set_value('ui_samples_text', f'| Samples: {nb_om_samples}/om | {nb_px_samples}/px')
+
+        # Scene Stats
+        dpg.set_value('ui_tri_text', f'Triangles: {self.ctx.scene.total_triangles:,}')
+        dpg.set_value('ui_pts_text', f'| Points: {self.ctx.scene.total_points:,}')
+
+        # Interactive inputs sync
 
         # Rendering sync
-        dpg.set_value(self.ui_tags['view_mode'], self.ctx.view_mode)
+        dpg.set_value(self.ui_tags['view_mode'], self.ctx.view_mode.name)
         dpg.set_value(self.ui_tags['proj_mode'], self.ctx.renderer.projection_mode.name)
         dpg.set_value(self.ui_tags['tiled_mode'], self.ctx.renderer.tiled_mode)
         dpg.set_value(self.ui_tags['heatmap'], self.ctx.renderer.overlay_enabled)
@@ -416,9 +451,9 @@ class Dashboard:
             dpg.set_value(self.ui_tags['sun_intensity'], self.ctx.scene.sun.intensity)
 
         # Agent sync
-        dpg.set_value(self.ui_tags['pos_x'], agent_pos.x)
-        dpg.set_value(self.ui_tags['pos_y'], agent_pos.y)
-        dpg.set_value(self.ui_tags['pos_z'], agent_pos.z)
+        dpg.set_value(self.ui_tags['pos_x'], pos.x)
+        dpg.set_value(self.ui_tags['pos_y'], pos.y)
+        dpg.set_value(self.ui_tags['pos_z'], pos.z)
 
         dpg.set_value(self.ui_tags['rot_y'], self.ctx.agent.yaw)
         dpg.set_value(self.ui_tags['rot_p'], self.ctx.agent.pitch)
