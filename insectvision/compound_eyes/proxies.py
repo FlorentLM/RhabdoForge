@@ -87,12 +87,12 @@ class LensView:
     @property
     def positions(self) -> np.ndarray:
         """Lens centre positions in head/world space."""
-        return self._ra.rcpt_static_data['position'][self._gi]
+        return self._ra._lens_positions[self._gi]
 
     @property
     def directions(self) -> np.ndarray:
         """Optical axis unit vectors."""
-        return self._ra.rcpt_dynamic_data['direction'][self._gi]
+        return self._ra._lens_directions[self._gi]
 
     @property
     def bundle_orientations(self) -> np.ndarray:
@@ -111,8 +111,8 @@ class LensView:
     def interommatidial_angles(self) -> Tuple[np.ndarray, np.ndarray]:
         """IOA arrays in radians."""
 
-        minor = self._ra.lens_data['ioa_axes'][self._gi, 0]
-        major = self._ra.lens_data['ioa_axes'][self._gi, 1]
+        minor = self._ra.lens_static_data['ioa_axes'][self._gi, 0]
+        major = self._ra.lens_static_data['ioa_axes'][self._gi, 1]
 
         return minor, major
 
@@ -120,7 +120,7 @@ class LensView:
     def lattice_tilts(self) -> np.ndarray:
         """Local lattice tilt (Ψ6 angle, radians)."""
 
-        return self._ra.lens_data['tilt'][self._gi]
+        return self._ra.lens_static_data['ioa_tilt'][self._gi]
 
     # Directed-neighbour graph (eye-level only)
 
