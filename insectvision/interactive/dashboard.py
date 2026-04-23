@@ -1,11 +1,7 @@
-import OpenGL
-OpenGL.ERROR_CHECKING = False
-from OpenGL.GL import glBindBuffer, glGetBufferSubData, GL_SHADER_STORAGE_BUFFER
 import dearpygui.dearpygui as dpg
 import numpy as np
 import collections
 
-from insectvision.compound_eyes.datatypes import LENS_DYNAMIC_DTYPE
 from insectvision.renderers.commons import EyeOutput
 
 
@@ -187,18 +183,11 @@ class Dashboard:
             for r_idx in range(ra.receptor_count):
                 self.rec_data_buffers[r_idx].append(np.mean(group[r_idx, :3]))
 
-            # Download Actuation State from GPU to CPU to graph it
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ctx.renderer._lens_dynamic_ssbo)
-            state_bytes = glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, ra.lens_count * 16)
-            state_data = np.frombuffer(state_bytes, dtype=LENS_DYNAMIC_DTYPE)
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            # Download actuation state from GPU to CPU to graph it
+            state_data = self.ctx.renderer.buffers['lens_dynamic'].read(start=lens_id, count=1)
 
-            # Now you can use it:
-            self.lat_um_data.append(state_data['lateral_um'][lens_id])
-            self.ax_um_data.append(state_data['axial_um'][lens_id])
-
-            self.lat_um_data.append(getattr(ra, '_lateral_state', np.zeros(ra.lens_count))[lens_id])
-            self.ax_um_data.append(getattr(ra, '_axial_state', np.zeros(ra.lens_count))[lens_id])
+            self.lat_um_data.append(float(state_data['lateral_um'][0]))
+            self.ax_um_data.append(float(state_data['axial_um'][0]))
 
             self.current_frame += 1
 

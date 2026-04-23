@@ -23,20 +23,20 @@ if TYPE_CHECKING:
     from insectvision.compound_eyes import ReceptorArray
 
 # Scene geometry bindings
-BINDING_VERTICES     = 7 #5
-BINDING_INDICES      = 8 #6
-BINDING_MATERIALS    = 9 #7
-BINDING_POINTS       = 10 #8
-BINDING_BLAS_NODES   = 11 #9
-BINDING_TLAS_NODES   = 12 #10
-BINDING_INSTANCES    = 13 #11
-BINDING_TLAS_INDICES = 14 #12
-BINDING_BLAS_INDICES = 15 #13
+BINDING_VERTICES     = 7
+BINDING_INDICES      = 8
+BINDING_MATERIALS    = 9
+BINDING_POINTS       = 10
+BINDING_BLAS_NODES   = 11
+BINDING_TLAS_NODES   = 12
+BINDING_INSTANCES    = 13
+BINDING_TLAS_INDICES = 14
+BINDING_BLAS_INDICES = 15
 
 # Light bindings
-BINDING_LIGHT_DIR    = 16 #14
-BINDING_LIGHT_POINT  = 17 #15
-BINDING_LIGHT_AREA   = 18 #16
+BINDING_LIGHT_DIR    = 16
+BINDING_LIGHT_POINT  = 17
+BINDING_LIGHT_AREA   = 18
 
 RENDERABLE_INST_DTYPE = np.dtype([
     ('transform', np.float32, (4, 4)),
@@ -750,10 +750,11 @@ class Raytracer(BaseRenderer):
         shader = self.raytrace_shader
         shader.use()
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self._lens_static_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.sampling_results_ssbo)
+
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self.buffers['rcpt_static'].binding)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self.buffers['lens_static'].binding)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self.buffers['rcpt_dynamic'].binding)
 
         self._bind_scene_ssbos()
         self._bind_scene_textures(shader)
@@ -765,7 +766,11 @@ class Raytracer(BaseRenderer):
         c2w_mat = glm.inverse(self.agent.view)
         glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
-        work_groups = (len(self._ra) * self._nb_samples + 63) // 64
+        # Dispatch: one thread per sample
+        N = len(self._ra)
+        total_work = N * self._nb_samples
+        work_groups = (total_work + 63) // 64
+
         glDispatchCompute(work_groups, 1, 1)
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         shader.stop()

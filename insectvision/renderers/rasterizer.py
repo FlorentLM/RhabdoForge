@@ -717,8 +717,8 @@ class Rasterizer(BaseRenderer):
         shader.use()
 
         # Dynamic buffer for actuated directions and static (for positions)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self.buffers['rcpt_static'].binding)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self.buffers['rcpt_dynamic'].binding)
 
         # We write to the same intermediate buffer the raytracer uses
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.sampling_results_ssbo)
@@ -731,9 +731,12 @@ class Rasterizer(BaseRenderer):
         glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
         glUniform1f(shader.get_loc('dither_counter'), float(self._dither_counter))
 
-        # Dispatch: one thread per sample (TotalReceptors * nb_samples)
-        total_work = len(self._ra) * self.nb_samples
-        glDispatchCompute((total_work + 63) // 64, 1, 1)
+        # Dispatch: one thread per sample
+        N = len(self._ra)
+        total_work = N * self.nb_samples
+        work_groups = (total_work + 63) // 64
+
+        glDispatchCompute(work_groups, 1, 1)
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         shader.stop()
 

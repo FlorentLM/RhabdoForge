@@ -16,6 +16,7 @@ from insectvision.geometry.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
 from insectvision.engine.shader_utils import ShaderProgram
+from insectvision.compound_eyes.buffers import BufferRegistry
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import ReceptorArray, Eye
@@ -25,10 +26,11 @@ if TYPE_CHECKING:
 BINDING_RCPT_STATIC       = 0
 BINDING_LENS_STATIC       = 1
 BINDING_COLOR             = 2
-BINDING_EMA_HIST          = 3 #22
-BINDING_RCPT_DYNAMIC      = 4 #3
-BINDING_RAYS_INTERMEDIATE = 5 #4
-BINDING_LENS_DYNAMIC      = 6 #17
+BINDING_EMA_HIST          = 3
+BINDING_RCPT_DYNAMIC      = 4
+BINDING_RAYS_INTERMEDIATE = 5
+BINDING_LENS_DYNAMIC      = 6
+
 
 class EyeOutput(IntEnum):
     Raw = 0          # Render receptors individually (scaled down)
@@ -222,8 +224,11 @@ class BaseRenderer(ABC):
         self.agent: 'Agent' = agent
         self.scene: 'Scene'
 
+        N = len(self._ra)
+        nb_lenses = self._ra.lens_count
+
         # Estimate needed sizes and available memory
-        frame_bytes = len(self._ra) * 16  # 16 bytes per vec4 (RGBA float)
+        frame_bytes = N * 16  # 16 bytes per vec4 (RGBA float)
 
         avail_VRAM = _query_available_VRAM() * 0.9  # 90% for safety, in Mb
         req_batch_dim = (frame_bytes * max(1, batch_size)) / (1024 * 1024)  # in Mb
@@ -245,8 +250,7 @@ class BaseRenderer(ABC):
         self._batch_size = max(1, safe_batch_size)
 
         # Output color buffer (contiguous RGBA floats for CPU readback)
-        frame_bytes = len(self._ra) * 16
-        self._color_ssbo = _create_ssbo(data=None, size=frame_bytes * self._batch_size, usage=GL_DYNAMIC_DRAW)
+        frame_bytes = N * 16
 
         # Ping-Pong PBOs
         self._pbos = [
@@ -255,16 +259,23 @@ class BaseRenderer(ABC):
         ]
         self._pbo_index = 0
         self._fences = [0, 0]
-        self._colours_cpu_buffer = np.zeros((len(self._ra), 4), dtype=np.float32)
-        self._ema_history_ssbo = _create_ssbo(size=len(self._ra) * 16, usage=GL_DYNAMIC_DRAW)
+        self._colours_cpu_buffer = np.zeros((N, 4), dtype=np.float32)
 
-        # Unified Packed Static Buffers (Upload ONCE)
-        self._rcpt_static_ssbo = _create_ssbo(data=self._ra.rcpt_static_data, usage=GL_STATIC_DRAW)
-        self._lens_static_ssbo = _create_ssbo(data=self._ra.lens_static_data, usage=GL_STATIC_DRAW)
+        # Buffer registry
+        self.buffers = BufferRegistry()
 
-        # Unified Packed Dynamic Buffers (GPU Read/Write)
-        self._rcpt_dynamic_ssbo = _create_ssbo(data=self._ra.rcpt_dynamic_data, usage=GL_DYNAMIC_DRAW)
-        self._lens_dynamic_ssbo = _create_ssbo(data=self._ra.lens_dynamic_data, usage=GL_DYNAMIC_DRAW)
+        self.buffers.allocate('rcpt_static', self._ra.rcpt_static_data.dtype, N,
+                              data=self._ra.rcpt_static_data, usage=GL_STATIC_DRAW)
+        self.buffers.allocate('lens_static', self._ra.lens_static_data.dtype, nb_lenses,
+                              data=self._ra.lens_static_data, usage=GL_STATIC_DRAW)
+        self.buffers.allocate('rcpt_dynamic', self._ra.rcpt_dynamic_data.dtype, N,
+                              data=self._ra.rcpt_dynamic_data, usage=GL_DYNAMIC_DRAW)
+        self.buffers.allocate('lens_dynamic', self._ra.lens_dynamic_data.dtype, nb_lenses,
+                              data=self._ra.lens_dynamic_data, usage=GL_DYNAMIC_DRAW)
+        self.buffers.allocate('ema_state', np.dtype((np.float32, 4)), N,
+                              usage=GL_DYNAMIC_DRAW)
+        self.buffers.allocate('colors', np.dtype((np.float32, 4)), N * self._batch_size,
+                              usage=GL_DYNAMIC_DRAW, supports_async=True, _async_reader=self._colors_read_async)
 
         # Ray results buffer
         self.sampling_results_ssbo: Optional[int] = None
@@ -289,7 +300,6 @@ class BaseRenderer(ABC):
         self._lazy_fp_overlay_shader: Optional[int] = None   # 1st person overlay mode
         self._lazy_tp_colour_shader: Optional[int] = None    # 3rd person colour mode
         self._lazy_tp_overlay_shader: Optional[int] = None   # 3rd person overlay mode
-        self._lazy_overlay_ssbo: Optional[int] = None
 
         # Geometry VAOs (lazy-loaded)
         self._lazy_lens_cones_vao: Optional[int] = None
@@ -300,7 +310,6 @@ class BaseRenderer(ABC):
         self._lazy_hemisph_vertices = 0
 
         # Overlay stuff
-        self._overlay_ssbo_capacity = 0
         self._overlay_colormap = Colormap.Thermal
         self._overlay_range = (0.0, 1.0)
         self._overlay_current_peak: Optional[float] = None
@@ -402,15 +411,8 @@ class BaseRenderer(ABC):
         return self._lazy_fp_overlay_shader
 
     @property
-    def _overlay_ssbo(self) -> int:
-        if self._lazy_overlay_ssbo is None:
-            self._lazy_overlay_ssbo = glGenBuffers(1)
-
-        return self._lazy_overlay_ssbo
-
-    @property
     def _active_colour_ssbo(self) -> int:
-        return self._overlay_ssbo if self.overlay_enabled else self._color_ssbo
+        return self.buffers['overlay'].binding if self.overlay_enabled else self.buffers['colors'].binding
 
     # Various internal helpers
 
@@ -426,10 +428,10 @@ class BaseRenderer(ABC):
     # Internal helpers for GL resource binding
 
     def _bind_eye_ssbos(self):
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self._lens_static_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_DYNAMIC, self._lens_dynamic_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self.buffers['rcpt_static'].binding)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self.buffers['lens_static'].binding)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self.buffers['rcpt_dynamic'].binding)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_DYNAMIC, self.buffers['lens_dynamic'].binding)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self._active_colour_ssbo)
 
     def _unbind_eye_ssbos(self):
@@ -459,23 +461,26 @@ class BaseRenderer(ABC):
 
     def _reduction(self):
 
+        N = len(self._ra)
+
         shader = self.reduction_shader
         shader.use()
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.sampling_results_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self._color_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self._ema_history_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
+
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self.buffers['rcpt_static'].binding)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self.buffers['colors'].binding)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self.buffers['ema_state'].binding)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self.buffers['rcpt_dynamic'].binding)
 
         glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
-        glUniform1i(shader.get_loc('nb_receptors'), len(self._ra))
+        glUniform1i(shader.get_loc('nb_receptors'), N)
         glUniform1f(shader.get_loc('dt'), self._dt)
 
         frame_offset = self._frame_index % self._batch_size
         glUniform1i(shader.get_loc('frame_offset'), frame_offset)
 
-        work_groups = (len(self._ra) + 63) // 64
+        work_groups = (N + 63) // 64
         glDispatchCompute(work_groups, 1, 1)
 
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
@@ -490,12 +495,12 @@ class BaseRenderer(ABC):
             shader = self.dynamics_shader
             shader.use()
 
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self._rcpt_static_ssbo)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self._lens_static_ssbo)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self._color_ssbo)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self._ema_history_ssbo)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self._rcpt_dynamic_ssbo)
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_DYNAMIC, self._lens_dynamic_ssbo)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self.buffers['rcpt_static'].binding)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self.buffers['lens_static'].binding)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self.buffers['colors'].binding)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self.buffers['ema_state'].binding)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self.buffers['rcpt_dynamic'].binding)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_DYNAMIC, self.buffers['lens_dynamic'].binding)
 
             glUniform1i(shader.get_loc('nb_lenses'), self._ra.lens_count)
             glUniform1i(shader.get_loc('receptors_per_lens'), self._ra.receptor_count)
@@ -527,6 +532,47 @@ class BaseRenderer(ABC):
             glDispatchCompute(work_groups, 1, 1)
             glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
             shader.stop()
+
+    def _colors_read_async(self) -> np.ndarray:
+        """
+        Non-blocking colour readback (via ping-pong PBO ring).
+        Returns the *previous* frame colours (and zeros on the first frame).
+        """
+
+        N = len(self._ra)
+        bytes_to_read = N * 16
+
+        # Copy colour SSBO into current PBO
+        current_pbo = self._pbos[self._pbo_index]
+        glBindBuffer(GL_COPY_READ_BUFFER, self.buffers['colors'].binding)
+        glBindBuffer(GL_COPY_WRITE_BUFFER, current_pbo)
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, bytes_to_read)
+
+        # Fence to know when the copy is done
+        if self._fences[self._pbo_index]:
+            glDeleteSync(self._fences[self._pbo_index])
+        self._fences[self._pbo_index] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
+
+        # Read from the OTHER PBO (previous frame's data)
+        next_pbo_index = (self._pbo_index + 1) % 2
+        next_pbo = self._pbos[next_pbo_index]
+        fence = self._fences[next_pbo_index]
+
+        out_array = np.zeros_like(self._colours_cpu_buffer)
+        if fence:
+            glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000)
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, next_pbo)
+            ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
+            if ptr:
+                ctypes.memmove(self._colours_cpu_buffer.ctypes.data, ptr, bytes_to_read)
+                glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
+                out_array = self._colours_cpu_buffer.copy()
+            else:
+                print("Warning: Failed to map PBO. Context lost?")
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+
+        self._pbo_index = next_pbo_index
+        return out_array
 
     def _main_render(self):
         """Shared pipeline: tick -> scene-specific sampling -> reduce -> actuate."""
@@ -562,7 +608,8 @@ class BaseRenderer(ABC):
         self._set_eye_uniforms(shader)
         self._bind_eye_ssbos()
 
-        nb_units = len(self._ra) if self.output_mode == EyeOutput.Raw else self._ra.lens_count
+        N = len(self._ra)
+        nb_units = N if self.output_mode == EyeOutput.Raw else self._ra.lens_count
 
         glBindVertexArray(self._cones_vao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, self._lazy_cones_vertices, nb_units)
@@ -606,7 +653,8 @@ class BaseRenderer(ABC):
         self._set_eye_uniforms(shader)
         self._bind_eye_ssbos()
 
-        nb_units = len(self._ra) if self.output_mode == EyeOutput.Raw else self._ra.lens_count
+        N = len(self._ra)
+        nb_units = N if self.output_mode == EyeOutput.Raw else self._ra.lens_count
 
         if self.projection_mode == OmmatidiaProjection.Position:
             glBindVertexArray(self._hemispheres_vao)
@@ -638,12 +686,13 @@ class BaseRenderer(ABC):
         glFinish()  # Block until all rendering commands are complete
 
         frames_to_read = int(self._frame_index)
+        N = len(self._ra)
 
         # Direct synchronous download is ok here
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._color_ssbo)
-        data_bytes = glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, len(self._ra) * 16 * frames_to_read)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.buffers['colors'].binding)
+        data_bytes = glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, N * 16 * frames_to_read)
 
-        data_np = np.frombuffer(data_bytes, dtype=np.float32).reshape(frames_to_read, len(self._ra), 4)
+        data_np = np.frombuffer(data_bytes, dtype=np.float32).reshape(frames_to_read, N, 4)
 
         self._frame_index = 0  # reset counter for next batch
 
@@ -657,8 +706,7 @@ class BaseRenderer(ABC):
 
         # Update lens dynamic state if changed
         if self._ra.lens_dirty or force_all:
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._lens_dynamic_ssbo)
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self._ra.lens_dynamic_data.nbytes, self._ra.lens_dynamic_data)
+            self.buffers['lens_dynamic'].write(self._ra.lens_dynamic_data)
             self._ra.lens_dirty = False
 
         # Update receptor dynamic state if changed
@@ -666,17 +714,14 @@ class BaseRenderer(ABC):
         if dirty_indices.size == 0 and not force_all:
             return
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._rcpt_dynamic_ssbo)
-
         if force_all:
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self._ra.rcpt_dynamic_data.nbytes, self._ra.rcpt_dynamic_data)
+            self.buffers['rcpt_dynamic'].write(self._ra.rcpt_dynamic_data)
 
         else:
             # Find contiguous blocks of updated indices
             jumps = np.where(np.diff(dirty_indices) != 1)[0] + 1
             contiguous_blocks = np.split(dirty_indices, jumps)
 
-            item_size = self._ra.rcpt_dynamic_data.itemsize
             for block in contiguous_blocks:
                 nb_items = block.size
                 if nb_items == 0:
@@ -685,9 +730,8 @@ class BaseRenderer(ABC):
                 # indexing like this instead of fancy indexing (using [block] directly) avoids a copy
                 start_index = block[0]
                 data_view = self._ra.rcpt_dynamic_data[start_index:start_index + nb_items]
-                glBufferSubData(GL_SHADER_STORAGE_BUFFER, start_index * item_size, data_view.nbytes, data_view)
+                self.buffers['rcpt_dynamic'].write(data_view, start=start_index)
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
         self._ra.dirty_mask.fill(False)
 
     # Main public methods
@@ -721,48 +765,9 @@ class BaseRenderer(ABC):
             return None
 
         if self.runs_interactive or self._batch_size == 1:
-            # Synchronous path
+            # Synchronous path: ping-pong PBO read
+            out_array = self._colors_read_async()
 
-            bytes_to_read = len(self._ra) * 16
-
-            # Copy to current PBO
-            current_pbo = self._pbos[self._pbo_index]
-            glBindBuffer(GL_COPY_READ_BUFFER, self._color_ssbo)
-            glBindBuffer(GL_COPY_WRITE_BUFFER, current_pbo)
-            glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, bytes_to_read)
-
-            # Insert a sync fence to know when this copy finishes
-            if self._fences[self._pbo_index]:
-                glDeleteSync(self._fences[self._pbo_index])
-            self._fences[self._pbo_index] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
-
-            # Read from the next PBO (which holds the previous frame)
-            next_pbo_index = (self._pbo_index + 1) % 2
-            next_pbo = self._pbos[next_pbo_index]
-            fence = self._fences[next_pbo_index]
-
-            out_array = np.zeros_like(self._colours_cpu_buffer)
-
-            # If there's a fence, the previous frame has data to read
-            if fence:
-                glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000)
-
-                glBindBuffer(GL_PIXEL_PACK_BUFFER, next_pbo)
-                ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
-
-                if ptr:
-                    ctypes.memmove(self._colours_cpu_buffer.ctypes.data, ptr, bytes_to_read)
-                    glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
-                    out_array = self._colours_cpu_buffer.copy()
-
-                else:
-                    print("Warning: Failed to map PBO. Context lost?")
-
-                glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
-
-            self._pbo_index = next_pbo_index
-
-            # TODO: Currently frame 1 returns zeros because it has no history, maybe return None?
             return VisualOutput(out_array, self._ra)
 
         else:
@@ -794,8 +799,10 @@ class BaseRenderer(ABC):
                          1.0 = linear, 0.5 = sqrt, lower = brings out detail
         """
 
+        N = len(self._ra)
+
         if isinstance(values, dict):
-            merged = np.zeros((len(self._ra)), dtype=np.float32)
+            merged = np.zeros(N, dtype=np.float32)
 
             for eye, data in values.items():
                 if len(data) == len(eye):
@@ -805,19 +812,23 @@ class BaseRenderer(ABC):
 
         buf = np.ascontiguousarray(values, dtype=np.float32).ravel()
 
-        if len(buf) != len(self._ra):
+        if len(buf) != N:
             raise ValueError(
-                f"scalar_data has {len(buf)} elements, expected {len(self._ra)}."
+                f"scalar_data has {len(buf)} elements, expected {N}."
             )
 
-        if self._overlay_ssbo_capacity != len(self._ra):
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._overlay_ssbo)
-            glBufferData(GL_SHADER_STORAGE_BUFFER, len(self._ra) * 4, None, GL_DYNAMIC_DRAW)
+        if 'overlay' not in self.buffers:
+            self.buffers.allocate('overlay', np.dtype(np.float32), 0, usage=GL_DYNAMIC_DRAW)
+
+        if self.buffers['overlay'].count != N:
+            overlay_id = self.buffers['overlay'].binding
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, overlay_id)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, N * 4, None, GL_DYNAMIC_DRAW)
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            self.buffers['overlay'].count = N
 
-            self._overlay_ssbo_capacity = len(self._ra)
-
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._overlay_ssbo)
+        overlay_id = self.buffers['overlay'].binding
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, overlay_id)
         glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, buf.nbytes, buf)
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
@@ -854,10 +865,10 @@ class BaseRenderer(ABC):
 
     @nb_samples.setter
     def nb_samples(self, value):
-        R = len(self._ra)
+        N = len(self._ra)
 
         max_tot_samples = self._max_ssbo_bytes // 16
-        max_per_r = max(1, max_tot_samples // R)
+        max_per_r = max(1, max_tot_samples // N)
         value_clamped = int(np.clip(value, 1, max_per_r))
 
         if value_clamped == self._nb_samples:
@@ -868,9 +879,9 @@ class BaseRenderer(ABC):
 
         self._nb_samples = value_clamped
 
-        req_bytes = R * self._nb_samples * 16
+        req_bytes = N * self._nb_samples * 16
         print(
-            f"Allocating ray result buffer for {R * self._nb_samples:,} samples ({req_bytes / (1024 * 1024):.2f} MB).")
+            f"Allocating ray result buffer for {N * self._nb_samples:,} samples ({req_bytes / (1024 * 1024):.2f} MB).")
 
         if self.sampling_results_ssbo:
             glDeleteBuffers(1, [self.sampling_results_ssbo])
@@ -897,7 +908,10 @@ class BaseRenderer(ABC):
 
     @property
     def overlay_enabled(self) -> bool:
-        return self._overlay_enabled and self._overlay_ssbo_capacity > 0
+        if 'overlay' not in self.buffers:
+            self._overlay_enabled = False
+            return False
+        return self._overlay_enabled and self.buffers['overlay'].count > 0
 
     @overlay_enabled.setter
     def overlay_enabled(self, value: bool):
@@ -926,12 +940,11 @@ class BaseRenderer(ABC):
                 except Exception:
                     pass
 
+        for handle in self.buffers.values():
+            if handle.binding:
+                glDeleteBuffers(1, [handle.binding])
+
         for buf in (
-            self._rcpt_static_ssbo,
-            self._lens_static_ssbo,
-            self._rcpt_dynamic_ssbo,
-            self._lens_dynamic_ssbo,
-            self._lazy_overlay_ssbo,
             self._lazy_lens_cones_vbo,
             self._lazy_lens_hemisph_vbo,
             self.sampling_results_ssbo,

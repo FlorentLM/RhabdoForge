@@ -116,7 +116,7 @@ def main():
 
     if not HEADLESS:
 
-        while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer):
+        while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer, use_dashboard=True):
 
             context.input()  # this processes mouse and keyboard, it can be omitted to run headless
 
@@ -126,7 +126,7 @@ def main():
             # Get sensory data from the compound eye renderer
             view = eye_renderer.get_output()
 
-            context.draw()  # this draws to the viewport, it can be omitted to run headless
+            context.draw(view)  # this draws to the viewport, it can be omitted to run headless
 
             nb_frames += 1
 
