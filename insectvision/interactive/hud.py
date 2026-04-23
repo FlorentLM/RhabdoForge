@@ -3,14 +3,12 @@ OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 from pathlib import Path
-from collections import deque
 import numpy as np
 import json
 from PIL import Image
 from pyglm import glm
 
 from insectvision.engine.shader_utils import ShaderProgram
-
 
 
 def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fonts', color=(255, 255, 255, 255)):
@@ -134,7 +132,7 @@ class FontRenderer:
 
         json_path = (atlas_dir / f'{font_name}.json')
         if not json_path.exists():
-            generate_font_atlas(font_name=font_name, font_size=22, output_dir=atlas_dir)
+            generate_font_atlas(font_name=font_name, font_size=10, output_dir=str(atlas_dir))
 
         with json_path.open(encoding="UTF-8") as f:
             data = json.load(f)
@@ -236,7 +234,8 @@ class HUD:
         self.view_modes_names = {0: 'Compound eye', 1: 'Panoramic', 2: 'Third person', 3: 'Perspective'}
         self.proj_modes_names = {0: 'Layout', 1: 'Acceptance'}
 
-        self.update_interval = 0.25  # update text every 250 ms
+        self.update_interval = 0.5  # update text every 500 ms
+
         self._last_update_time = 0
         self._info_text = ""
         self._controls_text_lines = []
@@ -248,35 +247,34 @@ class HUD:
         self._update_controls_text()
 
     def _update_controls_text(self):
-        from insectvision.renderers import Raytracer
 
-        sample_label = "rays" if self.ctx.renderer and isinstance(self.ctx.renderer, Raytracer) else "samples"
+        lines = [
+            'Movement:',
+            '    WASD: Move',
+            '    Mouse: Look / Pan',
+            '    Space / Ctrl: Up / Down',
+            '    L-Shift (hold): Strafe (3rd person)'
+        ]
 
-        self._controls_text_lines = reversed([
-            'Controls:',
-            '------',
-            'WASD: Move',
-            'Mouse: Yaw & Pitch',
-            'Q/E: Roll',
-            'Ctrl/Space: Down/Up',
-            'C: Change view',
-            'P: Projection mode (acceptance / layout)',
-            'G: Toggle debug objects',
-            'V: Toggle Voronoi view',
-            'H: Toggle Heatmap mode',
-            'T: Toggle time dithering',
-            'L: Toggle Sun control',
-            'R: Toggle rhabdomere actuation',
-            f'+/-: Increase/decrease {sample_label}',
-            'X: Dither once',
-            'O: Teleport to origin',
-            'R: Reset rotation',
-            'I: Show/hide HUD',
-            'ESC: Quit'
-        ])
+        categories = ['Rendering', 'Sampling', 'Environment', 'Dynamics', 'Agent', 'UI']
 
-        shadow_verts, fg_verts = [],[]
-        margin, line_height = 10, self.font_renderer.font_size
+        for cat in categories:
+            actions = self.ctx.actions.get_by_category(cat)
+            if not actions:
+                continue
+
+            lines.append(f'{cat}:')
+
+            for a in actions:
+                if a.keyboard_hint:
+                    lines.append(f'    {a.keyboard_hint}: {a.name}')
+
+        lines.append('    ESC: Quit')
+
+        self._controls_text_lines = reversed(lines)
+
+        shadow_verts, fg_verts = [], []
+        margin, line_height = 5, self.font_renderer.font_size
 
         for i, text in enumerate(self._controls_text_lines):
             y_pos = margin + (i * line_height)
@@ -299,9 +297,9 @@ class HUD:
             is_ray_based = isinstance(active_renderer, Raytracer)
 
             if is_ray_based and isinstance(active_renderer, Pathtracer):
-                render_mode = "Path-tracer"
+                render_mode = "Pathtracer"
             elif is_ray_based:
-                render_mode = "Ray-tracer"
+                render_mode = "Raytracer"
             else:
                 render_mode = "Rasterizer"
             sample_label = "Rays" if is_ray_based else "Samples"

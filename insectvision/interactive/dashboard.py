@@ -347,10 +347,7 @@ class Dashboard:
     # Callbacks
 
     def _toggle_mouse_lock(self, sender, app_data):
-        import glfw
         self.ctx.mouse_captured = app_data
-        mode = glfw.CURSOR_DISABLED if app_data else glfw.CURSOR_NORMAL
-        glfw.set_input_mode(self.ctx.window, glfw.CURSOR, mode)
 
     def _change_output_mode(self, sender, app_data):
         self.ctx.renderer.output_mode = EyeOutput[app_data]
@@ -401,7 +398,7 @@ class Dashboard:
         dpg.set_value("ui_samples_text", f"Samples: {om_s}/om | {px_s}/px")
 
         # Rendering sync
-        dpg.set_value(self.ui_tags['view_mode'], self.ctx.view_mode.name)
+        dpg.set_value(self.ui_tags['view_mode'], self.ctx.view_mode)
         dpg.set_value(self.ui_tags['proj_mode'], self.ctx.renderer.projection_mode.name)
         dpg.set_value(self.ui_tags['tiled_mode'], self.ctx.renderer.tiled_mode)
         dpg.set_value(self.ui_tags['heatmap'], self.ctx.renderer.overlay_enabled)
@@ -411,7 +408,7 @@ class Dashboard:
         if hasattr(self.ctx.renderer, 'nb_samples'):
             dpg.set_value(self.ui_tags['samples'], self.ctx.renderer.nb_samples)
 
-        # Env sync
+        # Environment sync
         if self.ctx.scene.sun:
             dpg.set_value(self.ui_tags['sun_control'], self.ctx.sun_control_mode)
             dpg.set_value(self.ui_tags['sun_azimuth'], self.ctx.scene.sun.azimuth)

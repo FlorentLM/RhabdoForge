@@ -11,7 +11,7 @@ from .scene import Scene
 from .agent import Agent, OrbitCamera
 
 from insectvision.interactive.utils import DisplayMode
-from insectvision.interactive.controls_interface import Controls
+from insectvision.interactive.controls import Controls, ActionRegistry
 from insectvision.interactive.hud import HUD
 from insectvision.interactive.debug import DebugOverlay
 from insectvision.interactive.dashboard import Dashboard
@@ -71,7 +71,7 @@ class Context:
 
         # Shared movement parameter
         self.move_speed: float = 3.0
-        self.mouse_captured: bool = True
+        self._mouse_captured: bool = True
 
         # Sun control mode
         self.sun_control_mode: bool = False
@@ -79,7 +79,22 @@ class Context:
         # Key bindings: (glfw_key, glfw_action) -> [callbacks]
         self._key_bindings: Dict[Tuple[int, int], List[Callable]] = {}
 
+        self.actions = ActionRegistry(self)
         self._controls: Optional[Controls] = controls
+
+    @property
+    def mouse_captured(self) -> bool:
+        return self._mouse_captured
+
+    @mouse_captured.setter
+    def mouse_captured(self, value: bool):
+        self._mouse_captured = value
+        if self.window:
+            mode = glfw.CURSOR_DISABLED if value else glfw.CURSOR_NORMAL
+            glfw.set_input_mode(self.window, glfw.CURSOR, mode)
+
+    def toggle_mouse_capture(self):
+        self.mouse_captured = not self.mouse_captured
 
     @property
     def controls(self) -> Optional[Controls]:
