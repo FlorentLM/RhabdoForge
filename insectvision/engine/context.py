@@ -306,18 +306,16 @@ class Context:
             if vsync is not None:
                 self._vsync = bool(vsync)
 
-            if use_dashboard:
-                self.dashboard = Dashboard(self)
-
             glfw.swap_interval(int(self._vsync))
-
             glfw.show_window(self.window)
 
             self.observer = OrbitCamera(target=agent, distance=1.5, ratio=self._window_size[0] / self._window_size[1])
-
             self.display_mode = DisplayMode.Compound
-
             self.hud = HUD(self)
+
+            if use_dashboard:
+                self.dashboard = Dashboard(self)
+                self.hud.show = False  # default HUD to false dashboard is active
 
             # Default to kb + mouse
             if self._controls is None:

@@ -320,7 +320,7 @@ class HUD:
         nb_px_samples = getattr(self.ctx.renderer, 'samples_per_pixel', 1)
         has_pixels = self.ctx.display_mode.name in ('Panoramic', 'Third_person')
 
-        # Bottom info line
+        # Top info line
         info_text = (
             f'FPS: {self.ctx.fps:5.1f} | '
             f'Renderer: {renderer_name} | '
@@ -334,7 +334,7 @@ class HUD:
             [info_text], x_align='left', y_start=self.height - line_height
         )
 
-        # Top-right scene stats
+        # Bottom-right scene stats
         samples_pp_str = f", {nb_px_samples}/px" if has_pixels else ""
         total_pp = f" (om) + {nb_px_samples * self.nb_px:,} (px)" if has_pixels else ""
 
