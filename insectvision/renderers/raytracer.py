@@ -732,7 +732,7 @@ class Raytracer(BaseRenderer):
         self._bind_scene_textures(shader)
         self._set_scene_uniforms(shader)
 
-        glUniform1i(shader.get_loc('nb_samples'), self._samples_per_pixel)
+        glUniform1i(shader.get_loc('nb_samples'), self._samples_per_px)
         c2w = glm.inverse(pov.view)
         glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w))
 
@@ -750,8 +750,7 @@ class Raytracer(BaseRenderer):
         shader = self.raytrace_shader
         shader.use()
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.sampling_results_ssbo)
-
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.buffers['rays_intermediate'].binding)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self.buffers['rcpt_static'].binding)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LENS_STATIC, self.buffers['lens_static'].binding)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self.buffers['rcpt_dynamic'].binding)
@@ -768,7 +767,7 @@ class Raytracer(BaseRenderer):
 
         # Dispatch: one thread per sample
         N = len(self._ra)
-        total_work = N * self._nb_samples
+        total_work = N * self._samples_per_rcpt
         work_groups = (total_work + 63) // 64
 
         glDispatchCompute(work_groups, 1, 1)

@@ -720,8 +720,7 @@ class Rasterizer(BaseRenderer):
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self.buffers['rcpt_static'].binding)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_DYNAMIC, self.buffers['rcpt_dynamic'].binding)
 
-        # We write to the same intermediate buffer the raytracer uses
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.sampling_results_ssbo)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.buffers['rays_intermediate'].binding)
 
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.tex_id)

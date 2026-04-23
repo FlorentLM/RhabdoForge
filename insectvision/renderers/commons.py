@@ -227,11 +227,14 @@ class BaseRenderer(ABC):
         N = len(self._ra)
         nb_lenses = self._ra.lens_count
 
+        self._samples_per_rcpt = nb_samples
+        self._samples_per_px = 1
+
         # Estimate needed sizes and available memory
-        frame_bytes = N * 16  # 16 bytes per vec4 (RGBA float)
+        bytes_per_frame = N * 16  # 16 bytes per vec4 (RGBA float)
 
         avail_VRAM = _query_available_VRAM() * 0.9  # 90% for safety, in Mb
-        req_batch_dim = (frame_bytes * max(1, batch_size)) / (1024 * 1024)  # in Mb
+        req_batch_dim = (bytes_per_frame * max(1, batch_size)) / (1024 * 1024)  # in Mb
         other_VRAM_usage = self._estim_vram_use()
         tot_VRAM_needed = req_batch_dim + other_VRAM_usage
 
@@ -240,7 +243,7 @@ class BaseRenderer(ABC):
             print("WARNING: Could not query available VRAM. Assuming enough memory is available.")
 
         if avail_VRAM and tot_VRAM_needed >= avail_VRAM:
-            safe_batch_size = int((avail_VRAM - other_VRAM_usage) * 1024 * 1024 / frame_bytes)
+            safe_batch_size = int((avail_VRAM - other_VRAM_usage) * 1024 * 1024 / bytes_per_frame)
 
             if safe_batch_size < batch_size:
                 print(f"WARNING: Requested batch size of {req_batch_dim} frames ({req_batch_dim:.2f} MB) exceeds available VRAM.")
@@ -249,13 +252,10 @@ class BaseRenderer(ABC):
         self._max_ssbo_bytes = glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)  # in bytes
         self._batch_size = max(1, safe_batch_size)
 
-        # Output color buffer (contiguous RGBA floats for CPU readback)
-        frame_bytes = N * 16
-
         # Ping-Pong PBOs
         self._pbos = [
-            _create_pbo(data=None, size=frame_bytes, usage=GL_STREAM_READ),
-            _create_pbo(data=None, size=frame_bytes, usage=GL_STREAM_READ)
+            _create_pbo(data=None, size=bytes_per_frame, usage=GL_STREAM_READ),
+            _create_pbo(data=None, size=bytes_per_frame, usage=GL_STREAM_READ)
         ]
         self._pbo_index = 0
         self._fences = [0, 0]
@@ -276,10 +276,8 @@ class BaseRenderer(ABC):
                               usage=GL_DYNAMIC_DRAW)
         self.buffers.allocate('colors', np.dtype((np.float32, 4)), N * self._batch_size,
                               usage=GL_DYNAMIC_DRAW, supports_async=True, _async_reader=self._colors_read_async)
-
-        # Ray results buffer
-        self.sampling_results_ssbo: Optional[int] = None
-        self._samples_per_pixel = 1  # raytracer subdivision hook, rasterizer ignores
+        self.buffers.allocate('rays_intermediate', np.dtype((np.float32, 4)), N * self._samples_per_rcpt,
+                              usage=GL_DYNAMIC_DRAW)
 
         # Reduction and dynamics shaders (shared to rasterizer and raytracer)
         self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp')
@@ -291,9 +289,6 @@ class BaseRenderer(ABC):
         self.enable_shadows = getattr(self, 'enable_shadows', True)
         self.ambient_intensity = getattr(self, 'ambient_intensity', 1.0)
         self.sky_intensity = getattr(self, 'sky_intensity', 1.0)
-
-        self._nb_samples = 0
-        self.nb_samples = nb_samples  # triggers sampling_results_ssbo allocation
 
         # Visualisation shaders (lazy-loaded)
         self._lazy_fp_colour_shader: Optional[int] = None    # 1st person colour mode
@@ -466,8 +461,7 @@ class BaseRenderer(ABC):
         shader = self.reduction_shader
         shader.use()
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.sampling_results_ssbo)
-
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RAYS_INTERMEDIATE, self.buffers['rays_intermediate'].binding)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_RCPT_STATIC, self.buffers['rcpt_static'].binding)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COLOR, self.buffers['colors'].binding)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_EMA_HIST, self.buffers['ema_state'].binding)
@@ -861,7 +855,7 @@ class BaseRenderer(ABC):
 
     @property
     def nb_samples(self):
-        return self._nb_samples
+        return self._samples_per_rcpt
 
     @nb_samples.setter
     def nb_samples(self, value):
@@ -871,22 +865,25 @@ class BaseRenderer(ABC):
         max_per_r = max(1, max_tot_samples // N)
         value_clamped = int(np.clip(value, 1, max_per_r))
 
-        if value_clamped == self._nb_samples:
+        if value_clamped == self._samples_per_rcpt:
             return
 
         if value_clamped != value:
             print(f"Warning: Clamped samples per receptor to {value_clamped} (HW limit is {max_per_r}).")
 
-        self._nb_samples = value_clamped
+        self._samples_per_rcpt = value_clamped
 
-        req_bytes = N * self._nb_samples * 16
+        req_bytes = N * self._samples_per_rcpt * 16
         print(
-            f"Allocating ray result buffer for {N * self._nb_samples:,} samples ({req_bytes / (1024 * 1024):.2f} MB).")
+            f"Allocating ray result buffer for {N * self._samples_per_rcpt:,} samples ({req_bytes / (1024 * 1024):.2f} MB).")
 
-        if self.sampling_results_ssbo:
-            glDeleteBuffers(1, [self.sampling_results_ssbo])
+        # orphan and resize the existing buffer
+        handle = self.buffers['rays_intermediate']
+        handle.count = N * self._samples_per_rcpt
 
-        self.sampling_results_ssbo = _create_ssbo(data=None, size=req_bytes, usage=GL_DYNAMIC_DRAW)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, handle.binding)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, req_bytes, None, GL_DYNAMIC_DRAW)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
     @property
     def time_dithering(self):
@@ -947,7 +944,6 @@ class BaseRenderer(ABC):
         for buf in (
             self._lazy_lens_cones_vbo,
             self._lazy_lens_hemisph_vbo,
-            self.sampling_results_ssbo,
             *self._pbos
         ):
             if buf:

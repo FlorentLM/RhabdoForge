@@ -24,7 +24,7 @@ class BufferHandle:
     def __init__(
             self,
             name: str,
-            ssbo_id: int,
+            binding: int,
             dtype: np.dtype,
             count: int,
             supports_async: bool = False,
@@ -32,7 +32,7 @@ class BufferHandle:
     ):
 
         self.name = name
-        self.binding = ssbo_id
+        self.binding = binding
         self.dtype = np.dtype(dtype)
         self.count = count
         self._supports_async = supports_async
@@ -178,17 +178,18 @@ class BufferRegistry:
         itemsize = np.dtype(dtype).itemsize
         size_bytes = count * itemsize
 
-        ssbo_id = glGenBuffers(1)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_id)
+        binding = glGenBuffers(1)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, binding)
 
         if data is not None:
             data_arr = np.ascontiguousarray(data)
             glBufferData(GL_SHADER_STORAGE_BUFFER, size_bytes, data_arr.tobytes(), usage)
         else:
             glBufferData(GL_SHADER_STORAGE_BUFFER, size_bytes, None, usage)
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
 
-        handle = BufferHandle(name, ssbo_id, dtype, count, supports_async, _async_reader)
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+
+        handle = BufferHandle(name, binding, dtype, count, supports_async, _async_reader)
         if handle.name in self._buffers:
             raise KeyError(f"Buffer {handle.name!r} already registered.")
 
