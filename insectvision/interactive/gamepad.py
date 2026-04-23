@@ -229,3 +229,5 @@ class Gamepad(Controls):
             ctx.decrease_samples()
         if self._button_pressed(state, glfw.GAMEPAD_BUTTON_DPAD_LEFT):
             ctx.toggle_time_dithering()
+        if self._button_pressed(state, glfw.GAMEPAD_BUTTON_DPAD_RIGHT):
+            ctx.toggle_saccades()

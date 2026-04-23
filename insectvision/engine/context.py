@@ -261,6 +261,10 @@ class Context:
         if self.debug is not None:
             self.debug.enabled = not self.debug.enabled
 
+    def toggle_saccades(self):
+        if hasattr(self.renderer, 'actuation'):
+            self.renderer.actuation = not self.renderer.actuation
+
     def reset_position(self):
         self.agent.position = (0.0, 0.0, 0.0)
 

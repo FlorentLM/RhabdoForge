@@ -72,6 +72,7 @@ class KeyboardMouse(Controls):
             elif key == glfw.KEY_X: ctx.dither_once()
             elif key == glfw.KEY_T: ctx.toggle_time_dithering()
             elif key == glfw.KEY_G: ctx.toggle_debug()
+            elif key == glfw.KEY_R: ctx.toggle_saccades()
             elif key in (glfw.KEY_KP_ADD, glfw.KEY_EQUAL):      ctx.increase_samples()
             elif key in (glfw.KEY_KP_SUBTRACT, glfw.KEY_MINUS): ctx.decrease_samples()
             elif key == glfw.KEY_KP_MULTIPLY:                   ctx.increase_pixel_samples()

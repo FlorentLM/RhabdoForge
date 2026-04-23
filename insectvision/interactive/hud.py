@@ -266,6 +266,7 @@ class HUD:
             'H: Toggle Heatmap mode',
             'T: Toggle time dithering',
             'L: Toggle Sun control',
+            'R: Toggle rhabdomere actuation',
             f'+/-: Increase/decrease {sample_label}',
             'X: Dither once',
             'O: Teleport to origin',
