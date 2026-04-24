@@ -67,7 +67,8 @@ class Context:
         self.debug: Optional['DebugOverlay'] = DebugOverlay() if debug_overlay else None
 
         self.last_frame_time: float = 0.0
-        self._delta_time: float = 1e-12
+        self._dt: float = 1e-12
+        self._fixed_dt: Optional[float] = None
 
         # Shared movement parameter
         self.move_speed: float = 3.0
@@ -111,36 +112,40 @@ class Context:
 
     # Time
 
+    @property
+    def current_time(self) -> float:
+        return glfw.get_time()
+
+    @property
+    def dt(self) -> float:
+        return self._dt
+
+    @property
+    def fixed_dt(self) -> Optional[float]:
+        return self._fixed_dt
+
+    @fixed_dt.setter
+    def fixed_dt(self, value: Optional[float]):
+        self._fixed_dt = value
+
     def update_dt(self):
         """
         Update delta time based on the real-world clock.
         """
         current_time = self.current_time
-        self._delta_time = current_time - self.last_frame_time
+        if self._fixed_dt is not None:
+            self._dt = self._fixed_dt
+        else:
+            self._dt = current_time - self.last_frame_time
         self._frame_times.append(current_time)
         self.last_frame_time = current_time
 
-    def reset_time(self):
-        """
-        Initialise last_frame_time right before a loop starts.
-        """
-        self.last_frame_time = self.current_time
-
     @property
     def fps(self) -> float:
-        """Average FPS over the last 60 frames."""
+        """Average FPS over the last n frames."""
         if len(self._frame_times) < 2:
             return 0.0
         return (len(self._frame_times) - 1) / (self._frame_times[-1] - self._frame_times[0])
-
-    @property
-    def delta_time(self) -> float:
-        return self._delta_time
-
-    @delta_time.setter
-    def delta_time(self, value: float):
-        """Allow manually setting the delta time for fixed-step headless simulations."""
-        self._delta_time = value
 
     # Custom key bindings
 
@@ -333,6 +338,7 @@ class Context:
         if renderer is not self.renderer:
             self.renderer = renderer
             renderer.runs_interactive = True
+            renderer._context = self
 
         if agent is not self.agent:
             self.agent = agent
@@ -415,10 +421,6 @@ class Context:
         if self.dashboard:
             self.dashboard.free()
         glfw.terminate()
-
-    @property
-    def current_time(self) -> float:
-        return glfw.get_time()
 
     @property
     def window_size(self) -> tuple:

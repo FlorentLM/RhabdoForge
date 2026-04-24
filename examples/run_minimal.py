@@ -44,11 +44,13 @@ def main():
         context.input()
 
         # Make the agent follow the trajectory
-        agent.dt(context.delta_time).follow(agent_path, align_orientation=True)
+        agent.dt(context.dt).follow(agent_path, align_orientation=True)
 
-        view = eye_renderer.get_output()
+        output = eye_renderer.get_output()
 
         context.draw()
+        # context.draw(output)  # eye output must be passed when using the dashboard so it can plot
+
 
     eye_renderer.free()
     scene.free()

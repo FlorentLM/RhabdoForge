@@ -122,6 +122,7 @@ class BaseRenderer(ABC):
                  resource_manager: Optional[GPUResourceManager] = None
                  ):
 
+        self._context: Optional['Context'] = None
         self._ra: 'ReceptorArray' = receptor_array
         self.agent: 'Agent' = agent
         self.scene: 'Scene'
@@ -418,9 +419,12 @@ class BaseRenderer(ABC):
         return 100.0
 
     def _tick(self):
-        now = time.perf_counter()
-        self._dt = (now - self._last_render_time) if self._last_render_time > 0.0 else 0.0
-        self._last_render_time = now
+        if self._context is not None:
+            self._dt = self._context.dt
+        else:
+            now = time.perf_counter()
+            self._dt = (now - self._last_render_time) if self._last_render_time > 0.0 else 0.0
+            self._last_render_time = now
 
     # Internal rendering logic and draw calls
 
@@ -593,7 +597,28 @@ class BaseRenderer(ABC):
             glDisable(GL_BLEND)
             glDisable(GL_DEPTH_TEST)
 
-    # TODO: The following two public methods should probably be all under the hood
+    # TODO: The following public methods should probably be all under the hood
+
+    def reset_dynamic_state(self, n_flush_frames: int = 3) -> None:
+        """
+        Zero the GPU-side photomechanical/adaptation state and flush the PBO readback ring.
+        """
+
+        self.eye_buffers['lens_dynamic'].reset()
+        self.eye_buffers['ema_state'].reset()
+
+        # Invalidate PBO ring
+        for i in range(len(self._fences)):
+            if self._fences[i]:
+                glDeleteSync(self._fences[i])
+                self._fences[i] = 0
+        self._pbo_index = 0
+        self._colours_cpu_buffer[:] = 0
+
+        # Run throwaway frames if requested
+        if n_flush_frames > 0:
+            for _ in range(n_flush_frames):
+                self.get_output(readback=False)
 
     def flush(self) -> np.ndarray:
         """
@@ -617,15 +642,18 @@ class BaseRenderer(ABC):
         self._frame_index = 0
         return data_np.copy()
 
-    def update(self, force_all=False):
+    def sync_cpu(self, force_all=False):
         """
         Finds contiguous blocks of changed ommatidia and uploads dynamic states to the GPU.
         """
 
+        # no-op if no CPU changes
+        if not self._ra.lens_dirty and not force_all:
+            return
+
         # Update lens dynamic state if changed
-        if self._ra.lens_dirty or force_all:
-            self.eye_buffers['lens_dynamic'].write(self._ra.lens_dynamic_data)
-            self._ra.lens_dirty = False
+        self.eye_buffers['lens_dynamic'].write(self._ra.lens_dynamic_data)
+        self._ra.lens_dirty = False
 
         # Update receptor dynamic state if changed
         dirty_indices = np.where(self._ra.dirty_mask)[0]
@@ -667,7 +695,7 @@ class BaseRenderer(ABC):
         """
         from insectvision.compound_eyes import VisualOutput
 
-        self.update()
+        self.sync_cpu()
 
         if self._time_dithering:
             self._dither_counter += 1

@@ -108,6 +108,16 @@ def main():
 
     context.bind_key('m', toggle_halton)
 
+    # Example: pin the biological clock to a fixed rate
+    #
+    # Useful for reproducible experiments where shader dynamics (saccades, adaptation,
+    # photoreceptor filtering) should advance at sim rate regardless of
+    # wallclock render speed.
+    #
+    # Leave it as None (default) for free-running interactive use.
+    #
+    # context.fixed_dt = 0.010   # 10 ms biological time per render call
+
     # Run
 
     start_time = context.current_time
