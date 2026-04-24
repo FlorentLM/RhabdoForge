@@ -647,7 +647,7 @@ class Raytracer(BaseRenderer):
         with self._get_view_shader(view_name) as shader:
             glBindImageTexture(0, tex_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
 
-            with bvh.grouped_bind_base(), lights.grouped_bind_base():
+            with bvh.grouped_bind(), lights.grouped_bind():
                 with self._baker.scene_textures.bind_all():
 
                     # Override number of samples for third person
@@ -673,7 +673,7 @@ class Raytracer(BaseRenderer):
         lights = self._baker.light_buffers
 
         with self.raytrace_shader as shader:
-            with bvh.grouped_bind_base(), lights.grouped_bind_base(), eye.grouped_bind_base(['rays_intermediate', 'rcpt_static', 'lens_static', 'rcpt_dynamic']):
+            with bvh.grouped_bind(), lights.grouped_bind(), eye.grouped_bind(['rays_intermediate', 'rcpt_static', 'lens_static', 'rcpt_dynamic']):
                 with self._baker.scene_textures.bind_all():
 
                     self._eye_uniforms.update(cam_to_world=glm.inverse(self.agent.view))

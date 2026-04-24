@@ -342,24 +342,19 @@ class BufferObject:
 
     @contextmanager
     def bind(self, mode_override: Optional[int] = None):
-        """Standard binding."""
         target = mode_override if mode_override is not None else self.target
-        glBindBuffer(target, self.handle)
-        try:
-            yield self
-        finally:
-            glBindBuffer(target, 0)
 
-    @contextmanager
-    def bind_base(self):
-        """Binding for Indexed buffers (SSBOs)."""
-        if self.binding is None:
-            raise ValueError(f"Buffer {self.name} has no binding point assigned.")
-        glBindBufferBase(self.target, self.binding, self.handle)
+        if self.binding is not None:
+            glBindBufferBase(self.target, self.binding, self.handle)
+        else:
+            glBindBuffer(target, self.handle)
         try:
             yield self
         finally:
-            glBindBufferBase(self.target, self.binding, 0)
+            if self.binding is not None:
+                glBindBufferBase(self.target, self.binding, 0)
+            else:
+                glBindBuffer(target, 0)
 
     @property
     def itemsize(self) -> int:
@@ -550,22 +545,6 @@ class BufferRegistry:
                     stack.enter_context(self._buffers[name].bind())
             yield
 
-    @contextmanager
-    def grouped_bind_base(self, names: Optional[Union[str, Sequence[str]]] = None):
-        """
-        Binds a group of buffers to specific binding points.
-        """
-        if names is None:
-            names = self._buffers.keys()
-        elif isinstance(names, str):
-            names = [names]
-
-        with ExitStack() as stack:
-            for name in names:
-                if name in self._buffers:
-                    stack.enter_context(self._buffers[name].bind_base())
-            yield
-
     def free(self):
         for buf in self._buffers.values():
             buf.free()
@@ -696,6 +675,9 @@ class UniformRegistry:
 
     def __getitem__(self, name: str):
         return self._uniforms[name]
+
+    def __repr__(self):
+        return f'<UniformRegistry({len(self._uniforms.keys())} uniforms)>'
 
     def update(self, **kwargs):
         """Update multiple uniforms at once."""

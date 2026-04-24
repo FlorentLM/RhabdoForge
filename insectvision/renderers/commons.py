@@ -431,7 +431,7 @@ class BaseRenderer(ABC):
     def _reduction(self):
 
         with self.reduction_shader as shader:
-            with self.eye_buffers.grouped_bind_base(['rays_intermediate', 'rcpt_static', 'colors', 'ema_state', 'rcpt_dynamic']):
+            with self.eye_buffers.grouped_bind(['rays_intermediate', 'rcpt_static', 'colors', 'ema_state', 'rcpt_dynamic']):
 
                 self._eye_uniforms.apply(shader)
 
@@ -444,7 +444,7 @@ class BaseRenderer(ABC):
 
         if self._ra.kernel.nodal_distance_um is not None:
             with self.dynamics_shader as shader:
-                with self.eye_buffers.grouped_bind_base(['rcpt_static', 'lens_static', 'colors', 'ema_state', 'rcpt_dynamic', 'lens_dynamic']):
+                with self.eye_buffers.grouped_bind(['rcpt_static', 'lens_static', 'colors', 'ema_state', 'rcpt_dynamic', 'lens_dynamic']):
 
                     self._eye_uniforms.apply(shader)
 
@@ -550,7 +550,7 @@ class BaseRenderer(ABC):
             self._eye_uniforms.apply(shader)
 
             color_buffer = 'overlay' if self.overlay_enabled else 'colors'
-            with self.eye_buffers.grouped_bind_base(['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', color_buffer]):
+            with self.eye_buffers.grouped_bind(['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', color_buffer]):
                 N = len(self._ra)
                 nb_units = N if self.output_mode == EyeOutput.Raw else self._ra.lens_count
 
@@ -579,7 +579,7 @@ class BaseRenderer(ABC):
             self._eye_uniforms.apply(shader)
 
             color_buffer = 'overlay' if self.overlay_enabled else 'colors'
-            with self.eye_buffers.grouped_bind_base(['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', color_buffer]):
+            with self.eye_buffers.grouped_bind(['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', color_buffer]):
 
                 N = len(self._ra)
                 nb_units = N if self.output_mode == EyeOutput.Raw else self._ra.lens_count
