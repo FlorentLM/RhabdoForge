@@ -3,8 +3,7 @@ import numpy as np
 import collections
 
 from pyglm import glm
-from insectvision.renderers.commons import EyeOutput, OmmatidiaProjection, Colormap
-from insectvision.interactive.utils import DisplayMode
+from insectvision.utils import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode
 
 
 class Dashboard:

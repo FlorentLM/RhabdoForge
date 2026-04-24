@@ -1,7 +1,4 @@
 import OpenGL
-
-from insectvision.renderers.resources import BufferRegistry
-
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
@@ -11,12 +8,12 @@ from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
-from insectvision.interactive.utils import DisplayMode
+from insectvision.utils import DisplayMode
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType, Asset
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
 from insectvision.engine.shader_utils import write_pytinybvh_preamble, ShaderProgram
-
+from insectvision.renderers.resources import BufferRegistry
 from insectvision.renderers.commons import (
     BaseRenderer, BINDING_RCPT_STATIC, BINDING_LENS_STATIC, BINDING_RCPT_DYNAMIC, BINDING_RAYS_INTERMEDIATE
 )

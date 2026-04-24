@@ -8,7 +8,7 @@ from PIL import Image
 from pyglm import glm
 
 from insectvision.utils.math import tangent_frames
-from insectvision.interactive.utils import DisplayMode
+from insectvision.utils import DisplayMode
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight

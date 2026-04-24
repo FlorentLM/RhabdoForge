@@ -5,12 +5,11 @@ from OpenGL.GL import *
 import time
 import random
 from abc import ABC, abstractmethod
-from enum import IntEnum
 from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple
 import numpy as np
 from pyglm import glm
 
-from insectvision.interactive.utils import DisplayMode
+from insectvision.utils import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode
 from insectvision.geometry.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
@@ -30,26 +29,6 @@ BINDING_RCPT_DYNAMIC      = 4
 BINDING_RAYS_INTERMEDIATE = 5
 BINDING_LENS_DYNAMIC      = 6
 
-
-class EyeOutput(IntEnum):
-    Raw = 0          # Render receptors individually (scaled down)
-    Ommatidium = 1   # One tile per lens (averaging R1-R8)
-    Cartridge = 2    # One tile per lens (averaging optically superimposed receptors)
-
-
-class OmmatidiaProjection(IntEnum):
-    Position = 0     # Positions on the curved eye surface
-    OpticalAxis = 1  # Positions from optical axis directions
-
-
-class Colormap(IntEnum):
-    Diverging = 0    # Blue, white, red (signed and centred on zero)
-    Sequential = 1   # Viridis-like
-    Thermal = 2      # Black, red, white
-
-
-##
-# Small helpers
 
 def _query_available_VRAM() -> int:
     """Queries available VRAM in MB."""
@@ -769,11 +748,11 @@ class BaseRenderer(ABC):
             return VisualOutput(batch_result, self._ra)
 
     def set_overlay(self,
-        values: Union[Dict['Eye', np.array], np.array],
-        range: Optional[Tuple[float, float]] = None,
-        colormap: 'Colormap' = Colormap.Thermal,
-        compression: float = 0.5
-    ):
+                    values: Union[Dict['Eye', np.array], np.array],
+                    range: Optional[Tuple[float, float]] = None,
+                    colormap: 'Colormap' = Colormap.Thermal,
+                    compression: float = 0.5
+                    ):
         """
         Upload data for overlay visualisation.
 

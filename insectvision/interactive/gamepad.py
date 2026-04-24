@@ -3,7 +3,7 @@ from pyglm import glm
 from typing import Optional, Dict
 
 from insectvision.engine.world_utils import WORLD_UP, WORLD_DOWN
-from insectvision.interactive.utils import DisplayMode
+from insectvision.utils import DisplayMode
 from insectvision.interactive.controls import Controls
 
 

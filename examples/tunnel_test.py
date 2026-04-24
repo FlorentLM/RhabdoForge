@@ -7,7 +7,7 @@ from matplotlib.gridspec import GridSpec
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.compound_eyes import ReceptorArray
 from insectvision.renderers import Raytracer
-from insectvision.renderers.commons import Colormap
+from insectvision.utils import Colormap
 from insectvision.interactive.debug import AxesGizmo, DebugGrid, DebugBox
 from insectvision.geometry import plane_geom
 from insectvision.geometry.materials_utils import checkerboard_texture
