@@ -217,6 +217,7 @@ class ShaderProgram:
         )
 
         self.locations = {}
+        self.types = {}
 
         self.use()
         self._cache_uniforms()
@@ -224,7 +225,7 @@ class ShaderProgram:
 
     def _cache_uniforms(self):
         """
-        Query and cache all active uniform locations.
+        Query and cache all active uniform locations and their strict GL types.
         """
         num_uniforms = glGetProgramiv(self.program_id, GL_ACTIVE_UNIFORMS)
 
@@ -240,6 +241,7 @@ class ShaderProgram:
                 name = name[:-3]
 
             self.locations[name] = glGetUniformLocation(self.program_id, name)
+            self.types[name] = type_
 
     def __enter__(self):
         self.use()
@@ -709,9 +711,14 @@ class UniformRegistry:
             if loc == -1:
                 continue  # Shader optimised this out or doesn't use it
 
+            uniform_type = shader.types.get(name)
+
             # Bools and integers
             if isinstance(value, (int, bool, np.integer)):
-                glUniform1i(loc, int(value))
+                if uniform_type == GL_UNSIGNED_INT:
+                    glUniform1ui(loc, int(value))
+                else:
+                    glUniform1i(loc, int(value))
 
             # Floats
             elif isinstance(value, (float, np.floating)):
@@ -719,42 +726,30 @@ class UniformRegistry:
 
             # PyGLM vectors and mats
             elif isinstance(value, (glm.vec2, glm.vec3, glm.vec4)):
-                if len(value) == 2:
-                    glUniform2f(loc, value.x, value.y)
-                elif len(value) == 3:
-                    glUniform3f(loc, value.x, value.y, value.z)
-                elif len(value) == 4:
-                    glUniform4f(loc, value.x, value.y, value.z, value.w)
+                if len(value) == 2: glUniform2f(loc, value.x, value.y)
+                elif len(value) == 3: glUniform3f(loc, value.x, value.y, value.z)
+                elif len(value) == 4: glUniform4f(loc, value.x, value.y, value.z, value.w)
+
 
             elif isinstance(value, (glm.mat3, glm.mat4)):
                 ptr = glm.value_ptr(value)
-                if len(value) == 3:
-                    glUniformMatrix3fv(loc, 1, GL_FALSE, ptr)
-                elif len(value) == 4:
-                    glUniformMatrix4fv(loc, 1, GL_FALSE, ptr)
+                if len(value) == 3: glUniformMatrix3fv(loc, 1, GL_FALSE, ptr)
+                elif len(value) == 4: glUniformMatrix4fv(loc, 1, GL_FALSE, ptr)
 
             # Tuples / Lists (assumed floats)
             elif isinstance(value, (tuple, list)):
-                if len(value) == 2:
-                    glUniform2f(loc, *value)
-                elif len(value) == 3:
-                    glUniform3f(loc, *value)
-                elif len(value) == 4:
-                    glUniform4f(loc, *value)
+                if len(value) == 2: glUniform2f(loc, *value)
+                elif len(value) == 3: glUniform3f(loc, *value)
+                elif len(value) == 4: glUniform4f(loc, *value)
 
             # Numpy arrays
             elif isinstance(value, np.ndarray):
                 val_flat = np.ascontiguousarray(value.flatten())
-                if value.shape == (3, 3):
-                    glUniformMatrix3fv(loc, 1, GL_TRUE, val_flat)  # True for row-major numpy
-                elif value.shape == (4, 4):
-                    glUniformMatrix4fv(loc, 1, GL_TRUE, val_flat)
-                elif value.size == 2:
-                    glUniform2fv(loc, 1, val_flat)
-                elif value.size == 3:
-                    glUniform3fv(loc, 1, val_flat)
-                elif value.size == 4:
-                    glUniform4fv(loc, 1, val_flat)
+                if value.shape == (3, 3): glUniformMatrix3fv(loc, 1, GL_TRUE, val_flat)  # True for row-major numpy
+                elif value.shape == (4, 4): glUniformMatrix4fv(loc, 1, GL_TRUE, val_flat)
+                elif value.size == 2: glUniform2fv(loc, 1, val_flat)
+                elif value.size == 3: glUniform3fv(loc, 1, val_flat)
+                elif value.size == 4: glUniform4fv(loc, 1, val_flat)
 
             else:
                 raise TypeError(f"UniformRegistry doesn't know how to dispatch type: {type(value)} for '{name}'")

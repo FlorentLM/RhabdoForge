@@ -312,6 +312,7 @@ class BaseRenderer(ABC):
             # Time tracking
             dt=self._dt,
             frame_offset=self._frame_index % self._batch_size,
+            dither_counter=self._dither_counter,
 
             # Receptors dynamics
             tau_fast=self.tau_fast,
@@ -428,10 +429,6 @@ class BaseRenderer(ABC):
         with self.reduction_shader as shader:
             with self.eye_buffers.grouped_bind_base(['rays_intermediate', 'rcpt_static', 'colors', 'ema_state', 'rcpt_dynamic']):
 
-                self._eye_uniforms.update(dt=self._dt, frame_offset=self._frame_index % self._batch_size)
-
-                self._eye_uniforms.update(nb_samples=self.nb_samples)
-
                 self._eye_uniforms.apply(shader)
 
                 N = len(self._ra)
@@ -444,20 +441,6 @@ class BaseRenderer(ABC):
         if self._ra.kernel.nodal_distance_um is not None:
             with self.dynamics_shader as shader:
                 with self.eye_buffers.grouped_bind_base(['rcpt_static', 'lens_static', 'colors', 'ema_state', 'rcpt_dynamic', 'lens_dynamic']):
-
-                    self._eye_uniforms.update(dt=self._dt, frame_offset=self._frame_index % self._batch_size)
-
-                    self._eye_uniforms.update(nb_samples=self.nb_samples)
-
-                    # Dynamics
-                    self._eye_uniforms.update(
-                        tau_fast=self.tau_fast,
-                        tau_adapt=self.tau_adapt,
-                        tau_relax=self.tau_relax,
-                        gain_lat=self.gain_lat if self._gpu_actuation else 0.0,
-                        gain_ax=self.gain_ax if self._gpu_actuation else 0.0,
-                        gain_biochem=self.gain_biochem
-                    )
 
                     self._eye_uniforms.apply(shader)
 
@@ -505,10 +488,39 @@ class BaseRenderer(ABC):
         self._pbo_index = next_pbo_index
         return out_array
 
+    def _update_uniforms(self):
+
+        # Ticks
+        self._eye_uniforms.update(
+            dt=self._dt,
+            frame_offset=self._frame_index % self._batch_size,
+            dither_counter=self._dither_counter
+        )
+
+        # Process UI commands
+        self._eye_uniforms.update(
+            nb_samples=self.nb_samples,
+            projection_mode=self.projection_mode,
+            tiled_mode=self.tiled_mode,
+            use_quasi_random=self._quasi_random
+        )
+
+        self._eye_uniforms.update(
+            tau_fast=self.tau_fast,
+            tau_adapt=self.tau_adapt,
+            tau_relax=self.tau_relax,
+            gain_lat=self.gain_lat if self._gpu_actuation else 0.0,
+            gain_ax=self.gain_ax if self._gpu_actuation else 0.0,
+            gain_biochem=self.gain_biochem
+        )
+
     def _main_render(self):
-        """Shared pipeline: tick -> scene-specific sampling -> reduce -> actuate."""
+        """Shared pipeline: tick -> upload updated uniforms -> scene-specific sampling -> reduce -> actuate."""
 
         self._tick()
+
+        self._update_uniforms()
+
         self._sample_scene()  # subclasses override: fill sampling_results_ssbo
         self._reduction()
         self._eye_dynamics()
@@ -526,14 +538,10 @@ class BaseRenderer(ABC):
         with shader:
             glEnable(GL_DEPTH_TEST)
 
+            # Need the first person projection to conform to viewport aspect
             viewport = glGetIntegerv(GL_VIEWPORT)
-            aspect_ratio = viewport[2] / viewport[3] if viewport[3] > 0 else 1.0
+            self._eye_uniforms.update(aspect_ratio=viewport[2] / viewport[3] if viewport[3] > 0 else 1.0)
 
-            self._eye_uniforms.update(
-                aspect_ratio=aspect_ratio,
-                projection_mode=self.projection_mode,
-                tiled_mode=self.tiled_mode
-            )
             self._eye_uniforms.apply(shader)
 
             color_buffer = 'overlay' if self.overlay_enabled else 'colors'
@@ -557,15 +565,11 @@ class BaseRenderer(ABC):
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             glDisable(GL_CULL_FACE)
 
-            self._eye_uniforms.update(projection_mode=self.projection_mode)
-
-            view_matrix_np = np.array(observer_camera.view, dtype=np.float32)
-            projection_matrix_np = np.array(observer_camera.projection, dtype=np.float32)
-            c2w_mat = glm.inverse(self.agent.view)
-
-            glUniformMatrix4fv(shader.get_loc('view'), 1, True, view_matrix_np)
-            glUniformMatrix4fv(shader.get_loc('projection'), 1, True, projection_matrix_np)
-            glUniformMatrix4fv(shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w_mat))
+            self._eye_uniforms.update(
+                view=observer_camera.view,
+                projection=observer_camera.projection,
+                eye_to_world=glm.inverse(self.agent.view)
+            )
 
             self._eye_uniforms.apply(shader)
 

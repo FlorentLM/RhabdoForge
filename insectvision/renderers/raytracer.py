@@ -12,8 +12,10 @@ from insectvision.utils import DisplayMode
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType, Asset
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
-from insectvision.engine.resources import write_pytinybvh_preamble, ShaderProgram, GPUResourceManager, \
-    BufferRegistry, TextureRegistry
+from insectvision.engine.resources import (
+    write_pytinybvh_preamble, ShaderProgram, GPUResourceManager,
+    BufferRegistry, TextureRegistry, UniformRegistry
+)
 from insectvision.renderers.commons import BaseRenderer
 
 if TYPE_CHECKING:
@@ -498,6 +500,33 @@ class Raytracer(BaseRenderer):
         self.view_textures = TextureRegistry(self.resource_manager)
         self._pano_res = pano_res
 
+        self._scene_uniforms = UniformRegistry(
+            nb_tlas_nodes=len(self._baker.cpu_tlas_nodes),
+
+            use_skybox=self.scene.skybox is not None,
+            background_color=self.scene.background_color
+        )
+
+        if 'skybox' in self._baker.scene_textures:
+            self._scene_uniforms.update(skybox=self._baker.scene_textures['skybox'].unit)
+
+        if 'materials' in self._baker.scene_textures:
+            self._scene_uniforms.update(scene_textures=self._baker.scene_textures['materials'].unit)
+
+        self._lights_uniforms = UniformRegistry(
+
+            enable_ambient=self.enable_ambient,
+            enable_direct=self.enable_direct,
+            enable_shadows=self.enable_shadows,
+
+            sky_intensity=self.sky_intensity,
+            ambient_intensity=self.ambient_intensity,
+
+            directional_lights_count=self._baker._nb_dir_lights,
+            point_lights_count=self._baker._nb_point_lights,
+            area_lights_count=self._baker._nb_area_lights
+        )
+
     # Internal properties for lazy-loaded resources
 
     @property
@@ -590,27 +619,20 @@ class Raytracer(BaseRenderer):
             self._invalidate_shaders()
             self._active_defines = new_defines
 
-    def _set_scene_uniforms(self, shader: ShaderProgram):
-        """Set uniforms shared by all ray-tracing compute shaders."""
+    def _update_uniforms(self):
 
-        glUniform1ui(shader.get_loc('nb_tlas_nodes'), len(self._baker.cpu_tlas_nodes))
+        self._lights_uniforms.update(
+            sky_intensity=self.sky_intensity,
+            ambient_intensity=self.ambient_intensity,
+            # directional_lights_count=self._baker._nb_dir_lights,
+            # point_lights_count=self._baker._nb_point_lights,
+            # area_lights_count=self._baker._nb_area_lights
+        )
 
-        glUniform1i(shader.get_loc('use_skybox'), int(self.scene.skybox is not None))
+        # if 'materials' in self._baker.scene_textures:
+        #     self._scene_uniforms.update(scene_textures=self._baker.scene_textures['materials'].unit)
 
-        r, g, b = self.scene.background_color
-        glUniform3f(shader.get_loc('background_color'), r, g, b)
-        glUniform1f(shader.get_loc('sky_intensity'), self.sky_intensity)
-
-        glUniform1ui(shader.get_loc('dither_counter'), int(self._dither_counter))
-
-        glUniform1i(shader.get_loc('enable_ambient'), int(self.enable_ambient))
-        glUniform1i(shader.get_loc('enable_direct'), int(self.enable_direct))
-        glUniform1i(shader.get_loc('enable_shadows'), int(self.enable_shadows))
-        glUniform1f(shader.get_loc('ambient_intensity'), self.ambient_intensity)
-
-        glUniform1i(shader.get_loc('directional_lights_count'), self._baker._nb_dir_lights)
-        glUniform1i(shader.get_loc('point_lights_count'), self._baker._nb_point_lights)
-        glUniform1i(shader.get_loc('area_lights_count'), self._baker._nb_area_lights)
+        super()._update_uniforms()
 
     # Internal rendering logic and draw calls
 
@@ -628,20 +650,17 @@ class Raytracer(BaseRenderer):
             with bvh.grouped_bind_base(), lights.grouped_bind_base():
                 with self._baker.scene_textures.bind_all():
 
-                    if 'skybox' in self._baker.scene_textures:
-                        glUniform1i(shader.get_loc('skybox'), self._baker.scene_textures['skybox'].unit)
-                    if 'materials' in self._baker.scene_textures:
-                        glUniform1i(shader.get_loc('scene_textures'), self._baker.scene_textures['materials'].unit)
+                    # Override number of samples for third person
+                    self._eye_uniforms.update(nb_samples=self._samples_per_px)
 
-                    self._set_scene_uniforms(shader)
-
-                    glUniform1i(shader.get_loc('nb_samples'), self._samples_per_px)
-                    c2w = glm.inverse(pov.view)
-                    glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w))
+                    self._eye_uniforms.update(cam_to_world=glm.inverse(pov.view))
 
                     if view_name == 'perspective':
-                        inv_proj = glm.inverse(self.agent.projection)
-                        glUniformMatrix4fv(shader.get_loc('inv_projection'), 1, False, glm.value_ptr(inv_proj))
+                        self._eye_uniforms.update(inv_projection=glm.inverse(self.agent.projection))
+
+                    self._eye_uniforms.apply(shader)
+                    self._scene_uniforms.apply(shader)
+                    self._lights_uniforms.apply(shader)
 
                     glDispatchCompute((res[0] + 15) // 16, (res[1] + 15) // 16, 1)
                     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
@@ -657,18 +676,11 @@ class Raytracer(BaseRenderer):
             with bvh.grouped_bind_base(), lights.grouped_bind_base(), eye.grouped_bind_base(['rays_intermediate', 'rcpt_static', 'lens_static', 'rcpt_dynamic']):
                 with self._baker.scene_textures.bind_all():
 
-                    if 'skybox' in self._baker.scene_textures:
-                        glUniform1i(shader.get_loc('skybox'), self._baker.scene_textures['skybox'].unit)
-                    if 'materials' in self._baker.scene_textures:
-                        glUniform1i(shader.get_loc('scene_textures'), self._baker.scene_textures['materials'].unit)
+                    self._eye_uniforms.update(cam_to_world=glm.inverse(self.agent.view))
 
-                    self._set_scene_uniforms(shader)
-
-                    glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
-                    glUniform1i(shader.get_loc('use_quasi_random'), int(self._quasi_random))
-
-                    c2w_mat = glm.inverse(self.agent.view)
-                    glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
+                    self._eye_uniforms.apply(shader)
+                    self._scene_uniforms.apply(shader)
+                    self._lights_uniforms.apply(shader)
 
                     N = len(self._ra)
                     total_work = N * self._samples_per_rcpt
@@ -696,7 +708,8 @@ class Raytracer(BaseRenderer):
 
             tex_id, _ = self._get_view_texture(view_name)
             self.screen_surface.draw(
-                tex_id, is_cubemap=False,
+                tex_id,
+                is_cubemap=False,
                 simulate_insect_vision=self.simulate_insect_vision,
                 uv_encoded_textures=self.uv_encoded_textures
             )
@@ -763,11 +776,10 @@ class Pathtracer(Raytracer):
             enable_direct=enable_direct
         )
 
+        self._scene_uniforms.update(max_bounces=self.max_bounces)
+        # TODO: Would be nice to control this during runtime
+
     def _get_defines(self) -> Dict[str, Any]:
         defines = super()._get_defines()
         defines['PATH_TRACING'] = 1
         return defines
-
-    def _set_scene_uniforms(self, shader: ShaderProgram):
-        super()._set_scene_uniforms(shader)
-        glUniform1i(shader.get_loc('max_bounces'), self.max_bounces)
