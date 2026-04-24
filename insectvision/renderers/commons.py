@@ -502,7 +502,8 @@ class BaseRenderer(ABC):
             nb_samples=self.nb_samples,
             projection_mode=self.projection_mode,
             tiled_mode=self.tiled_mode,
-            use_quasi_random=self._quasi_random
+            use_quasi_random=self._quasi_random,
+            selected_lens=self.selected_lens,
         )
 
         self._eye_uniforms.update(
