@@ -41,6 +41,26 @@ BINDING_LIGHT_DIR    = 16
 BINDING_LIGHT_POINT  = 17
 BINDING_LIGHT_AREA   = 18
 
+
+SCENE_BINDINGS = {
+    'verts': BINDING_VERTICES,
+    'indices': BINDING_INDICES,
+    'materials': BINDING_MATERIALS,
+    'points': BINDING_POINTS,
+    'blas_nodes': BINDING_BLAS_NODES,
+    'tlas_nodes': BINDING_TLAS_NODES,
+    'inst_info': BINDING_INSTANCES,
+    'tlas_indices': BINDING_TLAS_INDICES,
+    'blas_indices': BINDING_BLAS_INDICES
+}
+
+LIGHTS_BINDINGS = {
+    'dir': BINDING_LIGHT_DIR,
+    'point': BINDING_LIGHT_POINT,
+    'area': BINDING_LIGHT_AREA
+}
+
+
 RENDERABLE_INST_DTYPE = np.dtype([
     ('transform', np.float32, (4, 4)),
     ('inverse_transform', np.float32, (4, 4)),
@@ -706,27 +726,6 @@ class Raytracer(BaseRenderer):
 
     # Internal helpers for GL resource binding
 
-    def _bind_scene_ssbos(self):
-        """Bind scene geometry and light SSBOs."""
-
-        bvh = self._baker.bvh_buffers
-        lights = self._baker.light_buffers
-
-        bvh['verts'].bind_base(BINDING_VERTICES)
-        bvh['indices'].bind_base(BINDING_INDICES)
-        if 'materials' in bvh:
-            bvh['materials'].bind_base(BINDING_MATERIALS)
-        bvh['points'].bind_base(BINDING_POINTS)
-        bvh['blas_nodes'].bind_base(BINDING_BLAS_NODES)
-        bvh['tlas_nodes'].bind_base(BINDING_TLAS_NODES)
-        bvh['inst_info'].bind_base(BINDING_INSTANCES)
-        bvh['tlas_indices'].bind_base(BINDING_TLAS_INDICES)
-        bvh['blas_indices'].bind_base(BINDING_BLAS_INDICES)
-
-        lights['dir'].bind_base(BINDING_LIGHT_DIR)
-        lights['point'].bind_base(BINDING_LIGHT_POINT)
-        lights['area'].bind_base(BINDING_LIGHT_AREA)
-
     def _bind_scene_textures(self, shader: ShaderProgram):
         """Bind skybox cubemap and material texture array."""
 
@@ -773,20 +772,23 @@ class Raytracer(BaseRenderer):
 
         glBindImageTexture(0, tex_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
 
-        self._bind_scene_ssbos()
-        self._bind_scene_textures(shader)
-        self._set_scene_uniforms(shader)
+        bvh = self._baker.bvh_buffers
+        lights = self._baker.light_buffers
+        with bvh.grouped_bind_base(SCENE_BINDINGS), lights.grouped_bind_base(LIGHTS_BINDINGS):
 
-        glUniform1i(shader.get_loc('nb_samples'), self._samples_per_px)
-        c2w = glm.inverse(pov.view)
-        glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w))
+            self._bind_scene_textures(shader)
+            self._set_scene_uniforms(shader)
 
-        if view_name == 'perspective':
-            inv_proj = glm.inverse(self.agent.projection)
-            glUniformMatrix4fv(shader.get_loc('inv_projection'), 1, False, glm.value_ptr(inv_proj))
+            glUniform1i(shader.get_loc('nb_samples'), self._samples_per_px)
+            c2w = glm.inverse(pov.view)
+            glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w))
 
-        glDispatchCompute((res[0] + 15) // 16, (res[1] + 15) // 16, 1)
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
+            if view_name == 'perspective':
+                inv_proj = glm.inverse(self.agent.projection)
+                glUniformMatrix4fv(shader.get_loc('inv_projection'), 1, False, glm.value_ptr(inv_proj))
+
+            glDispatchCompute((res[0] + 15) // 16, (res[1] + 15) // 16, 1)
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
         shader.stop()
 
     def _raytrace_receptors(self):
@@ -795,28 +797,35 @@ class Raytracer(BaseRenderer):
         shader = self.raytrace_shader
         shader.use()
 
-        self.buffers['rays_intermediate'].bind_base(BINDING_RAYS_INTERMEDIATE)
-        self.buffers['rcpt_static'].bind_base(BINDING_RCPT_STATIC)
-        self.buffers['lens_static'].bind_base(BINDING_LENS_STATIC)
-        self.buffers['rcpt_dynamic'].bind_base(BINDING_RCPT_DYNAMIC)
+        eye_bindings = {
+            'rays_intermediate': BINDING_RAYS_INTERMEDIATE,
+            'rcpt_static': BINDING_RCPT_STATIC,
+            'lens_static': BINDING_LENS_STATIC,
+            'rcpt_dynamic': BINDING_RCPT_DYNAMIC
+        }
 
-        self._bind_scene_ssbos()
-        self._bind_scene_textures(shader)
-        self._set_scene_uniforms(shader)
+        eye = self.eye_buffers
+        bvh = self._baker.bvh_buffers
+        lights = self._baker.light_buffers
 
-        glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
-        glUniform1i(shader.get_loc('use_quasi_random'), int(self._quasi_random))
+        with bvh.grouped_bind_base(SCENE_BINDINGS), lights.grouped_bind_base(LIGHTS_BINDINGS), eye.grouped_bind_base(eye_bindings):
+            self._bind_scene_textures(shader)
+            self._set_scene_uniforms(shader)
 
-        c2w_mat = glm.inverse(self.agent.view)
-        glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
+            glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
+            glUniform1i(shader.get_loc('use_quasi_random'), int(self._quasi_random))
 
-        # Dispatch: one thread per sample
-        N = len(self._ra)
-        total_work = N * self._samples_per_rcpt
-        work_groups = (total_work + 63) // 64
+            c2w_mat = glm.inverse(self.agent.view)
+            glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
-        glDispatchCompute(work_groups, 1, 1)
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+            # Dispatch: one thread per sample
+            N = len(self._ra)
+            total_work = N * self._samples_per_rcpt
+            work_groups = (total_work + 63) // 64
+
+            glDispatchCompute(work_groups, 1, 1)
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
         shader.stop()
 
     def _sample_scene(self):

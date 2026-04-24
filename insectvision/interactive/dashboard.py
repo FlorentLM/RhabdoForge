@@ -168,8 +168,8 @@ class Dashboard:
 
                     if dpg.add_button(label='Reset GPU States', width=-1):
                         self._main_thread_queue.append(
-                        self.ctx.renderer.buffers['ema_state'].reset)
-                        self._main_thread_queue.append(self.ctx.renderer.buffers['lens_dynamic'].reset)
+                        self.ctx.renderer.eye_buffers['ema_state'].reset)
+                        self._main_thread_queue.append(self.ctx.renderer.eye_buffers['lens_dynamic'].reset)
 
                 # Tab 3: Rendering
                 with dpg.tab(label='Rendering'):
@@ -512,7 +512,7 @@ class Dashboard:
                 self.rec_data_buffers[r_idx].append(np.mean(group[r_idx, :3]))
 
             # Actuation buffer readback
-            state_data = self.ctx.renderer.buffers['lens_dynamic'].read(start=lens_id, count=1)
+            state_data = self.ctx.renderer.eye_buffers['lens_dynamic'].read(start=lens_id, count=1)
             self.lat_um_data.append(float(state_data['lateral_um'][0]))
             self.ax_um_data.append(float(state_data['axial_um'][0]))
 

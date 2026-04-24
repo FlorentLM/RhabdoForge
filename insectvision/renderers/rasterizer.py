@@ -718,25 +718,30 @@ class Rasterizer(BaseRenderer):
 
         # Dynamic buffer for actuated directions and static (for positions)
 
-        self.buffers['rcpt_static'].bind_base(BINDING_RCPT_STATIC)
-        self.buffers['rcpt_dynamic'].bind_base(BINDING_RCPT_DYNAMIC)
-        self.buffers['rays_intermediate'].bind_base(BINDING_RAYS_INTERMEDIATE)
+        eye_bindings = {
+            'rays_intermediate': BINDING_RAYS_INTERMEDIATE,
+            'rcpt_static': BINDING_RCPT_STATIC,
+            'rcpt_dynamic': BINDING_RCPT_DYNAMIC
+        }
 
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.tex_id)
-        glUniform1i(shader.get_loc('scene_cubemap'), 0)
-        glUniform1i(shader.get_loc('use_quasi_random '), self._quasi_random)
+        with self.eye_buffers.grouped_bind_base(eye_bindings):
 
-        glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
-        glUniform1f(shader.get_loc('dither_counter'), float(self._dither_counter))
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.tex_id)
+            glUniform1i(shader.get_loc('scene_cubemap'), 0)
+            glUniform1i(shader.get_loc('use_quasi_random '), self._quasi_random)
 
-        # Dispatch: one thread per sample
-        N = len(self._ra)
-        total_work = N * self.nb_samples
-        work_groups = (total_work + 63) // 64
+            glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
+            glUniform1f(shader.get_loc('dither_counter'), float(self._dither_counter))
 
-        glDispatchCompute(work_groups, 1, 1)
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+            # Dispatch: one thread per sample
+            N = len(self._ra)
+            total_work = N * self.nb_samples
+            work_groups = (total_work + 63) // 64
+
+            glDispatchCompute(work_groups, 1, 1)
+            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+
         shader.stop()
 
     def _sample_scene(self):

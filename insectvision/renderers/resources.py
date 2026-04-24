@@ -1,8 +1,10 @@
+from contextlib import contextmanager, ExitStack
+
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import Optional, Dict, Callable
+from typing import Optional, Dict, Callable, Sequence
 import numpy as np
 
 
@@ -58,19 +60,24 @@ class BufferObject:
             f'count={self.count} dtype={self.dtype}>'
         )
 
+    @contextmanager
     def bind(self, mode_override: Optional[int] = None):
         """Standard binding."""
-        glBindBuffer(mode_override if mode_override is not None else self.target, self.handle)
+        target = mode_override if mode_override is not None else self.target
+        glBindBuffer(target, self.handle)
+        try:
+            yield self
+        finally:
+            glBindBuffer(target, 0)
 
+    @contextmanager
     def bind_base(self, binding: int):
         """Binding for Indexed buffers (SSBOs)."""
-        # TODO: Binding points should be stored here and injected automatically in the Shader compiler
         glBindBufferBase(self.target, binding, self.handle)
-
-    # TODO: Make a context manager instead? Or just ditch the unbind completely?
-    def unbind(self):
-        # glBindBuffer(self.target, 0)
-        pass
+        try:
+            yield self
+        finally:
+            glBindBufferBase(self.target, binding, 0)
 
     @property
     def itemsize(self) -> int:
@@ -91,10 +98,9 @@ class BufferObject:
         if start < 0 or count < 0 or (start + count) > self.count:
             raise IndexError(f"read range [{start}:{start + count}] out of bounds for {self.name} (count={self.count})")
 
-        self.bind()
-        data_bytes = glGetBufferSubData(self.target, start * self.itemsize, count * self.itemsize)
-        ret = np.frombuffer(data_bytes, dtype=self.dtype).copy()
-        self.unbind()
+        with self.bind():
+            data_bytes = glGetBufferSubData(self.target, start * self.itemsize, count * self.itemsize)
+            ret = np.frombuffer(data_bytes, dtype=self.dtype).copy()
 
         return ret
 
@@ -122,46 +128,40 @@ class BufferObject:
         if start < 0 or (start + n) > self.count:
             raise IndexError(f"write range [{start}:{start + n}] out of bounds for {self.name} (count={self.count})")
 
-        self.bind()
-        glBufferSubData(self.target, start * self.itemsize, arr.nbytes, arr.tobytes())
-        self.unbind()
+        with self.bind():
+            glBufferSubData(self.target, start * self.itemsize, arr.nbytes, arr.tobytes())
 
     def resize(self, count: int, data: Optional[np.ndarray] = None) -> None:
         """Resize GPU buffer, optionally initialising with new data."""
 
         self.count = count
-        self.bind()
 
-        if data is not None:
-            arr = np.ascontiguousarray(data)
-            glBufferData(self.target, self.nbytes, arr.tobytes(), self.usage)
-        else:
-            glBufferData(self.target, self.nbytes, None, self.usage)
-
-        self.unbind()
+        with self.bind():
+            if data is not None:
+                arr = np.ascontiguousarray(data)
+                glBufferData(self.target, self.nbytes, arr.tobytes(), self.usage)
+            else:
+                glBufferData(self.target, self.nbytes, None, self.usage)
 
     def reset(self) -> None:
         """
         Zero-out the entire GPU buffer immediately.
         """
 
-        self.bind()
-
-        try:
-            # glClearBufferSubData is the fast path
-            glClearBufferSubData(
-                GL_SHADER_STORAGE_BUFFER,
-                GL_R32F,  # internal format for the clear (arbitrary for zero)
-                0, self.nbytes,
-                GL_RED, GL_FLOAT,
-                None,  # passing None clears to zero
-            )
-        except Exception:
-            # if that didn't work just upload zeroes
-            zeros = np.zeros(self.count, dtype=self.dtype)
-            glBufferSubData(self.target, 0, self.nbytes, zeros)
-
-        self.unbind()
+        with self.bind():
+            try:
+                # glClearBufferSubData is the fast path
+                glClearBufferSubData(
+                    GL_SHADER_STORAGE_BUFFER,
+                    GL_R32F,  # internal format for the clear (arbitrary for zero)
+                    0, self.nbytes,
+                    GL_RED, GL_FLOAT,
+                    None,  # passing None clears to zero
+                )
+            except Exception:
+                # if that didn't work just upload zeroes
+                zeros = np.zeros(self.count, dtype=self.dtype)
+                glBufferSubData(self.target, 0, self.nbytes, zeros)
 
     def free(self):
         if self.handle:
@@ -241,6 +241,28 @@ class BufferRegistry:
         self._buffers[buf.name] = buf
 
         return buf
+
+    @contextmanager
+    def grouped_bind(self, names: Sequence[str]):
+        """
+        Binds a group of buffers.
+        """
+        with ExitStack() as stack:
+            for name in names:
+                if name in self._buffers:
+                    stack.enter_context(self._buffers[name].bind())
+            yield
+
+    @contextmanager
+    def grouped_bind_base(self, bindings: Dict[str, int]):
+        """
+        Binds a group of buffers to specific binding points.
+        """
+        with ExitStack() as stack:
+            for name, point in bindings.items():
+                if name in self._buffers:
+                    stack.enter_context(self._buffers[name].bind_base(point))
+            yield
 
     def free(self):
         for buf in self._buffers.values():
