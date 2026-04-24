@@ -12,19 +12,19 @@
 #include "colormaps.glsl"
 #endif
 
-layout(std430, binding = 0)  readonly buffer RcptStaticBlock  { ReceptorStatic  rcpt_static[]; };
-layout(std430, binding = 1)  readonly buffer LensStaticBlock  { LensStatic      lens_static[]; };
-layout(std430, binding = 4)  readonly buffer RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
+layout(std430, binding = BINDING_RCPT_STATIC)  readonly buffer RcptStaticBlock  { ReceptorStatic  rcpt_static[]; };
+layout(std430, binding = BINDING_LENS_STATIC)  readonly buffer LensStaticBlock  { LensStatic      lens_static[]; };
+layout(std430, binding = BINDING_RCPT_DYNAMIC) readonly buffer RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
 
 #ifdef OVERLAY_MODE
-layout(std430, binding = 2) readonly buffer DataBlock { float scalar_data[]; };
+layout(std430, binding = BINDING_COLORS) readonly buffer DataBlock { float scalar_data[]; };
 layout (location = 0) out float v_scalar;
 uniform float overlay_data_min;
 uniform float overlay_data_max;
 uniform int colormap;
 uniform float compression;
 #else
-layout(std430, binding = 2) readonly buffer DataBlock { vec4 color_data[]; };
+layout(std430, binding = BINDING_COLORS) readonly buffer DataBlock { vec4 color_data[]; };
 layout (location = 0) out vec3 v_color;
 #endif
 

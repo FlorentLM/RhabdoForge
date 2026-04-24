@@ -4,7 +4,7 @@ from OpenGL.GL import *
 
 import re
 from pathlib import Path
-from typing import Optional, Set, Union
+from typing import Optional, Set, Dict, Any, Union
 import numpy as np
 
 
@@ -36,11 +36,11 @@ class ShaderCompiler:
     _include_pattern = re.compile(r'#include\s+"(.*?)"')
     _version_pattern = re.compile(r'^\s*#version\s+.*$', re.MULTILINE)
 
-    def __init__(self, defines: Optional[Set[str]] = None):
+    def __init__(self, defines: Optional[Union[Set[str], Dict[str, Any]]] = None):
 
         self._shaders_root = Path(SHADERS_ROOT)
 
-        self.defines = defines or set()
+        self.defines = defines or {}
         self._include_stack = set()
 
     def resolve_shader_path(self, file_name: Union[str, Path], current_file: Optional[Union[str, Path]] = None) -> Path:
@@ -129,7 +129,10 @@ class ShaderCompiler:
         # Inject #define blocks immediately after #version
         define_block = ''
         if self.defines:
-            define_block = '\n'.join(f'#define {d}' for d in sorted(self.defines)) + '\n'
+            if isinstance(self.defines, dict):
+                define_block = '\n'.join(f'#define {k} {v}' for k, v in sorted(self.defines.items())) + '\n'
+            else:
+                define_block = '\n'.join(f'#define {d}' for d in sorted(self.defines)) + '\n'
 
         final_code = version_directive + '\n' + define_block + code_without_version
 
@@ -199,7 +202,7 @@ class ShaderProgram:
             frag_path=None,
             geom_path=None,
             comp_path=None,
-            defines: Optional[Set[str]] = None,
+            defines: Optional[Union[Set[str], Dict[str, Any]]] = None,
         ):
 
         compiler = ShaderCompiler(defines=defines)
@@ -235,6 +238,13 @@ class ShaderProgram:
                 name = name[:-3]
 
             self.locations[name] = glGetUniformLocation(self.program_id, name)
+
+    def __enter__(self):
+        self.use()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
 
     def use(self):
         """

@@ -14,20 +14,10 @@ from insectvision.geometry.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
 from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.renderers.resources import BufferRegistry
+from insectvision.renderers.resources import BufferRegistry, GPUResourceManager
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import ReceptorArray, Eye
-
-
-# SSBO bindings
-BINDING_RCPT_STATIC       = 0
-BINDING_LENS_STATIC       = 1
-BINDING_COLOR             = 2
-BINDING_EMA_HIST          = 3
-BINDING_RCPT_DYNAMIC      = 4
-BINDING_RAYS_INTERMEDIATE = 5
-BINDING_LENS_DYNAMIC      = 6
 
 
 def _query_available_VRAM() -> int:
@@ -84,42 +74,34 @@ class TextureViewer:
 
         shader = self.shader_cube if is_cubemap else self.shader_2d
 
-        shader.use()
-        glDisable(GL_DEPTH_TEST)
-        glDepthMask(GL_FALSE)
+        with shader:
+            glDisable(GL_DEPTH_TEST)
+            glDepthMask(GL_FALSE)
 
-        glActiveTexture(GL_TEXTURE0)
-        if is_cubemap:
-            glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id)
-            glUniform1i(shader.get_loc("cubemap"), 0)
-        else:
-            glBindTexture(GL_TEXTURE_2D, texture_id)
-            glUniform1i(shader.get_loc("texture_sampler"), 0)
+            glActiveTexture(GL_TEXTURE0)
+            if is_cubemap:
+                glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id)
+                glUniform1i(shader.get_loc("cubemap"), 0)
+            else:
+                glBindTexture(GL_TEXTURE_2D, texture_id)
+                glUniform1i(shader.get_loc("texture_sampler"), 0)
 
-        # Pass toggles to the background shader
-        glUniform1i(shader.get_loc('false_colors'), int(simulate_insect_vision and not uv_encoded_textures))
-        glUniform1i(shader.get_loc('uv_encodeing'), int(uv_encoded_textures))
+            glUniform1i(shader.get_loc('false_colors'), int(simulate_insect_vision and not uv_encoded_textures))
+            glUniform1i(shader.get_loc('uv_encodeing'), int(uv_encoded_textures))
 
-        glBindVertexArray(self.vao)
-        glDrawArrays(GL_TRIANGLES, 0, 3)
+            glBindVertexArray(self.vao)
+            glDrawArrays(GL_TRIANGLES, 0, 3)
 
-        glBindVertexArray(0)
-        shader.stop()
+            glBindVertexArray(0)
 
         glDepthMask(GL_TRUE)
         glEnable(GL_DEPTH_TEST)
         glClear(GL_DEPTH_BUFFER_BIT)
 
     def free(self):
-        if self._shader_2d:
-            self._shader_2d.free()
-
-        if self._shader_cube:
-            self._shader_cube.free()
-
-        if self._vao:
-            glDeleteVertexArrays(1, [self._vao])
-
+        if self._shader_2d: self._shader_2d.free()
+        if self._shader_cube: self._shader_cube.free()
+        if self._vao: glDeleteVertexArrays(1, [self._vao])
         self._shader_2d = None
         self._shader_cube = None
         self._vao = None
@@ -131,14 +113,15 @@ class BaseRenderer(ABC):
     """
 
     def __init__(self,
-            receptor_array: 'ReceptorArray',
-            agent: 'Agent',
-            time_dithering: bool = True,
-            nb_samples: int = 256,
-            quasi_random: bool = False,
-            batch_size: int = 1,
-            enable_actuation: bool = False,     #TODO: might rename this
-        ):
+                 receptor_array: 'ReceptorArray',
+                 agent: 'Agent',
+                 time_dithering: bool = True,
+                 nb_samples: int = 256,
+                 quasi_random: bool = False,
+                 batch_size: int = 1,
+                 enable_actuation: bool = False,     #TODO: might rename this
+                 resource_manager: Optional[GPUResourceManager] = None
+                 ):
 
         self._ra: 'ReceptorArray' = receptor_array
         self.agent: 'Agent' = agent
@@ -175,7 +158,8 @@ class BaseRenderer(ABC):
         self._colours_cpu_buffer = np.zeros((N, 4), dtype=np.float32)
 
         # Buffer registry
-        self.eye_buffers = BufferRegistry()
+        self.resource_manager = resource_manager or GPUResourceManager()
+        self.eye_buffers = BufferRegistry(self.resource_manager)
 
         # Ping-pong PBOs
         self.eye_buffers.allocate('pbo_0',
@@ -227,9 +211,12 @@ class BaseRenderer(ABC):
                                   supports_async=True,
                                   _async_reader=self._colors_read_async)
 
+        # Base define maps generated automatically from the BufferRegistry allocations
+        base_defines = self.eye_buffers.shader_defines
+
         # Reduction and dynamics shaders (shared to rasterizer and raytracer)
-        self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp')
-        self.dynamics_shader = ShaderProgram(comp_path='shaders/eyeDynamics.comp')
+        self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp', defines=base_defines)
+        self.dynamics_shader = ShaderProgram(comp_path='shaders/eyeDynamics.comp', defines=base_defines)
 
         # Shared lighting flags (subclasses may override defaults before calling super)
         self.enable_direct = getattr(self, 'enable_direct', True)
@@ -247,10 +234,10 @@ class BaseRenderer(ABC):
         self.gain_biochem = 0.1
 
         # Visualisation shaders (lazy-loaded)
-        self.__fp_colour_shader: Optional[int] = None    # 1st person colour mode
-        self.__fp_overlay_shader: Optional[int] = None   # 1st person overlay mode
-        self.__tp_colour_shader: Optional[int] = None    # 3rd person colour mode
-        self.__tp_overlay_shader: Optional[int] = None   # 3rd person overlay mode
+        self.__fp_colour_shader: Optional[ShaderProgram] = None    # 1st person colour mode
+        self.__fp_overlay_shader: Optional[ShaderProgram] = None   # 1st person overlay mode
+        self.__tp_colour_shader: Optional[ShaderProgram] = None    # 3rd person colour mode
+        self.__tp_overlay_shader: Optional[ShaderProgram] = None   # 3rd person overlay mode
 
         # Geometry VAOs (lazy-loaded)
         self.__lens_cones_vao: Optional[int] = None
@@ -272,7 +259,7 @@ class BaseRenderer(ABC):
         self._dither_counter: int = 0  # only advanced when time dithering is on
         self._frame_index: int = 0  # advanced at each new rendered frame
         self._last_render_time: float = 0.0
-        self._dt: float = 0.0  # elapsed time (in seconds) since last render
+        self._dt: float = 0.0
 
         # Visualisation stuff
         self.projection_mode = OmmatidiaProjection.Position
@@ -344,39 +331,37 @@ class BaseRenderer(ABC):
     @property
     def _tp_colour_shader(self):
         if self.__tp_colour_shader is None:
-            self.__tp_colour_shader = ShaderProgram(
-                vert_path='thirdPersonEye.vert',
-                frag_path='thirdPersonEye.frag'
-            )
+            self.__tp_colour_shader = ShaderProgram(vert_path='thirdPersonEye.vert',
+                                                    frag_path='thirdPersonEye.frag',
+                                                    defines=self.eye_buffers.shader_defines)
         return self.__tp_colour_shader
 
     @property
     def _tp_overlay_shader(self):
         if self.__tp_overlay_shader is None:
-            self.__tp_overlay_shader = ShaderProgram(
-                vert_path='thirdPersonEye.vert',
-                frag_path='thirdPersonEye.frag',
-                defines={'OVERLAY_MODE'}
-            )
+            defines = self.eye_buffers.shader_defines.copy()
+            defines['OVERLAY_MODE'] = 1
+            self.__tp_overlay_shader = ShaderProgram(vert_path='thirdPersonEye.vert',
+                                                     frag_path='thirdPersonEye.frag',
+                                                     defines=defines)
         return self.__tp_overlay_shader
 
     @property
     def _fp_colour_shader(self):
         if self.__fp_colour_shader is None:
-            self.__fp_colour_shader = ShaderProgram(
-                vert_path='firstPersonEye.vert',
-                frag_path='firstPersonEye.frag'
-            )
+            self.__fp_colour_shader = ShaderProgram(vert_path='firstPersonEye.vert',
+                                                    frag_path='firstPersonEye.frag',
+                                                    defines=self.eye_buffers.shader_defines)
         return self.__fp_colour_shader
 
     @property
     def _fp_overlay_shader(self):
         if self.__fp_overlay_shader is None:
-            self.__fp_overlay_shader = ShaderProgram(
-                vert_path='firstPersonEye.vert',
-                frag_path='firstPersonEye.frag',
-                defines={'OVERLAY_MODE'}
-            )
+            defines = self.eye_buffers.shader_defines.copy()
+            defines['OVERLAY_MODE'] = 1
+            self.__fp_overlay_shader = ShaderProgram(vert_path='firstPersonEye.vert',
+                                                     frag_path='firstPersonEye.frag',
+                                                     defines=defines)
         return self.__fp_overlay_shader
 
     # Various internal helpers
@@ -414,83 +399,55 @@ class BaseRenderer(ABC):
 
         N = len(self._ra)
 
-        shader = self.reduction_shader
-        shader.use()
+        with self.reduction_shader as shader:
+            with self.eye_buffers.grouped_bind_base(['rays_intermediate', 'rcpt_static', 'colors', 'ema_state', 'rcpt_dynamic']):
 
-        eye_bindings = {
-            'rays_intermediate': BINDING_RAYS_INTERMEDIATE,
-            'rcpt_static': BINDING_RCPT_STATIC,
-            'colors': BINDING_COLOR,
-            'ema_state': BINDING_EMA_HIST,
-            'rcpt_dynamic': BINDING_RCPT_DYNAMIC
-        }
+                glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
+                glUniform1i(shader.get_loc('nb_receptors'), N)
+                glUniform1f(shader.get_loc('dt'), self._dt)
+                glUniform1i(shader.get_loc('frame_offset'), self._frame_index % self._batch_size)
 
-        with self.eye_buffers.grouped_bind_base(eye_bindings):
-
-            glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
-            glUniform1i(shader.get_loc('nb_receptors'), N)
-            glUniform1f(shader.get_loc('dt'), self._dt)
-
-            frame_offset = self._frame_index % self._batch_size
-            glUniform1i(shader.get_loc('frame_offset'), frame_offset)
-
-            work_groups = (N + 63) // 64
-            glDispatchCompute(work_groups, 1, 1)
-
-            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-
-        shader.stop()
+                work_groups = (N + 63) // 64
+                glDispatchCompute(work_groups, 1, 1)
+                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     def _eye_dynamics(self):
 
         k = self._ra.kernel
-        center_idx = k.center_index
 
         if k.nodal_distance_um is not None:
-            shader = self.dynamics_shader
-            shader.use()
+            with self.dynamics_shader as shader:
+                with self.eye_buffers.grouped_bind_base(['rcpt_static', 'lens_static', 'colors', 'ema_state', 'rcpt_dynamic', 'lens_dynamic']):
 
-        eye_bindings = {
-            'rcpt_static': BINDING_RCPT_STATIC,
-            'lens_static': BINDING_LENS_STATIC,
-            'colors': BINDING_COLOR,
-            'ema_state': BINDING_EMA_HIST,
-            'rcpt_dynamic': BINDING_RCPT_DYNAMIC,
-            'lens_dynamic': BINDING_LENS_DYNAMIC
-        }
+                    glUniform1i(shader.get_loc('nb_lenses'), self._ra.lens_count)
+                    glUniform1i(shader.get_loc('receptors_per_lens'), self._ra.receptor_count)
+                    glUniform1f(shader.get_loc('dt'), self._dt)
 
-        with self.eye_buffers.grouped_bind_base(eye_bindings):
+                    glUniform1f(shader.get_loc('d_rest'), k.nodal_distance_um)
+                    lam_um = self._ra._wavelength_nm * 1e-3
+                    glUniform1f(shader.get_loc('diffraction_sq'), (lam_um / k.lens_diameter_um) ** 2)
+                    glUniform1f(shader.get_loc('acc_rest_geom_sq'), (k.diameters_um[k.center_index] / k.nodal_distance_um) ** 2)
 
-            glUniform1i(shader.get_loc('nb_lenses'), self._ra.lens_count)
-            glUniform1i(shader.get_loc('receptors_per_lens'), self._ra.receptor_count)
-            glUniform1f(shader.get_loc('dt'), self._dt)
+                    # Dynamics
+                    saccades_enabled = self._gpu_actuation
 
-            glUniform1f(shader.get_loc('d_rest'), k.nodal_distance_um)
-            lam_um = self._ra._wavelength_nm * 1e-3
-            glUniform1f(shader.get_loc('diffraction_sq'), (lam_um / k.lens_diameter_um) ** 2)
-            glUniform1f(shader.get_loc('acc_rest_geom_sq'), (k.diameters_um[center_idx] / k.nodal_distance_um) ** 2)
+                    glUniform1f(shader.get_loc('tau_fast'), self.tau_fast)
+                    glUniform1f(shader.get_loc('tau_adapt'), self.tau_adapt)
+                    glUniform1f(shader.get_loc('gain_lat'), self.gain_lat if saccades_enabled else 0.0)
+                    glUniform1f(shader.get_loc('gain_ax'), self.gain_ax if saccades_enabled else 0.0)
+                    glUniform1f(shader.get_loc('tau_relax'), self.tau_relax)
+                    glUniform1f(shader.get_loc('gain_biochem'), self.gain_biochem)
 
-            # Dynamics
-            saccades_enabled = self._gpu_actuation
-
-            glUniform1f(shader.get_loc('tau_fast'), self.tau_fast)
-            glUniform1f(shader.get_loc('tau_adapt'), self.tau_adapt)
-            glUniform1f(shader.get_loc('gain_lat'), self.gain_lat if saccades_enabled else 0.0)
-            glUniform1f(shader.get_loc('gain_ax'), self.gain_ax if saccades_enabled else 0.0)
-            glUniform1f(shader.get_loc('tau_relax'), self.tau_relax)
-            glUniform1f(shader.get_loc('gain_biochem'), self.gain_biochem)
-
-            work_groups = (self._ra.lens_count + 63) // 64
-            glDispatchCompute(work_groups, 1, 1)
-            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-
-        shader.stop()
+                    work_groups = (self._ra.lens_count + 63) // 64
+                    glDispatchCompute(work_groups, 1, 1)
+                    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     def _colors_read_async(self) -> np.ndarray:
         """
         Non-blocking colour readback (via ping-pong PBO ring).
         Returns the *previous* frame colours (and zeros on the first frame).
         """
+
         N = len(self._ra)
         bytes_to_read = N * 16
 
@@ -542,104 +499,83 @@ class BaseRenderer(ABC):
         """First-person compound-eye view (colours or scalar overlay)."""
 
         shader = self._fp_overlay_shader if self.overlay_enabled else self._fp_colour_shader
-        shader.use()
 
-        glEnable(GL_DEPTH_TEST)
+        with shader:
+            glEnable(GL_DEPTH_TEST)
 
-        # Compute nice-looking dimensions for tiles
-        viewport = glGetIntegerv(GL_VIEWPORT)
-        aspect_ratio = viewport[2] / viewport[3] if viewport[3] > 0 else 1.0
-        receptive_field_scale = 1.0 / (2.0 * np.pi)
+            viewport = glGetIntegerv(GL_VIEWPORT)
+            aspect_ratio = viewport[2] / viewport[3] if viewport[3] > 0 else 1.0
+            receptive_field_scale = 1.0 / (2.0 * np.pi)
 
-        glUniform1f(shader.get_loc('aspect_ratio'), aspect_ratio)
-        glUniform1i(shader.get_loc('tiled_mode'), self.tiled_mode)
-        glUniform1i(shader.get_loc('projection_mode'), self.projection_mode)
-        glUniform1f(shader.get_loc('receptive_field_scale'), receptive_field_scale)
+            glUniform1f(shader.get_loc('aspect_ratio'), aspect_ratio)
+            glUniform1i(shader.get_loc('tiled_mode'), self.tiled_mode)
+            glUniform1i(shader.get_loc('projection_mode'), self.projection_mode)
+            glUniform1f(shader.get_loc('receptive_field_scale'), receptive_field_scale)
 
-        self._set_eye_uniforms(shader)
+            self._set_eye_uniforms(shader)
 
-        eye_bindings = {
-            'rcpt_static': BINDING_RCPT_STATIC,
-            'lens_static': BINDING_LENS_STATIC,
-            'rcpt_dynamic': BINDING_RCPT_DYNAMIC,
-            'lens_dynamic': BINDING_LENS_DYNAMIC,
-            'overlay' if self.overlay_enabled else 'colors': BINDING_COLOR
-        }
+            color_buffer = 'overlay' if self.overlay_enabled else 'colors'
+            with self.eye_buffers.grouped_bind_base(['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', color_buffer]):
+                N = len(self._ra)
+                nb_units = N if self.output_mode == EyeOutput.Raw else self._ra.lens_count
 
-        with self.eye_buffers.grouped_bind_base(eye_bindings):
+                glBindVertexArray(self._cones_vao)
+                glDrawArraysInstanced(GL_TRIANGLES, 0, self.__cones_vertices, nb_units)
+                glBindVertexArray(0)
 
-            N = len(self._ra)
-            nb_units = N if self.output_mode == EyeOutput.Raw else self._ra.lens_count
-
-            glBindVertexArray(self._cones_vao)
-            glDrawArraysInstanced(GL_TRIANGLES, 0, self.__cones_vertices, nb_units)
-
-            glBindVertexArray(0)
-
-        glDisable(GL_DEPTH_TEST)
-
-        shader.stop()
+            glDisable(GL_DEPTH_TEST)
 
     def _draw_eye_thirdperson(self, observer_camera):
         """Third-person eye model (colours or scalar overlay)."""
 
         shader = self._tp_overlay_shader if self.overlay_enabled else self._tp_colour_shader
-        shader.use()
 
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glDisable(GL_CULL_FACE)
+        with shader:
+            glEnable(GL_BLEND)
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            glDisable(GL_CULL_FACE)
 
-        view_matrix_np = np.array(observer_camera.view, dtype=np.float32)
-        projection_matrix_np = np.array(observer_camera.projection, dtype=np.float32)
-        c2w_mat = glm.inverse(self.agent.view)
+            view_matrix_np = np.array(observer_camera.view, dtype=np.float32)
+            projection_matrix_np = np.array(observer_camera.projection, dtype=np.float32)
+            c2w_mat = glm.inverse(self.agent.view)
 
-        glUniformMatrix4fv(shader.get_loc('view'), 1, True, view_matrix_np)
-        glUniformMatrix4fv(shader.get_loc('projection'), 1, True, projection_matrix_np)
-        glUniformMatrix4fv(shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w_mat))
+            glUniformMatrix4fv(shader.get_loc('view'), 1, True, view_matrix_np)
+            glUniformMatrix4fv(shader.get_loc('projection'), 1, True, projection_matrix_np)
+            glUniformMatrix4fv(shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
-        # Nice-looking factors for visualisation
-        avg_radius = np.mean(np.linalg.norm(self._ra.rcpt_static_data['position'][:, :3], axis=1))
-        cone_length = max(0.01, avg_radius) * 0.3
-        visualisation_scale = 1.0
-        saccade_visualisation_gain = 0.025
+            # Nice-looking factors for visualisation
+            avg_radius = np.mean(np.linalg.norm(self._ra.rcpt_static_data['position'][:, :3], axis=1))
+            cone_length = max(0.01, avg_radius) * 0.3
+            visualisation_scale = 1.0
+            saccade_visualisation_gain = 0.025
 
-        glUniform1i(shader.get_loc('projection_mode'), self.projection_mode)
-        glUniform1f(shader.get_loc('cone_length'), cone_length)
-        glUniform1f(shader.get_loc('visualisation_scale'), visualisation_scale)
-        glUniform1f(shader.get_loc('saccade_visualisation_gain'), saccade_visualisation_gain)
+            glUniform1i(shader.get_loc('projection_mode'), self.projection_mode)
+            glUniform1f(shader.get_loc('cone_length'), cone_length)
+            glUniform1f(shader.get_loc('visualisation_scale'), visualisation_scale)
+            glUniform1f(shader.get_loc('saccade_visualisation_gain'), saccade_visualisation_gain)
 
-        self._set_eye_uniforms(shader)
+            self._set_eye_uniforms(shader)
 
-        eye_bindings = {
-            'rcpt_static': BINDING_RCPT_STATIC,
-            'lens_static': BINDING_LENS_STATIC,
-            'rcpt_dynamic': BINDING_RCPT_DYNAMIC,
-            'lens_dynamic': BINDING_LENS_DYNAMIC,
-            'overlay' if self.overlay_enabled else 'colors': BINDING_COLOR
-        }
+            color_buffer = 'overlay' if self.overlay_enabled else 'colors'
+            with self.eye_buffers.grouped_bind_base(['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', color_buffer]):
 
-        with self.eye_buffers.grouped_bind_base(eye_bindings):
+                N = len(self._ra)
+                nb_units = N if self.output_mode == EyeOutput.Raw else self._ra.lens_count
 
-            N = len(self._ra)
-            nb_units = N if self.output_mode == EyeOutput.Raw else self._ra.lens_count
+                if self.projection_mode == OmmatidiaProjection.Position:
+                    glBindVertexArray(self._hemispheres_vao)
+                    glDrawArraysInstanced(GL_TRIANGLES, 0, self.__hemisph_vertices, nb_units)
+                else:
+                    glBindVertexArray(self._cones_vao)
+                    glDrawArraysInstanced(GL_TRIANGLES, 0, self.__cones_vertices, nb_units)
 
-            if self.projection_mode == OmmatidiaProjection.Position:
-                glBindVertexArray(self._hemispheres_vao)
-                glDrawArraysInstanced(GL_TRIANGLES, 0, self.__hemisph_vertices, nb_units)
-            else:
-                glBindVertexArray(self._cones_vao)
-                glDrawArraysInstanced(GL_TRIANGLES, 0, self.__cones_vertices, nb_units)
+                glBindVertexArray(0)
 
-            glBindVertexArray(0)
+            glEnable(GL_CULL_FACE)
+            glDisable(GL_BLEND)
+            glDisable(GL_DEPTH_TEST)
 
-        glEnable(GL_CULL_FACE)
-        glDisable(GL_BLEND)
-        glDisable(GL_DEPTH_TEST)
-
-        shader.stop()
-
-    # TODO: These two public methods should probably be all under the hood
+    # TODO: The following two public methods should probably be all under the hood
 
     def flush(self) -> np.ndarray:
         """
@@ -660,9 +596,7 @@ class BaseRenderer(ABC):
             data_bytes = glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, N * 16 * frames_to_read)
             data_np = np.frombuffer(data_bytes, dtype=np.float32).reshape(frames_to_read, N, 4)
 
-        self._frame_index = 0  # reset counter for next batch
-
-        # return only first 4 floats (current RGBA) and not the next 4 (state for EMA)
+        self._frame_index = 0
         return data_np.copy()
 
     def update(self, force_all=False):
@@ -731,13 +665,13 @@ class BaseRenderer(ABC):
             return None
 
         if self.runs_interactive or self._batch_size == 1:
-            # Synchronous path: ping-pong PBO read
+            # Frame by frame path: ping-pong PBO read
             out_array = self._colors_read_async()
 
             return VisualOutput(out_array, self._ra)
 
         else:
-            # Asynchronous path
+            # Batched path
 
             if self._frame_index < self._batch_size:
                 # batch is not full yet, we're done for this frame
@@ -834,7 +768,6 @@ class BaseRenderer(ABC):
         print(f"Warning: Clamped samples per receptor to {value_clamped} (HW limit is {max_per_r}).")
 
         self._samples_per_rcpt = value_clamped
-        req_bytes = N * self._samples_per_rcpt * 16
 
         self.eye_buffers['rays_intermediate'].resize(N * self._samples_per_rcpt)
 

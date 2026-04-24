@@ -52,8 +52,8 @@ uniform uint nb_tlas_nodes;
 
 #if TBVH_LAYOUT_STANDARD || TBVH_LAYOUT_BVH_GPU
 
-layout(std430, binding = 11) readonly buffer AllBlasNodesBuffer { uint blas_nodes32[]; };
-layout(std430, binding = 12) readonly buffer TlasNodesBuffer    { uint tlas_nodes32[]; };
+layout(std430, binding = BINDING_BLAS_NODES) readonly buffer AllBlasNodesBuffer { uint blas_nodes32[]; };
+layout(std430, binding = BINDING_TLAS_NODES) readonly buffer TlasNodesBuffer    { uint tlas_nodes32[]; };
 
 const uint TBVH_WORDS_PER_NODE = TBVH_NODE_STRIDE_FLOATS;
 
@@ -93,20 +93,20 @@ struct BvhNode {
     vec4 data2;
 };
 
-layout(std430, binding = 11) readonly buffer AllBlasNodesBuffer { BvhNode blas_nodes[]; };
-layout(std430, binding = 12) readonly buffer TlasNodesBuffer    { BvhNode tlas_nodes[]; };
+layout(std430, binding = BINDING_BLAS_NODES) readonly buffer AllBlasNodesBuffer { BvhNode blas_nodes[]; };
+layout(std430, binding = BINDING_TLAS_NODES) readonly buffer TlasNodesBuffer    { BvhNode tlas_nodes[]; };
 
 #endif
 
 // Geometry and materials
-layout(std430, binding = 7) readonly buffer VertexBuffer { float v[]; };
-layout(std430, binding = 8) readonly buffer IndexBuffer { uint indices[]; };
-layout(std430, binding = 9) readonly buffer MaterialBuffer { Material materials[]; };
-layout(std430, binding = 10) readonly buffer PointsBuffer { float points_data[]; };
+layout(std430, binding = BINDING_VERTS) readonly buffer VertexBuffer { float v[]; };
+layout(std430, binding = BINDING_INDICES) readonly buffer IndexBuffer { uint indices[]; };
+layout(std430, binding = BINDING_MATERIALS) readonly buffer MaterialBuffer { Material materials[]; };
+layout(std430, binding = BINDING_POINTS) readonly buffer PointsBuffer { float points_data[]; };
 
-layout(row_major, std430, binding = 13) readonly buffer InstancesBuffer { InstanceInfo instances[]; };
-layout(std430, binding = 14) readonly buffer TlasPrimIndexBuffer { uint tlas_prim_indices[]; };
-layout(std430, binding = 15) readonly buffer BlasPrimIndexBuffer { uint blas_prim_indices[]; };
+layout(row_major, std430, binding = BINDING_INST_INFO) readonly buffer InstancesBuffer { InstanceInfo instances[]; };
+layout(std430, binding = BINDING_TLAS_INDICES) readonly buffer TlasPrimIndexBuffer { uint tlas_prim_indices[]; };
+layout(std430, binding = BINDING_BLAS_INDICES) readonly buffer BlasPrimIndexBuffer { uint blas_prim_indices[]; };
 
 // ==================================== Data accessors =============================================
 

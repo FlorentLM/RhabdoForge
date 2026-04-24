@@ -63,19 +63,19 @@ uniform int area_lights_count;
 // ====================================== Light SSBOs ===============================================
 
 #ifdef HAS_DIRECTIONAL_LIGHT
-layout(std430, binding = 16) readonly buffer DirectionalLightsBuffer {
+layout(std430, binding = BINDING_DIR) readonly buffer DirectionalLightsBuffer {
     DirectionalLightData directional_lights[];
 };
 #endif
 
 #ifdef HAS_POINT_LIGHT
-layout(std430, binding = 17) readonly buffer PointLightsBuffer {
+layout(std430, binding = BINDING_POINT) readonly buffer PointLightsBuffer {
     PointLightData point_lights[];
 };
 #endif
 
 #ifdef HAS_AREA_LIGHT
-layout(std430, binding = 18) readonly buffer AreaLightsBuffer {
+layout(std430, binding = BINDING_AREA) readonly buffer AreaLightsBuffer {
     AreaLightData area_lights[];
 };
 #endif

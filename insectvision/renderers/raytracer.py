@@ -2,7 +2,7 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import TYPE_CHECKING, Tuple, List, Dict, Optional, Set, Union
+from typing import TYPE_CHECKING, Tuple, List, Dict, Optional, Union, Any
 import numpy as np
 from PIL import Image
 from pyglm import glm
@@ -13,49 +13,11 @@ from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType, Asset
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
 from insectvision.engine.shader_utils import write_pytinybvh_preamble, ShaderProgram
-from insectvision.renderers.resources import BufferRegistry
-from insectvision.renderers.commons import (
-    BaseRenderer, BINDING_RCPT_STATIC, BINDING_LENS_STATIC, BINDING_RCPT_DYNAMIC, BINDING_RAYS_INTERMEDIATE
-)
+from insectvision.renderers.resources import BufferRegistry, TextureRegistry, GPUResourceManager
+from insectvision.renderers.commons import BaseRenderer
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import ReceptorArray
-
-# Scene geometry bindings
-BINDING_VERTICES     = 7
-BINDING_INDICES      = 8
-BINDING_MATERIALS    = 9
-BINDING_POINTS       = 10
-BINDING_BLAS_NODES   = 11
-BINDING_TLAS_NODES   = 12
-BINDING_INSTANCES    = 13
-BINDING_TLAS_INDICES = 14
-BINDING_BLAS_INDICES = 15
-
-# Light bindings
-BINDING_LIGHT_DIR    = 16
-BINDING_LIGHT_POINT  = 17
-BINDING_LIGHT_AREA   = 18
-
-
-SCENE_BINDINGS = {
-    'verts': BINDING_VERTICES,
-    'indices': BINDING_INDICES,
-    'materials': BINDING_MATERIALS,
-    'points': BINDING_POINTS,
-    'blas_nodes': BINDING_BLAS_NODES,
-    'tlas_nodes': BINDING_TLAS_NODES,
-    'inst_info': BINDING_INSTANCES,
-    'tlas_indices': BINDING_TLAS_INDICES,
-    'blas_indices': BINDING_BLAS_INDICES
-}
-
-LIGHTS_BINDINGS = {
-    'dir': BINDING_LIGHT_DIR,
-    'point': BINDING_LIGHT_POINT,
-    'area': BINDING_LIGHT_AREA
-}
-
 
 RENDERABLE_INST_DTYPE = np.dtype([
     ('transform', np.float32, (4, 4)),
@@ -71,87 +33,22 @@ RENDERABLE_INST_DTYPE = np.dtype([
 ])  # 160 bytes
 
 
-##
-
-def _create_texture(width, height, image_data: Optional[np.ndarray] = None, repeat: bool = False, dtype=float):
-    texture_id = glGenTextures(1)
-
-    glBindTexture(GL_TEXTURE_2D, texture_id)
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT if repeat else GL_CLAMP_TO_EDGE)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT if repeat else GL_CLAMP_TO_EDGE)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-
-    # TODO: This should probably use the image_data dtpye
-    if dtype == float:
-        bitdepth = GL_RGBA32F
-        typ = GL_FLOAT
-    elif dtype == int:
-        bitdepth = GL_SRGB_ALPHA
-        typ = GL_UNSIGNED_BYTE
-    else:
-        raise AttributeError(f'Unsupported data type {dtype}')
-
-    glTexImage2D(GL_TEXTURE_2D, 0, bitdepth, width, height, 0, GL_RGBA, typ, image_data)
-
-    return texture_id
-
-
-def _create_tex_array(texture_ids):
-
-    if not texture_ids:
-        return 0
-
-    glBindTexture(GL_TEXTURE_2D, texture_ids[0])
-
-    tex_w = glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH)
-    tex_h = glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT)
-    glBindTexture(GL_TEXTURE_2D, 0)
-
-    layer_count = len(texture_ids)
-    tex_array_id = glGenTextures(1)
-
-    glBindTexture(GL_TEXTURE_2D_ARRAY, tex_array_id)
-    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_SRGB8_ALPHA8, tex_w, tex_h, layer_count)
-
-    for i, tex_id in enumerate(texture_ids):
-        glCopyImageSubData(
-            tex_id, GL_TEXTURE_2D, 0, 0, 0, 0,
-            tex_array_id, GL_TEXTURE_2D_ARRAY, 0, 0, 0, i,
-            tex_w, tex_h, 1
-        )
-
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-
-    glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
-
-    return tex_array_id
-
-
-# Scene baker
-
-
 class RaytraceBaker:
     """
     Manages BVH structures and GPU buffers for a Scene.
     """
 
-    def __init__(self, scene: Scene):
+    def __init__(self, scene: Scene, resource_manager: GPUResourceManager):
         self.scene = scene
 
         self._tlas: Optional[BVH] = None
         self._blases: List[BVH] = []
         self._dynamic_map: Dict[int, int] = {}
 
-        self.skybox_tex = self.scene.skybox.texture_id if self.scene.skybox else 0
-        self.tex_array = 0
-
-        self.bvh_buffers = BufferRegistry()
-        self.light_buffers = BufferRegistry()
+        self.resource_manager = resource_manager
+        self.bvh_buffers = BufferRegistry(self.resource_manager)
+        self.light_buffers = BufferRegistry(self.resource_manager)
+        self.scene_textures = TextureRegistry(self.resource_manager)
 
         self._nb_dir_lights = 0
         self._nb_point_lights = 0
@@ -161,6 +58,7 @@ class RaytraceBaker:
         self.gpu_inst_info: Optional[np.ndarray] = None
         self._material_map: Dict[int, int] = {}
         self._asset_blas_map: Dict[int, Dict] = {}
+        self._asset_tex_map = {}
 
         print("Baking ray-tracing scene...")
         if not self.scene.instances:
@@ -177,6 +75,9 @@ class RaytraceBaker:
 
         # Upload everything to GPU
         self._push_to_gpu()
+
+        if self.scene.skybox:
+            self.scene_textures.register_existing('skybox', self.scene.skybox.texture_id, GL_TEXTURE_CUBE_MAP)
 
     # Main packing methods
 
@@ -195,7 +96,11 @@ class RaytraceBaker:
             if name in self.light_buffers:
                 self.light_buffers[name].resize(len(data), data=data)
             else:
-                self.light_buffers.allocate(name, dtype, len(data), data=data, usage=GL_DYNAMIC_DRAW)
+                self.light_buffers.allocate(name,
+                                            dtype=dtype,
+                                            count=len(data),
+                                            data=data,
+                                            usage=GL_DYNAMIC_DRAW)
 
         _pack_or_update('dir', dir_l, DIR_LIGHT_DTYPE)
         _pack_or_update('point', point_l, POINT_LIGHT_DTYPE)
@@ -211,16 +116,11 @@ class RaytraceBaker:
         self._material_map = {asset.id: i for i, asset in enumerate(mesh_assets)}
 
         texture_images = []
-        self._asset_tex_map = {}
 
         for asset in mesh_assets:
-            if asset.has_texture:
-                img = asset.texture_image
-                if img is not None:
-                    self._asset_tex_map[asset.id] = len(texture_images)
-                    texture_images.append(img)
-                else:
-                    self._asset_tex_map[asset.id] = None
+            if asset.has_texture and asset.texture_image is not None:
+                self._asset_tex_map[asset.id] = len(texture_images)
+                texture_images.append(asset.texture_image)
             else:
                 self._asset_tex_map[asset.id] = None
 
@@ -234,12 +134,20 @@ class RaytraceBaker:
                     print(f"  Resizing texture {i} from {img.size}")
                     img = img.resize((self.tex_w, self.tex_h), Image.Resampling.LANCZOS)
 
-                img_data = img.convert('RGBA').tobytes()
-                tex_id = _create_texture(self.tex_w, self.tex_h, image_data=img_data, repeat=True, dtype=int)
-                tex_ids.append(tex_id)
+                # Create a temporary standalone texture to push in the array
+                temp_tex = self.scene_textures.allocate_2d('temp',
+                                                           self.tex_w,
+                                                           self.tex_h,
+                                                           image_data=img.convert('RGBA').tobytes(),
+                                                           repeat=True,
+                                                           dtype=int)
+                tex_ids.append(temp_tex.handle)
 
-            self.tex_array = _create_tex_array(tex_ids)
+            self.scene_textures.allocate_array('materials', tex_ids)
+
+            # remove the temporary IDs now that they've been copied to the array
             glDeleteTextures(len(tex_ids), tex_ids)
+            del self.scene_textures._textures['temp']
 
         mat_data = np.zeros((len(mesh_assets), 4), dtype=np.uint32)
 
@@ -306,13 +214,7 @@ class RaytraceBaker:
                 all_verts.append(asset.vertices)
                 all_idxs.append(asset.indices.flatten())
 
-                self._asset_blas_map[asset.id] = {
-                    'id': blas_id,
-                    'v_off': v_off,
-                    'idx_off': idx_off,
-                    'is_points': 0
-                }
-
+                self._asset_blas_map[asset.id] = {'id': blas_id, 'v_off': v_off, 'idx_off': idx_off, 'is_points': 0}
                 v_off += len(asset.vertices)
                 idx_off += len(asset.indices.flatten())
 
@@ -321,10 +223,10 @@ class RaytraceBaker:
                 points = asset.points.astype(np.float32)
                 radii = asset.radii.astype(np.float32)
 
-                blas = BVH.from_points(
-                    points, radius=radii,
-                    traversal_cost=1.0, intersection_cost=1.0
-                )
+                blas = BVH.from_points(points,
+                                       radius=radii,
+                                       traversal_cost=1.0,
+                                       intersection_cost=1.0)
 
                 bundle = blas.get_SSBO_bundle(flatten_nodes=False)
 
@@ -336,11 +238,7 @@ class RaytraceBaker:
                 packed_points[:, 7:10] = asset.colors
                 all_pts.append(packed_points)
 
-                self._asset_blas_map[asset.id] = {
-                    'id': blas_id,
-                    'pt_off': pt_off,
-                }
-
+                self._asset_blas_map[asset.id] = {'id': blas_id, 'pt_off': pt_off}
                 pt_off += nb_points
 
             else:
@@ -484,7 +382,7 @@ class RaytraceBaker:
     def update_texture(self, asset: 'Asset'):
         """Update a texture on the GPU for a given Asset."""
 
-        if self.tex_array == 0:
+        if 'materials' not in self.scene_textures:
             return
 
         tex_idx = self._asset_tex_map.get(asset.id)
@@ -500,12 +398,10 @@ class RaytraceBaker:
         if img.size != (self.tex_w, self.tex_h):
             img = img.resize((self.tex_w, self.tex_h), Image.Resampling.LANCZOS)
 
-        glBindTexture(GL_TEXTURE_2D_ARRAY, self.tex_array)
+        glBindTexture(GL_TEXTURE_2D_ARRAY, self.scene_textures['materials'].handle)
         glTexSubImage3D(
-            GL_TEXTURE_2D_ARRAY, 0,
-            0, 0, tex_idx,
-            self.tex_w, self.tex_h, 1,
-            GL_RGBA, GL_UNSIGNED_BYTE, img.convert("RGBA").tobytes()
+            GL_TEXTURE_2D_ARRAY, 0, 0, 0, tex_idx,
+            self.tex_w, self.tex_h, 1, GL_RGBA, GL_UNSIGNED_BYTE, img.convert("RGBA").tobytes()
         )
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
@@ -543,9 +439,7 @@ class RaytraceBaker:
     def free(self):
         self.bvh_buffers.free()
         self.light_buffers.free()
-
-        if self.tex_array:
-            glDeleteTextures(1, [self.tex_array])
+        self.scene_textures.free()
 
 
 ##
@@ -575,7 +469,8 @@ class Raytracer(BaseRenderer):
 
         # Bake first so VRAM estimation is correct
         self.scene = scene
-        self._baker = RaytraceBaker(scene)
+        self.resource_manager = GPUResourceManager()
+        self._baker = RaytraceBaker(scene, self.resource_manager)
 
         super().__init__(
             receptor_array=receptor_array,
@@ -584,7 +479,8 @@ class Raytracer(BaseRenderer):
             nb_samples=nb_samples,
             quasi_random=quasi_random,
             batch_size=batch_size,
-            enable_actuation=enable_actuation
+            enable_actuation=enable_actuation,
+            resource_manager=self.resource_manager
         )
 
         # Global lighting controls
@@ -595,11 +491,11 @@ class Raytracer(BaseRenderer):
         self.sky_intensity = 1.0
 
         # Lazy resource handles
-        self._active_defines: Set[str] = set()
+        self._active_defines: Dict[str, Any] = {}
         self._raytrace_shader: Optional[ShaderProgram] = None
 
         self._view_shaders: Dict[str, ShaderProgram] = {}
-        self._view_textures: Dict[str, int] = {}
+        self.view_textures = TextureRegistry(self.resource_manager)
         self._pano_res = pano_res
 
     # Internal properties for lazy-loaded resources
@@ -609,10 +505,10 @@ class Raytracer(BaseRenderer):
         self._ensure_defines()
 
         if self._raytrace_shader is None:
-            self._raytrace_shader = ShaderProgram(
-                comp_path='shaders/raytracing/ommatidiaRaytracing.comp',
-                defines=self._active_defines
-            )
+            shader_path = 'shaders/raytracing/ommatidiaRaytracing.comp'
+
+            self._raytrace_shader = ShaderProgram(comp_path=shader_path,
+                                                  defines=self._active_defines)
         return self._raytrace_shader
 
     def _get_view_shader(self, view_name: str) -> ShaderProgram:
@@ -625,10 +521,8 @@ class Raytracer(BaseRenderer):
             elif view_name == 'perspective':
                 shader_path = 'shaders/raytracing/perspectiveRaytracing.comp'
 
-            self._view_shaders[view_name] = ShaderProgram(
-                comp_path=shader_path,
-                defines=self._active_defines
-            )
+            self._view_shaders[view_name] = ShaderProgram(comp_path=shader_path,
+                                                          defines=self._active_defines)
         return self._view_shaders[view_name]
 
     def _get_view_texture(self, view_name: str) -> Tuple[int, Tuple[int, int]]:
@@ -640,33 +534,29 @@ class Raytracer(BaseRenderer):
             viewport = glGetIntegerv(GL_VIEWPORT)
             target_res = (viewport[2], viewport[3])
 
-        if view_name not in self._view_textures:
-            self._view_textures[view_name] = _create_texture(*target_res, dtype=float)
-            return self._view_textures[view_name], target_res
+        if view_name not in self.view_textures:
+            self.view_textures.allocate_2d(view_name, target_res[0], target_res[1], dtype=float)
 
-        return self._view_textures[view_name], target_res
-
-    # Various internal helpers
+        return self.view_textures[view_name].handle, target_res
 
     def _estim_vram_use(self) -> float:
-        total_bytes = 0
 
-        for buf in (
-            self._baker.cpu_verts, self._baker.cpu_idx,
-            self._baker.cpu_pts, self._baker.cpu_blas,
-            self._baker.cpu_tlas_nodes, self._baker.cpu_tlas_idx,
-            self._baker.cpu_blas_idx, self._baker.gpu_inst_info,
-        ):
-            if buf is not None:
-                total_bytes += buf.nbytes
-
+        total_bytes = sum(buf.nbytes for buf in
+            (self._baker.cpu_verts, self._baker.cpu_idx, self._baker.cpu_pts, self._baker.cpu_blas,
+            self._baker.cpu_tlas_nodes, self._baker.cpu_tlas_idx, self._baker.cpu_blas_idx,
+            self._baker.gpu_inst_info)
+                          if buf is not None)
         total_bytes += getattr(self, '_total_samples', 0) * 16
+
         return total_bytes / (1024 * 1024)
 
-    def _get_defines(self) -> Set[str]:
+    def _get_defines(self) -> Dict[str, Any]:
         """Determines which #defines to inject based on current baker light counts."""
 
-        defines = set()
+        defines = {}
+        defines.update(self.eye_buffers.shader_defines)
+        defines.update(self._baker.bvh_buffers.shader_defines)
+        defines.update(self._baker.light_buffers.shader_defines)
 
         for count, name in [
             (self._baker._nb_dir_lights, 'DIRECTIONAL'),
@@ -674,10 +564,9 @@ class Raytracer(BaseRenderer):
             (self._baker._nb_area_lights, 'AREA')
         ]:
             if count >= 1:
-                defines.add(f'HAS_{name}_LIGHT')
-
+                defines[f'HAS_{name}_LIGHT'] = 1
             if count > 1:
-                defines.add(f'MULTI_{name}')
+                defines[f'MULTI_{name}'] = 1
 
         return defines
 
@@ -700,20 +589,6 @@ class Raytracer(BaseRenderer):
         if new_defines != self._active_defines:
             self._invalidate_shaders()
             self._active_defines = new_defines
-
-    # Internal helpers for GL resource binding
-
-    def _bind_scene_textures(self, shader: ShaderProgram):
-        """Bind skybox cubemap and material texture array."""
-
-        if self._baker.scene.skybox:
-            glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_CUBE_MAP, self._baker.skybox_tex)
-            glUniform1i(shader.get_loc('skybox'), 0)
-
-        glActiveTexture(GL_TEXTURE1)
-        glBindTexture(GL_TEXTURE_2D_ARRAY, self._baker.tex_array)
-        glUniform1i(shader.get_loc('scene_textures'), 1)
 
     def _set_scene_uniforms(self, shader: ShaderProgram):
         """Set uniforms shared by all ray-tracing compute shaders."""
@@ -742,68 +617,65 @@ class Raytracer(BaseRenderer):
     def _raytrace_thirdperson(self, view_name: str, pov: Union['Agent', 'OrbitCamera']):
         """Shared dispatch for panoramic / perspective ray-traced views."""
 
-        shader = self._get_view_shader(view_name)
-        shader.use()
-
         tex_id, res = self._get_view_texture(view_name)
-
-        glBindImageTexture(0, tex_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
 
         bvh = self._baker.bvh_buffers
         lights = self._baker.light_buffers
-        with bvh.grouped_bind_base(SCENE_BINDINGS), lights.grouped_bind_base(LIGHTS_BINDINGS):
 
-            self._bind_scene_textures(shader)
-            self._set_scene_uniforms(shader)
+        with self._get_view_shader(view_name) as shader:
+            glBindImageTexture(0, tex_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
 
-            glUniform1i(shader.get_loc('nb_samples'), self._samples_per_px)
-            c2w = glm.inverse(pov.view)
-            glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w))
+            with bvh.grouped_bind_base(), lights.grouped_bind_base():
+                with self._baker.scene_textures.bind_all():
 
-            if view_name == 'perspective':
-                inv_proj = glm.inverse(self.agent.projection)
-                glUniformMatrix4fv(shader.get_loc('inv_projection'), 1, False, glm.value_ptr(inv_proj))
+                    if 'skybox' in self._baker.scene_textures:
+                        glUniform1i(shader.get_loc('skybox'), self._baker.scene_textures['skybox'].unit)
+                    if 'materials' in self._baker.scene_textures:
+                        glUniform1i(shader.get_loc('scene_textures'), self._baker.scene_textures['materials'].unit)
 
-            glDispatchCompute((res[0] + 15) // 16, (res[1] + 15) // 16, 1)
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
-        shader.stop()
+                    self._set_scene_uniforms(shader)
+
+                    glUniform1i(shader.get_loc('nb_samples'), self._samples_per_px)
+                    c2w = glm.inverse(pov.view)
+                    glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w))
+
+                    if view_name == 'perspective':
+                        inv_proj = glm.inverse(self.agent.projection)
+                        glUniformMatrix4fv(shader.get_loc('inv_projection'), 1, False, glm.value_ptr(inv_proj))
+
+                    glDispatchCompute((res[0] + 15) // 16, (res[1] + 15) // 16, 1)
+                    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
 
     def _raytrace_receptors(self):
         """Pass 1: ray-trace each receptor."""
-
-        shader = self.raytrace_shader
-        shader.use()
-
-        eye_bindings = {
-            'rays_intermediate': BINDING_RAYS_INTERMEDIATE,
-            'rcpt_static': BINDING_RCPT_STATIC,
-            'lens_static': BINDING_LENS_STATIC,
-            'rcpt_dynamic': BINDING_RCPT_DYNAMIC
-        }
 
         eye = self.eye_buffers
         bvh = self._baker.bvh_buffers
         lights = self._baker.light_buffers
 
-        with bvh.grouped_bind_base(SCENE_BINDINGS), lights.grouped_bind_base(LIGHTS_BINDINGS), eye.grouped_bind_base(eye_bindings):
-            self._bind_scene_textures(shader)
-            self._set_scene_uniforms(shader)
+        with self.raytrace_shader as shader:
+            with bvh.grouped_bind_base(), lights.grouped_bind_base(), eye.grouped_bind_base(['rays_intermediate', 'rcpt_static', 'lens_static', 'rcpt_dynamic']):
+                with self._baker.scene_textures.bind_all():
 
-            glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
-            glUniform1i(shader.get_loc('use_quasi_random'), int(self._quasi_random))
+                    if 'skybox' in self._baker.scene_textures:
+                        glUniform1i(shader.get_loc('skybox'), self._baker.scene_textures['skybox'].unit)
+                    if 'materials' in self._baker.scene_textures:
+                        glUniform1i(shader.get_loc('scene_textures'), self._baker.scene_textures['materials'].unit)
 
-            c2w_mat = glm.inverse(self.agent.view)
-            glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
+                    self._set_scene_uniforms(shader)
 
-            # Dispatch: one thread per sample
-            N = len(self._ra)
-            total_work = N * self._samples_per_rcpt
-            work_groups = (total_work + 63) // 64
+                    glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
+                    glUniform1i(shader.get_loc('use_quasi_random'), int(self._quasi_random))
 
-            glDispatchCompute(work_groups, 1, 1)
-            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+                    c2w_mat = glm.inverse(self.agent.view)
+                    glUniformMatrix4fv(shader.get_loc('cam_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
-        shader.stop()
+                    N = len(self._ra)
+                    total_work = N * self._samples_per_rcpt
+                    work_groups = (total_work + 63) // 64
+
+                    glDispatchCompute(work_groups, 1, 1)
+                    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     def _sample_scene(self):
         self._baker.update()
@@ -836,24 +708,15 @@ class Raytracer(BaseRenderer):
 
     def update_texture(self, asset: 'Asset'):
         """Update a texture on the GPU for given Asset."""
-
         self._baker.update_texture(asset)
 
     # Cleanup
 
     def free(self):
         self._invalidate_shaders()
-
-        if self.reduction_shader:
-            self.reduction_shader.free()
-
-        tex_ids = list(self._view_textures.values())
-        if tex_ids:
-            glDeleteTextures(len(tex_ids), tex_ids)
-
-        if self._screen_surface:
-            self._screen_surface.free()
-
+        if self.reduction_shader: self.reduction_shader.free()
+        self.view_textures.free()
+        if self._screen_surface: self._screen_surface.free()
         self._baker.free()
         super().free()
 
@@ -900,9 +763,9 @@ class Pathtracer(Raytracer):
             enable_direct=enable_direct
         )
 
-    def _get_defines(self) -> Set[str]:
+    def _get_defines(self) -> Dict[str, Any]:
         defines = super()._get_defines()
-        defines.add('PATH_TRACING')
+        defines['PATH_TRACING'] = 1
         return defines
 
     def _set_scene_uniforms(self, shader: ShaderProgram):

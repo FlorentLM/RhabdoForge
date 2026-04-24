@@ -13,10 +13,12 @@ from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight
 from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.renderers.commons import BaseRenderer, BINDING_RCPT_STATIC, BINDING_RCPT_DYNAMIC, BINDING_RAYS_INTERMEDIATE
+from insectvision.renderers.resources import GPUResourceManager
+from insectvision.renderers.commons import BaseRenderer
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import ReceptorArray
+
 
 def _get_light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
     """Computes the orthographic projection and view matrix for a directional light."""
@@ -181,7 +183,7 @@ class RasterMesh:
         self.asset_id = asset.id
         self.draw_count = asset.indices.size
 
-        self.shaders = ShaderProgram(vert_path=vert_path, frag_path=frag_path)
+        self.shader = ShaderProgram(vert_path=vert_path, frag_path=frag_path)
 
         self.texture = self._load_texture(asset)
         self.has_texture = self.texture != 0
@@ -269,7 +271,7 @@ class RasterMesh:
         glDeleteBuffers(1, [self.nbo])
         glDeleteBuffers(1, [self.ebo])
 
-        self.shaders.free()
+        self.shader.free()
 
         if self.texture != 0:
             glDeleteTextures(1, [self.texture])
@@ -285,7 +287,7 @@ class RasterPoints:
         self.asset_id = asset.id
         self.draw_count = asset._nb_points
 
-        self.shaders = ShaderProgram(vert_path=vert_path, frag_path=frag_path)
+        self.shader = ShaderProgram(vert_path=vert_path, frag_path=frag_path)
         self.vao = glGenVertexArrays(1)
         self.vbo = glGenBuffers(1)
 
@@ -299,17 +301,17 @@ class RasterPoints:
         stride = packed_data.itemsize * 7  # 3 for pos, 3 for color, 1 for radius
 
         # Vertex attribute for position
-        pos_loc = glGetAttribLocation(self.shaders.program_id, "position")
+        pos_loc = glGetAttribLocation(self.shader.program_id, "position")
         glEnableVertexAttribArray(pos_loc)
         glVertexAttribPointer(pos_loc, 3, GL_FLOAT, False, stride, ctypes.c_void_p(0))
 
         # Vertex attribute for color
-        color_loc = glGetAttribLocation(self.shaders.program_id, "color")
+        color_loc = glGetAttribLocation(self.shader.program_id, "color")
         glEnableVertexAttribArray(color_loc)
         glVertexAttribPointer(color_loc, 3, GL_FLOAT, False, stride, ctypes.c_void_p(packed_data.itemsize * 3))
 
         # Vertex attribute for radius
-        rad_loc = glGetAttribLocation(self.shaders.program_id, "radius")
+        rad_loc = glGetAttribLocation(self.shader.program_id, "radius")
         glEnableVertexAttribArray(rad_loc)
         glVertexAttribPointer(rad_loc, 1, GL_FLOAT, False, stride, ctypes.c_void_p(packed_data.itemsize * 6))
 
@@ -318,7 +320,7 @@ class RasterPoints:
     def free(self):
         glDeleteVertexArrays(1, [self.vao])
         glDeleteBuffers(1, [self.vbo])
-        self.shaders.free()
+        self.shader.free()
 
 
 class RasterInstance:
@@ -336,8 +338,9 @@ class RasterBaker:
     Creates and caches OpenGL vertex arrays (VAOs) for each unique asset in the scene.
     """
 
-    def __init__(self, scene: Scene, enable_shadows: bool = False):
+    def __init__(self, scene: Scene, resource_manager: GPUResourceManager, enable_shadows: bool = False):
         self.scene = scene
+        self.resource_manager = resource_manager
 
         self._cache = {}
 
@@ -448,7 +451,9 @@ class Rasterizer(BaseRenderer):
 
         self._ra = receptor_array
         self.scene = scene
-        self._baker = RasterBaker(scene, enable_shadows=enable_shadows)
+
+        self.resource_manager = GPUResourceManager()
+        self._baker = RasterBaker(scene, enable_shadows=enable_shadows, resource_manager=self.resource_manager)
 
         self._cubemap_fbo = CubemapFBO(resolution=cubemap_res)
         self._cubemap_sampler = ShaderProgram(comp_path='ommatidiaRasterizer.comp')
@@ -534,40 +539,35 @@ class Rasterizer(BaseRenderer):
         renderables_list = self._baker.renderables
 
         # Meshes
-        mesh_shader = self._baker._shadow_mesh
-        mesh_shader.use()
+        with self._baker._shadow_mesh as mesh_shader:
 
-        glUniformMatrix4fv(mesh_shader.get_loc('light_space_matrix'), 1, False, lsm_ptr)
+            glUniformMatrix4fv(mesh_shader.get_loc('light_space_matrix'), 1, False, lsm_ptr)
 
-        for inst in renderables_list:
-            if not isinstance(inst.asset, RasterMesh):
-                continue
-            glUniformMatrix4fv(mesh_shader.get_loc('model'), 1, False, glm.value_ptr(inst.transform))
-            glBindVertexArray(inst.asset.vao)
-            glDrawElements(GL_TRIANGLES, inst.asset.draw_count, GL_UNSIGNED_INT, None)
-
-        mesh_shader.stop()
+            for inst in renderables_list:
+                if not isinstance(inst.asset, RasterMesh):
+                    continue
+                glUniformMatrix4fv(mesh_shader.get_loc('model'), 1, False, glm.value_ptr(inst.transform))
+                glBindVertexArray(inst.asset.vao)
+                glDrawElements(GL_TRIANGLES, inst.asset.draw_count, GL_UNSIGNED_INT, None)
 
         # Point clouds (splats)
-        pts_shader = self._baker._shadow_points
-        pts_shader.use()
+        with self._baker._shadow_points as pts_shader:
 
-        glUniformMatrix4fv(pts_shader.get_loc('light_space_matrix'), 1, False, lsm_ptr)
+            glUniformMatrix4fv(pts_shader.get_loc('light_space_matrix'), 1, False, lsm_ptr)
 
-        pixel_mult = 25.0
-        glEnable(GL_PROGRAM_POINT_SIZE)
+            pixel_mult = 25.0
+            glEnable(GL_PROGRAM_POINT_SIZE)
 
-        for inst in renderables_list:
-            if not isinstance(inst.asset, RasterPoints):
-                continue
-            rad_scale = inst.properties.get('radius_scale', 1.0) * pixel_mult * self.shadow_splat
-            glUniform1f(pts_shader.get_loc('radius_scale'), rad_scale)
-            glUniformMatrix4fv(pts_shader.get_loc('model'), 1, False, glm.value_ptr(inst.transform))
-            glBindVertexArray(inst.asset.vao)
-            glDrawArrays(GL_POINTS, 0, inst.asset.draw_count)
+            for inst in renderables_list:
+                if not isinstance(inst.asset, RasterPoints):
+                    continue
+                rad_scale = inst.properties.get('radius_scale', 1.0) * pixel_mult * self.shadow_splat
+                glUniform1f(pts_shader.get_loc('radius_scale'), rad_scale)
+                glUniformMatrix4fv(pts_shader.get_loc('model'), 1, False, glm.value_ptr(inst.transform))
+                glBindVertexArray(inst.asset.vao)
+                glDrawArrays(GL_POINTS, 0, inst.asset.draw_count)
 
-        glDisable(GL_PROGRAM_POINT_SIZE)
-        pts_shader.stop()
+            glDisable(GL_PROGRAM_POINT_SIZE)
 
         glDisable(GL_POLYGON_OFFSET_FILL)
         glBindVertexArray(0)
@@ -576,70 +576,69 @@ class Rasterizer(BaseRenderer):
 
     def _render_instance(self, inst: RasterInstance, view_mat: np.ndarray, proj_mat: np.ndarray, to_screen: bool = False):
         """Renders a single RasterInstance."""
-        asset = inst.asset
-        asset.shaders.use()
 
-        glBindVertexArray(asset.vao)
+        with inst.asset.shader as shader:
 
-        cam_mat = proj_mat * view_mat
-        glUniformMatrix4fv(asset.shaders.get_loc("camera"), 1, False, glm.value_ptr(cam_mat))
-        glUniformMatrix4fv(asset.shaders.get_loc("model"), 1, False, glm.value_ptr(inst.transform))
+            glBindVertexArray(inst.asset.vao)
 
-        # these toggles are only if drawing to the human screen
-        sim_insect = int(self.simulate_insect_vision and not self.uv_encoded_textures) if to_screen else 0
-        uv_enc = int(self.uv_encoded_textures) if to_screen else 0
+            cam_mat = proj_mat * view_mat
+            glUniformMatrix4fv(shader.get_loc("camera"), 1, False, glm.value_ptr(cam_mat))
+            glUniformMatrix4fv(shader.get_loc("model"), 1, False, glm.value_ptr(inst.transform))
 
-        glUniform1i(asset.shaders.get_loc('false_colors'), sim_insect)
-        glUniform1i(asset.shaders.get_loc('uv_encoding'), uv_enc)
+            # these toggles are only if drawing to the human screen
+            sim_insect = int(self.simulate_insect_vision and not self.uv_encoded_textures) if to_screen else 0
+            uv_enc = int(self.uv_encoded_textures) if to_screen else 0
 
-        if isinstance(asset, RasterMesh):
+            glUniform1i(shader.get_loc('false_colors'), sim_insect)
+            glUniform1i(shader.get_loc('uv_encoding'), uv_enc)
 
-            # Normal matrix for lighting
-            norm_mat = glm.transpose(glm.inverse(glm.mat3(inst.transform)))
-            norm_np = np.array(norm_mat, dtype=np.float32).reshape(3, 3)
-            glUniformMatrix3fv(asset.shaders.get_loc("normal_matrix"), 1, True, norm_np)
+            if isinstance(inst.asset, RasterMesh):
 
-            # Directional light (independent of shadows)
-            light = self._primary_light if self.enable_direct else None
-            glUniform1i(asset.shaders.get_loc("enable_ambient"), int(light is not None))
+                # Normal matrix for lighting
+                norm_mat = glm.transpose(glm.inverse(glm.mat3(inst.transform)))
+                norm_np = np.array(norm_mat, dtype=np.float32).reshape(3, 3)
+                glUniformMatrix3fv(shader.get_loc("normal_matrix"), 1, True, norm_np)
 
-            if light is not None:
-                glUniform3f(asset.shaders.get_loc("light_direction"), light.direction.x, light.direction.y, light.direction.z)
-                glUniform3f(asset.shaders.get_loc("light_color"), light.color.x, light.color.y, light.color.z)
-                glUniform1f(asset.shaders.get_loc("light_intensity"), light.intensity)
-                glUniform3f(asset.shaders.get_loc("ambient_color"), *self.ambient_color)
-                glUniform1f(asset.shaders.get_loc("ambient_intensity"), self.ambient_intensity)
+                # Directional light (independent of shadows)
+                light = self._primary_light if self.enable_direct else None
+                glUniform1i(shader.get_loc("enable_ambient"), int(light is not None))
 
-            self._set_shadow_uniforms(asset.shaders)
+                if light is not None:
+                    glUniform3f(shader.get_loc("light_direction"), light.direction.x, light.direction.y, light.direction.z)
+                    glUniform3f(shader.get_loc("light_color"), light.color.x, light.color.y, light.color.z)
+                    glUniform1f(shader.get_loc("light_intensity"), light.intensity)
+                    glUniform3f(shader.get_loc("ambient_color"), *self.ambient_color)
+                    glUniform1f(shader.get_loc("ambient_intensity"), self.ambient_intensity)
 
-            glUniform1i(asset.shaders.get_loc("has_texture"), int(asset.has_texture))
-            glUniform4fv(asset.shaders.get_loc("base_color"), 1, asset.base_color)
+                self._set_shadow_uniforms(shader)
 
-            glActiveTexture(GL_TEXTURE0)
-            if asset.has_texture:
-                glBindTexture(GL_TEXTURE_2D, asset.texture)
-            else:
+                glUniform1i(shader.get_loc("has_texture"), int(inst.asset.has_texture))
+                glUniform4fv(shader.get_loc("base_color"), 1, inst.asset.base_color)
+
+                glActiveTexture(GL_TEXTURE0)
+                if inst.asset.has_texture:
+                    glBindTexture(GL_TEXTURE_2D, inst.asset.texture)
+                else:
+                    glBindTexture(GL_TEXTURE_2D, 0)
+
+                glDrawElements(GL_TRIANGLES, inst.asset.draw_count, GL_UNSIGNED_INT, None)
                 glBindTexture(GL_TEXTURE_2D, 0)
 
-            glDrawElements(GL_TRIANGLES, asset.draw_count, GL_UNSIGNED_INT, None)
-            glBindTexture(GL_TEXTURE_2D, 0)
+            elif isinstance(inst.asset, RasterPoints):
+                glEnable(GL_PROGRAM_POINT_SIZE)
 
-        elif isinstance(asset, RasterPoints):
-            glEnable(GL_PROGRAM_POINT_SIZE)
+                pixel_mult = 25.0
+                rad_scale = inst.properties.get('radius_scale', 1.0) * pixel_mult
+                glUniform1f(shader.get_loc("radius_scale"), rad_scale)
 
-            pixel_mult = 25.0
-            rad_scale = inst.properties.get('radius_scale', 1.0) * pixel_mult
-            glUniform1f(asset.shaders.get_loc("radius_scale"), rad_scale)
+                self._set_shadow_uniforms(shader)
+                glUniform1f(shader.get_loc("shadow_darkness"), self.shadow_darkness)
 
-            self._set_shadow_uniforms(asset.shaders)
-            glUniform1f(asset.shaders.get_loc("shadow_darkness"), self.shadow_darkness)
+                glDrawArrays(GL_POINTS, 0, inst.asset.draw_count)
 
-            glDrawArrays(GL_POINTS, 0, asset.draw_count)
+                glDisable(GL_PROGRAM_POINT_SIZE)
 
-            glDisable(GL_PROGRAM_POINT_SIZE)
-
-        glBindVertexArray(0)
-        asset.shaders.stop()
+            glBindVertexArray(0)
 
     def _render_to_cubemap(self):
         """Pass 1: renders to the cubemap."""
@@ -713,36 +712,27 @@ class Rasterizer(BaseRenderer):
 
     def _sample_cubemap(self):
         """Pass 2: samples the cubemap into the intermediate ray_results buffer."""
-        shader = self._cubemap_sampler
-        shader.use()
 
-        # Dynamic buffer for actuated directions and static (for positions)
+        with self._cubemap_sampler as shader:
 
-        eye_bindings = {
-            'rays_intermediate': BINDING_RAYS_INTERMEDIATE,
-            'rcpt_static': BINDING_RCPT_STATIC,
-            'rcpt_dynamic': BINDING_RCPT_DYNAMIC
-        }
+            # Dynamic buffer for actuated directions and static (for positions)
+            with self.eye_buffers.grouped_bind_base(['rays_intermediate', 'rcpt_static', 'rcpt_dynamic']):
 
-        with self.eye_buffers.grouped_bind_base(eye_bindings):
+                glActiveTexture(GL_TEXTURE0)
+                glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.tex_id)
+                glUniform1i(shader.get_loc('scene_cubemap'), 0)
+                glUniform1i(shader.get_loc('use_quasi_random '), self._quasi_random)
 
-            glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.tex_id)
-            glUniform1i(shader.get_loc('scene_cubemap'), 0)
-            glUniform1i(shader.get_loc('use_quasi_random '), self._quasi_random)
+                glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
+                glUniform1f(shader.get_loc('dither_counter'), float(self._dither_counter))
 
-            glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
-            glUniform1f(shader.get_loc('dither_counter'), float(self._dither_counter))
+                # Dispatch: one thread per sample
+                N = len(self._ra)
+                total_work = N * self.nb_samples
+                work_groups = (total_work + 63) // 64
 
-            # Dispatch: one thread per sample
-            N = len(self._ra)
-            total_work = N * self.nb_samples
-            work_groups = (total_work + 63) // 64
-
-            glDispatchCompute(work_groups, 1, 1)
-            glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-
-        shader.stop()
+                glDispatchCompute(work_groups, 1, 1)
+                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     def _sample_scene(self):
         self._render_to_cubemap()

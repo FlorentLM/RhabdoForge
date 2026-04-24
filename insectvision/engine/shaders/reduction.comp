@@ -4,11 +4,11 @@
 // One thread per receptor
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(std430, binding = 0) readonly buffer  RcptStaticBlock  { ReceptorStatic rcpt_static[]; };
-layout(std430, binding = 2) writeonly buffer ColorOutput      { vec4 history_data[]; };
-layout(std430, binding = 3) buffer           EmaHistory       { vec4 ema_state[]; };
-layout(std430, binding = 4) readonly buffer  RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
-layout(std430, binding = 5) readonly buffer  RayResults       { vec4 ray_results[]; };
+layout(std430, binding = BINDING_RCPT_STATIC)       readonly buffer  RcptStaticBlock  { ReceptorStatic rcpt_static[]; };
+layout(std430, binding = BINDING_COLORS)            writeonly buffer ColorOutput      { vec4 history_data[]; };
+layout(std430, binding = BINDING_EMA_STATE)         buffer           EmaHistory       { vec4 ema_state[]; };
+layout(std430, binding = BINDING_RCPT_DYNAMIC)      readonly buffer  RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
+layout(std430, binding = BINDING_RAYS_INTERMEDIATE) readonly buffer  RayResults       { vec4 ray_results[]; };
 
 // Uniforms
 uniform int nb_samples;
