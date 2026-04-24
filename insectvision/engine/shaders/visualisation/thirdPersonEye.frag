@@ -9,7 +9,7 @@
 #ifdef OVERLAY_MODE
 #include "colormaps.glsl"
 layout (location = 0) in float v_scalar;
-uniform int colormap;
+uniform int overlay_colormap;
 #else
 layout (location = 0) in vec3  v_color;
 
@@ -40,7 +40,7 @@ out vec4 FragColor;
 
 void main() {
     #ifdef OVERLAY_MODE
-    vec3 rgb = apply_colormap(v_scalar, colormap);
+    vec3 rgb = apply_overlay_colormap(v_scalar, overlay_colormap);
     FragColor = vec4(clamp(rgb * visualisation_eye_surface_albedo, 0.0, 1.0), 1.0);
 
     #else

@@ -15,16 +15,17 @@
 layout(std430, binding = BINDING_RCPT_STATIC)  readonly buffer RcptStaticBlock  { ReceptorStatic  rcpt_static[]; };
 layout(std430, binding = BINDING_LENS_STATIC)  readonly buffer LensStaticBlock  { LensStatic      lens_static[]; };
 layout(std430, binding = BINDING_RCPT_DYNAMIC) readonly buffer RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
+layout(std430, binding = BINDING_COLORS)       readonly buffer ColorBlock       { vec4 color_data[]; };
 
 #ifdef OVERLAY_MODE
 layout(std430, binding = BINDING_OVERLAY) readonly buffer DataBlock { float scalar_data[]; };
 layout (location = 0) out float v_scalar;
 uniform float overlay_data_min;
 uniform float overlay_data_max;
-uniform int colormap;
-uniform float compression;
+uniform int overlay_colormap;
+uniform float overlay_compression;
+uniform bool overlay_fallback;
 #else
-layout(std430, binding = BINDING_COLORS) readonly buffer DataBlock { vec4 color_data[]; };
 layout (location = 0) out vec3 v_color;
 #endif
 
@@ -75,7 +76,12 @@ void main() {
         rs = rcpt_static[i]; rd = rcpt_dynamic[i];
         l_id = unpack_lens_id(rs.metadata);
         #ifdef OVERLAY_MODE
-        val = scalar_data[base + i];
+        if (overlay_fallback) {
+            val = color_data[base + i].w;
+//            val = dot(color_data[base + i].rgb, vec3(0.299, 0.587, 0.114));
+        } else {
+            val = scalar_data[base + i];
+        }
         #else
         val = color_data[base + i].rgb;
         #endif
@@ -87,7 +93,12 @@ void main() {
         for (int r = 0; r < receptors_per_lens; r++) {
             uint src = (output_mode == 2) ? rcpt_static[l_id * receptors_per_lens + r].cartridge_src : (l_id * receptors_per_lens + r);
             #ifdef OVERLAY_MODE
-            val += scalar_data[base + src];
+            if (overlay_fallback) {
+                val = color_data[base + i].w;
+//                val += dot(color_data[base + src].rgb, vec3(0.299, 0.587, 0.114));
+            } else {
+                val += scalar_data[base + src];
+            }
             #else
             val += color_data[base + src].rgb;
             #endif
@@ -99,7 +110,7 @@ void main() {
     v_eye_id = unpack_eye_id(rs.metadata);
 
     #ifdef OVERLAY_MODE
-    v_scalar = normalize_scalar(val, overlay_data_min, overlay_data_max, compression, colormap);
+    v_scalar = normalize_scalar(val, overlay_data_min, overlay_data_max, overlay_compression, overlay_colormap);
     #else
     v_color = val;
     #endif

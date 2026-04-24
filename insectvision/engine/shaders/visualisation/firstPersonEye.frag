@@ -4,13 +4,13 @@
 // First-person compound-eye visualisation
 //
 // Without OVERLAY_MODE: pass-through RGB
-// With OVERLAY_MODE: apply colormap LUT to scalar
+// With OVERLAY_MODE: apply overlay_colormap LUT to scalar
 
 #ifdef OVERLAY_MODE
 #include "colormaps.glsl"
 
 layout (location = 0) in float v_scalar;
-uniform int colormap;
+uniform int overlay_colormap;
 #else
 layout (location = 0) in vec3  v_color;
 #endif
@@ -25,7 +25,7 @@ layout (location = 0) out vec4 FragColor;
 
 void main() {
     #ifdef OVERLAY_MODE
-    vec3 base_rgb = apply_colormap(v_scalar, colormap);
+    vec3 base_rgb = apply_overlay_colormap(v_scalar, overlay_colormap);
     #else
     vec3 base_rgb = v_color;
 

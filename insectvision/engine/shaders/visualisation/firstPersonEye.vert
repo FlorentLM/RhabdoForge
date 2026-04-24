@@ -10,16 +10,17 @@ layout (location = 0) in vec3 cone_vertex;
 layout(std430, binding = BINDING_RCPT_STATIC)  readonly buffer RcptStaticBlock  { ReceptorStatic  rcpt_static[]; };
 layout(std430, binding = BINDING_LENS_STATIC)  readonly buffer LensStaticBlock  { LensStatic      lens_static[]; };
 layout(std430, binding = BINDING_RCPT_DYNAMIC) readonly buffer RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
+layout(std430, binding = BINDING_COLORS)       readonly buffer ColorBlock       { vec4 color_data[]; };
 
 #ifdef OVERLAY_MODE
 layout(std430, binding = BINDING_OVERLAY) readonly buffer DataBlock { float scalar_data[]; };
 layout (location = 0) out float v_scalar;
 uniform float overlay_data_min;
 uniform float overlay_data_max;
-uniform int colormap;
-uniform float compression;
+uniform int overlay_colormap;
+uniform float overlay_compression;
+uniform bool overlay_fallback;
 #else
-layout(std430, binding = BINDING_COLORS) readonly buffer DataBlock { vec4 color_data[]; };
 layout (location = 0) out vec3 v_color;
 #endif
 
@@ -41,7 +42,6 @@ void main() {
     v_instance_id = inst_idx;
     v_local_pos = cone_vertex.xy;
 
-    // Calculate buffer offset for batched rendering
     uint base = uint(frame_offset) * rcpt_static.length();
 
     uint l_id;
@@ -57,7 +57,12 @@ void main() {
         l_id = unpack_lens_id(rcpt_static[inst_idx].metadata);
         p_vec = (projection_mode == 1) ? rcpt_dynamic[inst_idx].direction : normalize(rcpt_static[inst_idx].position);
         #ifdef OVERLAY_MODE
-        value = scalar_data[base + inst_idx];
+        if (overlay_fallback) {
+            value = color_data[base + i].w;
+//            value = dot(color_data[base + inst_idx].rgb, vec3(0.299, 0.587, 0.114));
+        } else {
+            value = scalar_data[base + inst_idx];
+        }
         #else
         value = color_data[base + inst_idx].rgb;
         #endif
@@ -75,7 +80,12 @@ void main() {
             }
 
             #ifdef OVERLAY_MODE
-            value += scalar_data[base + src];
+            if (overlay_fallback) {
+                value = color_data[base + i].w;
+//                value += dot(color_data[base + src].rgb, vec3(0.299, 0.587, 0.114));
+            } else {
+                value += scalar_data[base + src];
+            }
             #else
             value += color_data[base + src].rgb;
             #endif
@@ -100,7 +110,7 @@ void main() {
     gl_Position = vec4(pos, 1.0);
 
     #ifdef OVERLAY_MODE
-    v_scalar = normalize_scalar(value, overlay_data_min, overlay_data_max, compression, colormap);
+    v_scalar = normalize_scalar(value, overlay_data_min, overlay_data_max, overlay_compression, overlay_colormap);
     #else
     v_color = value;
     #endif

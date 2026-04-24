@@ -256,10 +256,8 @@ class BaseRenderer(ABC):
         self.uv_encoded_textures: bool = False
 
         # Time keeping
-        self._dither_counter: int = 0  # only advanced when time dithering is on
-        self._frame_index: int = 0  # advanced at each new rendered frame
-        self._last_render_time: float = 0.0
-        self._dt: float = 0.0
+        self._dither_counter: int = 0   # only advanced when time dithering is on
+        self._frame_index: int = 0      # advanced at each new rendered frame
 
         # Visualisation stuff
         self.projection_mode = OmmatidiaProjection.Position
@@ -270,8 +268,8 @@ class BaseRenderer(ABC):
         self._overlay_colormap = Colormap.Thermal
         self._overlay_range = (0.0, 1.0)
         self._overlay_current_peak: Optional[float] = None
-        self._overlay_compression = 1.0  # power exponent for dynamic range compression (1.0 = linear, 0.5 = sqrt, etc)
-        self._overlay_autorange_perc = 98  # percentile to reject outliers
+        self._overlay_compression = 1.0         # power exponent for dynamic range compression (1.0 = linear, 0.5 = sqrt, etc)
+        self._overlay_autorange_perc = 98       # percentile to reject outliers
 
         # Fullscreen texture to draw to
         self._screen_surface: Optional[TextureViewer] = None
@@ -307,11 +305,16 @@ class BaseRenderer(ABC):
             uv_encoding=self.uv_encoded_textures,
             nb_samples=self.nb_samples,
 
-            # Visualisation
+            # Visualisation defaults
             selected_lens=self.selected_lens,
+            overlay_fallback=True,
+            overlay_data_min=self._overlay_range[0],
+            overlay_data_max=self._overlay_range[1],
+            overlay_colormap=int(self._overlay_colormap),
+            overlay_compression=self._overlay_compression,
 
             # Time tracking
-            dt=self._dt,
+            dt=0.0,
             frame_offset=self._frame_index % self._batch_size,
             dither_counter=self._dither_counter,
 
@@ -418,14 +421,6 @@ class BaseRenderer(ABC):
         # Each subclass implements its own estimation logic
         return 100.0
 
-    def _tick(self):
-        if self._context is not None:
-            self._dt = self._context.dt
-        else:
-            now = time.perf_counter()
-            self._dt = (now - self._last_render_time) if self._last_render_time > 0.0 else 0.0
-            self._last_render_time = now
-
     # Internal rendering logic and draw calls
 
     def _reduction(self):
@@ -494,9 +489,11 @@ class BaseRenderer(ABC):
 
     def _update_uniforms(self):
 
+        # self._last_render_time = time.perf_counter()
+
         # Ticks
         self._eye_uniforms.update(
-            dt=self._dt,
+            dt=self._context.dt,
             frame_offset=self._frame_index % self._batch_size,
             dither_counter=self._dither_counter
         )
@@ -521,8 +518,6 @@ class BaseRenderer(ABC):
 
     def _main_render(self):
         """Shared pipeline: tick -> upload updated uniforms -> scene-specific sampling -> reduce -> actuate."""
-
-        self._tick()
 
         self._update_uniforms()
 
@@ -549,8 +544,10 @@ class BaseRenderer(ABC):
 
             self._eye_uniforms.apply(shader)
 
-            color_buffer = 'overlay' if self.overlay_enabled else 'colors'
-            with self.eye_buffers.grouped_bind(['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', color_buffer]):
+            to_bind = ['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', 'colors']
+            if self.overlay_enabled:
+                to_bind.append('overlay')
+            with self.eye_buffers.grouped_bind(to_bind):
                 N = len(self._ra)
                 nb_units = N if self.output_mode == EyeOutput.Raw else self._ra.lens_count
 
@@ -578,8 +575,10 @@ class BaseRenderer(ABC):
 
             self._eye_uniforms.apply(shader)
 
-            color_buffer = 'overlay' if self.overlay_enabled else 'colors'
-            with self.eye_buffers.grouped_bind(['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', color_buffer]):
+            to_bind = ['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', 'colors']
+            if self.overlay_enabled:
+                to_bind.append('overlay')
+            with self.eye_buffers.grouped_bind(to_bind):
 
                 N = len(self._ra)
                 nb_units = N if self.output_mode == EyeOutput.Raw else self._ra.lens_count
@@ -728,7 +727,7 @@ class BaseRenderer(ABC):
             return VisualOutput(batch_result, self._ra)
 
     def set_overlay(self,
-                    values: Union[Dict['Eye', np.array], np.array],
+                    values: Optional[Union[Dict['Eye', np.array], np.array]] = None,
                     range: Optional[Tuple[float, float]] = None,
                     colormap: 'Colormap' = Colormap.Thermal,
                     compression: float = 0.5,
@@ -748,6 +747,23 @@ class BaseRenderer(ABC):
 
         N = len(self._ra)
 
+        if 'overlay' not in self.eye_buffers:
+            self.eye_buffers.allocate('overlay',
+                                      dtype=np.float32,
+                                      count=N,
+                                      usage=GL_DYNAMIC_DRAW)
+
+        if values is None:
+            # Clear and use default luminance
+            self._eye_uniforms.update(
+                overlay_fallback=True,
+                overlay_data_min=0.0,
+                overlay_data_max=1.0,
+                overlay_colormap=int(Colormap.Thermal),
+                overlay_compression=1.0
+            )
+            return
+
         if isinstance(values, dict):
             merged = np.zeros(N, dtype=np.float32)
 
@@ -762,12 +778,6 @@ class BaseRenderer(ABC):
 
         if buf_size != N:
             raise ValueError(f"scalar_data has {buf_size} elements, expected {N}.")
-
-        if 'overlay' not in self.eye_buffers:
-            self.eye_buffers.allocate('overlay',
-                                      dtype=np.float32,
-                                      count=N,
-                                      usage=GL_DYNAMIC_DRAW)
 
         elif self.eye_buffers['overlay'].count != N:
             self.eye_buffers['overlay'].resize(N)
@@ -802,10 +812,11 @@ class BaseRenderer(ABC):
         self._overlay_compression = compression
 
         self._eye_uniforms.update(
+            overlay_fallback=False,
             overlay_data_min=self._overlay_range[0],
             overlay_data_max=self._overlay_range[1],
-            colormap=int(self._overlay_colormap),
-            compression=self._overlay_compression
+            overlay_colormap=int(self._overlay_colormap),
+            overlay_compression=self._overlay_compression,
         )
 
     # Public properties and methods
@@ -855,7 +866,18 @@ class BaseRenderer(ABC):
 
     @overlay_enabled.setter
     def overlay_enabled(self, value: bool):
-        self._overlay_enabled = bool(value)
+        enable = bool(value)
+        self._overlay_enabled = enable
+        if enable:
+            self._eye_uniforms.update(
+                overlay_fallback=True,
+                overlay_data_min=0.0,
+                overlay_data_max=1.0,
+                overlay_colormap=int(Colormap.Thermal),
+                overlay_compression=1.0
+            )
+            # dummy call to initialise the buffer
+            self.set_overlay()
 
     @property
     def actuation(self):
