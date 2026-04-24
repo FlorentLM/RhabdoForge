@@ -1,9 +1,8 @@
-from contextlib import contextmanager, ExitStack
-
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
+from contextlib import contextmanager, ExitStack
 from typing import Optional, Dict, Callable, Sequence
 import numpy as np
 
