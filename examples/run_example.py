@@ -131,7 +131,7 @@ def main():
             context.input()  # this processes mouse and keyboard, it can be omitted to run headless
 
             # Rotate dynamic test crate
-            dynamic_crate.dt(context.delta_time).rotate_axis(45, 'up')
+            dynamic_crate.dt(context.dt).rotate_axis(45, 'up')
 
             # Get sensory data from the compound eye renderer
             view = eye_renderer.get_output()
