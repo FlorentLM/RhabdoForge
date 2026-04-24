@@ -7,7 +7,6 @@ from OpenGL.GL import *
 
 from typing import TYPE_CHECKING, Tuple, List, Dict, Optional, Set, Union
 import numpy as np
-from numpy.typing import ArrayLike
 from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
@@ -134,25 +133,6 @@ def _create_tex_array(texture_ids):
     glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
     return tex_array_id
-
-
-def _create_ssbo(data: Optional[ArrayLike] = None, size: Optional[int] = None, usage: int = GL_STATIC_DRAW) -> int:
-    """Create a new SSBO, upload data into it, and return the handle."""
-
-    if data is None and size is None:
-        raise AttributeError("SSBO size must be provided if data is not passed.")
-
-    if data is not None:
-        data = np.asarray(data)
-        if size is None:
-            size = data.nbytes
-
-    ssbo_bind = glGenBuffers(1)
-
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_bind)
-    glBufferData(GL_SHADER_STORAGE_BUFFER, size, data, usage)
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
-    return ssbo_bind
 
 
 # Scene baker

@@ -7,7 +7,6 @@ import random
 from abc import ABC, abstractmethod
 from enum import IntEnum
 from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple
-from numpy.typing import ArrayLike
 import numpy as np
 from pyglm import glm
 
@@ -71,45 +70,6 @@ def _query_available_VRAM() -> int:
         return mem_info[0] // 1024
 
     return 0
-
-
-def _create_pbo(data: Optional[ArrayLike] = None, size: Optional[int] = None, usage: int = GL_STREAM_READ) -> int:
-    """Create a new PBO, upload data into it, and return the handle."""
-
-    if data is None and size is None:
-        raise AttributeError("PBO size must be provided if data is not passed.")
-
-    if data is not None:
-        data = np.asarray(data)
-        if size is None:
-            size = data.nbytes
-
-    pbo_bind = glGenBuffers(1)
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo_bind)
-    glBufferData(GL_PIXEL_PACK_BUFFER, size, data, usage)
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
-
-    return pbo_bind
-
-
-def _create_vao(vertex_data: np.ndarray):
-    """
-    Create a VAO + VBO for a flat array of vec3 positions at attribute location 0.
-    Returns (vao, vbo, vertex_count).
-    """
-    vertex_count = len(vertex_data) // 3
-    vao = glGenVertexArrays(1)
-    vbo = glGenBuffers(1)
-
-    glBindVertexArray(vao)
-    glBindBuffer(GL_ARRAY_BUFFER, vbo)  # TODO: VBOs in the BufferRegistry?
-    glBufferData(GL_ARRAY_BUFFER, vertex_data.nbytes, vertex_data, GL_STATIC_DRAW)
-    glEnableVertexAttribArray(0)
-    glVertexAttribPointer(0, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
-    glBindVertexArray(0)
-
-    return vao, vbo, vertex_count
 
 
 ##
