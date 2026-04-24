@@ -12,8 +12,7 @@ from insectvision.utils import DisplayMode
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight
-from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.renderers.resources import GPUResourceManager
+from insectvision.engine.resources import ShaderProgram, GPUResourceManager
 from insectvision.renderers.commons import BaseRenderer
 
 if TYPE_CHECKING:

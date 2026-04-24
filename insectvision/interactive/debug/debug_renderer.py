@@ -6,7 +6,7 @@ import ctypes
 import numpy as np
 from pyglm import glm
 
-from insectvision.engine.shader_utils import ShaderProgram
+from insectvision.engine.resources import ShaderProgram
 
 
 class DebugRenderer:

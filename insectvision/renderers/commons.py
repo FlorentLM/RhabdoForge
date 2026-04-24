@@ -13,8 +13,7 @@ from insectvision.utils import EyeOutput, OmmatidiaProjection, Colormap, Display
 from insectvision.geometry.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
-from insectvision.engine.shader_utils import ShaderProgram
-from insectvision.renderers.resources import BufferRegistry, GPUResourceManager
+from insectvision.engine.resources import ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import ReceptorArray, Eye
@@ -276,6 +275,53 @@ class BaseRenderer(ABC):
         # Fullscreen texture to draw to
         self._screen_surface: Optional[TextureViewer] = None
 
+        # Initialise uniforms registries
+        avg_lens_radius = np.mean(np.linalg.norm(self._ra.rcpt_static_data['position'][:, :3], axis=1))
+
+        self._eye_uniforms = UniformRegistry(
+
+            # Receptors and lenses (constants during runtime)
+            nb_lenses=self._ra.lens_count,
+            nb_receptors=len(self._ra),
+            receptors_per_lens=self._ra.receptors_per_lens,
+
+            # Rhabdomere kernel params (constants during runtime)
+            kernel_centre_idx=self._ra.kernel.center_index,
+            diffraction_sq=(self._ra._wavelength_nm * 1e-3 / self._ra.kernel.lens_diameter_um) ** 2,
+            acc_rest_geom_sq=(self._ra.kernel.diameters_um[self._ra.kernel.center_index] / self._ra.kernel.nodal_distance_um) ** 2,
+            nodal_dist_rest=self._ra.kernel.nodal_distance_um,
+
+            # Various visualisation parameters (currently fixed and not modifiable)
+            visualisation_eye_surface_albedo=1.0,
+            visualisation_receptivefield_scale=1.0 / (2.0 * np.pi),
+            visualisation_lens_length=max(0.01, avg_lens_radius) * 0.3,
+            visualisation_eyes_scale=1.0,
+            visualisation_saccade_scale=0.025,
+
+            # Mofidiable during runtime
+            output_mode=self.output_mode,
+            tiled_mode=self.tiled_mode,
+            projection_mode=self.projection_mode,
+            false_colors=self.simulate_insect_vision and not self.uv_encoded_textures,
+            uv_encoding=self.uv_encoded_textures,
+            nb_samples=self.nb_samples,
+
+            # Visualisation
+            selected_lens=self.selected_lens,
+
+            # Time tracking
+            dt=self._dt,
+            frame_offset=self._frame_index % self._batch_size,
+
+            # Receptors dynamics
+            tau_fast=self.tau_fast,
+            tau_adapt=self.tau_adapt,
+            gain_lat=self.gain_lat if self._gpu_actuation else 0.0,
+            gain_ax=self.gain_ax if self._gpu_actuation else 0.0,
+            tau_relax=self.tau_relax,
+            gain_biochem=self.gain_biochem,
+        )
+
     # Internal properties for lazy loaded resources
 
     @property
@@ -375,68 +421,45 @@ class BaseRenderer(ABC):
         self._dt = (now - self._last_render_time) if self._last_render_time > 0.0 else 0.0
         self._last_render_time = now
 
-    # Internal helpers for GL resource binding
-
-    def _set_eye_uniforms(self, shader):
-        glUniform1i(shader.get_loc('output_mode'), int(self.output_mode))
-        glUniform1i(shader.get_loc('receptor_count'), self._ra.receptor_count)
-        glUniform1i(shader.get_loc('center_index'), self._ra.kernel.center_index)
-        glUniform1i(shader.get_loc('selected_id'), self.selected_lens)
-        glUniform1i(shader.get_loc('frame_offset'), self._frame_index % self._batch_size)
-        glUniform1f(shader.get_loc('albedo_boost'), 1.0)
-        glUniform1i(shader.get_loc('false_colors'), int(self.simulate_insect_vision and not self.uv_encoded_textures))
-        glUniform1i(shader.get_loc('uv_encoding'), int(self.uv_encoded_textures))
-
-        if self.overlay_enabled:
-            glUniform1f(shader.get_loc('overlay_data_min'), self._overlay_range[0])
-            glUniform1f(shader.get_loc('overlay_data_max'), self._overlay_range[1])
-            glUniform1i(shader.get_loc('colormap'), int(self._overlay_colormap))
-            glUniform1f(shader.get_loc('compression'), self._overlay_compression)
-
     # Internal rendering logic and draw calls
 
     def _reduction(self):
 
-        N = len(self._ra)
-
         with self.reduction_shader as shader:
             with self.eye_buffers.grouped_bind_base(['rays_intermediate', 'rcpt_static', 'colors', 'ema_state', 'rcpt_dynamic']):
 
-                glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
-                glUniform1i(shader.get_loc('nb_receptors'), N)
-                glUniform1f(shader.get_loc('dt'), self._dt)
-                glUniform1i(shader.get_loc('frame_offset'), self._frame_index % self._batch_size)
+                self._eye_uniforms.update(dt=self._dt, frame_offset=self._frame_index % self._batch_size)
 
+                self._eye_uniforms.update(nb_samples=self.nb_samples)
+
+                self._eye_uniforms.apply(shader)
+
+                N = len(self._ra)
                 work_groups = (N + 63) // 64
                 glDispatchCompute(work_groups, 1, 1)
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     def _eye_dynamics(self):
 
-        k = self._ra.kernel
-
-        if k.nodal_distance_um is not None:
+        if self._ra.kernel.nodal_distance_um is not None:
             with self.dynamics_shader as shader:
                 with self.eye_buffers.grouped_bind_base(['rcpt_static', 'lens_static', 'colors', 'ema_state', 'rcpt_dynamic', 'lens_dynamic']):
 
-                    glUniform1i(shader.get_loc('nb_lenses'), self._ra.lens_count)
-                    glUniform1i(shader.get_loc('receptors_per_lens'), self._ra.receptor_count)
-                    glUniform1f(shader.get_loc('dt'), self._dt)
+                    self._eye_uniforms.update(dt=self._dt, frame_offset=self._frame_index % self._batch_size)
 
-                    glUniform1f(shader.get_loc('d_rest'), k.nodal_distance_um)
-                    lam_um = self._ra._wavelength_nm * 1e-3
-                    glUniform1f(shader.get_loc('diffraction_sq'), (lam_um / k.lens_diameter_um) ** 2)
-                    glUniform1f(shader.get_loc('acc_rest_geom_sq'), (k.diameters_um[k.center_index] / k.nodal_distance_um) ** 2)
+                    self._eye_uniforms.update(nb_samples=self.nb_samples)
 
                     # Dynamics
-                    saccades_enabled = self._gpu_actuation
+                    self._eye_uniforms.update(
+                        tau_fast=self.tau_fast,
+                        tau_adapt=self.tau_adapt,
+                        tau_relax=self.tau_relax,
+                        gain_lat=self.gain_lat if self._gpu_actuation else 0.0,
+                        gain_ax=self.gain_ax if self._gpu_actuation else 0.0,
+                        gain_biochem=self.gain_biochem
+                    )
 
-                    glUniform1f(shader.get_loc('tau_fast'), self.tau_fast)
-                    glUniform1f(shader.get_loc('tau_adapt'), self.tau_adapt)
-                    glUniform1f(shader.get_loc('gain_lat'), self.gain_lat if saccades_enabled else 0.0)
-                    glUniform1f(shader.get_loc('gain_ax'), self.gain_ax if saccades_enabled else 0.0)
-                    glUniform1f(shader.get_loc('tau_relax'), self.tau_relax)
-                    glUniform1f(shader.get_loc('gain_biochem'), self.gain_biochem)
+                    self._eye_uniforms.apply(shader)
 
                     work_groups = (self._ra.lens_count + 63) // 64
                     glDispatchCompute(work_groups, 1, 1)
@@ -505,14 +528,13 @@ class BaseRenderer(ABC):
 
             viewport = glGetIntegerv(GL_VIEWPORT)
             aspect_ratio = viewport[2] / viewport[3] if viewport[3] > 0 else 1.0
-            receptive_field_scale = 1.0 / (2.0 * np.pi)
 
-            glUniform1f(shader.get_loc('aspect_ratio'), aspect_ratio)
-            glUniform1i(shader.get_loc('tiled_mode'), self.tiled_mode)
-            glUniform1i(shader.get_loc('projection_mode'), self.projection_mode)
-            glUniform1f(shader.get_loc('receptive_field_scale'), receptive_field_scale)
-
-            self._set_eye_uniforms(shader)
+            self._eye_uniforms.update(
+                aspect_ratio=aspect_ratio,
+                projection_mode=self.projection_mode,
+                tiled_mode=self.tiled_mode
+            )
+            self._eye_uniforms.apply(shader)
 
             color_buffer = 'overlay' if self.overlay_enabled else 'colors'
             with self.eye_buffers.grouped_bind_base(['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', color_buffer]):
@@ -535,6 +557,8 @@ class BaseRenderer(ABC):
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             glDisable(GL_CULL_FACE)
 
+            self._eye_uniforms.update(projection_mode=self.projection_mode)
+
             view_matrix_np = np.array(observer_camera.view, dtype=np.float32)
             projection_matrix_np = np.array(observer_camera.projection, dtype=np.float32)
             c2w_mat = glm.inverse(self.agent.view)
@@ -543,18 +567,7 @@ class BaseRenderer(ABC):
             glUniformMatrix4fv(shader.get_loc('projection'), 1, True, projection_matrix_np)
             glUniformMatrix4fv(shader.get_loc('eye_to_world'), 1, False, glm.value_ptr(c2w_mat))
 
-            # Nice-looking factors for visualisation
-            avg_radius = np.mean(np.linalg.norm(self._ra.rcpt_static_data['position'][:, :3], axis=1))
-            cone_length = max(0.01, avg_radius) * 0.3
-            visualisation_scale = 1.0
-            saccade_visualisation_gain = 0.025
-
-            glUniform1i(shader.get_loc('projection_mode'), self.projection_mode)
-            glUniform1f(shader.get_loc('cone_length'), cone_length)
-            glUniform1f(shader.get_loc('visualisation_scale'), visualisation_scale)
-            glUniform1f(shader.get_loc('saccade_visualisation_gain'), saccade_visualisation_gain)
-
-            self._set_eye_uniforms(shader)
+            self._eye_uniforms.apply(shader)
 
             color_buffer = 'overlay' if self.overlay_enabled else 'colors'
             with self.eye_buffers.grouped_bind_base(['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', color_buffer]):
@@ -685,7 +698,8 @@ class BaseRenderer(ABC):
                     values: Union[Dict['Eye', np.array], np.array],
                     range: Optional[Tuple[float, float]] = None,
                     colormap: 'Colormap' = Colormap.Thermal,
-                    compression: float = 0.5
+                    compression: float = 0.5,
+                    autorange_perc: int = 98
                     ):
         """
         Upload data for overlay visualisation.
@@ -706,7 +720,7 @@ class BaseRenderer(ABC):
 
             for eye, data in values.items():
                 if len(data) == len(eye):
-                    data = np.repeat(data, self._ra.receptor_count)
+                    data = np.repeat(data, self._ra.receptors_per_lens)
                 merged[eye.receptors.global_indices] = data
             values = merged
 
@@ -722,6 +736,7 @@ class BaseRenderer(ABC):
             self.eye_buffers['overlay'].resize(N)
 
         self.eye_buffers['overlay'].write(buf)
+        self._overlay_autorange_perc = autorange_perc
 
         # Range
         if range is not None:
@@ -747,6 +762,13 @@ class BaseRenderer(ABC):
 
         self._overlay_colormap = colormap
         self._overlay_compression = compression
+
+        self._eye_uniforms.update(
+            overlay_data_min=self._overlay_range[0],
+            overlay_data_max=self._overlay_range[1],
+            colormap=int(self._overlay_colormap),
+            compression=self._overlay_compression
+        )
 
     # Public properties and methods
 

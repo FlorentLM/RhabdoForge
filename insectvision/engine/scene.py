@@ -13,7 +13,7 @@ from pyglm import glm
 
 from .lights import Sun, Light, DirectionalLight, PointLight, AreaLight
 from .movement import TransformMixin
-from .shader_utils import ShaderProgram
+from .resources import ShaderProgram
 from .world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
 from insectvision.geometry.meshes import CUBE_VERTICES, CUBE_INDICES

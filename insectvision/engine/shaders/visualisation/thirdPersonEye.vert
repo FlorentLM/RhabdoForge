@@ -39,15 +39,15 @@ uniform mat4 view;
 uniform mat4 projection;
 uniform mat4 eye_to_world;
 uniform int projection_mode;
-uniform float cone_length;
-uniform float visualisation_scale;
-uniform float saccade_visualisation_gain;
-uniform int selected_id;
+uniform float visualisation_lens_length;
+uniform float visualisation_eyes_scale;
+uniform float visualisation_saccade_gain;
+uniform int selected_lens;
 uniform int frame_offset;
 
 uniform int output_mode;    // 0 = Raw, 1 = Ommatidium, 2 = Cartridge
-uniform int receptor_count;
-uniform int center_index;
+uniform int receptors_per_lens;
+uniform int kernel_centre_idx;
 
 mat3 rmatFromDir(vec3 z) {
     vec3 x = normalize(cross((abs(z.y) > 0.999) ? vec3(1,0,0) : vec3(0,1,0), z));
@@ -82,17 +82,17 @@ void main() {
 
     } else {
         l_id = uint(i);
-        uint c_idx = l_id * uint(receptor_count) + uint(center_index);
+        uint c_idx = l_id * uint(receptors_per_lens) + uint(kernel_centre_idx);
         rs = rcpt_static[c_idx]; rd = rcpt_dynamic[c_idx];
-        for (int r = 0; r < receptor_count; r++) {
-            uint src = (output_mode == 2) ? rcpt_static[l_id * receptor_count + r].cartridge_src : (l_id * receptor_count + r);
+        for (int r = 0; r < receptors_per_lens; r++) {
+            uint src = (output_mode == 2) ? rcpt_static[l_id * receptors_per_lens + r].cartridge_src : (l_id * receptors_per_lens + r);
             #ifdef OVERLAY_MODE
             val += scalar_data[base + src];
             #else
             val += color_data[base + src].rgb;
             #endif
         }
-        val /= float(receptor_count);
+        val /= float(receptors_per_lens);
     }
 
     v_mode = uint(projection_mode);
@@ -107,11 +107,11 @@ void main() {
     LensStatic ls = lens_static[l_id];
 
     // Nudge ommatidia by their actuation values
-    vec3 pos_local = rs.position * visualisation_scale;
+    vec3 pos_local = rs.position * visualisation_eyes_scale;
     if (projection_mode == 0) {
         LensStatic ls_nudge = ls;
         vec3 tangent_shift = rd.direction - ls_nudge.forward * dot(rd.direction, ls_nudge.forward);
-        pos_local += tangent_shift * saccade_visualisation_gain;
+        pos_local += tangent_shift * visualisation_saccade_gain;
     }
 
     vec3 P_world = (eye_to_world * vec4(pos_local, 1.0)).xyz;
@@ -124,10 +124,10 @@ void main() {
     vec2 axes = (projection_mode == 1) ? rd.acc_axes : ls.ioa_axes;
     vec3 scale;
     if (projection_mode == 1) {
-        scale = vec3(cone_length * tan(axes * 0.5), cone_length);
+        scale = vec3(visualisation_lens_length * tan(axes * 0.5), visualisation_lens_length);
 
     } else {
-        float rad = length(rs.position) * visualisation_scale;
+        float rad = length(rs.position) * visualisation_eyes_scale;
         vec2 radii = rad * sin(axes * 0.5);
         scale = vec3(radii, (radii.x + radii.y) * 0.15);
     }

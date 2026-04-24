@@ -832,7 +832,7 @@ class ReceptorArray:
         return len(self.rcpt_static_data)
 
     def __repr__(self):
-        return f"<ReceptorArray(lenses={self.lens_count}, R={self.receptor_count}, total={len(self.rcpt_static_data)})>"
+        return f"<ReceptorArray(lenses={self.lens_count}, R={self.receptors_per_lens}, total={len(self.rcpt_static_data)})>"
 
     @property
     def lenses(self) -> 'LensView':
@@ -920,11 +920,15 @@ class ReceptorArray:
     # Properties
 
     @property
+    def total_receptors(self) -> int:
+        return len(self)
+
+    @property
     def lens_count(self) -> int:
         return self._lens_count
 
     @property
-    def receptor_count(self) -> int:
+    def receptors_per_lens(self) -> int:
         return self._kernel.count
 
     @property
@@ -978,7 +982,7 @@ class ReceptorArray:
         """
         Returns (N, R) array of global receptor indices (for neural superposition).
         """
-        return self.rcpt_static_data['cartridge_src'].reshape(self.lens_count, self.receptor_count)
+        return self.rcpt_static_data['cartridge_src'].reshape(self.lens_count, self.receptors_per_lens)
 
     # Animal-level spatial queries
 
@@ -1119,7 +1123,7 @@ class ReceptorArray:
         ):
 
         N = self.lens_count
-        R = self.receptor_count
+        R = self.receptors_per_lens
 
         centre_rhab = self._kernel.center_index
         periph_rhab = np.array([i for i in range(R) if i != centre_rhab])
@@ -1266,7 +1270,7 @@ class ReceptorArray:
         Displace rhabdomeres manually from the CPU.
         """
 
-        R = self.receptor_count
+        R = self.receptors_per_lens
 
         d_rest = self._kernel.nodal_distance_um
         if d_rest is None:
@@ -1375,7 +1379,7 @@ class ReceptorArray:
 
     @property
     def cartridge_map(self) -> np.ndarray:
-        return self.rcpt_static_data['cartridge_src'].reshape(self.lens_count, self.receptor_count) // self.receptor_count
+        return self.rcpt_static_data['cartridge_src'].reshape(self.lens_count, self.receptors_per_lens) // self.receptors_per_lens
 
 
 

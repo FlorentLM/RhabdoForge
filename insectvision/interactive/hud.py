@@ -10,7 +10,7 @@ import json
 from PIL import Image
 from pyglm import glm
 
-from insectvision.engine.shader_utils import ShaderProgram
+from insectvision.engine.resources import ShaderProgram
 
 
 def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fonts', color=(255, 255, 255, 255)):

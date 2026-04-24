@@ -13,7 +13,7 @@ layout(std430, binding = BINDING_LENS_DYNAMIC) buffer          LensDynamicBlock 
 uniform int nb_lenses;
 uniform int receptors_per_lens;
 uniform float dt;
-uniform float d_rest;
+uniform float nodal_dist_rest;
 uniform float diffraction_sq;
 uniform float acc_rest_geom_sq;
 uniform float tau_fast;
@@ -80,10 +80,10 @@ void main() {
     float target_gain = 1.0 / (1.0 + ld.adapted_lum * gain_biochem);
 
     LensStatic ls = lens_static[lens_idx];
-    float d_eff = max(d_rest - ld.axial_um, 1.0);
+    float d_eff = max(nodal_dist_rest - ld.axial_um, 1.0);
 
     // Snyder optics scale
-    float geom_new_sq = acc_rest_geom_sq * ((d_rest * d_rest) / (d_eff * d_eff));
+    float geom_new_sq = acc_rest_geom_sq * ((nodal_dist_rest * nodal_dist_rest) / (d_eff * d_eff));
     float acc_scale = sqrt(diffraction_sq + geom_new_sq) / sqrt(diffraction_sq + acc_rest_geom_sq);
 
     for (int r = 0; r < receptors_per_lens; r++) {

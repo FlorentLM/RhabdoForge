@@ -30,11 +30,11 @@ uniform int frame_offset;
 uniform float aspect_ratio;
 uniform int projection_mode;
 uniform bool tiled_mode;
-uniform float receptive_field_scale;
+uniform float visualisation_receptivefield_scale;
 uniform int output_mode;
-uniform int receptor_count;
-uniform int center_index;
-uniform int selected_id;
+uniform int receptors_per_lens;
+uniform int kernel_centre_idx;
+uniform int selected_lens;
 
 void main() {
     int inst_idx = gl_InstanceID;
@@ -63,15 +63,15 @@ void main() {
         #endif
     } else {
         l_id = uint(inst_idx);
-        uint c_idx = l_id * uint(receptor_count) + uint(center_index);
+        uint c_idx = l_id * uint(receptors_per_lens) + uint(kernel_centre_idx);
         p_vec = (projection_mode == 1) ? rcpt_dynamic[c_idx].direction : normalize(rcpt_static[c_idx].position);
 
-        for (int r = 0; r < receptor_count; r++) {
+        for (int r = 0; r < receptors_per_lens; r++) {
             uint src;
             if (output_mode == 2) {
-                src = rcpt_static[l_id * receptor_count + r].cartridge_src;
+                src = rcpt_static[l_id * receptors_per_lens + r].cartridge_src;
             } else {
-                src = l_id * uint(receptor_count) + uint(r);
+                src = l_id * uint(receptors_per_lens) + uint(r);
             }
 
             #ifdef OVERLAY_MODE
@@ -80,20 +80,20 @@ void main() {
             value += color_data[base + src].rgb;
             #endif
         }
-        value /= float(receptor_count);
+        value /= float(receptors_per_lens);
     }
 
-    float tilt = tiled_mode ? lens_static[l_id].ioa_tilt : rcpt_static[output_mode == 0 ? inst_idx : l_id * receptor_count + center_index].acc_tilt;
+    float tilt = tiled_mode ? lens_static[l_id].ioa_tilt : rcpt_static[output_mode == 0 ? inst_idx : l_id * receptors_per_lens + kernel_centre_idx].acc_tilt;
 
     // Fetch axes from Dynamic (Binding 4) for contraction, or Static for layout
-    vec2 axes = tiled_mode ? lens_static[l_id].ioa_axes : rcpt_dynamic[output_mode == 0 ? inst_idx : l_id * receptor_count + center_index].acc_axes;
+    vec2 axes = tiled_mode ? lens_static[l_id].ioa_axes : rcpt_dynamic[output_mode == 0 ? inst_idx : l_id * receptors_per_lens + kernel_centre_idx].acc_axes;
 
-    float is_sel = 1.0 - clamp(abs(float(inst_idx - selected_id)), 0.0, 1.0);
+    float is_sel = 1.0 - clamp(abs(float(inst_idx - selected_lens)), 0.0, 1.0);
     float s = sin(tilt), c = cos(tilt);
     vec2 rot = mat2(c, -s, s, c) * (cone_vertex.xy * axes) * (1.0 + is_sel * 0.1);
 
     float longi = atan(p_vec.x, -p_vec.z), lati = asin(p_vec.y);
-    vec3 pos = vec3(rot * receptive_field_scale * (tiled_mode ? 2.5 : 1.0), cone_vertex.z) + vec3(longi/PI, lati/HPI, 0.0);
+    vec3 pos = vec3(rot * visualisation_receptivefield_scale * (tiled_mode ? 2.5 : 1.0), cone_vertex.z) + vec3(longi/PI, lati/HPI, 0.0);
 
     pos.z -= (is_sel * 0.8);
     pos.x /= aspect_ratio;

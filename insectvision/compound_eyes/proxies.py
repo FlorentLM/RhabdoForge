@@ -103,7 +103,7 @@ class LensView:
     @property
     def chirality(self) -> np.ndarray:
         """+1 normal, -1 mirrored (one value per lens)."""
-        first_rec = self._gi * self._ra.receptor_count
+        first_rec = self._gi * self._ra.receptors_per_lens
         is_mirrored = (self._ra.rcpt_static_data['metadata'][first_rec] >> 27) & 0x01
         return np.where(is_mirrored, -1, 1)
 
@@ -517,7 +517,7 @@ class Ommatidium:
         self._ra = ra
         self._lens_index = int(lens_index)
 
-        R = ra.receptor_count
+        R = ra.receptors_per_lens
         self._rec_start = self._lens_index * R
         self._rec_animal = np.arange(self._rec_start, self._rec_start + R, dtype=np.intp)
 
@@ -533,7 +533,7 @@ class Ommatidium:
         return self.receptors[idx]
 
     def __len__(self) -> int:
-        return self._ra.receptor_count
+        return self._ra.receptors_per_lens
 
     def __iter__(self):
         for k in range(len(self)):
@@ -588,7 +588,7 @@ class Cartridge:
         if ra._cartridge_map is None:
             raise RuntimeError("Cartridge map not built. Call array.wire_cartridges() first.")
 
-        R = ra.receptor_count
+        R = ra.receptors_per_lens
         sources = ra._cartridge_map[lens_index]
         self._rec_animal = (sources * R + np.arange(R)).astype(np.intp)
 
@@ -602,7 +602,7 @@ class Cartridge:
         return self.receptors[idx]
 
     def __len__(self) -> int:
-        return self._ra.receptor_count
+        return self._ra.receptors_per_lens
 
     def __repr__(self):
         return f"<Cartridge(lens={self._lens_index}, R={len(self)})>"
@@ -618,7 +618,7 @@ class Eye:
         self._eye_id = eye_id
         self._lens_indices = np.asarray(lens_indices, dtype=np.intp)
 
-        R = ra.receptor_count
+        R = ra.receptors_per_lens
         self._receptor_indices = (
             self._lens_indices[:, None] * R + np.arange(R)[None, :]
         ).ravel()
@@ -899,7 +899,7 @@ class VisualOutput:
         arr = self.raw.reshape(
             *self.raw.shape[:-2],       # batch
             self._ra.lens_count,        # lenses
-            self._ra.receptor_count,    # receptors
+            self._ra.receptors_per_lens,    # receptors
             self.raw.shape[-1]          # cartridges
         )
 
@@ -909,7 +909,7 @@ class VisualOutput:
     def cartridges(self) -> np.ndarray:
         """Grouped by neural superposition wiring."""
 
-        if self._ra.receptor_count == 1:
+        if self._ra.receptors_per_lens == 1:
             return self.lenses
 
         indices = self._ra.cartridge_indices
@@ -942,7 +942,7 @@ class EyeVisualOutput:
         arr = self.receptors.reshape(
             *self._raw.shape[:-2],       # batch
             len(self._eye),              # lenses
-            self._ra.receptor_count,     # receptors
+            self._ra.receptors_per_lens,     # receptors
             self._raw.shape[-1]          # cartridges
         )
         return arr
@@ -951,7 +951,7 @@ class EyeVisualOutput:
     def cartridges(self) -> np.ndarray:
         """Grouped by neural superposition."""
 
-        if self._ra.receptor_count == 1:
+        if self._ra.receptors_per_lens == 1:
             return self.lenses
 
         indices = self._ra.cartridge_indices[self._eye.lenses.global_indices]
@@ -959,7 +959,7 @@ class EyeVisualOutput:
         arr = self._raw[..., indices, :].reshape(
             *self._raw.shape[:-2],       # batch
             len(self._eye),              # lenses
-            self._ra.receptor_count,     # receptors
+            self._ra.receptors_per_lens,     # receptors
             self._raw.shape[-1]          # cartridges
         )
         return arr

@@ -12,8 +12,8 @@ from insectvision.utils import DisplayMode
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType, Asset
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
-from insectvision.engine.shader_utils import write_pytinybvh_preamble, ShaderProgram
-from insectvision.renderers.resources import BufferRegistry, TextureRegistry, GPUResourceManager
+from insectvision.engine.resources import write_pytinybvh_preamble, ShaderProgram, GPUResourceManager, \
+    BufferRegistry, TextureRegistry
 from insectvision.renderers.commons import BaseRenderer
 
 if TYPE_CHECKING:

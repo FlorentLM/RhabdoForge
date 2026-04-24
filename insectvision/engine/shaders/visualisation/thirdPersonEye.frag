@@ -29,8 +29,8 @@ layout (location = 3) flat in uint v_mode;
 layout (location = 4) flat in uint v_eye_id;
 layout (location = 5) in vec3 v_world_normal;
 
-uniform float albedo_boost;
-uniform int selected_id;
+uniform float visualisation_eye_surface_albedo;
+uniform int selected_lens;
 uniform bool false_colors;
 uniform bool uv_encoding;
 
@@ -39,7 +39,7 @@ out vec4 FragColor;
 void main() {
     #ifdef OVERLAY_MODE
     vec3 rgb = apply_colormap(v_scalar, colormap);
-    FragColor = vec4(clamp(rgb * albedo_boost, 0.0, 1.0), 1.0);
+    FragColor = vec4(clamp(rgb * visualisation_eye_surface_albedo, 0.0, 1.0), 1.0);
 
     #else
     if (v_mode == 1u) {
@@ -47,7 +47,7 @@ void main() {
         FragColor = EYE_COLORS[v_eye_id];
     } else {
         // Physical mode: simulation color
-        vec3 lit_rgb = v_color * albedo_boost;
+        vec3 lit_rgb = v_color * visualisation_eye_surface_albedo;
 
         if (uv_encoding) {
             // Channel 0 is UV -> make it look purple
@@ -62,7 +62,7 @@ void main() {
     #endif
 
     // Highlight one ommatidia
-    float is_selected = 1.0 - clamp(abs(float(v_instance_id - selected_id)), 0.0, 1.0);
+    float is_selected = 1.0 - clamp(abs(float(v_instance_id - selected_lens)), 0.0, 1.0);
     float dist = length(v_local_pos);
 
     float contour = smoothstep(0.85, 0.90, dist);

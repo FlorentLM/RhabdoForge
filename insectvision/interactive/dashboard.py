@@ -49,7 +49,7 @@ class Dashboard:
         dpg.setup_dearpygui()
 
         ra = self.ctx.renderer._ra
-        self.rec_data_buffers = [collections.deque(maxlen=self.plot_history_len) for _ in range(ra.receptor_count)]
+        self.rec_data_buffers = [collections.deque(maxlen=self.plot_history_len) for _ in range(ra.receptors_per_lens)]
 
         with dpg.window(label='Inspector', width=650, height=950, no_close=True, no_move=True, tag='main_window'):
 
@@ -88,10 +88,10 @@ class Dashboard:
                     self.omm_slider = dpg.add_slider_int(label="Lens ID", default_value=0, max_value=ra.lens_count - 1)
 
                     self.show_all_rec_toggle = dpg.add_checkbox(
-                        label=f'Show individual receptors (R1-R{ra.receptor_count})', default_value=False)
+                        label=f'Show individual receptors (R1-R{ra.receptors_per_lens})', default_value=False)
                     self.rec_slider = dpg.add_slider_int(label='Probed Receptor ID', default_value=0,
-                                                         max_value=max(0, ra.receptor_count - 1),
-                                                         show=(ra.receptor_count > 1))
+                                                         max_value=max(0, ra.receptors_per_lens - 1),
+                                                         show=(ra.receptors_per_lens > 1))
 
                     self.rgb_toggle = dpg.add_checkbox(label='Show RGB channels', default_value=False)
                     self.instant_toggle = dpg.add_checkbox(label='Show instantaneous (Alpha)', default_value=False)
@@ -110,7 +110,7 @@ class Dashboard:
                         self.series_b = dpg.add_line_series([], [], label='Blue', parent='y_axis_1')
 
                         self.series_receptors = []
-                        for r in range(ra.receptor_count):
+                        for r in range(ra.receptors_per_lens):
                             tag = dpg.add_line_series([], [], label=f'R{r + 1}', parent='y_axis_1')
                             self.series_receptors.append(tag)
 
@@ -485,13 +485,13 @@ class Dashboard:
 
         if mode == EyeOutput.Raw:
             rec_id = dpg.get_value(self.rec_slider)
-            self.ctx.renderer.selected_lens = (lens_id * ra.receptor_count) + rec_id
+            self.ctx.renderer.selected_lens = (lens_id * ra.receptors_per_lens) + rec_id
         else:
             self.ctx.renderer.selected_lens = lens_id
 
         if is_plotting and visual_output is not None and lens_id < ra.lens_count:
             if mode == EyeOutput.Raw:
-                start, end = lens_id * ra.receptor_count, (lens_id + 1) * ra.receptor_count
+                start, end = lens_id * ra.receptors_per_lens, (lens_id + 1) * ra.receptors_per_lens
                 group = visual_output.receptors[start:end]
             elif mode == EyeOutput.Ommatidium:
                 group = visual_output.lenses[lens_id]
@@ -507,7 +507,7 @@ class Dashboard:
             self.b_data.append(avg_pixel[2])
             self.response_instant.append(avg_pixel[3])
 
-            for r_idx in range(ra.receptor_count):
+            for r_idx in range(ra.receptors_per_lens):
                 self.rec_data_buffers[r_idx].append(np.mean(group[r_idx, :3]))
 
             # Actuation buffer readback
