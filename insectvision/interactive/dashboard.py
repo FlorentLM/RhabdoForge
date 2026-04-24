@@ -486,9 +486,9 @@ class Dashboard:
 
         if mode == EyeOutput.Raw:
             rec_id = dpg.get_value(self.rec_slider)
-            self.ctx.renderer.selected_id = (lens_id * ra.receptor_count) + rec_id
+            self.ctx.renderer.selected_lens = (lens_id * ra.receptor_count) + rec_id
         else:
-            self.ctx.renderer.selected_id = lens_id
+            self.ctx.renderer.selected_lens = lens_id
 
         if is_plotting and visual_output is not None and lens_id < ra.lens_count:
             if mode == EyeOutput.Raw:

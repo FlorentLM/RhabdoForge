@@ -213,7 +213,6 @@ class BaseRenderer(ABC):
 
         # Estimate needed sizes and available memory
         bytes_per_frame = N * 16  # 16 bytes per vec4 (RGBA float)
-
         avail_VRAM = _query_available_VRAM() * 0.9  # 90% for safety, in Mb
         req_batch_dim = (bytes_per_frame * max(1, batch_size)) / (1024 * 1024)  # in Mb
         other_VRAM_usage = self._estim_vram_use()
@@ -225,19 +224,13 @@ class BaseRenderer(ABC):
 
         if avail_VRAM and tot_VRAM_needed >= avail_VRAM:
             safe_batch_size = int((avail_VRAM - other_VRAM_usage) * 1024 * 1024 / bytes_per_frame)
-
             if safe_batch_size < batch_size:
-                print(f"WARNING: Requested batch size of {req_batch_dim} frames ({req_batch_dim:.2f} MB) exceeds available VRAM.")
-                print(f"         Reducing batch size to {safe_batch_size} frames.")
+                print(f"WARNING: Requested batch size exceeds available VRAM. Reducing batch size to {safe_batch_size} frames.")
 
-        self._max_ssbo_bytes = glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)  # in bytes
+        self._max_ssbo_bytes = glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)
         self._batch_size = max(1, safe_batch_size)
 
-        # Ping-Pong PBOs
-        self._pbos = [
-            _create_pbo(data=None, size=bytes_per_frame, usage=GL_STREAM_READ),
-            _create_pbo(data=None, size=bytes_per_frame, usage=GL_STREAM_READ)
-        ]
+        # Ping-pong PBOs tracking
         self._pbo_index = 0
         self._fences = [0, 0]
         self._colours_cpu_buffer = np.zeros((N, 4), dtype=np.float32)
@@ -245,20 +238,55 @@ class BaseRenderer(ABC):
         # Buffer registry
         self.buffers = BufferRegistry()
 
-        self.buffers.allocate('rcpt_static', self._ra.rcpt_static_data.dtype, N,
-                              data=self._ra.rcpt_static_data, usage=GL_STATIC_DRAW)
-        self.buffers.allocate('lens_static', self._ra.lens_static_data.dtype, nb_lenses,
-                              data=self._ra.lens_static_data, usage=GL_STATIC_DRAW)
-        self.buffers.allocate('rcpt_dynamic', self._ra.rcpt_dynamic_data.dtype, N,
-                              data=self._ra.rcpt_dynamic_data, usage=GL_DYNAMIC_DRAW)
-        self.buffers.allocate('lens_dynamic', self._ra.lens_dynamic_data.dtype, nb_lenses,
-                              data=self._ra.lens_dynamic_data, usage=GL_DYNAMIC_DRAW)
-        self.buffers.allocate('ema_state', np.dtype((np.float32, 4)), N,
+        # Ping-pong PBOs
+        self.buffers.allocate('pbo_0',
+                              dtype=np.uint8,
+                              count=bytes_per_frame,
+                              target=GL_PIXEL_PACK_BUFFER,
+                              usage=GL_STREAM_READ)
+        self.buffers.allocate('pbo_1',
+                              dtype=np.uint8,
+                              count=bytes_per_frame,
+                              target=GL_PIXEL_PACK_BUFFER,
+                              usage=GL_STREAM_READ)
+
+        # SSBOs
+        self.buffers.allocate('rcpt_static',
+                              dtype=self._ra.rcpt_static_data.dtype,
+                              count=N,
+                              data=self._ra.rcpt_static_data,
+                              usage=GL_STATIC_DRAW)
+        self.buffers.allocate('lens_static',
+                              dtype=self._ra.lens_static_data.dtype,
+                              count=nb_lenses,
+                              data=self._ra.lens_static_data,
+                              usage=GL_STATIC_DRAW)
+        self.buffers.allocate('rcpt_dynamic',
+                              dtype=self._ra.rcpt_dynamic_data.dtype,
+                              count=N,
+                              data=self._ra.rcpt_dynamic_data,
                               usage=GL_DYNAMIC_DRAW)
-        self.buffers.allocate('colors', np.dtype((np.float32, 4)), N * self._batch_size,
-                              usage=GL_DYNAMIC_DRAW, supports_async=True, _async_reader=self._colors_read_async)
-        self.buffers.allocate('rays_intermediate', np.dtype((np.float32, 4)), N * self._samples_per_rcpt,
+        self.buffers.allocate('lens_dynamic',
+                              dtype=self._ra.lens_dynamic_data.dtype,
+                              count=nb_lenses,
+                              data=self._ra.lens_dynamic_data,
                               usage=GL_DYNAMIC_DRAW)
+        self.buffers.allocate('ema_state',
+                              dtype=np.dtype((np.float32, 4)),
+                              count=N,
+                              usage=GL_DYNAMIC_DRAW)
+        self.buffers.allocate('rays_intermediate',
+                              dtype=np.dtype((np.float32, 4)),
+                              count=N * self._samples_per_rcpt,
+                              usage=GL_DYNAMIC_DRAW)
+
+        # Async SSBO
+        self.buffers.allocate('colors',
+                              dtype=np.dtype((np.float32, 4)),
+                              count=N * self._batch_size,
+                              usage=GL_DYNAMIC_DRAW,
+                              supports_async=True,
+                              _async_reader=self._colors_read_async)
 
         # Reduction and dynamics shaders (shared to rasterizer and raytracer)
         self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp')
@@ -271,7 +299,7 @@ class BaseRenderer(ABC):
         self.ambient_intensity = getattr(self, 'ambient_intensity', 1.0)
         self.sky_intensity = getattr(self, 'sky_intensity', 1.0)
 
-        # Dynamics
+        # Dynamics parameters
         self.gain_lat = 3.0      # saccade lateral gain (μm) per unit drive
         self.gain_ax = 8.0       # saccade axial gain (μm) per unit drive
         self.tau_fast = 0.005    # 5 ms: fast saccade trigger
@@ -288,40 +316,36 @@ class BaseRenderer(ABC):
         # Geometry VAOs (lazy-loaded)
         self._lazy_lens_cones_vao: Optional[int] = None
         self._lazy_lens_hemisph_vao: Optional[int] = None
-        self._lazy_lens_cones_vbo: Optional[int] = None
-        self._lazy_lens_hemisph_vbo: Optional[int] = None
         self._lazy_cones_vertices = 0
         self._lazy_hemisph_vertices = 0
 
-        # Overlay stuff
-        self._overlay_colormap = Colormap.Thermal
-        self._overlay_range = (0.0, 1.0)
-        self._overlay_current_peak: Optional[float] = None
-        self._overlay_compression = 1.0   # power exponent for dynamic range compression (1.0 = linear, 0.5 = sqrt, etc)
-        self._overlay_autorange_perc = 98 # percentile to reject outliers
-
         # States flags and other things
-        self._gpu_actuation = enable_actuation
-        self._overlay_enabled = False
-        self.runs_interactive = False
-        self.tiled_mode = True
-        self.simulate_insect_vision = False     # TODO: expose these (and generate UV-encoded assets for demo)
-        self.uv_encoded_textures = False
-
-        self.projection_mode = OmmatidiaProjection.Position
-        self.output_mode = EyeOutput.Ommatidium
-
-        self._quasi_random = quasi_random  # Halton sampling for direction generation
-        self._time_dithering = time_dithering
+        self._quasi_random: bool = quasi_random  # Halton sampling for direction generation
+        self._time_dithering: bool = time_dithering
+        self._gpu_actuation: bool = enable_actuation
+        self._overlay_enabled: bool = False
+        self.runs_interactive: bool = False
+        self.tiled_mode: bool = True
+        self.simulate_insect_vision: bool = False  # TODO: expose these (and generate UV-encoded assets for demo)
+        self.uv_encoded_textures: bool = False
 
         # Time keeping
         self._dither_counter: int = 0  # only advanced when time dithering is on
         self._frame_index: int = 0  # advanced at each new rendered frame
         self._last_render_time: float = 0.0
-        self._dt = 0.0  # elapsed time (in seconds) since last render
+        self._dt: float = 0.0  # elapsed time (in seconds) since last render
 
-        # For visualisation only
-        self.selected_id = -1
+        # Visualisation stuff
+        self.projection_mode = OmmatidiaProjection.Position
+        self.output_mode = EyeOutput.Ommatidium
+        self.selected_lens = -1
+
+        # Overlay parameters
+        self._overlay_colormap = Colormap.Thermal
+        self._overlay_range = (0.0, 1.0)
+        self._overlay_current_peak: Optional[float] = None
+        self._overlay_compression = 1.0  # power exponent for dynamic range compression (1.0 = linear, 0.5 = sqrt, etc)
+        self._overlay_autorange_perc = 98  # percentile to reject outliers
 
         # Fullscreen texture to draw to
         self._screen_surface: Optional[TextureViewer] = None
@@ -337,22 +361,44 @@ class BaseRenderer(ABC):
     @property
     def _cones_vao(self):
         if self._lazy_lens_cones_vao is None:
-            vao, vbo, vertices = _create_vao(CONE_VERTICES)
+            v_data = CONE_VERTICES
 
+            self._lazy_cones_vertices = len(v_data) // 3
+            self.buffers.allocate('cones_vbo',
+                                  dtype=np.float32,
+                                  count=len(v_data),
+                                  target=GL_ARRAY_BUFFER,
+                                  data=v_data)
+
+            vao = glGenVertexArrays(1)
+            glBindVertexArray(vao)
+            self.buffers['cones_vbo'].bind()
+            glEnableVertexAttribArray(0)
+            glVertexAttribPointer(0, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
+            glBindVertexArray(0)
             self._lazy_lens_cones_vao = vao
-            self._lazy_lens_cones_vbo = vbo
-            self._lazy_cones_vertices = vertices
 
         return self._lazy_lens_cones_vao
 
     @property
     def _hemispheres_vao(self):
         if self._lazy_lens_hemisph_vao is None:
-            vao, vbo, vertices = _create_vao(SPHERE_VERTICES)
+            v_data = SPHERE_VERTICES
 
+            self._lazy_hemisph_vertices = len(v_data) // 3
+            self.buffers.allocate('hemisph_vbo',
+                                  dtype=np.float32,
+                                  count=len(v_data),
+                                  target=GL_ARRAY_BUFFER,
+                                  data=v_data)
+
+            vao = glGenVertexArrays(1)
+            glBindVertexArray(vao)
+            self.buffers['hemisph_vbo'].bind()
+            glEnableVertexAttribArray(0)
+            glVertexAttribPointer(0, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
+            glBindVertexArray(0)
             self._lazy_lens_hemisph_vao = vao
-            self._lazy_lens_hemisph_vbo = vbo
-            self._lazy_hemisph_vertices = vertices
 
         return self._lazy_lens_hemisph_vao
 
@@ -433,7 +479,7 @@ class BaseRenderer(ABC):
         glUniform1i(shader.get_loc('output_mode'), int(self.output_mode))
         glUniform1i(shader.get_loc('receptor_count'), self._ra.receptor_count)
         glUniform1i(shader.get_loc('center_index'), self._ra.kernel.center_index)
-        glUniform1i(shader.get_loc('selected_id'), self.selected_id)
+        glUniform1i(shader.get_loc('selected_id'), self.selected_lens)
         glUniform1i(shader.get_loc('frame_offset'), self._frame_index % self._batch_size)
         glUniform1f(shader.get_loc('albedo_boost'), 1.0)
         glUniform1i(shader.get_loc('false_colors'), int(self.simulate_insect_vision and not self.uv_encoded_textures))
@@ -523,9 +569,12 @@ class BaseRenderer(ABC):
 
         # Copy colour SSBO into current PBO
         self.buffers['colors'].bind(mode_override=GL_COPY_READ_BUFFER)
-        glBindBuffer(GL_COPY_WRITE_BUFFER, self._pbos[self._pbo_index])  # TODO: PBOs should also be managed by the BufferRegistry
+        self.buffers[f'pbo_{self._pbo_index}'].bind(mode_override=GL_COPY_WRITE_BUFFER)
 
         glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, bytes_to_read)
+
+        self.buffers['colors'].unbind()
+        self.buffers[f'pbo_{self._pbo_index}'].unbind()
 
         # Fence to know when the copy is done
         if self._fences[self._pbo_index]:
@@ -534,14 +583,13 @@ class BaseRenderer(ABC):
 
         # Read from the other PBO (previous frame data)
         next_pbo_index = (self._pbo_index + 1) % 2
-        next_pbo = self._pbos[next_pbo_index]
         fence = self._fences[next_pbo_index]
 
         out_array = np.zeros_like(self._colours_cpu_buffer)
         if fence:
             glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000)
 
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, next_pbo)
+            self.buffers[f'pbo_{next_pbo_index}'].bind(mode_override=GL_PIXEL_PACK_BUFFER)
             ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
             if ptr:
                 ctypes.memmove(self._colours_cpu_buffer.ctypes.data, ptr, bytes_to_read)
@@ -549,7 +597,7 @@ class BaseRenderer(ABC):
                 out_array = self._colours_cpu_buffer.copy()
             else:
                 print("Warning: Failed to map PBO. Context lost?")
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+            self.buffers[f'pbo_{next_pbo_index}'].unbind()
 
         self._pbo_index = next_pbo_index
         return out_array
@@ -791,24 +839,17 @@ class BaseRenderer(ABC):
             values = merged
 
         buf = np.ascontiguousarray(values, dtype=np.float32).ravel()
+        buf_size = len(buf)
 
-        if len(buf) != N:
-            raise ValueError(
-                f"scalar_data has {len(buf)} elements, expected {N}."
-            )
+        if buf_size != N:
+            raise ValueError(f"scalar_data has {buf_size} elements, expected {N}.")
 
         if 'overlay' not in self.buffers:
-            self.buffers.allocate('overlay', np.dtype(np.float32), 0, usage=GL_DYNAMIC_DRAW)
+            self.buffers.allocate('overlay', np.float32, N, usage=GL_DYNAMIC_DRAW)
+        elif self.buffers['overlay'].count != N:
+            self.buffers['overlay'].resize(N)
 
-        self.buffers['overlay'].bind()
-
-        if self.buffers['overlay'].count != N:
-            glBufferData(GL_SHADER_STORAGE_BUFFER, N * 4, None, GL_DYNAMIC_DRAW)
-            self.buffers['overlay'].count = N
-
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, buf.nbytes, buf)
-
-        self.buffers['overlay'].unbind()
+        self.buffers['overlay'].write(buf)
 
         # Range
         if range is not None:
@@ -852,21 +893,12 @@ class BaseRenderer(ABC):
         if value_clamped == self._samples_per_rcpt:
             return
 
-        if value_clamped != value:
-            print(f"Warning: Clamped samples per receptor to {value_clamped} (HW limit is {max_per_r}).")
+        print(f"Warning: Clamped samples per receptor to {value_clamped} (HW limit is {max_per_r}).")
 
         self._samples_per_rcpt = value_clamped
-
         req_bytes = N * self._samples_per_rcpt * 16
-        print(
-            f"Allocating ray result buffer for {N * self._samples_per_rcpt:,} samples ({req_bytes / (1024 * 1024):.2f} MB).")
 
-        # orphan and resize the existing buffer
-        self.buffers['rays_intermediate'].count = N * self._samples_per_rcpt
-
-        self.buffers['rays_intermediate'].bind()
-        glBufferData(GL_SHADER_STORAGE_BUFFER, req_bytes, None, GL_DYNAMIC_DRAW)
-        self.buffers['rays_intermediate'].unbind()
+        self.buffers['rays_intermediate'].resize(N * self._samples_per_rcpt)
 
     @property
     def time_dithering(self):
@@ -929,17 +961,7 @@ class BaseRenderer(ABC):
                 except Exception:
                     pass
 
-        for handle in self.buffers.values():
-            if handle.handle:
-                glDeleteBuffers(1, [handle.handle])
-
-        for buf in (
-            self._lazy_lens_cones_vbo,
-            self._lazy_lens_hemisph_vbo,
-            *self._pbos
-        ):
-            if buf:
-                glDeleteBuffers(1, [buf])
+        self.buffers.free()
 
         for vao in (
             self._lazy_lens_cones_vao,
@@ -949,12 +971,12 @@ class BaseRenderer(ABC):
                 glDeleteVertexArrays(1, [vao])
 
         for shader in (
-                self._lazy_fp_colour_shader,
-                self._lazy_fp_overlay_shader,
-                self._lazy_tp_colour_shader,
-                self._lazy_tp_overlay_shader,
-                self.reduction_shader,
-                self.dynamics_shader
+            self._lazy_fp_colour_shader,
+            self._lazy_fp_overlay_shader,
+            self._lazy_tp_colour_shader,
+            self._lazy_tp_overlay_shader,
+            self.reduction_shader,
+            self.dynamics_shader
         ):
             if shader:
                 shader.free()

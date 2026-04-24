@@ -1,4 +1,7 @@
 import OpenGL
+
+from insectvision.renderers.resources import BufferRegistry
+
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
@@ -147,30 +150,15 @@ class RaytraceBaker:
         self._blases: List[BVH] = []
         self._dynamic_map: Dict[int, int] = {}
 
-        # Geometry
         self.skybox_tex = self.scene.skybox.texture_id if self.scene.skybox else 0
-        self.materials_ssbo = None
         self.tex_array = 0
-        self.points_ssbo = None
-        self.verts_ssbo = None
-        self.indices_ssbo = None
-        self.tlas_nodes_ssbo = None
-        self.blas_nodes_ssbo = None
-        self.inst_info_ssbo = None
-        self.tlas_indices_ssbo = None
-        self.blas_indices_ssbo = None
 
-        # TODO: Use a BufferRegistry instance for all the BVH SSBOs
+        self.bvh_buffers = BufferRegistry()
+        self.light_buffers = BufferRegistry()
 
-        # Lights
-        self.dir_lights_ssbo = None
-        self.point_lights_ssbo = None
-        self.area_lights_ssbo = None
         self._nb_dir_lights = 0
         self._nb_point_lights = 0
         self._nb_area_lights = 0
-
-        # TODO: Use a BufferRegistry instance for the lights SSBOs
 
         # CPU-side data
         self.gpu_inst_info: Optional[np.ndarray] = None
@@ -205,17 +193,16 @@ class RaytraceBaker:
         self._nb_point_lights = len(point_l)
         self._nb_area_lights = len(area_l)
 
-        def _pack(lights, dtype):
-            return np.concatenate([l.pack() for l in lights]) if lights else np.zeros(1, dtype=dtype)
+        def _pack_or_update(name, lights, dtype):
+            data = np.concatenate([l.pack() for l in lights]) if lights else np.zeros(1, dtype=dtype)
+            if name in self.light_buffers:
+                self.light_buffers[name].resize(len(data), data=data)
+            else:
+                self.light_buffers.allocate(name, dtype, len(data), data=data, usage=GL_DYNAMIC_DRAW)
 
-        # Free previous buffers if re-packing
-        for buf in (self.dir_lights_ssbo, self.point_lights_ssbo, self.area_lights_ssbo):
-            if buf:
-                glDeleteBuffers(1, [buf])
-
-        self.dir_lights_ssbo = _create_ssbo(data=_pack(dir_l, DIR_LIGHT_DTYPE), usage=GL_DYNAMIC_DRAW)
-        self.point_lights_ssbo = _create_ssbo(data=_pack(point_l, POINT_LIGHT_DTYPE), usage=GL_DYNAMIC_DRAW)
-        self.area_lights_ssbo = _create_ssbo(data=_pack(area_l, AREA_LIGHT_DTYPE), usage=GL_DYNAMIC_DRAW)
+        _pack_or_update('dir', dir_l, DIR_LIGHT_DTYPE)
+        _pack_or_update('point', point_l, POINT_LIGHT_DTYPE)
+        _pack_or_update('area', area_l, AREA_LIGHT_DTYPE)
 
     def _pack_materials(self):
         """Packs material data for all mesh assets into GPU buffers."""
@@ -272,7 +259,12 @@ class RaytraceBaker:
             a = int(np.clip(c[3], 0, 1) * 255) & 0xFF
             mat_data[idx, 1] = (a << 24) | (b << 16) | (g << 8) | r
 
-        self.materials_ssbo = _create_ssbo(data=mat_data, usage=GL_STATIC_DRAW)
+        if len(mesh_assets) > 0:
+            self.bvh_buffers.allocate('materials',
+                                      dtype=np.uint32,
+                                      count=mat_data.size,
+                                      data=mat_data,
+                                      usage=GL_STATIC_DRAW)
 
     # BVH construction
 
@@ -435,22 +427,60 @@ class RaytraceBaker:
 
     def _push_to_gpu(self):
 
-        def _safe(data, dtype, min_elms=1):
+        def _data_or_default(data, dtype, min_elems=1):
             if data is None or getattr(data, 'nbytes', 0) == 0:
-                return np.zeros((min_elms,), dtype=dtype)
+                return np.zeros((min_elems,), dtype=dtype)
             return data
 
-        self.verts_ssbo = _create_ssbo(data=_safe(self.cpu_verts, np.float32, 5), usage=GL_STATIC_DRAW)
-        self.indices_ssbo = _create_ssbo(data=_safe(self.cpu_idx, np.uint32, 3), usage=GL_STATIC_DRAW)
-        self.points_ssbo = _create_ssbo(data=_safe(self.cpu_pts, np.float32, 12), usage=GL_STATIC_DRAW)
+        verts = _data_or_default(data=self.cpu_verts, dtype=np.float32, min_elems=5)
+        self.bvh_buffers.allocate('verts',
+                                  dtype=np.float32,
+                                  count=verts.size,
+                                  data=verts)
 
-        self.blas_nodes_ssbo = _create_ssbo(data=_safe(self.cpu_blas, np.float32, 1), usage=GL_STATIC_DRAW)
-        self.tlas_nodes_ssbo = _create_ssbo(data=_safe(self.cpu_tlas_nodes, np.float32, 1), usage=GL_DYNAMIC_DRAW)
+        indices = _data_or_default(data=self.cpu_idx, dtype=np.uint32, min_elems=3)
+        self.bvh_buffers.allocate('indices',
+                                  dtype=np.uint32,
+                                  count=indices.size,
+                                  data=indices)
 
-        self.tlas_indices_ssbo = _create_ssbo(data=_safe(self.cpu_tlas_idx, np.uint32, 1), usage=GL_STATIC_DRAW)
-        self.blas_indices_ssbo = _create_ssbo(data=_safe(self.cpu_blas_idx, np.uint32, 1), usage=GL_STATIC_DRAW)
+        points = _data_or_default(data=self.cpu_pts, dtype=np.float32, min_elems=12)
+        self.bvh_buffers.allocate('points',
+                                  dtype=np.float32,
+                                  count=points.size,
+                                  data=points)
 
-        self.inst_info_ssbo = _create_ssbo(data=_safe(self.gpu_inst_info, RENDERABLE_INST_DTYPE, 1), usage=GL_DYNAMIC_DRAW)
+        blas_nodes = _data_or_default(data=self.cpu_blas, dtype=np.float32, min_elems=1)
+        self.bvh_buffers.allocate('blas_nodes',
+                                  dtype=np.float32,
+                                  count=blas_nodes.size,
+                                  data=blas_nodes)
+
+        tlas_nodes = _data_or_default(data=self.cpu_tlas_nodes, dtype=np.float32, min_elems=1)
+        self.bvh_buffers.allocate('tlas_nodes',
+                                  dtype=np.float32,
+                                  count=tlas_nodes.size,
+                                  data=tlas_nodes,
+                                  usage=GL_DYNAMIC_DRAW)
+
+        tlas_indices = _data_or_default(data=self.cpu_tlas_idx, dtype=np.uint32, min_elems=1)
+        self.bvh_buffers.allocate('tlas_indices',
+                                  dtype=np.uint32,
+                                  count=tlas_indices.size,
+                                  data=tlas_indices)
+
+        blas_indices = _data_or_default(data=self.cpu_blas_idx, dtype=np.uint32, min_elems=1)
+        self.bvh_buffers.allocate('blas_indices',
+                                  dtype=np.uint32,
+                                  count=blas_indices.size,
+                                  data=blas_indices)
+
+        inst_info = _data_or_default(data=self.gpu_inst_info, dtype=RENDERABLE_INST_DTYPE, min_elems=1)
+        self.bvh_buffers.allocate('inst_info',
+                                  dtype=RENDERABLE_INST_DTYPE,
+                                  count=inst_info.size,
+                                  data=inst_info,
+                                  usage=GL_DYNAMIC_DRAW)
 
     # Dynamic updates
 
@@ -506,28 +536,16 @@ class RaytraceBaker:
 
         if updated:
             self._tlas.refit_tlas()
-
             new_tlas_nodes = self._tlas.get_buffers()['nodes']
 
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.tlas_nodes_ssbo)
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, new_tlas_nodes.nbytes, new_tlas_nodes)
-
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.inst_info_ssbo)
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.gpu_inst_info.nbytes, self.gpu_inst_info)
-
-            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+            self.bvh_buffers['tlas_nodes'].write(new_tlas_nodes)
+            self.bvh_buffers['inst_info'].write(self.gpu_inst_info)
 
     # Cleanup
 
     def free(self):
-        for buf in (
-            self.verts_ssbo, self.indices_ssbo, self.points_ssbo, self.materials_ssbo,
-            self.tlas_nodes_ssbo, self.blas_nodes_ssbo, self.inst_info_ssbo,
-            self.tlas_indices_ssbo, self.blas_indices_ssbo,
-            self.dir_lights_ssbo, self.point_lights_ssbo, self.area_lights_ssbo,
-        ):
-            if buf:
-                glDeleteBuffers(1, [buf])
+        self.bvh_buffers.free()
+        self.light_buffers.free()
 
         if self.tex_array:
             glDeleteTextures(1, [self.tex_array])
@@ -691,19 +709,23 @@ class Raytracer(BaseRenderer):
     def _bind_scene_ssbos(self):
         """Bind scene geometry and light SSBOs."""
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_VERTICES, self._baker.verts_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_INDICES, self._baker.indices_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_MATERIALS, self._baker.materials_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_POINTS, self._baker.points_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_BLAS_NODES, self._baker.blas_nodes_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_TLAS_NODES, self._baker.tlas_nodes_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_INSTANCES, self._baker.inst_info_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_TLAS_INDICES, self._baker.tlas_indices_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_BLAS_INDICES, self._baker.blas_indices_ssbo)
+        bvh = self._baker.bvh_buffers
+        lights = self._baker.light_buffers
 
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LIGHT_DIR, self._baker.dir_lights_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LIGHT_POINT, self._baker.point_lights_ssbo)
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_LIGHT_AREA, self._baker.area_lights_ssbo)
+        bvh['verts'].bind_base(BINDING_VERTICES)
+        bvh['indices'].bind_base(BINDING_INDICES)
+        if 'materials' in bvh:
+            bvh['materials'].bind_base(BINDING_MATERIALS)
+        bvh['points'].bind_base(BINDING_POINTS)
+        bvh['blas_nodes'].bind_base(BINDING_BLAS_NODES)
+        bvh['tlas_nodes'].bind_base(BINDING_TLAS_NODES)
+        bvh['inst_info'].bind_base(BINDING_INSTANCES)
+        bvh['tlas_indices'].bind_base(BINDING_TLAS_INDICES)
+        bvh['blas_indices'].bind_base(BINDING_BLAS_INDICES)
+
+        lights['dir'].bind_base(BINDING_LIGHT_DIR)
+        lights['point'].bind_base(BINDING_LIGHT_POINT)
+        lights['area'].bind_base(BINDING_LIGHT_AREA)
 
     def _bind_scene_textures(self, shader: ShaderProgram):
         """Bind skybox cubemap and material texture array."""

@@ -35,6 +35,7 @@ class BufferObject:
             dtype: np.dtype,
             count: int,
             target: int = GL_SHADER_STORAGE_BUFFER,
+            usage: int = GL_STATIC_DRAW,
             supports_async: bool = False,
             _async_reader: Optional['Callable'] = None,
     ):
@@ -44,13 +45,14 @@ class BufferObject:
         self.dtype = np.dtype(dtype)
         self.count = count
         self.target = target
+        self.usage = usage
         self._supports_async = supports_async
         self._async_reader = _async_reader
 
     def __repr__(self):
 
         return (
-            f"<{self.BUFFER_TYPES.get(self.target, 'Unkown buffer')} "
+            f"<{self.BUFFER_TYPES.get(self.target, 'Unknown buffer')} "
             f"{'(async)' if self._supports_async else '(sync)'} "
             f'name={self.name!r} handle={self.handle} '
             f'count={self.count} dtype={self.dtype}>'
@@ -67,8 +69,8 @@ class BufferObject:
 
     # TODO: Make a context manager instead? Or just ditch the unbind completely?
     def unbind(self):
-        glBindBuffer(self.target, 0)
-        # pass
+        # glBindBuffer(self.target, 0)
+        pass
 
     @property
     def itemsize(self) -> int:
@@ -112,21 +114,30 @@ class BufferObject:
         """
 
         arr = np.ascontiguousarray(data)
-        if arr.dtype != self.dtype:
-            # allow raw bytes of matching size, raise on mismatch
-            if arr.nbytes != len(arr) * self.itemsize:
-                raise TypeError(
-                    f"write(): data dtype {arr.dtype} does not match buffer dtype {self.dtype}."
-                )
+        # allow raw bytes of matching size, raise on mismatch
+        if arr.dtype != self.dtype and arr.nbytes != len(arr) * self.itemsize:
+            raise TypeError(f"write(): data dtype {arr.dtype} does not match buffer dtype {self.dtype}.")
 
         n = arr.size if arr.dtype == self.dtype else arr.nbytes // self.itemsize
         if start < 0 or (start + n) > self.count:
-            raise IndexError(
-                f"write range [{start}:{start + n}] out of bounds for {self.name} (count={self.count})"
-            )
+            raise IndexError(f"write range [{start}:{start + n}] out of bounds for {self.name} (count={self.count})")
 
         self.bind()
         glBufferSubData(self.target, start * self.itemsize, arr.nbytes, arr.tobytes())
+        self.unbind()
+
+    def resize(self, count: int, data: Optional[np.ndarray] = None) -> None:
+        """Resize GPU buffer, optionally initialising with new data."""
+
+        self.count = count
+        self.bind()
+
+        if data is not None:
+            arr = np.ascontiguousarray(data)
+            glBufferData(self.target, self.nbytes, arr.tobytes(), self.usage)
+        else:
+            glBufferData(self.target, self.nbytes, None, self.usage)
+
         self.unbind()
 
     def reset(self) -> None:
@@ -140,17 +151,22 @@ class BufferObject:
             # glClearBufferSubData is the fast path
             glClearBufferSubData(
                 GL_SHADER_STORAGE_BUFFER,
-                GL_R32F,              # internal format for the clear (arbitrary for zero)
+                GL_R32F,  # internal format for the clear (arbitrary for zero)
                 0, self.nbytes,
                 GL_RED, GL_FLOAT,
-                None,                       # passing None clears to zero
+                None,  # passing None clears to zero
             )
         except Exception:
             # if that didn't work just upload zeroes
             zeros = np.zeros(self.count, dtype=self.dtype)
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self.nbytes, zeros)
+            glBufferSubData(self.target, 0, self.nbytes, zeros)
 
         self.unbind()
+
+    def free(self):
+        if self.handle:
+            glDeleteBuffers(1, [self.handle])
+            self.handle = 0
 
 
 class BufferRegistry:
@@ -160,9 +176,8 @@ class BufferRegistry:
 
     def __getitem__(self, name: str) -> BufferObject:
         if name not in self._buffers:
-            raise KeyError(
-                f"No buffer named {name!r}. Available: {sorted(self._buffers)}"
-            )
+            raise KeyError(f"No buffer named {name!r}. Available: {sorted(self._buffers)}")
+
         return self._buffers[name]
 
     def __contains__(self, name: str) -> bool:
@@ -184,30 +199,30 @@ class BufferRegistry:
         return self._buffers.values()
 
     def allocate(self,
-        name: str,
-        dtype: np.dtype,
-        count: int,
-        target: int = GL_SHADER_STORAGE_BUFFER,
-        data: Optional[np.ndarray] = None,
-        usage: int = GL_STATIC_DRAW,
-        supports_async: bool = False,
-        _async_reader: Optional[callable] = None,
-    ) -> BufferObject:
+                 name: str,
+                 dtype: np.dtype,
+                 count: int,
+                 target: int = GL_SHADER_STORAGE_BUFFER,
+                 data: Optional[np.ndarray] = None,
+                 usage: int = GL_STATIC_DRAW,
+                 supports_async: bool = False,
+                 _async_reader: Optional[callable] = None,
+                 ) -> BufferObject:
         """Create a new SSBO, allocate GPU memory, and register it."""
 
         itemsize = np.dtype(dtype).itemsize
         size_bytes = count * itemsize
 
         handle = glGenBuffers(1)
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, handle)
+        glBindBuffer(target, handle)
 
         if data is not None:
             data_arr = np.ascontiguousarray(data)
-            glBufferData(GL_SHADER_STORAGE_BUFFER, size_bytes, data_arr.tobytes(), usage)
+            glBufferData(target, size_bytes, data_arr.tobytes(), usage)
         else:
-            glBufferData(GL_SHADER_STORAGE_BUFFER, size_bytes, None, usage)
+            glBufferData(target, size_bytes, None, usage)
 
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        glBindBuffer(target, 0)
 
         buf = BufferObject(
             name=name,
@@ -215,6 +230,7 @@ class BufferRegistry:
             dtype=dtype,
             count=count,
             target=target,
+            usage=usage,
             supports_async=supports_async,
             _async_reader=_async_reader
         )
@@ -226,5 +242,7 @@ class BufferRegistry:
 
         return buf
 
-
-# TODO: A UniformRegistry to manage uniforms similarly?
+    def free(self):
+        for buf in self._buffers.values():
+            buf.free()
+        self._buffers.clear()
