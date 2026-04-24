@@ -67,9 +67,9 @@ void main() {
     ReceptorDynamic rd;
 
     #ifdef OVERLAY_MODE
-    float val = 0.0;
+    float value = 0.0;
     #else
-    vec3 val = vec3(0.0);
+    vec3 value = vec3(0.0);
     #endif
 
     if (output_mode == 0) {
@@ -77,13 +77,14 @@ void main() {
         l_id = unpack_lens_id(rs.metadata);
         #ifdef OVERLAY_MODE
         if (overlay_fallback) {
-            val = color_data[base + i].w;
-//            val = dot(color_data[base + i].rgb, vec3(0.299, 0.587, 0.114));
+//            value = color_data[base + i].w;
+//            value = dot(color_data[base + i].rgb, vec3(0.299, 0.587, 0.114));
+            value = rcpt_dynamic[inst_idx].adaptation_state;
         } else {
-            val = scalar_data[base + i];
+            value = scalar_data[base + i];
         }
         #else
-        val = color_data[base + i].rgb;
+        value = color_data[base + i].rgb;
         #endif
 
     } else {
@@ -94,25 +95,26 @@ void main() {
             uint src = (output_mode == 2) ? rcpt_static[l_id * receptors_per_lens + r].cartridge_src : (l_id * receptors_per_lens + r);
             #ifdef OVERLAY_MODE
             if (overlay_fallback) {
-                val = color_data[base + i].w;
-//                val += dot(color_data[base + src].rgb, vec3(0.299, 0.587, 0.114));
+//                value = color_data[base + i].w;
+//                value += dot(color_data[base + src].rgb, vec3(0.299, 0.587, 0.114));
+                value = rcpt_dynamic[inst_idx].adaptation_state;
             } else {
-                val += scalar_data[base + src];
+                value += scalar_data[base + src];
             }
             #else
-            val += color_data[base + src].rgb;
+            value += color_data[base + src].rgb;
             #endif
         }
-        val /= float(receptors_per_lens);
+        value /= float(receptors_per_lens);
     }
 
     v_mode = uint(projection_mode);
     v_eye_id = unpack_eye_id(rs.metadata);
 
     #ifdef OVERLAY_MODE
-    v_scalar = normalize_scalar(val, overlay_data_min, overlay_data_max, overlay_compression, overlay_colormap);
+    v_scalar = normalize_scalar(value, overlay_data_min, overlay_data_max, overlay_compression, overlay_colormap);
     #else
-    v_color = val;
+    v_color = value;
     #endif
 
     LensStatic ls = lens_static[l_id];

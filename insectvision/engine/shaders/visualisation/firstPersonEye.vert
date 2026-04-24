@@ -58,8 +58,9 @@ void main() {
         p_vec = (projection_mode == 1) ? rcpt_dynamic[inst_idx].direction : normalize(rcpt_static[inst_idx].position);
         #ifdef OVERLAY_MODE
         if (overlay_fallback) {
-            value = color_data[base + i].w;
+//            value = color_data[base + i].w;
 //            value = dot(color_data[base + inst_idx].rgb, vec3(0.299, 0.587, 0.114));
+            value = rcpt_dynamic[inst_idx].adaptation_state;
         } else {
             value = scalar_data[base + inst_idx];
         }
@@ -81,8 +82,9 @@ void main() {
 
             #ifdef OVERLAY_MODE
             if (overlay_fallback) {
-                value = color_data[base + i].w;
+//                value = color_data[base + i].w;
 //                value += dot(color_data[base + src].rgb, vec3(0.299, 0.587, 0.114));
+                value = rcpt_dynamic[inst_idx].adaptation_state;
             } else {
                 value += scalar_data[base + src];
             }

@@ -231,7 +231,7 @@ class BaseRenderer(ABC):
         self.tau_fast = 0.001    # 1 ms: fast saccade trigger
         self.tau_adapt = 0.050   # 50 ms: light adaptation baseline
         self.tau_relax = 0.080   # 80 ms: Mechanical relaxation (elastic return)
-        self.gain_biochem = 0.1
+        self.gain_biochem = 0.9
 
         # Visualisation shaders (lazy-loaded)
         self.__fp_colour_shader: Optional[ShaderProgram] = None    # 1st person colour mode
@@ -270,6 +270,8 @@ class BaseRenderer(ABC):
         self._overlay_current_peak: Optional[float] = None
         self._overlay_compression = 1.0         # power exponent for dynamic range compression (1.0 = linear, 0.5 = sqrt, etc)
         self._overlay_autorange_perc = 98       # percentile to reject outliers
+
+        # TODO: Add multiple selectable overlay modes: luminance, adaptation state, etc , and custom (the set_data one)
 
         # Fullscreen texture to draw to
         self._screen_surface: Optional[TextureViewer] = None
