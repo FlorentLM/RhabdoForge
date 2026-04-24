@@ -7,7 +7,9 @@
 // With OVERLAY_MODE: both modes show scalar data through a LUT
 
 #ifdef OVERLAY_MODE
+#include "colormaps.glsl"
 layout (location = 0) in float v_scalar;
+uniform int colormap;
 #else
 layout (location = 0) in vec3  v_color;
 

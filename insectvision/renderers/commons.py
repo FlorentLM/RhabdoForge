@@ -764,11 +764,16 @@ class BaseRenderer(ABC):
             raise ValueError(f"scalar_data has {buf_size} elements, expected {N}.")
 
         if 'overlay' not in self.eye_buffers:
-            self.eye_buffers.allocate('overlay', np.float32, N, usage=GL_DYNAMIC_DRAW)
+            self.eye_buffers.allocate('overlay',
+                                      dtype=np.float32,
+                                      count=N,
+                                      usage=GL_DYNAMIC_DRAW)
+
         elif self.eye_buffers['overlay'].count != N:
             self.eye_buffers['overlay'].resize(N)
 
         self.eye_buffers['overlay'].write(buf)
+
         self._overlay_autorange_perc = autorange_perc
 
         # Range
@@ -846,10 +851,7 @@ class BaseRenderer(ABC):
 
     @property
     def overlay_enabled(self) -> bool:
-        if 'overlay' not in self.eye_buffers:
-            self._overlay_enabled = False
-            return False
-        return self._overlay_enabled and self.eye_buffers['overlay'].count > 0
+        return self._overlay_enabled and 'overlay' in self.eye_buffers and self.eye_buffers['overlay'].count > 0
 
     @overlay_enabled.setter
     def overlay_enabled(self, value: bool):

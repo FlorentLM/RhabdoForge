@@ -17,7 +17,7 @@ layout(std430, binding = BINDING_LENS_STATIC)  readonly buffer LensStaticBlock  
 layout(std430, binding = BINDING_RCPT_DYNAMIC) readonly buffer RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
 
 #ifdef OVERLAY_MODE
-layout(std430, binding = BINDING_COLORS) readonly buffer DataBlock { float scalar_data[]; };
+layout(std430, binding = BINDING_OVERLAY) readonly buffer DataBlock { float scalar_data[]; };
 layout (location = 0) out float v_scalar;
 uniform float overlay_data_min;
 uniform float overlay_data_max;

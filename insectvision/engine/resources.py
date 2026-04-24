@@ -344,15 +344,16 @@ class BufferObject:
     def bind(self, mode_override: Optional[int] = None):
         target = mode_override if mode_override is not None else self.target
 
-        if self.binding is not None:
-            glBindBufferBase(self.target, self.binding, self.handle)
+        if self.binding is not None and mode_override is None:
+            glBindBufferBase(target, self.binding, self.handle)
         else:
             glBindBuffer(target, self.handle)
+
         try:
             yield self
         finally:
-            if self.binding is not None:
-                glBindBufferBase(self.target, self.binding, 0)
+            if self.binding is not None and mode_override is None:
+                glBindBufferBase(target, self.binding, 0)
             else:
                 glBindBuffer(target, 0)
 
