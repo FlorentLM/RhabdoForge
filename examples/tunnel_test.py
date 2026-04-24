@@ -127,9 +127,9 @@ renderer.overlay_enabled = True
 # Add some debug stuff, hide HUD
 context.debug.add(DebugGrid(size=1000.0, step=5.0))
 context.debug.add(AxesGizmo(size=0.4))
-#
-# for blas in renderer._baker.BLASes:
-#     context.debug.add(DebugBox(blas))
+
+for blas in renderer.BLASes:
+    context.debug.add(DebugBox(blas))
 
 
 ## Run

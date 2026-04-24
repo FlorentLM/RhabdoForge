@@ -8,10 +8,10 @@ from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.geometry import cylinder_geom
 from insectvision.geometry.materials_utils import grating_texture
 from insectvision.renderers import Raytracer
-from insectvision.renderers.commons import Colormap
+from insectvision.utils import Colormap
 from insectvision.interactive.debug import AxesGizmo, DebugGrid, DebugBox
 from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD
-from insectvision.compound_eyes import ReceptorArray
+from insectvision.compound_eyes import ReceptorArray, RhabdomereKernel
 
 
 @dataclass
@@ -25,7 +25,7 @@ class RunLog:
 
 ## Setup test environment
 
-context = Context(window_size=(1280, 720), fps_limit=None, v_sync=False)
+context = Context(window_size=(1280, 720), fps_limit=None, vsync=False)
 
 scene = Scene(background_color=(0.15, 0.15, 0.3))
 scene.add_skybox('assets/textures/bright_day_nosun')
@@ -36,9 +36,11 @@ radius = diameter / 2.0
 h = 5.0
 texture_res = 4096, 1024
 
+NUM_BANDS = 5
+
 # Create cylinder
 v_cyl, uv_cyl, idx_cyl = cylinder_geom(radius=radius, height=h, segments=64, inwards=True)
-cyl_pattern = grating_texture(*texture_res, num_bands=18, orientation='vertical', wave_type='square')
+cyl_pattern = grating_texture(*texture_res, num_bands=NUM_BANDS, orientation='horizontal', wave_type='square')
 
 drum = Asset.from_arrays(
     name='optomotor_drum',
@@ -52,49 +54,86 @@ cylinder_drum = scene.add_instance(asset=drum, dynamic=True)
 
 ## Setup eye model and agent
 
-receptor_array = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
-receptor_array.scale(0.01)
-receptor_array.tau = 0.012   # 12 ms time accumulation
+droso = RhabdomereKernel(
+    name='Drosophila',
+    offsets_um=np.array([
+        [-1.6881,  1.0273],
+        [-1.8046, -0.9934],
+        [-1.7111, -2.9717],
+        [-0.0025, -1.9261],
+        [ 1.6690, -0.9493],
+        [ 1.6567,  0.9762],
+        [ 0.0045, -0.0113],
+    ]),
+    diameters_um=np.array([1.8627, 1.8627, 1.8627, 1.8627, 1.8627, 1.8627, 1.5743]),
+    nodal_distance_um=21.0,
+    center_index=6,
+    main_axis_indices=(2, 5)
+)
 
-left_eye = receptor_array.eye(0)
-right_eye = receptor_array.eye(1)
+pitch_rad = np.deg2rad(10.1)
+optic_flow = np.array([0.0, np.sin(pitch_rad), np.cos(pitch_rad)])
+
+ra = ReceptorArray.from_file(file_path='species_models/drosophila_custom.npz',
+# ra = ReceptorArray(ommatidia_count=1600,
+    kernel=droso,
+    flow_direction=optic_flow,
+    weight_flow=0.6,
+    weight_tissue=0.6
+)
+# ra.scale(0.01)
+ra.receptors.tau = 0.012
+
+left_eye = ra.eyes[0]
+right_eye = ra.eyes[1]
+
+
+##
+
+NB_SAMPLES = 512
+
+
+ACTUATE = True
+ACTUATION_GAIN = 5.0
+TAU_ON = 0.03
+TAU_OFF = 0.4
+LATERAL_CLAMP = 1.7
 
 start_position = (0.0, h/2.0, 0.0)
+
 agent = Agent(position=start_position)
+agent.yaw = 0.0
+agent.pitch = 0.0
+agent.roll = 0.0
+
 
 renderer = Raytracer(
-    receptor_array=receptor_array, scene=scene,
-    nb_samples=512,
+    receptor_array=ra, scene=scene, agent=agent,
+    nb_samples=NB_SAMPLES,
     time_dithering=True,
     quasi_random=True,
-    enable_shadows=False
+    enable_actuation=True,
+    enable_shadows=False,
 )
-renderer.heatmap_enabled = True
 
 # Add some debug stuff, hide HUD
 context.debug.add(DebugGrid(size=1000.0, step=5.0))
 context.debug.add(AxesGizmo(size=0.4))
 
-for blas in renderer._scene_baked.BLASes:
+for blas in renderer.BLASes:
     context.debug.add(DebugBox(blas))
 
-
-test_direction = (0.0, 0.0, 1.0)  # front to back
-
-agent.position = start_position
-agent.yaw = 0.0
-agent.pitch = 0.0
-agent.roll = 0.0
+##
 
 left_emd = HassensteinReichardtEMD(
     eye=left_eye,
-    direction=test_direction,
-    coordinate='cartesian'
+    direction=(0.0, -1.0),
+    coordinate='spherical'
 )
 right_emd = HassensteinReichardtEMD(
     eye=right_eye,
-    direction=test_direction,
-    coordinate='cartesian'
+    direction=(0.0, -1.0),
+    coordinate='spherical'
 )
 
 ## Run
@@ -106,13 +145,20 @@ drum_current_yaw = 0.0
 
 # Sensor calibration
 drum_velocity = 45.0
-# 45 deg/s rotation produces an EMD output of ~ 0.035 (from open-loop observation)
+# 45 deg/s rotation produces an EMD output of ~0.035 (from open-loop observation)
 EMD_TO_DEG_PER_SEC = 45.0 / 0.035
 
-switch_duration_range = (1.5, 4.0)  # between 1.5 and 4.0 seconds
-next_switch_time = random.uniform(*switch_duration_range)
 
-while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
+ra.actuate(lateral_um=0.0, axial_um=0.0)
+# Excitation/inhibition per eye
+exc_left = np.zeros(left_eye.lens_count)
+inh_left = np.zeros(left_eye.lens_count)
+exc_right = np.zeros(right_eye.lens_count)
+inh_right = np.zeros(right_eye.lens_count)
+
+
+
+while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=True):
     context.hud.show = False
 
     context.input()
@@ -120,51 +166,55 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
     dt = 1 / 120.0
     sim_time += dt
 
-    if sim_time >= next_switch_time:
-        drum_velocity *= -1.0
-        interval = random.uniform(*switch_duration_range)
-        next_switch_time = sim_time + interval
+    visual_output = renderer.get_output()
 
-    drum_yaw_delta = drum_velocity * dt
-    cylinder_drum.rotate_axis(drum_yaw_delta, 'up')
-    drum_current_yaw += drum_yaw_delta
+    left_lens_out = visual_output[left_eye].lenses
+    right_lens_out = visual_output[right_eye].lenses
 
-    view = renderer.get_visual_output(agent)
-    ommatidia_data = view.per_ommatidium
+    left_motion = left_emd.process(left_lens_out, dt)
+    right_motion = right_emd.process(right_lens_out, dt)
 
-    left_motion = left_emd.process(ommatidia_data, dt)
-    right_motion = right_emd.process(ommatidia_data, dt)
+    # Per-rhabdomere luminance
+    left_rhab_lum = left_lens_out[:, :, :3].mean(axis=2)
+    right_rhab_lum = right_lens_out[:, :, :3].mean(axis=2)
 
-    mean_left = float(np.mean(left_motion))
-    mean_right = float(np.mean(right_motion))
+    # Per-lens mean for actuation
+    left_lens_lum = left_rhab_lum.mean(axis=1)
+    right_lens_lum = right_rhab_lum.mean(axis=1)
 
     # Rotational optic flow
     # Drum spins left (+) -> left eye sees front-to-back (+) -> flow should be positive
-    net_rotational_flow = mean_left - mean_right
+    net_rotational_flow = left_lens_lum - right_lens_lum
     estimated_slip_velocity = net_rotational_flow * EMD_TO_DEG_PER_SEC
 
-    # Optomotor controller
-    optomotor_gain = 2.0
-    turn_rate = estimated_slip_velocity * optomotor_gain
+    if ACTUATE:
+        alpha_f = dt / (dt + TAU_ON)
+        alpha_s = dt / (dt + TAU_OFF)
 
-    agent.dt(dt).rotate(yaw_delta=turn_rate)
+        exc_left = alpha_f * left_lens_lum + (1 - alpha_f) * exc_left
+        inh_left = alpha_s * left_lens_lum + (1 - alpha_s) * inh_left
+        left_lat = np.clip(ACTUATION_GAIN * (exc_left - inh_left), -LATERAL_CLAMP, LATERAL_CLAMP)
+        left_eye.actuate(lateral_um=left_lat, axial_um=0.0)
+
+        exc_right = alpha_f * right_lens_lum + (1 - alpha_f) * exc_right
+        inh_right = alpha_s * right_lens_lum + (1 - alpha_s) * inh_right
+        right_lat = np.clip(ACTUATION_GAIN * (exc_right - inh_right), -LATERAL_CLAMP, LATERAL_CLAMP)
+        right_eye.actuate(lateral_um=right_lat, axial_um=0.0)
 
     # Log
     log.time.append(sim_time)
-    log.left_flow.append(mean_left)
-    log.right_flow.append(mean_right)
+    log.left_flow.append(left_lens_lum)
+    log.right_flow.append(right_lens_lum)
     log.agent_yaw.append(float(agent.yaw))
     log.drum_yaw.append(float(drum_current_yaw))
 
-    renderer.set_heatmap_eyes(
+    renderer.set_overlay(
         {left_eye: left_motion, right_eye: right_motion},
-        colormap=Colormap.Diverging, compression=0.5
+        colormap=Colormap.Thermal, compression=1.0
     )
 
-    context.draw()
+    context.draw(visual_output)
 
-    if sim_time > 12.0:
-        break
 
 context.free()
 

@@ -733,6 +733,14 @@ class Raytracer(BaseRenderer):
         self._baker.free()
         super().free()
 
+    @property
+    def TLAS(self) -> Optional[BVH]:
+        return self._baker._tlas
+
+    @property
+    def BLASes(self) -> List[BVH]:
+        return self._baker._blases
+
 
 ##
 # Pathtracer
