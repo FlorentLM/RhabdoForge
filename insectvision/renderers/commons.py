@@ -495,7 +495,7 @@ class BaseRenderer(ABC):
 
         # Ticks
         self._eye_uniforms.update(
-            dt=self._context.dt,
+            dt=self._context.dt if self._context else 0.0,
             frame_offset=self._frame_index % self._batch_size,
             dither_counter=self._dither_counter
         )
@@ -604,7 +604,6 @@ class BaseRenderer(ABC):
         """
         Zero the GPU-side photomechanical/adaptation state and flush the PBO readback ring.
         """
-
         self.eye_buffers['lens_dynamic'].reset()
         self.eye_buffers['ema_state'].reset()
 

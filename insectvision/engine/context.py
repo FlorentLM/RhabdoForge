@@ -335,10 +335,11 @@ class Context:
             self._interactive_initialised = True
 
         # Check if these changed during the runtime and update if needed
-        if renderer is not self.renderer:
+        if renderer._context is not self:
             self.renderer = renderer
-            renderer.runs_interactive = True
             renderer._context = self
+
+        renderer.runs_interactive = True
 
         if agent is not self.agent:
             self.agent = agent
