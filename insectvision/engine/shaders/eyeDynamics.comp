@@ -61,8 +61,8 @@ void main() {
     ld.adapted_lum = mix(ld.adapted_lum, lum, dt / (tau_adapt + dt));
 
     // Saccade drive: rectified fast-positive contrast, normalised by baseline
-    float bright_drive = max(0.0, ld.fast_lum - ld.adapted_lum) /
-                         max(ld.adapted_lum, 1e-3);
+    float bright_drive = max(0.0, ld.fast_lum - ld.adapted_lum) / max(ld.adapted_lum, 0.01);
+    bright_drive = min(bright_drive, 1.0);            // saturate
 
     float target_lat = bright_drive * gain_lat;
     float target_ax  = bright_drive * gain_ax;

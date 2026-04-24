@@ -226,9 +226,9 @@ class BaseRenderer(ABC):
         self.sky_intensity = getattr(self, 'sky_intensity', 1.0)
 
         # Dynamics parameters
-        self.gain_lat = 3.0      # saccade lateral gain (μm) per unit drive
-        self.gain_ax = 8.0       # saccade axial gain (μm) per unit drive
-        self.tau_fast = 0.005    # 5 ms: fast saccade trigger
+        self.gain_lat = 1.5      # saccade lateral gain (μm) per unit drive
+        self.gain_ax = 4.0       # saccade axial gain (μm) per unit drive
+        self.tau_fast = 0.001    # 1 ms: fast saccade trigger
         self.tau_adapt = 0.050   # 50 ms: light adaptation baseline
         self.tau_relax = 0.080   # 80 ms: Mechanical relaxation (elastic return)
         self.gain_biochem = 0.1
