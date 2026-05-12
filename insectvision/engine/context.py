@@ -66,9 +66,12 @@ class Context:
         self.dashboard: Optional['Dashboard'] = None
         self.debug: Optional['DebugOverlay'] = DebugOverlay() if debug_overlay else None
 
-        self.last_frame_time: float = 0.0
-        self._dt: float = 1e-12
-        self._fixed_dt: Optional[float] = None
+        # Timing states
+        self._last_wall_time: float = glfw.get_time()
+        self._wall_dt: float = 0.0  # Hardware time since last frame
+        self._sim_dt: float = 1e-12  # Biological time step for this frame
+        self._total_sim_time: float = 0.0  # Accumulated biological time
+        self._fixed_sim_dt: Optional[float] = None  # Constant step for SNN/Science mode
 
         # Shared movement parameter
         self.move_speed: float = 3.0
@@ -82,6 +85,16 @@ class Context:
 
         self.actions = ActionRegistry(self)
         self._controls: Optional[Controls] = controls
+
+    def __repr__(self):
+        if self._fixed_sim_dt is not None:
+            timing_mode = f"Biological clock (fixed): {self._fixed_sim_dt * 1000:.1f} ms/step"
+        else:
+            timing_mode = "Wall-clock (real-time, variable)"
+
+        return (f"<Context | Timing: {timing_mode} | "
+                f"Simulated Bio time: {self._total_sim_time:.3f}s | "
+                f"Hardware speed: {self.fps:.1f} FPS>")
 
     @property
     def mouse_captured(self) -> bool:
@@ -110,39 +123,77 @@ class Context:
         if self._controls is not None and self._interactive_initialised:
             self._controls.setup(self)
 
-    # Time
+    # Timing
 
     @property
-    def current_time(self) -> float:
+    def current_wall_time(self) -> float:
+        """The current time in real world (wall-clock), dependent on hardware."""
         return glfw.get_time()
 
     @property
-    def dt(self) -> float:
-        return self._dt
+    def wall_dt(self) -> float:
+        """Actual time passed on the hardware since the last frame."""
+        return self._wall_dt
 
     @property
-    def fixed_dt(self) -> Optional[float]:
-        return self._fixed_dt
-
-    @fixed_dt.setter
-    def fixed_dt(self, value: Optional[float]):
-        self._fixed_dt = value
-
-    def update_dt(self):
+    def sim_dt(self) -> float:
         """
-        Update delta time based on the real-world clock.
+        The delta-time to use for all physics, biology, and agent movement.
+        If fixed_sim_dt is set, this returns that constant.
+        Otherwise, it follows the wall-clock.
         """
-        current_time = self.current_time
-        if self._fixed_dt is not None:
-            self._dt = self._fixed_dt
+        return self._sim_dt
+
+    @property
+    def total_sim_time(self) -> float:
+        """The total biological time simulated so far."""
+        return self._total_sim_time
+
+    @property
+    def fixed_sim_dt(self) -> Optional[float]:
+        """The constant time-step used for reproducible simulations or SNNs."""
+        return self._fixed_sim_dt
+
+    @fixed_sim_dt.setter
+    def fixed_sim_dt(self, value: Optional[float]):
+        self._fixed_sim_dt = value
+
+    def tick(self) -> float:
+        """
+        Advance both clocks by one step.
+
+        - Wall clock: tracks the real time elapsed since the previous tick(), hardware-dependent
+        - Sim clock: advances by fixed_sim_dt if set, otherwise by the wall delta
+
+        Must be called exactly once per loop iteration (interactive or headless).
+        Everything time-dependent downstream (renderer.step(), DeltaTimeTransformer,
+        FPS estimation) reads its dt from the clock advanced here.
+
+        Returns:
+            The biological dt for this step (i.e. sim_dt), so the value can be
+            chained directly into time-dependent transforms.
+        """
+        current_wall = self.current_wall_time
+        self._wall_dt = current_wall - self._last_wall_time
+
+        # Determine simulation step size
+        if self._fixed_sim_dt is not None:
+            self._sim_dt = self._fixed_sim_dt
         else:
-            self._dt = current_time - self.last_frame_time
-        self._frame_times.append(current_time)
-        self.last_frame_time = current_time
+            self._sim_dt = self._wall_dt
+
+        # Accumulate simulated time and advance wall-clock anchor
+        self._total_sim_time += self._sim_dt
+        self._last_wall_time = current_wall
+
+        # Track hardware frame times for FPS display
+        self._frame_times.append(current_wall)
+
+        return self._sim_dt
 
     @property
     def fps(self) -> float:
-        """Average FPS over the last n frames."""
+        """Average hardware frames per second."""
         if len(self._frame_times) < 2:
             return 0.0
         return (len(self._frame_times) - 1) / (self._frame_times[-1] - self._frame_times[0])
@@ -329,15 +380,14 @@ class Context:
 
             self._controls.setup(self)
 
-            # Initialise last_frame_time right before the loop starts to prevent a massive initial delta_time
-            self.last_frame_time = self.current_time
+            # Synchronise start times
+            self._last_wall_time = self.current_wall_time
 
             self._interactive_initialised = True
 
         # Check if these changed during the runtime and update if needed
         if renderer._context is not self:
-            self.renderer = renderer
-            renderer._context = self
+            renderer.attach_context(self)
 
         renderer.runs_interactive = True
 
@@ -347,8 +397,6 @@ class Context:
 
         if scene is not self.scene:
             self.scene = scene
-
-        self.update_dt()
 
         return not glfw.window_should_close(self.window)
 
@@ -405,8 +453,8 @@ class Context:
             glfw.make_context_current(self.window)
 
         if self._fps_limit > 0:
-            frame_end_time = self.current_time
-            elapsed_time = frame_end_time - self.last_frame_time
+            frame_end_time = self.current_wall_time
+            elapsed_time = frame_end_time - self._last_wall_time
             wait_time = (1.0 / self._fps_limit) - elapsed_time
 
             if wait_time > 0:

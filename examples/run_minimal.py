@@ -27,6 +27,7 @@ def main():
 
     eye_renderer = Raytracer(
         receptor_array=eye_model, scene=scene, agent=agent,
+        context=context,
         nb_samples=16,
         time_dithering=False,
         enable_shadows=True
@@ -43,10 +44,13 @@ def main():
     while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer):
         context.input()
 
-        # Make the agent follow the trajectory
-        agent.dt(context.dt).follow(agent_path, align_orientation=True)
+        # Advance clocks
+        dt = context.tick()
 
-        output = eye_renderer.get_output()
+        # Make the agent follow the trajectory
+        agent.dt(dt).follow(agent_path, align_orientation=True)
+
+        output = eye_renderer.step()
 
         context.draw()
         # context.draw(output)  # eye output must be passed when using the dashboard so it can plot

@@ -60,6 +60,12 @@ class Dashboard:
                     dpg.add_text("FPS: 00.0", tag="ui_fps_text", color=[150, 255, 150])
                     dpg.add_text("| Renderer: Unknown", tag="ui_renderer_text")
 
+                # Timing: hardware (wall) clock vs biological (sim) clock
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Wall dt: -- ms", tag="ui_wall_dt_text", color=[180, 220, 255])
+                    dpg.add_text("| Sim: --", tag="ui_sim_mode_text", color=[180, 220, 255])
+                dpg.add_text("Total sim time: 0.000 s", tag="ui_sim_total_text", color=[180, 220, 255])
+
                 with dpg.group(horizontal=True):
                     dpg.add_text("View: Unknown", tag="ui_view_text", color=[200, 200, 200])
                     dpg.add_text("| Proj: Unknown", tag="ui_proj_text", color=[200, 200, 200])
@@ -406,6 +412,18 @@ class Dashboard:
 
         dpg.set_value('ui_fps_text', f'FPS: {self.ctx.fps:5.1f}')
         dpg.set_value('ui_renderer_text', f'| Renderer: {renderer_name}')
+
+        # Timing: wall vs sim clock
+        dpg.set_value('ui_wall_dt_text', f'Wall dt: {self.ctx.wall_dt * 1000.0:6.2f} ms')
+
+        if self.ctx.fixed_sim_dt is not None:
+            sim_hz = 1.0 / self.ctx.fixed_sim_dt
+            sim_mode = f'Sim: {sim_hz:5.1f} Hz (fixed {self.ctx.fixed_sim_dt * 1000:.1f} ms)'
+        else:
+            sim_mode = 'Sim: real-time (variable)'
+        dpg.set_value('ui_sim_mode_text', f'| {sim_mode}')
+
+        dpg.set_value('ui_sim_total_text', f'Total sim time: {self.ctx.total_sim_time:7.3f} s')
 
         # Modes
         view_str = self.ctx.display_mode.name.replace('_', ' ')

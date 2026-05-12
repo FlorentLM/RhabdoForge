@@ -17,6 +17,7 @@ from insectvision.engine.resources import ShaderProgram, GPUResourceManager, Buf
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import ReceptorArray, Eye
+    from insectvision.engine.context import Context
 
 
 def _query_available_VRAM() -> int:
@@ -119,10 +120,14 @@ class BaseRenderer(ABC):
                  quasi_random: bool = False,
                  batch_size: int = 1,
                  enable_actuation: bool = False,     #TODO: might rename this
-                 resource_manager: Optional[GPUResourceManager] = None
+                 resource_manager: Optional[GPUResourceManager] = None,
+                 context: Optional['Context'] = None
                  ):
 
         self._context: Optional['Context'] = None
+        if context is not None:
+            self.attach_context(context)
+
         self._ra: 'ReceptorArray' = receptor_array
         self.agent: 'Agent' = agent
         self.scene: 'Scene'
@@ -258,6 +263,7 @@ class BaseRenderer(ABC):
         # Time keeping
         self._dither_counter: int = 0   # only advanced when time dithering is on
         self._frame_index: int = 0      # advanced at each new rendered frame
+        self._last_step_dt: float = 0.0  # biological dt used in the most recent step()
 
         # Visualisation stuff
         self.projection_mode = OmmatidiaProjection.Position
@@ -327,7 +333,14 @@ class BaseRenderer(ABC):
             gain_ax=self.gain_ax if self._gpu_actuation else 0.0,
             tau_relax=self.tau_relax,
             gain_biochem=self.gain_biochem,
+            saccade_sign=1.0
         )
+
+    def __repr__(self):
+        loop_mode = 'Open-loop (batched)' if self._batch_size > 1 else 'Closed-loop / Interactive'
+        return (f"<{self.__class__.__name__} | Mode: {loop_mode} | "
+                f"Batch size: {self._batch_size} | "
+                f"{self.nb_samples} samples/Receptor>")
 
     # Internal properties for lazy loaded resources
 
@@ -489,13 +502,11 @@ class BaseRenderer(ABC):
         self._pbo_index = next_pbo_index
         return out_array
 
-    def _update_uniforms(self):
-
-        # self._last_render_time = time.perf_counter()
+    def _update_uniforms(self, sim_dt: float):
 
         # Ticks
         self._eye_uniforms.update(
-            dt=self._context.dt if self._context else 0.0,
+            dt=sim_dt,
             frame_offset=self._frame_index % self._batch_size,
             dither_counter=self._dither_counter
         )
@@ -518,10 +529,10 @@ class BaseRenderer(ABC):
             gain_biochem=self.gain_biochem
         )
 
-    def _main_render(self):
+    def _main_render(self, sim_dt: float):
         """Shared pipeline: tick -> upload updated uniforms -> scene-specific sampling -> reduce -> actuate."""
 
-        self._update_uniforms()
+        self._update_uniforms(sim_dt=sim_dt)
 
         self._sample_scene()  # subclasses override: fill sampling_results_ssbo
         self._reduction()
@@ -616,9 +627,10 @@ class BaseRenderer(ABC):
         self._colours_cpu_buffer[:] = 0
 
         # Run throwaway frames if requested
+        # sim_dt=0.0 so biology does not advance during the PBO ring flush
         if n_flush_frames > 0:
             for _ in range(n_flush_frames):
-                self.get_output(readback=False)
+                self._render_one(sim_dt=0.0, readback=False)
 
     def flush(self) -> np.ndarray:
         """
@@ -687,21 +699,19 @@ class BaseRenderer(ABC):
         # Each subclass implements its own rendering logic
         raise NotImplementedError
 
-    def get_output(self, readback: bool = True) -> Optional['VisualOutput']:
+    def _render_one(self, sim_dt: float, readback: bool) -> Optional[np.ndarray]:
         """
-        Runs one frame of simulation.
-            - batch_size = 1: Blocks and returns the current frame's data
-            - batch_size > 1: Queues the frame on the GPU and returns None
+        Internal: render one frame at a given biological dt and (optionally) read
+        the colours back. Returns the raw colour array, or None if there's nothing
+        to hand back (readback disabled, or mid-batch in async mode).
         """
-        from insectvision.compound_eyes import VisualOutput
-
         self.sync_cpu()
 
         if self._time_dithering:
             self._dither_counter += 1
 
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-        self._main_render()
+        self._main_render(sim_dt=sim_dt)
         glFinish()
 
         self._frame_index += 1
@@ -712,20 +722,47 @@ class BaseRenderer(ABC):
 
         if self.runs_interactive or self._batch_size == 1:
             # Frame by frame path: ping-pong PBO read
-            out_array = self._colors_read_async()
+            return self._colors_read_async()
 
-            return VisualOutput(out_array, self._ra)
+        # Batched path
+        if self._frame_index < self._batch_size:
+            # batch is not full yet, we're done for this frame
+            return None
 
-        else:
-            # Batched path
+        print(f"  > GPU batch is full. Flushing {self._batch_size} frames...")
+        return self.flush()
 
-            if self._frame_index < self._batch_size:
-                # batch is not full yet, we're done for this frame
-                return None
+    def step(self, readback: bool = True) -> Optional['VisualOutput']:
+        """
+        Advance biological dynamics by one time step and update the eyes.
 
-            print(f"  > GPU batch is full. Flushing {self._batch_size} frames...")
-            batch_result = self.flush()
-            return VisualOutput(batch_result, self._ra)
+        The time step is taken from the attached Context (context.sim_dt), and is
+        advanced by context.tick().
+
+        Behaviour by batch size:
+            - batch_size == 1: blocks (via ping-pong PBO) and returns this frame's VisualOutput.
+            - batch_size > 1: queues the frame on the GPU. Returns None until the batch is full,
+              then returns a VisualOutput wrapping the whole batch.
+
+        Args:
+            readback: If False, skip the CPU readback. Only the colour download is skipped.
+            The frame is still rendered and biological state still advances.
+        """
+        from insectvision.compound_eyes import VisualOutput
+
+        if self._context is None:
+            raise RuntimeError(
+                "renderer.step() requires an attached Context. Pass context=... "
+                "to the renderer's constructor (or call renderer.attach_context(ctx))."
+            )
+
+        dt = self._context.sim_dt
+        self._last_step_dt = dt
+
+        out_array = self._render_one(sim_dt=dt, readback=readback)
+        if out_array is None:
+            return None
+        return VisualOutput(out_array, self._ra)
 
     def set_overlay(self,
                     values: Optional[Union[Dict['Eye', np.array], np.array]] = None,
@@ -821,6 +858,26 @@ class BaseRenderer(ABC):
         )
 
     # Public properties and methods
+
+    @property
+    def context(self) -> Optional['Context']:
+        """The Context this renderer is attached to (if any)."""
+        return self._context
+
+    def attach_context(self, context: 'Context') -> None:
+        """
+        Bind this renderer to a Context. Needed so step() can be called without
+        an explicit dt.
+        """
+        if self._context is context:
+            return
+        self._context = context
+        context.renderer = self
+
+    @property
+    def last_step_dt(self) -> float:
+        """Biological dt (seconds) used in the most recent step()."""
+        return self._last_step_dt
 
     @property
     def nb_samples(self):

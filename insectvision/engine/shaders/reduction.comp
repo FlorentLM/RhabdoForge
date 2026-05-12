@@ -60,6 +60,7 @@ void main() {
     }
 
     float adapt = rcpt_dynamic[rcpt_idx].adaptation_state;
+    if (adapt < 1e-6) adapt = 1.0;
     vec4 out_val = vec4(ema_val.rgb * adapt, ema_val.w * adapt);
 
     // frame offset logic for batched rendering

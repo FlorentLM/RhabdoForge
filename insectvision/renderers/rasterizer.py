@@ -2,7 +2,7 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import TYPE_CHECKING, List, Union
+from typing import TYPE_CHECKING, List, Union, Optional
 import numpy as np
 from PIL import Image
 from pyglm import glm
@@ -17,6 +17,7 @@ from insectvision.renderers.commons import BaseRenderer
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import ReceptorArray
+    from insectvision.engine.context import Context
 
 
 def _get_light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
@@ -435,6 +436,7 @@ class Rasterizer(BaseRenderer):
             receptor_array: 'ReceptorArray',
             scene: 'Scene',
             agent: Agent,
+            context: Optional['Context'] = None,
             time_dithering: bool = False,
             nb_samples: int = 256,
             quasi_random: bool = False,
@@ -476,6 +478,7 @@ class Rasterizer(BaseRenderer):
         super().__init__(
             receptor_array=receptor_array,
             agent=agent,
+            context=context,
             time_dithering=time_dithering,
             nb_samples=nb_samples,
             quasi_random=quasi_random,

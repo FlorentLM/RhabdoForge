@@ -20,6 +20,7 @@ from insectvision.renderers.commons import BaseRenderer
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import ReceptorArray
+    from insectvision.engine.context import Context
 
 RENDERABLE_INST_DTYPE = np.dtype([
     ('transform', np.float32, (4, 4)),
@@ -467,6 +468,7 @@ class Raytracer(BaseRenderer):
             enable_direct: bool = True,
             enable_shadows: bool = True,
             enable_ambient: bool = True,
+            context: Optional['Context'] = None,
         ):
 
         # Bake first so VRAM estimation is correct
@@ -482,7 +484,8 @@ class Raytracer(BaseRenderer):
             quasi_random=quasi_random,
             batch_size=batch_size,
             enable_actuation=enable_actuation,
-            resource_manager=self.resource_manager
+            resource_manager=self.resource_manager,
+            context=context,
         )
 
         # Global lighting controls
@@ -619,7 +622,7 @@ class Raytracer(BaseRenderer):
             self._invalidate_shaders()
             self._active_defines = new_defines
 
-    def _update_uniforms(self):
+    def _update_uniforms(self, sim_dt: float):
 
         self._lights_uniforms.update(
             sky_intensity=self.sky_intensity,
@@ -632,7 +635,7 @@ class Raytracer(BaseRenderer):
         # if 'materials' in self._baker.scene_textures:
         #     self._scene_uniforms.update(scene_textures=self._baker.scene_textures['materials'].unit)
 
-        super()._update_uniforms()
+        super()._update_uniforms(sim_dt=sim_dt)
 
     # Internal rendering logic and draw calls
 

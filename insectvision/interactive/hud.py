@@ -293,7 +293,7 @@ class HUD:
 
         from insectvision.renderers import Raytracer, Pathtracer
 
-        current_time = self.ctx.current_time
+        current_time = self.ctx.current_wall_time
         if current_time - self._last_update_time < self.update_interval:
             return
         self._last_update_time = current_time
@@ -320,18 +320,33 @@ class HUD:
         nb_px_samples = getattr(self.ctx.renderer, 'samples_per_pixel', 1)
         has_pixels = self.ctx.display_mode.name in ('Panoramic', 'Third_person')
 
-        # Top info line
+        # Top info line: renderer / view / projection / position
         info_text = (
-            f'FPS: {self.ctx.fps:5.1f} | '
             f'Renderer: {renderer_name} | '
             f'View: {view_mode_str} | '
             f'Proj: {proj_mode_str} | '
             f'Pos: [{pos.x:5.2f}, {pos.y:5.2f}, {pos.z:5.2f}]'
         )
 
+        # Timing line: hardware (wall) clock vs biological (sim) clock
+        wall_fps = self.ctx.fps
+        wall_dt_ms = self.ctx.wall_dt * 1000.0
+
+        if self.ctx.fixed_sim_dt is not None:
+            sim_hz = 1.0 / self.ctx.fixed_sim_dt
+            sim_str = f'Sim: {sim_hz:5.1f} Hz (fixed {self.ctx.fixed_sim_dt * 1000:.1f} ms)'
+        else:
+            sim_str = 'Sim: real-time (variable)'
+
+        timing_text = (
+            f'Wall: {wall_fps:5.1f} FPS ({wall_dt_ms:5.1f} ms) | '
+            f'{sim_str} | '
+            f'Total sim time: {self.ctx.total_sim_time:7.3f} s'
+        )
+
         line_height = self.font_renderer.font_size * 1.1
         self._info_shadow_verts, self._info_fg_verts = self._build_text_buffers(
-            [info_text], x_align='left', y_start=self.height - line_height
+            [info_text, timing_text], x_align='left', y_start=self.height - 2 * line_height
         )
 
         # Bottom-right scene stats

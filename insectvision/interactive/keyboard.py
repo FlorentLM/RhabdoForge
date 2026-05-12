@@ -102,7 +102,7 @@ class KeyboardMouse(Controls):
 
         window = self.ctx.window
         agent = self.ctx.agent
-        dt = self.ctx.dt
+        dt = self.ctx.sim_dt
 
         # Continuous movement (WASD + vertical)
         move_direction = glm.vec3(0.0)

@@ -78,7 +78,7 @@ def main():
     batch_size = BATCH_SIZE if (HEADLESS and USE_ASYNC_BATCHING) else 1
 
     if USE_RAYTRACER:
-        eye_renderer = Raytracer(receptor_array=eye_model, scene=scene, agent=agent,
+        eye_renderer = Raytracer(receptor_array=eye_model, scene=scene, agent=agent, context=context,
                                  nb_samples=SAMPLES_PER_RECEPTOR,
                                  time_dithering=True,
                                  quasi_random=True,
@@ -93,7 +93,7 @@ def main():
                 context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
 
     else:
-        eye_renderer = Rasterizer(receptor_array=eye_model, scene=scene, agent=agent,
+        eye_renderer = Rasterizer(receptor_array=eye_model, scene=scene, agent=agent, context=context,
                                   nb_samples=SAMPLES_PER_RECEPTOR,
                                   time_dithering=False,
                                   batch_size=batch_size,
@@ -108,19 +108,16 @@ def main():
 
     context.bind_key('m', toggle_halton)
 
-    # Example: pin the biological clock to a fixed rate
-    #
-    # Useful for reproducible experiments where shader dynamics (saccades, adaptation,
-    # photoreceptor filtering) should advance at sim rate regardless of
-    # wallclock render speed.
-    #
-    # Leave it as None (default) for free-running interactive use.
-    #
-    # context.fixed_dt = 0.010   # 10 ms biological time per render call
+
+
+    # Example fixed timing: simulation steps by exactly 10 ms regardless of render speed
+    context.fixed_sim_dt = 0.010
+
+
 
     # Run
 
-    start_time = context.current_time
+    start_time = context.current_wall_time
     nb_frames = 0
     all_ommatidia_data = []
 
@@ -128,15 +125,16 @@ def main():
 
         while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer, use_dashboard=True):
 
-            context.input()  # this processes mouse and keyboard, it can be omitted to run headless
+            context.input()  # Processes mouse and keyboard, optional
+            dt = context.tick() # Advance clocks, must be called once per loop (all timings depend on this)
 
-            # Rotate dynamic test crate
-            dynamic_crate.dt(context.dt).rotate_axis(45, 'up')
+            # Rotate dynamic test crate at 45 deg/s (framerate-independent)
+            dynamic_crate.dt(dt).rotate_axis(45, 'up')
 
-            # Get sensory data from the compound eye renderer
-            view = eye_renderer.get_output()
+            # Render one biological step
+            eyes_output = eye_renderer.step()
 
-            context.draw(view)  # this draws to the viewport, it can be omitted to run headless
+            context.draw(eyes_output)  # draws to the viewport, also optional
 
             nb_frames += 1
 
@@ -150,15 +148,17 @@ def main():
 
         for i in range(max_steps):
 
-            # Move the agent or whatever
-            agent.translate(agent.forward * 0.05).rotate(yaw_delta=-0.5, pitch_delta=0, roll_delta=0, degrees=False)
+            dt = context.tick()  # Advance clocks
 
-            # Get sensory data from the compound eye renderer
-            view = eye_renderer.get_output()
+            # Move the agent at 0.5 m/s and yaw at 25 deg/s (framerate-independent)
+            agent.dt(dt).translate(agent.forward * 0.5).rotate(yaw_delta=25.0, degrees=True)
+
+            # Render one biological step
+            eyes_output = eye_renderer.step()
 
             # If the return value is not None, it's a valid chunk of data (either a single frame or a full batch)
-            if view is not None:
-                all_ommatidia_data.append(view.lenses)
+            if eyes_output is not None:
+                all_ommatidia_data.append(eyes_output.cartridges)
 
             nb_frames += 1
 
@@ -169,7 +169,7 @@ def main():
         if final_chunk.size > 0:
             all_ommatidia_data.append(final_chunk)
 
-    total_time = context.current_time - start_time
+    total_time = context.current_wall_time - start_time
 
     print(f"Ran for {nb_frames} frames in {total_time:.2f}s (avg. {nb_frames / total_time:.2f} fps).")
 

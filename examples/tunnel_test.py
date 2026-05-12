@@ -25,9 +25,10 @@ class RunLog:
     yaw: List[float] = field(default_factory=list)
 
 
-def random_tunnel_start(tunnel_width: float, tunnel_height: float, randomise_height=False):
-    start_x = (np.random.rand() - 0.5) * tunnel_width
-    start_y = np.random.rand() * tunnel_height if randomise_height else tunnel_height / 2.0
+def random_tunnel_start(tunnel_width: float, tunnel_height: float, margin_pct: float = 0.25, randomise_height=False):
+    margin_pct = 1.0 - np.clip(margin_pct, 0.0, 1.0)
+    start_x = (np.random.rand() - 0.5) * (tunnel_width * margin_pct)
+    start_y = np.random.rand() * (tunnel_height * margin_pct) if randomise_height else (tunnel_height * margin_pct) / 2.0
     return start_x, start_y, 0.0
 
 
@@ -117,6 +118,7 @@ agent = Agent()
 
 renderer = Raytracer(
     receptor_array=receptor_array, scene=scene, agent=agent,
+    context=context,
     nb_samples=512,
     time_dithering=True,
     quasi_random=True,
@@ -133,6 +135,9 @@ for blas in renderer.BLASes:
 
 
 ## Run
+
+# Simulation runs at a fixed 200 Hz biological clock, decoupled from rendering speed
+context.fixed_sim_dt = 1.0 / 200.0
 
 saved_runs: Dict[str, RunLog] = {}
 modes = ["Non-holonomic (yaw steering)", "Holonomic (lateral shift)"]
@@ -167,10 +172,10 @@ for mode in modes:
 
         context.input()
 
-        dt = 1/200.0
+        dt = context.tick()
         sim_time += dt
 
-        visual_output = renderer.get_output()
+        visual_output = renderer.step()
 
         left_motion = left_emd.process(visual_output[left_eye].cartridges, dt)
         right_motion = right_emd.process(visual_output[right_eye].cartridges, dt)
