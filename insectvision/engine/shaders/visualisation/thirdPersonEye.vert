@@ -79,7 +79,7 @@ void main() {
         if (overlay_fallback) {
 //            value = color_data[base + i].w;
 //            value = dot(color_data[base + i].rgb, vec3(0.299, 0.587, 0.114));
-            value = rcpt_dynamic[inst_idx].adaptation_state;
+            value = rcpt_dynamic[base + i].adaptation_state;
         } else {
             value = scalar_data[base + i];
         }
@@ -97,7 +97,7 @@ void main() {
             if (overlay_fallback) {
 //                value = color_data[base + i].w;
 //                value += dot(color_data[base + src].rgb, vec3(0.299, 0.587, 0.114));
-                value = rcpt_dynamic[inst_idx].adaptation_state;
+                value = rcpt_dynamic[base + i].adaptation_state;
             } else {
                 value += scalar_data[base + src];
             }
