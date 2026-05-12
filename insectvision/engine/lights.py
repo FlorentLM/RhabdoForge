@@ -303,11 +303,19 @@ class Sun(DirectionalLight):
         """Current azimuth angle in degrees."""
         return np.degrees(np.arctan2(self._position.x, self._position.z))
 
+    @azimuth.setter
+    def azimuth(self, val: float):
+        self.from_angles(float(val), self.elevation)
+
     @property
     def elevation(self) -> float:
         """Current elevation angle in degrees."""
         horizontal_dist = np.sqrt(self._position.x ** 2 + self._position.z ** 2)
         return np.degrees(np.arctan2(self._position.y, horizontal_dist))
+
+    @elevation.setter
+    def elevation(self, val: float):
+        self.from_angles(self.azimuth, float(val))
 
     @property
     def distance(self) -> float:
