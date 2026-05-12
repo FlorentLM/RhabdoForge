@@ -89,7 +89,7 @@ def main():
 
         # The BVH can also be displayed in debug
         if SHOW_DEBUG_OBJECTS:
-            for blas in eye_renderer._scene_baked.BLASes:
+            for blas in eye_renderer.BLASes:
                 context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
 
     else:
