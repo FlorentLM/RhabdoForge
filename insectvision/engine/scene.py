@@ -14,7 +14,6 @@ from pyglm import glm
 from .lights import Sun, Light, DirectionalLight, PointLight, AreaLight
 from .movement import TransformMixin
 from .resources import ShaderProgram
-from .world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
 
 from insectvision.geometry.meshes import CUBE_VERTICES, CUBE_INDICES
 
@@ -462,8 +461,7 @@ class Asset:
 
 class Instance(TransformMixin):
     """
-    Logical instance of an Asset in the scene. Renderer-agnostic.
-    This class is the single source of truth for an instance's transform.
+    Logical instance of an Asset in the scene (renderer-agnostic).
     """
 
     def __init__(self,
@@ -482,17 +480,14 @@ class Instance(TransformMixin):
         if transform is None:
             self.transform = glm.mat4(1.0)
         else:
-            transform_np = np.asarray(transform, dtype=np.float32)
-
-            if transform_np.shape == (4, 4):
-                self.transform = glm.mat4(transform_np)
-
-            elif transform_np.shape == (3,):
-                self.transform = glm.translate(glm.mat4(1.0), glm.vec3(transform_np))
-
+            t_np = np.asarray(transform, dtype=np.float32)
+            if t_np.shape == (4, 4):
+                self.transform = glm.mat4(t_np)
+            elif t_np.shape == (3,):
+                self.transform = glm.translate(glm.mat4(1.0), glm.vec3(t_np))
             else:
                 raise ValueError(
-                    f"Unsupported shape for transform: {transform_np.shape}. "
+                    f"Unsupported shape for transform: {t_np.shape}. "
                     "Expected a (4, 4) matrix or a (3,) position vector."
                 )
 
@@ -508,32 +503,6 @@ class Instance(TransformMixin):
     @visible.setter
     def visible(self, value: bool):
         self._visible = bool(value)
-
-    def dt(self, delta_time: float) -> DeltaTimeTransformer:
-        """
-        Enables framerate-independent transformations for a chain of method calls
-
-        Example:
-            # Rotates at 90 degrees per second
-            my_instance.dt(delta_time).rotate_axis(90, 'y')
-        """
-        return DeltaTimeTransformer(self, delta_time)
-
-    def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0, degrees: bool = True):
-        """
-        Rotates the instance by given Euler angle deltas.
-        (for Instance objects, rotations are applied around world axes sequentially)
-        """
-        if yaw_delta != 0.0:
-            self.transform = glm.rotate(self.transform, glm.radians(yaw_delta) if degrees else yaw_delta, WORLD_UP)
-
-        if pitch_delta != 0.0:
-            self.transform = glm.rotate(self.transform, glm.radians(pitch_delta) if degrees else pitch_delta, WORLD_RIGHT)
-
-        if roll_delta != 0.0:
-            self.transform = glm.rotate(self.transform, glm.radians(roll_delta) if degrees else roll_delta, WORLD_FORWARD)
-
-        return self
 
 
 class Skybox:
@@ -609,7 +578,8 @@ class Scene:
         self._point_instances: Set[Instance] = set()
 
         default_sun = Sun(intensity=1.0, angular_size=0.05)
-        default_sun.from_angles(azimuth=4.84, elevation=39.75)
+        default_sun.azimuth = 4.84
+        default_sun.elevation = 39.75
 
         self.add_light(default_sun)
 

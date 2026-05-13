@@ -11,239 +11,207 @@ from insectvision.utils.math import tangent_frames
 class TransformMixin:
     """
     Mixin class for common transformation methods.
-
-    Currently classes using this mixin should have:
-
-    For agent-like objects:
-    - `_position` attribute
-    - `yaw`, `pitch`, `roll` attributes
-    - `orientation` property
-    - `right`, `up`, `forward` properties
-
-    OR
-
-    For instance-like objects:
-    - `transform` attribute (glm.mat4)
-
-    In both cases:
-    - A `dt()` method returning a DeltaTimeTransformer
     """
 
+    def _euler_quat(self, yaw, pitch, roll, degrees=True):
+        """Build a quaternion from YXZ Euler angles."""
+        if degrees:
+            yaw, pitch, roll = glm.radians(yaw), glm.radians(pitch), glm.radians(roll)
+        return (glm.angleAxis(yaw, WORLD_UP)
+                * glm.angleAxis(pitch, WORLD_RIGHT)
+                * glm.angleAxis(roll, WORLD_FORWARD))
+
+    # Position
+
     @property
-    def position(self):
-
-        if hasattr(self, '_position'):
-            return self._position
-
-        elif hasattr(self, 'transform'):
-            return glm.vec3(self.transform[3])
-
-        else:
-            raise NotImplementedError(
-                f"{self.__class__.__name__} must have either '_position' or 'transform' attribute"
-            )
+    def position(self) -> glm.vec3:
+        return glm.vec3(self.transform[3])
 
     @position.setter
     def position(self, value: Union[glm.vec3, ArrayLike]):
-
-        if hasattr(self, '_position'):
-            self._position = glm.vec3(value)
-
-        elif hasattr(self, 'transform'):
-            self.transform[3] = glm.vec4(glm.vec3(value), 1.0)
-
-        else:
-            raise NotImplementedError(
-                f"{self.__class__.__name__} must have either '_position' or 'transform' attribute"
-            )
+        self.transform[3] = glm.vec4(glm.vec3(value), 1.0)
 
     pos = position
 
-    def translate(self, translation: Union[glm.vec3, ArrayLike]):
-        """
-        Translate by a given vector.
-        """
+    @property
+    def scale(self):
+        """Per-axis scale (column lengths of the linear part)."""
+        return glm.vec3(
+            glm.length(glm.vec3(self.transform[0])),
+            glm.length(glm.vec3(self.transform[1])),
+            glm.length(glm.vec3(self.transform[2])),
+        )
 
-        if hasattr(self, '_position'):
-            self._position += glm.vec3(translation)
+    @property
+    def rotation(self):
+        """Orientation as a unit quaternion."""
+        s = self.scale_vec
+        R = glm.mat3(
+            glm.vec3(self.transform[0]) / s.x,
+            glm.vec3(self.transform[1]) / s.y,
+            glm.vec3(self.transform[2]) / s.z,
+        )
+        return glm.quat_cast(R)
 
-        elif hasattr(self, 'transform'):
-            self.transform = glm.translate(self.transform, glm.vec3(translation))
+    @rotation.setter
+    def rotation(self, q):
+        """Replace orientation."""
+        if not isinstance(q, glm.quat):
+            q = glm.quat(q)
+        pos = self.position
+        s = self.scale
+        if not all(np.isfinite(v) and v > 1e-9 for v in (s.x, s.y, s.z)):
+            s = glm.vec3(1.0)
+        M = glm.mat4_cast(q)
+        M[0] = glm.vec4(glm.vec3(M[0]) * s.x, 0.0)
+        M[1] = glm.vec4(glm.vec3(M[1]) * s.y, 0.0)
+        M[2] = glm.vec4(glm.vec3(M[2]) * s.z, 0.0)
+        M[3] = glm.vec4(pos, 1.0)
+        self.transform = M
 
-        else:
-            raise NotImplementedError(
-                f"{self.__class__.__name__} must have either '_position' or 'transform' attribute"
-            )
+    # Directional vectors
+
+    @property
+    def forward(self) -> glm.vec3:
+        return glm.normalize(glm.vec3(-self.transform[2]))
+
+    @property
+    def backward(self) -> glm.vec3:
+        return -self.forward
+
+    @property
+    def right(self) -> glm.vec3:
+        return glm.normalize(glm.vec3(self.transform[0]))
+
+    @property
+    def left(self) -> glm.vec3:
+        return -self.right
+
+    @property
+    def up(self) -> glm.vec3:
+        return glm.normalize(glm.vec3(self.transform[1]))
+
+    @property
+    def down(self) -> glm.vec3:
+        return -self.up
+
+    # Euler accessors
+
+    @property
+    def yaw(self):
+        c2 = glm.normalize(glm.vec3(self.transform[2]))
+        return glm.degrees(glm.atan2(c2.x, c2.z))
+
+    @property
+    def pitch(self):
+        c2 = glm.normalize(glm.vec3(self.transform[2]))
+        return glm.degrees(glm.asin(glm.clamp(-c2.y, -1.0, 1.0)))
+
+    @property
+    def roll(self):
+        c0 = glm.normalize(glm.vec3(self.transform[0]))
+        c1 = glm.normalize(glm.vec3(self.transform[1]))
+        return glm.degrees(glm.atan2(c0.y, c1.y))
+
+    @yaw.setter
+    def yaw(self, v):
+        self.rotation = self._euler_quat(v, self.pitch, self.roll)
+
+    @pitch.setter
+    def pitch(self, v):
+        self.rotation = self._euler_quat(self.yaw, v, self.roll)
+
+    @roll.setter
+    def roll(self, v):
+        self.rotation = self._euler_quat(self.yaw, self.pitch, v)
+
+    def set_rotation(self, yaw=0.0, pitch=0.0, roll=0.0, degrees=True):
+        """Replace orientation from Euler angles, all at once."""
+        self.rotation = self._euler_quat(yaw, pitch, roll, degrees)
+        return self
+
+    # Aliases
+    pan = horizontal_angle = yaw
+    tilt = vertical_angle = pitch
+    bank = roll
+
+    # Transformations
+
+    def translate(self, vec: Union[glm.vec3, ArrayLike]):
+        """World-space translation."""
+        self.transform[3] = glm.vec4(self.position + glm.vec3(vec), 1.0)
         return self
 
     def rotate_axis(self, angle: float, axis: Union[str, glm.vec3, ArrayLike], degrees: bool = True):
-        """
-        Rotate around a given axis.
-        """
+        """Rotate around a world-space axis passing through the object's position."""
+        axis_map = {
+            'x': WORLD_RIGHT, 'y': WORLD_UP, 'z': WORLD_FORWARD,
+            'right': WORLD_RIGHT, 'left': -WORLD_RIGHT,
+            'up': WORLD_UP, 'down': -WORLD_UP,
+            'forward': WORLD_FORWARD, 'backward': -WORLD_FORWARD,
+        }
 
         if isinstance(axis, str):
-
-            axis_str = axis.lower()
-
-            if hasattr(self, 'yaw') and hasattr(self, 'orientation'):
-                axis_map = {
-                    'x': self.right,
-                    'y': self.up,
-                    'z': self.forward,
-                    'right': self.right,
-                    'left': self.left,
-                    'up': self.up,
-                    'down': self.down,
-                    'forward': self.forward,
-                    'backward': self.backward,
-                    'yaw': WORLD_UP,
-                    'pitch': self.right,
-                    'roll': self.forward,
-                }
-            else:
-                axis_map = {
-                    'x': WORLD_RIGHT,
-                    'y': WORLD_UP,
-                    'z': WORLD_FORWARD,
-                    'right': WORLD_RIGHT,
-                    'left': -WORLD_RIGHT,
-                    'up': WORLD_UP,
-                    'down': -WORLD_UP,
-                    'forward': WORLD_FORWARD,
-                    'backward': -WORLD_FORWARD,
-                    'yaw': WORLD_UP,
-                    'pitch': WORLD_RIGHT,
-                    'roll': WORLD_FORWARD,
-                }
-
-            try:
-                rotation_axis = axis_map[axis_str]
-            except KeyError:
-                raise ValueError(
-                    f"Unknown axis identifier: '{axis}'. Valid options are: {list(axis_map.keys())}"
-                )
+            rotation_axis = axis_map.get(axis.lower())
+            if rotation_axis is None:
+                raise ValueError(f"Unknown axis: '{axis}'.")
         else:
-            rotation_axis = glm.vec3(axis)
+            rotation_axis = glm.normalize(glm.vec3(axis))
 
-        angle_rad = glm.radians(angle) if degrees else angle
+        a = glm.radians(angle) if degrees else angle
 
-        # Agent-style: decompose to yaw/pitch/roll
-        if hasattr(self, 'yaw') and hasattr(self, 'orientation'):
-            new_orientation = glm.rotate(self.orientation, angle_rad, rotation_axis)
-            self._decompose_orientation(new_orientation)
-
-        # Instance-style: apply to transform matrix
-        elif hasattr(self, 'transform'):
-            self.transform = glm.rotate(self.transform, angle_rad, rotation_axis)
-
-        else:
-            raise NotImplementedError(
-                f"{self.__class__.__name__} must have either 'orientation' or 'transform'"
-            )
-
+        pos = self.position
+        self.transform[3] = glm.vec4(0, 0, 0, 1)
+        self.transform = glm.rotate(glm.mat4(1.0), a, rotation_axis) * self.transform
+        self.transform[3] = glm.vec4(pos, 1.0)
         return self
 
-    def rotate(self, yaw_delta: float = 0.0, pitch_delta: float = 0.0, roll_delta: float = 0.0, degrees: bool = True):
-        """
-        Rotate by yaw, pitch, and roll deltas.
-        """
-
-        if hasattr(self, 'yaw') and hasattr(self, 'pitch') and hasattr(self, 'roll'):
-            self.yaw += yaw_delta if degrees else glm.degrees(yaw_delta)
-            self.pitch += pitch_delta if degrees else glm.degrees(pitch_delta)
-            self.roll += roll_delta if degrees else glm.degrees(roll_delta)
-
-        else:
-            raise NotImplementedError(
-                f"{self.__class__.__name__} does not support yaw/pitch/roll rotation. "
-                "Use rotate_axis() instead."
-            )
+    def rotate(self, yaw=0.0, pitch=0.0, roll=0.0, degrees=True):
+        """Yaw around world up, pitch around local right, roll around local forward."""
+        if pitch:
+            self.rotate_axis(pitch, self.right, degrees=degrees)
+        if roll:
+            self.rotate_axis(roll, self.forward, degrees=degrees)
+        if yaw:
+            self.rotate_axis(yaw, WORLD_UP, degrees=degrees)
         return self
 
-    def _decompose_orientation(self, orientation_matrix: glm.mat4):
-        """
-        Decompose an orientation matrix into yaw, pitch, and roll.
-        """
-        if not (hasattr(self, 'yaw') and hasattr(self, 'pitch') and hasattr(self, 'roll')):
-            raise NotImplementedError(
-                f"{self.__class__.__name__} does not have yaw/pitch/roll attributes"
-            )
+    def lookat(self, target, up=WORLD_UP):
+        """Orient to face target."""
 
-        sin_pitch = -orientation_matrix[2][1]
-
-        # Clamp to avoid errors with asin
-        if sin_pitch >= 1.0:
-            self.pitch = 90.0
-        elif sin_pitch <= -1.0:
-            self.pitch = -90.0
-        else:
-            self.pitch = glm.degrees(glm.asin(sin_pitch))
-
-        cos_pitch = glm.cos(glm.radians(self.pitch))
-
-        if abs(cos_pitch) > 1e-6:
-            # Yaw
-            sin_yaw = orientation_matrix[2][0] / cos_pitch
-            cos_yaw = orientation_matrix[2][2] / cos_pitch
-            self.yaw = glm.degrees(glm.atan2(sin_yaw, cos_yaw))
-
-            # Roll
-            sin_roll = orientation_matrix[0][1] / cos_pitch
-            cos_roll = orientation_matrix[1][1] / cos_pitch
-            self.roll = glm.degrees(glm.atan2(sin_roll, cos_roll))
-        else:
-            # Gimbal lock: roll and yaw axes are aligned
-            self.roll = 0.0
-            sin_yaw = -orientation_matrix[0][2]
-            cos_yaw = orientation_matrix[0][0]
-            self.yaw = glm.degrees(glm.atan2(sin_yaw, cos_yaw))
-
-    def lookat(self, target_pos: Union[glm.vec3, ArrayLike]):
-        """
-        Orient to look at a target position.
-        """
-        target_pos = glm.vec3(target_pos)
-
-        if glm.distance(target_pos, self.position) < 1e-6:
+        target = glm.vec3(target)
+        pos = self.position
+        delta = target - pos
+        if glm.length(delta) < 1e-6:
             return self
+        look_dir = glm.normalize(delta)
+        up = glm.vec3(up)
 
-        direction = glm.normalize(target_pos - self.position)
+        if abs(glm.dot(look_dir, up)) > 0.9999:
+            up = WORLD_FORWARD if abs(glm.dot(look_dir, WORLD_FORWARD)) < 0.9999 else WORLD_RIGHT
 
-        # Agent-style (Euler angles)
-        if hasattr(self, 'yaw') and hasattr(self, 'pitch'):
-            self.pitch = glm.degrees(glm.asin(glm.clamp(direction.y, -1.0, 1.0)))
-            self.yaw = glm.degrees(glm.atan2(direction.x, -direction.z))
+        s = self.scale
+        if not all(np.isfinite(v) and v > 1e-9 for v in (s.x, s.y, s.z)):
+            s = glm.vec3(1.0)
 
-        # Instance-style (transform matrix)
-        elif hasattr(self, 'transform'):
-
-            dir_np = np.array(direction)
-            right_np, up_np = tangent_frames(dir_np)
-
-            self.transform[0] = glm.vec4(*right_np, 0.0)
-            self.transform[1] = glm.vec4(*up_np, 0.0)
-            self.transform[2] = glm.vec4(*dir_np, 0.0)
-
-        else:
-            raise NotImplementedError(f"{self.__class__.__name__} does not support lookat")
-
+        M = glm.inverse(glm.lookAt(pos, target, up))
+        M[0] = glm.vec4(glm.vec3(M[0]) * s.x, 0.0)
+        M[1] = glm.vec4(glm.vec3(M[1]) * s.y, 0.0)
+        M[2] = glm.vec4(glm.vec3(M[2]) * s.z, 0.0)
+        M[3] = glm.vec4(pos, 1.0)
+        self.transform = M
         return self
 
-    def scale(self, scale_factors: Union[glm.vec3, ArrayLike, float]):
-        """
-        Scale the object (for objects with transform matrices).
-        """
-        if not hasattr(self, 'transform'):
-            raise NotImplementedError(
-                f"{self.__class__.__name__} does not support scaling"
-            )
+    def rescale(self, factors: Union[glm.vec3, ArrayLike, float]):
+        s = glm.vec3(factors) if not isinstance(factors, (int, float)) else glm.vec3(factors)
+        self.transform = glm.scale(self.transform, s)
+        return self
 
-        if isinstance(scale_factors, (int, float)):
-            scale_vec = glm.vec3(scale_factors)
-        else:
-            scale_vec = glm.vec3(scale_factors)
-
-        self.transform = glm.scale(self.transform, scale_vec)
+    def follow(self, trajectory: 'Trajectory', dt: float, align: bool = True):
+        new_pos, tangent, _, _ = trajectory.advance(dt)
+        self.position = new_pos
+        if align:
+            self.lookat(new_pos - tangent)
         return self
 
 

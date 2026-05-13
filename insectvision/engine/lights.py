@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import Union, Sequence
+from typing import Union, Sequence, Optional
 from enum import Enum, auto
 from numpy.typing import ArrayLike
 import numpy as np
 from pyglm import glm
 
-from .world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, DeltaTimeTransformer
-
+from .world_utils import WORLD_UP
+from .movement import TransformMixin
 
 DIR_LIGHT_DTYPE = np.dtype([
     ('direction', np.float32, 3),
@@ -50,7 +50,7 @@ class LightType(Enum):
     Area = auto()           # Rectangular/disk emitter
 
 
-class Light(ABC):
+class Light(ABC, TransformMixin):
     """
     Abstract base class for all light types.
     """
@@ -67,6 +67,7 @@ class Light(ABC):
             cast_shadows: Whether this light casts shadows
             active: Whether this light contributes to the scene
         """
+        self.transform = glm.mat4(1.0)
         self._color = glm.vec3(color)
         self._intensity = max(0.0, intensity)
         self.cast_shadows = cast_shadows
@@ -101,26 +102,10 @@ class Light(ABC):
         self._intensity = max(0.0, value)
 
 
-class _LightDeltaTimeTransformer(DeltaTimeTransformer):
-    """Delta-time transformer for lights with orbital/positional controls."""
-
-    # TODO: Orbit might make its way into the other classes actually
-
-    def __init__(self, target: 'Light', delta_time: float):
-        super().__init__(target, delta_time)
-
-    def orbit(self, angle: float, axis: Union[str, glm.vec3, ArrayLike] = 'y', degrees: bool = True):
-        """Orbits the light around the origin (for lights that support it)."""
-        if hasattr(self._target, 'orbit'):
-            scaled_angle = angle * self._delta_time
-            self._target.orbit(scaled_angle, axis, degrees=degrees)
-        return self
-
-
 class DirectionalLight(Light):
-    """
-    Infinitely distant light source.
-    """
+    """Infinitely distant light source."""
+
+    _CONVENTIONAL_DISTANCE = 1000.0     # just for lookat which needs a finite value, has no physical meaning
 
     def __init__(self,
                  direction: Sequence[float] = (0.0, 1.0, 0.0),
@@ -130,14 +115,14 @@ class DirectionalLight(Light):
                  **kwargs):
         """
         Args:
-            direction: Direction the light shines from (will be normalised)
+            direction: direction: Unit vector pointing toward the light source (i.e. where the light arrives *from*). Will be normalised.
             color: RGB colour
             intensity: Brightness multiplier
             angular_size: Angular radius in radians (for soft shadows, 0 = hard shadows)
         """
         super().__init__(color=color, intensity=intensity, **kwargs)
-        self._direction = glm.normalize(glm.vec3(direction))
-        self._angular_radius = max(0.0, angular_size)
+        self._angular_size = max(0.0, angular_size)
+        self.direction = direction
 
     @property
     def light_type(self) -> LightType:
@@ -145,31 +130,29 @@ class DirectionalLight(Light):
 
     @property
     def direction(self) -> glm.vec3:
-        """Normalised direction to the light source."""
-        return self._direction
+        """Unit vector pointing toward the light source (i.e. where the light arrives *from*)."""
+        return self.backward
 
     @direction.setter
-    def direction(self, value: Union[glm.vec3, ArrayLike]):
-        vec = glm.vec3(value)
-        length = glm.length(vec)
-        if length > 1e-6:
-            self._direction = vec / length
-        else:
-            self._direction = glm.vec3(0.0, 1.0, 0.0)
+    def direction(self, value):
+        d = glm.normalize(glm.vec3(value))
+        self.position = d * self._CONVENTIONAL_DISTANCE
+        self.lookat(glm.vec3(0.0, 0.0, 0.0))
 
     @property
-    def angular_radius(self) -> float:
-        """Angular radius in radians (affects soft shadow size)."""
-        return self._angular_radius
+    def angular_size(self) -> float:
+        """Angular size in radians (affects soft shadow size)."""
+        return self._angular_size
 
-    @angular_radius.setter
-    def angular_radius(self, value: float):
-        self._angular_radius = max(0.0, value)
+    @angular_size.setter
+    def angular_size(self, value: float):
+        self._angular_size = max(0.0, value)
 
     def pack(self) -> np.ndarray:
         data = np.zeros(1, dtype=DIR_LIGHT_DTYPE)
-        data['direction'] = self.direction.x, self.direction.y, self.direction.z
-        data['angular_radius'] = self.angular_radius
+        d = self.direction
+        data['direction'] = d.x, d.y, d.z
+        data['angular_radius'] = self.angular_size
         data['color'] = self.color.x, self.color.y, self.color.z
         data['intensity'] = self.intensity
         data['cast_shadows'] = 1 if self.cast_shadows else 0
@@ -178,149 +161,84 @@ class DirectionalLight(Light):
 
 class Sun(DirectionalLight):
     """
-    Directional sun light with orbital controls and automatic colour temperature.
+    Directional light with solar convenience properties:
 
-    Extends DirectionalLight with:
     - Position-based direction
     - Elevation-based colour temperature (warm at horizon, white at zenith)
     - Time-of-day simulation
     """
 
     def __init__(self,
-                 position: Sequence[float] = (50.0, 100.0, 30.0),
+                 azimuth: float = 0.0,
+                 elevation: float = 45.0,
                  intensity: float = 2.0,
                  angular_size: float = 0.02,
-                 color: Sequence[float] = None,
+                 color: Optional[Sequence[float]] = None,
                  **kwargs):
         """
         Args:
-            position: Direction the sun shines from (magnitude used for visualisation)
+            azimuth: Horizontal angle in degrees
+            elevation: Vertical angle above horizon in degrees
             intensity: Brightness multiplier
             angular_size: Apparent angular size of sun disk in radians
             color: RGB colour override (None = automatic elevation-based colour)
         """
-        super().__init__(
-            direction=(0.0, 1.0, 0.0),
-            color=color if color is not None else (1.0, 1.0, 1.0),
-            intensity=intensity,
-            angular_size=angular_size,
-            **kwargs
-        )
+        super().__init__(intensity=intensity, angular_size=angular_size, **kwargs)
 
-        self._position = glm.vec3(position)
+        self.from_angles(azimuth, elevation)
         self._color_override = glm.vec3(color) if color is not None else None
-        self._update_direction_from_position()
-
-    def _update_direction_from_position(self):
-        """Updates the direction vector from the current position."""
-        length = glm.length(self._position)
-        if length > 1e-6:
-            self._direction = self._position / length
-        else:
-            self._direction = glm.vec3(0.0, 1.0, 0.0)
-
-    def dt(self, delta_time: float) -> _LightDeltaTimeTransformer:
-        """Enables framerate-independent transformations."""
-        return _LightDeltaTimeTransformer(self, delta_time)
-
-    @property
-    def position(self) -> glm.vec3:
-        """World-space position (for visualisation / orbit calculations)."""
-        return self._position
-
-    @position.setter
-    def position(self, value: Union[glm.vec3, ArrayLike]):
-        self._position = glm.vec3(value)
-        self._update_direction_from_position()
-
-    @property
-    def direction(self) -> glm.vec3:
-        """Normalised direction to the sun."""
-        return self._direction
-
-    def translate(self, translation: Union[glm.vec3, ArrayLike]):
-        """Translates the sun position."""
-        self._position += glm.vec3(translation)
-        self._update_direction_from_position()
-        return self
-
-    def orbit(self, angle: float, axis: Union[str, glm.vec3, ArrayLike] = 'y', degrees: bool = True):
-        """
-        Orbits the sun around the origin.
-
-        Args:
-            angle: Rotation angle
-            axis: Axis to rotate around ('x', 'y', 'z' or a vec3)
-            degrees: If True, angle is in degrees
-        """
-        if isinstance(axis, str):
-            axis_map = {
-                'x': WORLD_RIGHT,
-                'y': WORLD_UP,
-                'z': WORLD_FORWARD,
-                'right': WORLD_RIGHT,
-                'up': WORLD_UP,
-                'forward': WORLD_FORWARD,
-            }
-            rotation_axis = axis_map.get(axis.lower())
-            if rotation_axis is None:
-                raise ValueError(f"Unknown axis: '{axis}'. Use 'x', 'y', 'z' or a vec3.")
-        else:
-            rotation_axis = glm.vec3(axis)
-
-        angle_rad = glm.radians(angle) if degrees else angle
-        rotation = glm.rotate(glm.mat4(1.0), angle_rad, rotation_axis)
-        self._position = glm.vec3(rotation * glm.vec4(self._position, 0.0))
-        self._update_direction_from_position()
-
-        return self
-
-    def from_angles(self, azimuth: float, elevation: float, distance: float = 1000.0, degrees: bool = True):
-        """
-        Sets the sun position from spherical coordinates.
-
-        Args:
-            azimuth: Horizontal angle (0 = +Z, 90 = +X when looking down Y axis)
-            elevation: Vertical angle above horizon (0 = horizon, 90 = directly overhead)
-            distance: Distance from origin (for visualisation only)
-            degrees: If True, angles are in degrees
-        """
-        if degrees:
-            azimuth = glm.radians(azimuth)
-            elevation = glm.radians(elevation)
-
-        cos_el = np.cos(elevation)
-        x = distance * cos_el * np.sin(azimuth)
-        y = distance * np.sin(elevation)
-        z = distance * cos_el * np.cos(azimuth)
-
-        self._position = glm.vec3(x, y, z)
-        self._update_direction_from_position()
-        return self
 
     @property
     def azimuth(self) -> float:
-        """Current azimuth angle in degrees."""
-        return np.degrees(np.arctan2(self._position.x, self._position.z))
+        """Azimuth from position (degrees)."""
+        return glm.degrees(glm.atan2(self.position.x, self.position.z))
 
     @azimuth.setter
     def azimuth(self, val: float):
-        self.from_angles(float(val), self.elevation)
+        self.from_angles(float(val), self.elevation, self.distance)
 
     @property
     def elevation(self) -> float:
-        """Current elevation angle in degrees."""
-        horizontal_dist = np.sqrt(self._position.x ** 2 + self._position.z ** 2)
-        return np.degrees(np.arctan2(self._position.y, horizontal_dist))
+        """Elevation from position (degrees)."""
+        horiz = glm.sqrt(self.position.x * self.position.x + self.position.z * self.position.z)
+        return glm.degrees(glm.atan2(self.position.y, horiz))
 
     @elevation.setter
     def elevation(self, val: float):
-        self.from_angles(self.azimuth, float(val))
+        self.from_angles(self.azimuth, float(val), self.distance)
 
     @property
     def distance(self) -> float:
         """Distance from origin."""
-        return glm.length(self._position)
+        return glm.length(self.position)
+
+    @distance.setter
+    def distance(self, val: float):
+        """Sets the distance while maintaining direction."""
+        dir_vec = glm.normalize(self.position) if self.distance > 1e-6 else WORLD_UP
+        self.position = dir_vec * val
+
+    def orbit(self, angle: float, axis: Union[str, glm.vec3, ArrayLike] = 'y', degrees: bool = True):
+        """Orbits the sun by rotating its transform around the world origin."""
+        self.rotate_axis(angle, axis, degrees=degrees)
+        return self
+
+    def from_angles(self, azimuth: float, elevation: float, distance: float = 1000.0, degrees: bool = True):
+        """Sets the sun position and orientation from spherical coordinates."""
+        if degrees:
+            az_rad = glm.radians(azimuth)
+            el_rad = glm.radians(elevation)
+        else:
+            az_rad, el_rad = azimuth, elevation
+
+        cos_el = np.cos(el_rad)
+        x = distance * cos_el * np.sin(az_rad)
+        y = distance * np.sin(el_rad)
+        z = distance * cos_el * np.cos(az_rad)
+
+        self.position = glm.vec3(x, y, z)
+        self.lookat(glm.vec3(0.0, 0.0, 0.0))
+        return self
 
     @property
     def color(self) -> glm.vec3:
@@ -331,29 +249,21 @@ class Sun(DirectionalLight):
         if self._color_override is not None:
             return self._color_override
 
-        elevation = self.elevation  # in degrees
-
-        if elevation <= 0.0:
+        el = self.elevation
+        if el <= 0.0:
             return glm.vec3(1.0, 0.3, 0.1)
-        elif elevation < 6.0:
-            t = elevation / 6.0
+        elif el < 6.0:
+            t = el / 6.0
             return glm.vec3(1.0, 0.3 + 0.4 * t, 0.1 + 0.3 * t)
-        elif elevation < 15.0:
-            t = (elevation - 6.0) / 9.0
-            return glm.vec3(1.0, 0.7 + 0.25 * t, 0.4 + 0.5 * t)
-        elif elevation < 30.0:
-            t = (elevation - 15.0) / 15.0
-            return glm.vec3(1.0, 0.95 + 0.05 * t, 0.9 + 0.1 * t)
-        else:
-            return glm.vec3(1.0, 1.0, 1.0)
+        elif el < 30.0:
+            t = (el - 6.0) / 24.0
+            return glm.vec3(1.0, 0.7 + 0.3 * t, 0.4 + 0.6 * t)
+        return glm.vec3(1.0, 1.0, 1.0)
 
     @color.setter
-    def color(self, value: Union[glm.vec3, ArrayLike, None]):
+    def color(self, value: Optional[Union[glm.vec3, ArrayLike]]):
         """Set a fixed colour override, or None to use elevation-based colour."""
-        if value is None:
-            self._color_override = None
-        else:
-            self._color_override = glm.vec3(value)
+        self._color_override = glm.vec3(value) if value is not None else None
 
     def set_time_of_day(self, hour: float, latitude: float = 45.0):
         """
@@ -364,29 +274,23 @@ class Sun(DirectionalLight):
             latitude: Observer latitude in degrees
         """
         azimuth = (hour - 6.0) * 15.0  # 15 degrees/hour
-
         hour_from_noon = abs(hour - 12.0)
         max_elevation = 90.0 - abs(latitude - 23.5)
         elevation = max_elevation * np.cos(np.radians(hour_from_noon * 15.0))
-        elevation = max(0.0, elevation)
 
-        self.from_angles(azimuth, elevation)
+        self.from_angles(azimuth, max(0.0, elevation))
         return self
 
 
 class PointLight(Light):
-    """
-    Omnidirectional point light with distance attenuation.
-    """
+    """Omnidirectional point light with distance attenuation."""
 
     def __init__(self,
                  position: Sequence[float] = (0.0, 1.0, 0.0),
                  color: Sequence[float] = (1.0, 1.0, 1.0),
                  intensity: float = 1.0,
                  radius: float = 0.0,
-                 constant: float = 1.0,
-                 linear: float = 0.09,
-                 quadratic: float = 0.032,
+                 attenuation: Sequence[float] = (1.0, 0.09, 0.032),
                  **kwargs):
         """
         Args:
@@ -394,28 +298,17 @@ class PointLight(Light):
             color: RGB colour
             intensity: Brightness multiplier
             radius: Physical radius for soft shadows (0 = point source)
-            constant: Constant attenuation factor
-            linear: Linear attenuation factor
-            quadratic: Quadratic attenuation factor
+            attenuation: (constant, linear, quadratic) factors
         """
         super().__init__(color=color, intensity=intensity, **kwargs)
-        self._position = glm.vec3(position)
+
+        self.position = position
         self._radius = max(0.0, radius)
-        self.constant = constant
-        self.linear = linear
-        self.quadratic = quadratic
+        self.constant, self.linear, self.quadratic = attenuation
 
     @property
     def light_type(self) -> LightType:
         return LightType.Point
-
-    @property
-    def position(self) -> glm.vec3:
-        return self._position
-
-    @position.setter
-    def position(self, value: Union[glm.vec3, ArrayLike]):
-        self._position = glm.vec3(value)
 
     @property
     def radius(self) -> float:
@@ -426,17 +319,14 @@ class PointLight(Light):
     def radius(self, value: float):
         self._radius = max(0.0, value)
 
-    def translate(self, translation: Union[glm.vec3, ArrayLike]):
-        self._position += glm.vec3(translation)
-        return self
-
     def attenuation_at(self, distance: float) -> float:
         """Calculate attenuation factor at a given distance."""
         return 1.0 / (self.constant + self.linear * distance + self.quadratic * distance * distance)
 
     def pack(self) -> np.ndarray:
         data = np.zeros(1, dtype=POINT_LIGHT_DTYPE)
-        data['position'] = self.position.x, self.position.y, self.position.z
+        p = self.position
+        data['position'] = p.x, p.y, p.z
         data['radius'] = self.radius
         data['color'] = self.color.x, self.color.y, self.color.z
         data['intensity'] = self.intensity
@@ -448,13 +338,11 @@ class PointLight(Light):
 
 
 class AreaLight(Light):
-    """
-    Rectangular area light for soft shadows (path tracing only).
-    """
+    """Rectangular area light for soft shadows."""
 
     def __init__(self,
                  position: Sequence[float] = (0.0, 2.0, 0.0),
-                 normal: Sequence[float] = (0.0, -1.0, 0.0),
+                 look_at: Sequence[float] = (0.0, 0.0, 0.0),
                  width: float = 1.0,
                  height: float = 1.0,
                  color: Sequence[float] = (1.0, 1.0, 1.0),
@@ -464,7 +352,7 @@ class AreaLight(Light):
         """
         Args:
             position: Center of the light rectangle
-            normal: Direction the light faces (perpendicular to surface)
+            look_at: Point in space the light faces
             width: Width of the rectangle
             height: Height of the rectangle
             color: RGB colour
@@ -472,55 +360,36 @@ class AreaLight(Light):
             two_sided: Whether light emits from both sides
         """
         super().__init__(color=color, intensity=intensity, **kwargs)
-        self._position = glm.vec3(position)
-        self._normal = glm.normalize(glm.vec3(normal))
+        self.position = position
+        self.lookat(look_at)
         self._width = max(0.001, width)
         self._height = max(0.001, height)
         self.two_sided = two_sided
-
-        self._update_tangent_frame()
-
-    def _update_tangent_frame(self):
-        """Builds orthonormal tangent and bitangent vectors from the normal."""
-        up = glm.vec3(0.0, 1.0, 0.0) if abs(self._normal.y) < 0.999 else glm.vec3(1.0, 0.0, 0.0)
-        self._tangent = glm.normalize(glm.cross(up, self._normal))
-        self._bitangent = glm.cross(self._normal, self._tangent)
 
     @property
     def light_type(self) -> LightType:
         return LightType.Area
 
-    @property
-    def position(self) -> glm.vec3:
-        """Centre of the light rectangle."""
-        return self._position
-
-    @position.setter
-    def position(self, value: Union[glm.vec3, ArrayLike]):
-        self._position = glm.vec3(value)
+    # Basis vector mapping
 
     @property
     def normal(self) -> glm.vec3:
-        """Direction the light faces."""
-        return self._normal
-
-    @normal.setter
-    def normal(self, value: Union[glm.vec3, ArrayLike]):
-        self._normal = glm.normalize(glm.vec3(value))
-        self._update_tangent_frame()
+        """The emission normal is the local forward (-Z) vector."""
+        return self.forward
 
     @property
     def tangent(self) -> glm.vec3:
-        """Tangent vector (width direction)."""
-        return self._tangent
+        """The tangent is the local right (+X) vector."""
+        return self.right
 
     @property
     def bitangent(self) -> glm.vec3:
-        """Bitangent vector (height direction)."""
-        return self._bitangent
+        """The bitangent is the local up (+Y) vector."""
+        return self.up
 
     @property
     def width(self) -> float:
+        """Width of the rectangular emitter."""
         return self._width
 
     @width.setter
@@ -529,6 +398,7 @@ class AreaLight(Light):
 
     @property
     def height(self) -> float:
+        """Height of the rectangular emitter."""
         return self._height
 
     @height.setter
@@ -540,31 +410,25 @@ class AreaLight(Light):
         """Surface area of the light."""
         return self._width * self._height
 
-    def translate(self, translation: Union[glm.vec3, ArrayLike]):
-        """Translates the light position."""
-        self._position += glm.vec3(translation)
-        return self
-
     def sample_point(self, u: float, v: float) -> glm.vec3:
         """
         Sample a point on the light surface.
-
-        Args:
-            u, v: Random values in [0, 1]
+        u, v: Values in [0, 1]
         """
         local_u = (u - 0.5) * self._width
         local_v = (v - 0.5) * self._height
-        return self._position + self._tangent * local_u + self._bitangent * local_v
+        return self.position + self.tangent * local_u + self.bitangent * local_v
 
     def pack(self) -> np.ndarray:
         data = np.zeros(1, dtype=AREA_LIGHT_DTYPE)
-        data['position'] = self.position.x, self.position.y, self.position.z
+        p, n, t, b = self.position, self.normal, self.tangent, self.bitangent
+        data['position'] = p.x, p.y, p.z
         data['width'] = self.width
-        data['normal'] = self.normal.x, self.normal.y, self.normal.z
+        data['normal'] = n.x, n.y, n.z
         data['height'] = self.height
-        data['tangent'] = self.tangent.x, self.tangent.y, self.tangent.z
+        data['tangent'] = t.x, t.y, t.z
         data['intensity'] = self.intensity
-        data['bitangent'] = self.bitangent.x, self.bitangent.y, self.bitangent.z
+        data['bitangent'] = b.x, b.y, b.z
         data['cast_shadows'] = 1 if self.cast_shadows else 0
         data['color'] = self.color.x, self.color.y, self.color.z
         data['two_sided'] = 1 if self.two_sided else 0

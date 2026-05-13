@@ -123,7 +123,7 @@ class KeyboardMouse(Controls):
             if glfw.get_key(window, glfw.KEY_D) == glfw.PRESS: move_direction += agent.right
 
         if glm.length(move_direction) > 0:
-            agent.dt(dt).translate(glm.normalize(move_direction) * self.ctx.move_speed)
+            agent.translate(glm.normalize(move_direction) * self.ctx.move_speed * dt)
 
         # Roll
         roll_input = 0.0
@@ -136,8 +136,8 @@ class KeyboardMouse(Controls):
 
             if yaw_input != 0 or roll_input != 0:
                 agent.rotate(
-                    yaw_delta=yaw_input * self.keyboard_turn_speed,
-                    roll_delta=roll_input * self.keyboard_turn_speed,
+                    yaw=yaw_input * self.keyboard_turn_speed,
+                    roll=roll_input * self.keyboard_turn_speed,
                     degrees=True
                 )
             return
@@ -158,11 +158,11 @@ class KeyboardMouse(Controls):
             new_elevation = max(1.0, min(89.0, new_elevation))
 
             if abs(dx) > 0.1 or abs(dy) > 0.1:
-                sun.from_angles(new_azimuth, new_elevation, sun.distance)
+                sun.from_angles(new_azimuth, new_elevation)
 
             agent.rotate(
-                yaw_delta=yaw_input * self.keyboard_turn_speed,
-                roll_delta=roll_input * self.keyboard_turn_speed,
+                yaw=yaw_input * self.keyboard_turn_speed,
+                roll=roll_input * self.keyboard_turn_speed,
                 degrees=True
             )
 
@@ -174,14 +174,14 @@ class KeyboardMouse(Controls):
             if self.ctx.display_mode == DisplayMode.Third_person:
                 self.ctx.observer.pan(mouse_yaw * 0.5, mouse_pitch * 0.5, degrees=True)
                 agent.rotate(
-                    yaw_delta=yaw_input * self.keyboard_turn_speed,
-                    roll_delta=roll_input * self.keyboard_turn_speed,
+                    yaw=yaw_input * self.keyboard_turn_speed,
+                    roll=roll_input * self.keyboard_turn_speed,
                     degrees=True
                 )
             else:
                 agent.rotate(
-                    yaw_delta=mouse_yaw,
-                    pitch_delta=mouse_pitch,
-                    roll_delta=roll_input * self.keyboard_turn_speed,
+                    yaw=mouse_yaw,
+                    pitch=mouse_pitch,
+                    roll=roll_input * self.keyboard_turn_speed,
                     degrees=True
                 )

@@ -129,7 +129,7 @@ def main():
             dt = context.tick() # Advance clocks, must be called once per loop (all timings depend on this)
 
             # Rotate dynamic test crate at 45 deg/s (framerate-independent)
-            dynamic_crate.dt(dt).rotate_axis(45, 'up')
+            dynamic_crate.rotate_axis(45 * dt, 'up')
 
             # Render one biological step
             eyes_output = eye_renderer.step()
@@ -151,7 +151,7 @@ def main():
             dt = context.tick()  # Advance clocks
 
             # Move the agent at 0.5 m/s and yaw at 25 deg/s (framerate-independent)
-            agent.dt(dt).translate(agent.forward * 0.5).rotate(yaw_delta=25.0, degrees=True)
+            agent.translate(agent.forward * 0.5 * dt).rotate(yaw=25.0 * dt, degrees=True)
 
             # Render one biological step
             eyes_output = eye_renderer.step()

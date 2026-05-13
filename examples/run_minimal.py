@@ -48,7 +48,7 @@ def main():
         dt = context.tick()
 
         # Make the agent follow the trajectory
-        agent.dt(dt).follow(agent_path, align_orientation=True)
+        agent.follow(agent_path, dt=dt, align=True)
 
         output = eye_renderer.step()
 
