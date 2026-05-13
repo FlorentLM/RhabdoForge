@@ -728,11 +728,24 @@ class UniformRegistry:
             # Numpy arrays
             elif isinstance(value, np.ndarray):
                 val_flat = np.ascontiguousarray(value.flatten())
-                if value.shape == (3, 3): glUniformMatrix3fv(loc, 1, GL_TRUE, val_flat)  # True for row-major numpy
-                elif value.shape == (4, 4): glUniformMatrix4fv(loc, 1, GL_TRUE, val_flat)
-                elif value.size == 2: glUniform2fv(loc, 1, val_flat)
-                elif value.size == 3: glUniform3fv(loc, 1, val_flat)
-                elif value.size == 4: glUniform4fv(loc, 1, val_flat)
+                if value.shape == (3, 3):
+                    glUniformMatrix3fv(loc, 1, GL_TRUE, val_flat)  # True for row-major numpy
+                elif value.shape == (4, 4):
+                    glUniformMatrix4fv(loc, 1, GL_TRUE, val_flat)
+
+                # Check if the shader expects a scalar uniform (or array of scalars)
+                elif uniform_type in (GL_INT, GL_UNSIGNED_INT, GL_FLOAT, GL_BOOL):
+                    if value.dtype.kind in ('i', 'u', 'b'):
+                        glUniform1iv(loc, value.size, val_flat)
+                    else:
+                        glUniform1fv(loc, value.size, val_flat)
+
+                elif value.size == 2:
+                    glUniform2fv(loc, 1, val_flat)
+                elif value.size == 3:
+                    glUniform3fv(loc, 1, val_flat)
+                elif value.size == 4:
+                    glUniform4fv(loc, 1, val_flat)
 
             else:
                 raise TypeError(f"UniformRegistry doesn't know how to dispatch type: {type(value)} for '{name}'")

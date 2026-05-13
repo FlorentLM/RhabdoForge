@@ -35,7 +35,7 @@ uniform float visualisation_receptivefield_scale;
 uniform int output_mode;
 uniform int receptors_per_lens;
 uniform int kernel_centre_idx;
-uniform int selected_lens;
+uniform int selected_lenses[10];
 
 void main() {
     int inst_idx = gl_InstanceID;
@@ -100,14 +100,20 @@ void main() {
     // Fetch axes from Dynamic (Binding 4) for contraction, or Static for layout
     vec2 axes = tiled_mode ? lens_static[l_id].ioa_axes : rcpt_dynamic[output_mode == 0 ? inst_idx : l_id * receptors_per_lens + kernel_centre_idx].acc_axes;
 
-    float is_sel = 1.0 - clamp(abs(float(inst_idx - selected_lens)), 0.0, 1.0);
+    float is_selected = 0.0;
+    for (int j = 0; j < 10; j++) {
+        if (selected_lenses[j] == inst_idx) {
+            is_selected = 1.0;
+            break;
+        }
+    }
     float s = sin(tilt), c = cos(tilt);
-    vec2 rot = mat2(c, -s, s, c) * (cone_vertex.xy * axes) * (1.0 + is_sel * 0.1);
+    vec2 rot = mat2(c, -s, s, c) * (cone_vertex.xy * axes) * (1.0 + is_selected * 0.1);
 
     float longi = atan(p_vec.x, -p_vec.z), lati = asin(p_vec.y);
     vec3 pos = vec3(rot * visualisation_receptivefield_scale * (tiled_mode ? 2.5 : 1.0), cone_vertex.z) + vec3(longi/PI, lati/HPI, 0.0);
 
-    pos.z -= (is_sel * 0.8);
+    pos.z -= (is_selected * 0.8);
     pos.x /= aspect_ratio;
     gl_Position = vec4(pos, 1.0);
 

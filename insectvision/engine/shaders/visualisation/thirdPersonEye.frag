@@ -32,7 +32,7 @@ layout (location = 4) flat in uint v_eye_id;
 layout (location = 5) in vec3 v_world_normal;
 
 uniform float visualisation_eye_surface_albedo;
-uniform int selected_lens;
+uniform int selected_lenses[10];
 uniform bool false_colors;
 uniform bool uv_encoding;
 
@@ -63,8 +63,14 @@ void main() {
     }
     #endif
 
-    // Highlight one ommatidia
-    float is_selected = 1.0 - clamp(abs(float(v_instance_id - selected_lens)), 0.0, 1.0);
+    // Highlight selected ommatidia
+    float is_selected = 0.0;
+    for (int j = 0; j < 10; j++) {
+        if (selected_lenses[j] == v_instance_id) {
+            is_selected = 1.0;
+            break;
+        }
+    }
     float dist = length(v_local_pos);
 
     float contour = smoothstep(0.85, 0.90, dist);

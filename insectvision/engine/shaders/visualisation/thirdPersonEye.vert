@@ -43,7 +43,7 @@ uniform int projection_mode;
 uniform float visualisation_lens_length;
 uniform float visualisation_eyes_scale;
 uniform float visualisation_saccade_gain;
-uniform int selected_lens;
+uniform int selected_lenses[10];
 uniform int frame_offset;
 
 uniform int output_mode;    // 0 = Raw, 1 = Ommatidium, 2 = Cartridge

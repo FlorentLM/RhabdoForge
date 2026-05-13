@@ -270,7 +270,7 @@ class BaseRenderer(ABC):
         # Visualisation stuff
         self.projection_mode = OmmatidiaProjection.Position
         self.output_mode = EyeOutput.Ommatidium
-        self.selected_lens = -1
+        self.selected_lenses = np.full(10, -1, dtype=np.int32)
 
         # Overlay parameters
         self._overlay_colormap = Colormap.Thermal
@@ -316,7 +316,7 @@ class BaseRenderer(ABC):
             nb_samples=self.nb_samples,
 
             # Visualisation defaults
-            selected_lens=self.selected_lens,
+            selected_lenses=self.selected_lenses,
             overlay_fallback=True,
             overlay_data_min=self._overlay_range[0],
             overlay_data_max=self._overlay_range[1],
@@ -519,7 +519,7 @@ class BaseRenderer(ABC):
             projection_mode=self.projection_mode,
             tiled_mode=self.tiled_mode,
             use_quasi_random=self._quasi_random,
-            selected_lens=self.selected_lens,
+            selected_lenses=self.selected_lenses,
         )
 
         self._eye_uniforms.update(

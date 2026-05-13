@@ -1,7 +1,8 @@
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
-
+import numpy as np
+from pyglm import glm
 import glfw
 import time
 from typing import TYPE_CHECKING, Optional, Tuple, Callable, Dict, List, Union
@@ -342,6 +343,62 @@ class Context:
 
     def reset_rotation(self):
         self.agent.yaw, self.agent.pitch, self.agent.roll = (0.0, 0.0, 0.0)
+
+    def pick_ommatidium(self, ndc_x: float, ndc_y: float) -> Optional[int]:
+        """Calculates closest ommatidium based on active display projection."""
+        if not self.renderer or not getattr(self.renderer, '_ra', None):
+            return None
+        if self.display_mode not in (DisplayMode.Compound, DisplayMode.Third_person):
+            return None
+
+        ra = self.renderer._ra
+        c_idx = ra.kernel.center_index
+        rcpt_idx = np.arange(ra.lens_count) * ra.receptors_per_lens + c_idx
+        p_local = ra.rcpt_static_data['position'][rcpt_idx]
+
+        if self.display_mode == DisplayMode.Compound:
+            aspect_ratio = self.window_size[0] / self.window_size[1]
+            norms = np.linalg.norm(p_local, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            p_vec = p_local / norms
+
+            longi = np.arctan2(p_vec[:, 0], -p_vec[:, 2])
+            lati = np.arcsin(p_vec[:, 1])
+
+            x = (longi / np.pi) / aspect_ratio
+            y = lati / (np.pi / 2.0)
+
+            dist_sq = (x - ndc_x) ** 2 + (y - ndc_y) ** 2
+            best_idx = np.argmin(dist_sq)
+
+            if dist_sq[best_idx] < 0.05:
+                return int(best_idx)
+
+        elif self.display_mode == DisplayMode.Third_person:
+            eye_to_world = np.array(glm.inverse(self.agent.view))
+            p_local_h = np.column_stack((p_local, np.ones(ra.lens_count)))
+            p_world_h = p_local_h @ eye_to_world
+
+            view_mat = np.array(self.observer.view)
+            proj_mat = np.array(self.observer.projection)
+
+            p_view_h = p_world_h @ view_mat
+            p_clip_h = p_view_h @ proj_mat
+
+            w = p_clip_h[:, 3]
+            valid = w > 0.01
+
+            if not np.any(valid):
+                return None
+
+            ndc = p_clip_h[valid, :2] / w[valid, np.newaxis]
+            dist_sq = np.sum((ndc - [ndc_x, ndc_y]) ** 2, axis=1)
+
+            best_valid_idx = np.argmin(dist_sq)
+            if dist_sq[best_valid_idx] < 0.05:
+                return int(np.nonzero(valid)[0][best_valid_idx])
+
+        return None
 
     # Interactive loop
 

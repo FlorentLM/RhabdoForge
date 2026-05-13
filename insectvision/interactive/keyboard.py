@@ -55,6 +55,7 @@ class KeyboardMouse(Controls):
 
         glfw.set_key_callback(self.ctx.window, self._on_key)
         glfw.set_scroll_callback(self.ctx.window, self._on_scroll)
+        glfw.set_mouse_button_callback(self.ctx.window, self._on_mouse_button)
 
         # Force sync glfw state with context property on boot
         self.ctx.mouse_captured = self.ctx.mouse_captured
@@ -66,6 +67,7 @@ class KeyboardMouse(Controls):
         if self.ctx is not None and self.ctx.window:
             glfw.set_key_callback(self.ctx.window, None)
             glfw.set_scroll_callback(self.ctx.window, None)
+            glfw.set_mouse_button_callback(self.ctx.window, None)
             glfw.set_input_mode(self.ctx.window, glfw.CURSOR, glfw.CURSOR_NORMAL)
 
         self.ctx = None
@@ -83,6 +85,21 @@ class KeyboardMouse(Controls):
         binding = (key, action)
         for callback in self.ctx._key_bindings.get(binding, ()):
             callback()
+
+    def _on_mouse_button(self, window, button, action, mods):
+        if action == glfw.PRESS and button == glfw.MOUSE_BUTTON_LEFT:
+            if not self.ctx.mouse_captured:
+                x, y = glfw.get_cursor_pos(window)
+                w, h = glfw.get_window_size(window)
+                if w > 0 and h > 0:
+                    ndc_x = (x / w) * 2.0 - 1.0
+                    ndc_y = 1.0 - (y / h) * 2.0
+
+                    picked_lens = self.ctx.pick_ommatidium(ndc_x, ndc_y)
+                    if picked_lens is not None:
+                        if self.ctx.dashboard:
+                            is_shift = (mods & glfw.MOD_SHIFT) != 0
+                            self.ctx.dashboard.toggle_lens_selection(picked_lens, multi=is_shift)
 
     def _on_scroll(self, window, xoffset, yoffset):
 
