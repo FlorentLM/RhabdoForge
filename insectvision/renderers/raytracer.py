@@ -669,7 +669,6 @@ class Raytracer(BaseRenderer):
                     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
 
     def _raytrace_receptors(self):
-        """Pass 1: ray-trace each receptor."""
 
         eye = self.eye_buffers
         bvh = self._baker.bvh_buffers
@@ -768,6 +767,7 @@ class Pathtracer(Raytracer):
             enable_ambient: bool = True,
             enable_direct: bool = True,
             max_bounces: int = 3,
+            context: Optional['Context'] = None
         ):
 
         self.max_bounces = max_bounces
@@ -776,6 +776,7 @@ class Pathtracer(Raytracer):
             receptor_array=receptor_array,
             scene=scene,
             agent=agent,
+            context=context,
             time_dithering=time_dithering,
             nb_samples=nb_samples,
             quasi_random=quasi_random,

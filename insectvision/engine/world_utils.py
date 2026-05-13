@@ -1,11 +1,8 @@
 from pyglm import glm
 
-
 WORLD_RIGHT = WORLD_X = glm.vec3(1.0, 0.0, 0.0)
 WORLD_UP = WORLD_Y = glm.vec3(0.0, 1.0, 0.0)
 WORLD_FORWARD = WORLD_Z = glm.vec3(0.0, 0.0, -1.0)
-
 WORLD_LEFT = -WORLD_RIGHT
 WORLD_DOWN = -WORLD_UP
 WORLD_BACKWARD = -WORLD_FORWARD
-

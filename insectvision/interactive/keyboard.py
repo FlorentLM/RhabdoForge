@@ -172,7 +172,7 @@ class KeyboardMouse(Controls):
             mouse_pitch = dy * self.mouse_sensitivity * self._mouse_y_dir
 
             if self.ctx.display_mode == DisplayMode.Third_person:
-                self.ctx.observer.pan(mouse_yaw * 0.5, mouse_pitch * 0.5, degrees=True)
+                self.ctx.observer.pan(mouse_yaw * 0.5, mouse_pitch * 0.5)
                 agent.rotate(
                     yaw=yaw_input * self.keyboard_turn_speed,
                     roll=roll_input * self.keyboard_turn_speed,
