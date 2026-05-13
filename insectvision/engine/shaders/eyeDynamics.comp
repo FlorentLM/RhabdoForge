@@ -21,7 +21,7 @@ uniform float tau_adapt;
 uniform float tau_relax;
 uniform float gain_lat;
 uniform float gain_ax;
-uniform float gain_biochem;
+uniform float lum_ref;
 uniform float saccade_sign;
 
 void main() {
@@ -86,8 +86,10 @@ void main() {
 
     // [[ Optics & receptive field updates ]]
 
-    // Biochemical gain
-    float target_gain = 1.0 / (1.0 + ld.adapted_lum * gain_biochem);
+    // Biochemical gain, more or less like Matić & Laughlin, 1981. 10.1007/BF00605031
+    // Naka-Rushton response with an adapting half-saturation: gain settles so that the
+    // response of a 'mean' pixel is near 0.5 * lum_ref. Bounded by 1 (no amplification).
+    float target_gain = lum_ref / (lum_ref + max(ld.adapted_lum, 0.0));
 
     LensStatic ls = lens_static[lens_idx];
     float d_eff = max(nodal_dist_rest - ld.axial_um, 1.0);

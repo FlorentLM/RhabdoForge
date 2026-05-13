@@ -236,7 +236,7 @@ class BaseRenderer(ABC):
         self.tau_fast = 0.001    # 1 ms: fast saccade trigger
         self.tau_adapt = 0.050   # 50 ms: light adaptation baseline
         self.tau_relax = 0.080   # 80 ms: Mechanical relaxation (elastic return)
-        self.gain_biochem = 0.9
+        self.lum_ref = 1.0       # target operating-point luminance for biochemical adaptation
 
         # Visualisation shaders (lazy-loaded)
         self.__fp_colour_shader: Optional[ShaderProgram] = None    # 1st person colour mode
@@ -255,6 +255,8 @@ class BaseRenderer(ABC):
         self._time_dithering: bool = time_dithering
         self._gpu_actuation: bool = enable_actuation
         self._overlay_enabled: bool = False
+
+        self._needs_warmup: bool = True
         self.runs_interactive: bool = False
         self.tiled_mode: bool = True
         self.simulate_insect_vision: bool = False  # TODO: expose these (and generate UV-encoded assets for demo)
@@ -332,7 +334,7 @@ class BaseRenderer(ABC):
             gain_lat=self.gain_lat if self._gpu_actuation else 0.0,
             gain_ax=self.gain_ax if self._gpu_actuation else 0.0,
             tau_relax=self.tau_relax,
-            gain_biochem=self.gain_biochem,
+            lum_ref=self.lum_ref,
             saccade_sign=1.0
         )
 
@@ -526,7 +528,7 @@ class BaseRenderer(ABC):
             tau_relax=self.tau_relax,
             gain_lat=self.gain_lat if self._gpu_actuation else 0.0,
             gain_ax=self.gain_ax if self._gpu_actuation else 0.0,
-            gain_biochem=self.gain_biochem
+            lum_ref=self.lum_ref
         )
 
     def _main_render(self, sim_dt: float):
@@ -537,6 +539,10 @@ class BaseRenderer(ABC):
         self._sample_scene()  # subclasses override: fill sampling_results_ssbo
         self._reduction()
         self._eye_dynamics()
+
+        if self._needs_warmup:
+            self._reduction()
+            self._needs_warmup = False
 
     @abstractmethod
     def _sample_scene(self):
@@ -617,6 +623,7 @@ class BaseRenderer(ABC):
         """
         self.eye_buffers['lens_dynamic'].reset()
         self.eye_buffers['ema_state'].reset()
+        self._needs_warmup = True
 
         # Invalidate PBO ring
         for i in range(len(self._fences)):
