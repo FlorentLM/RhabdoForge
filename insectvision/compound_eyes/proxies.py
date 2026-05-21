@@ -566,14 +566,6 @@ class Ommatidium:
 
         return float(self._ra._bundle_orientation[self._lens_index])
 
-    def actuate(self, lateral_um: float = 0.0, axial_um: float = 0.0):
-
-        self._ra.actuate(
-            lateral_um=lateral_um,
-            axial_um=axial_um,
-            to_actuate=np.array([self._lens_index]),
-        )
-
 
 class Cartridge:
     """
@@ -703,11 +695,6 @@ class Eye:
         """Eye-local index -> Cartridge."""
 
         return Cartridge(self._ra, int(self._lens_indices[local_index]))
-
-    def actuate(self, lateral_um=0.0, axial_um=0.0):
-        """Displace all rhabdomeres in this eye."""
-
-        self._ra.actuate(lateral_um=lateral_um, axial_um=axial_um, to_actuate=self._lens_indices)
 
     def _query_knn(self,
            points: ArrayLike,

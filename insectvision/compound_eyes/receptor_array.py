@@ -684,7 +684,6 @@ class ReceptorArray:
                 directions=self._lens_directions,
                 positions=self._lens_positions,
                 eyes=self.eyes,
-                k=8
             )
 
         else:
@@ -1339,90 +1338,6 @@ class ReceptorArray:
 
         flat_rcpt_indices = (cartridge * R + np.arange(R)).flatten()
         self.rcpt_static_data['cartridge_src'] = flat_rcpt_indices.astype(np.uint32)
-
-    # Rhabdomere actuation
-
-    def actuate(self,
-                lateral_um: Union[float, ArrayLike] = 0.0,
-                axial_um: Union[float, ArrayLike] = 0.0,
-                to_actuate: Optional[ArrayLike] = None
-                ):
-        """
-        Displace rhabdomeres manually from the CPU.
-        """
-
-        R = self.receptors_per_lens
-
-        d_rest = self._kernel.nodal_distance_um
-        if d_rest is None:
-            raise ValueError("Can't actuate: kernel nodal distance is not set.")
-
-        to_actuate = np.asarray(to_actuate) if to_actuate is not None else np.arange(self.lens_count)
-        nb_actuated = len(to_actuate)
-
-        lateral_disp = np.broadcast_to(lateral_um, nb_actuated).astype(np.float32)
-        axial_displ = np.broadcast_to(axial_um, nb_actuated).astype(np.float32)
-
-        # Update lens dynamic state
-        self.lens_dynamic_data['lateral_um'][to_actuate] = lateral_disp
-        self.lens_dynamic_data['axial_um'][to_actuate] = axial_displ
-        self.lens_dirty = True  # Flag to tell renderer to upload lens states
-
-        # Effective nodal distance
-        d_eff = np.maximum(d_rest - axial_displ, 1.0)
-
-        # Fetch static invariants for the actuated lenses
-        l_stat = self.lens_static_data[to_actuate]
-        lr = l_stat['right']
-        lu = l_stat['up']
-        fwd = l_stat['forward']
-        sacc_x = l_stat['sacc_x']
-        sacc_y = l_stat['sacc_y']
-
-        # Global receptor indices for all affected lenses
-        global_affected_indices = (to_actuate[:, None] * R + np.arange(R)[None, :]).ravel()
-
-        # Fetch static invariants for the affected receptors
-        r_stat = self.rcpt_static_data[global_affected_indices]
-
-        # Apply Lateral Displacement
-        lat_rep = np.repeat(lateral_disp, R)
-        sx_rep = np.repeat(sacc_x, R)
-        sy_rep = np.repeat(sacc_y, R)
-
-        new_x = r_stat['rot_offset'][:, 0] + lat_rep * sx_rep
-        new_y = r_stat['rot_offset'][:, 1] + lat_rep * sy_rep
-
-        # to 3D space
-        lr_rep = np.repeat(lr, R, axis=0)
-        lu_rep = np.repeat(lu, R, axis=0)
-        fwd_rep = np.repeat(fwd, R, axis=0)
-        deff_rep = np.repeat(d_eff, R)
-
-        tip_world = (new_x[:, None] * lr_rep +
-                     new_y[:, None] * lu_rep -
-                     deff_rep[:, None] * fwd_rep)
-
-        new_dirs = -tip_world
-        norms = np.linalg.norm(new_dirs, axis=-1, keepdims=True)
-        np.divide(new_dirs, norms, out=new_dirs, where=norms != 0)
-
-        self.rcpt_dynamic_data['direction'][global_affected_indices] = new_dirs
-
-        # Update acceptance angles
-        wavelength_um = self._wavelength_nm * 1e-3
-        diffraction_sq = (wavelength_um / self._kernel.lens_diameter_um) ** 2
-        geom_rest_sq = (self._kernel.diameters_um / d_rest) ** 2
-        acc_rest = np.sqrt(diffraction_sq + geom_rest_sq)
-
-        geom_new_sq = (self._kernel.diameters_um[None, :] / d_eff[:, None]) ** 2
-        acc_new = np.sqrt(diffraction_sq + geom_new_sq)
-
-        scale = (acc_new / acc_rest).ravel()
-
-        self.rcpt_dynamic_data['acc_axes'][global_affected_indices] = r_stat['rest_acc'] * scale[:, None]
-
-        self.dirty_mask[global_affected_indices] = True
 
     # Spatial structures
 
