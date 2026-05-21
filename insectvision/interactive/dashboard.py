@@ -25,7 +25,7 @@ class Dashboard:
 
         self.frame_data = collections.deque(maxlen=self.plot_history_len)
 
-        self.selected_lenses = [0]
+        self.selected_lenses = []
         self.max_selected = 10
         self.lens_histories = {}
 
@@ -139,8 +139,6 @@ class Dashboard:
                             pool_item['receptors'].append(tag)
 
                         self.series_pool.append(pool_item)
-
-                    self.toggle_lens_selection(0, multi=False)
 
                 # Tab 2: Dynamics
                 with dpg.tab(label='Dynamics'):
@@ -347,13 +345,14 @@ class Dashboard:
         self._initialised = True
 
     def toggle_lens_selection(self, lens_id, multi=False):
-        if not multi:
+        """Toggle selection. If lens_id is None, clears all."""
+        if lens_id is None:
+            self.selected_lenses = []
+        elif not multi:
             self.selected_lenses = [lens_id]
         else:
             if lens_id in self.selected_lenses:
                 self.selected_lenses.remove(lens_id)
-                if not self.selected_lenses:
-                    self.selected_lenses = [0]
             else:
                 if len(self.selected_lenses) < self.max_selected:
                     self.selected_lenses.append(lens_id)
@@ -375,7 +374,8 @@ class Dashboard:
                 }
 
         if dpg.does_item_exist(self.omm_selection_text):
-            dpg.set_value(self.omm_selection_text, f"Selected Lenses: {self.selected_lenses}")
+            val = self.selected_lenses if self.selected_lenses else "None"
+            dpg.set_value(self.omm_selection_text, f"Selected Lenses: {val}")
         if self.selected_lenses and dpg.does_item_exist(self.omm_slider):
             dpg.set_value(self.omm_slider, self.selected_lenses[-1])
 
@@ -544,6 +544,13 @@ class Dashboard:
         if not self._initialised:
             self._setup_dpg()
 
+            initial = self.ctx.renderer.selected_lenses
+            if initial:
+                for lid in initial:
+                    self.toggle_lens_selection(lid, multi=True)
+            else:
+                self.toggle_lens_selection(0, multi=False)
+
         if not dpg.is_dearpygui_running():
             return False
 
@@ -560,14 +567,15 @@ class Dashboard:
         ra = self.ctx.renderer._ra
         mode = self.ctx.renderer.output_mode
 
-
         shader_selection = np.full(10, -1, dtype=np.int32)
-        for idx, l_id in enumerate(self.selected_lenses):
-            if mode == EyeOutput.Raw:
-                rec_id = dpg.get_value(self.rec_slider)
-                shader_selection[idx] = (l_id * ra.receptors_per_lens) + rec_id
-            else:
-                shader_selection[idx] = l_id
+
+        if self.selected_lenses:
+            for idx, l_id in enumerate(self.selected_lenses[:10]):
+                if mode == EyeOutput.Raw:
+                    rec_id = dpg.get_value(self.rec_slider)
+                    shader_selection[idx] = (l_id * ra.receptors_per_lens) + rec_id
+                else:
+                    shader_selection[idx] = l_id
 
         self.ctx.renderer.selected_lenses = shader_selection
 

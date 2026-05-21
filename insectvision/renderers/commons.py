@@ -2,10 +2,9 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-import time
 import random
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple
+from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple, Sequence
 import numpy as np
 from pyglm import glm
 
@@ -265,12 +264,11 @@ class BaseRenderer(ABC):
         # Time keeping
         self._dither_counter: int = 0   # only advanced when time dithering is on
         self._frame_index: int = 0      # advanced at each new rendered frame
-        self._last_step_dt: float = 0.0  # biological dt used in the most recent step()
 
         # Visualisation stuff
         self.projection_mode = OmmatidiaProjection.Position
         self.output_mode = EyeOutput.Ommatidium
-        self.selected_lenses = np.full(10, -1, dtype=np.int32)
+        self._selected_lenses = np.full(10, -1, dtype=np.int32)
 
         # Overlay parameters
         self._overlay_colormap = Colormap.Thermal
@@ -316,7 +314,7 @@ class BaseRenderer(ABC):
             nb_samples=self.nb_samples,
 
             # Visualisation defaults
-            selected_lenses=self.selected_lenses,
+            selected_lenses=self._selected_lenses,
             overlay_fallback=True,
             overlay_data_min=self._overlay_range[0],
             overlay_data_max=self._overlay_range[1],
@@ -519,7 +517,7 @@ class BaseRenderer(ABC):
             projection_mode=self.projection_mode,
             tiled_mode=self.tiled_mode,
             use_quasi_random=self._quasi_random,
-            selected_lenses=self.selected_lenses,
+            selected_lenses=self._selected_lenses,
         )
 
         self._eye_uniforms.update(
@@ -763,10 +761,9 @@ class BaseRenderer(ABC):
                 "to the renderer's constructor (or call renderer.attach_context(ctx))."
             )
 
-        dt = self._context.sim_dt
-        self._last_step_dt = dt
+        sim_dt = self._context.sim_dt
 
-        out_array = self._render_one(sim_dt=dt, readback=readback)
+        out_array = self._render_one(sim_dt=sim_dt, readback=readback)
         if out_array is None:
             return None
         return VisualOutput(out_array, self._ra)
@@ -882,11 +879,6 @@ class BaseRenderer(ABC):
         context.renderer = self
 
     @property
-    def last_step_dt(self) -> float:
-        """Biological dt (seconds) used in the most recent step()."""
-        return self._last_step_dt
-
-    @property
     def nb_samples(self):
         return self._samples_per_rcpt
 
@@ -945,13 +937,34 @@ class BaseRenderer(ABC):
             self.set_overlay()
 
     @property
+    def selected_lenses(self) -> Optional[list]:
+        active = [int(x) for x in self._selected_lenses if x != -1]
+        return active if active else None
+
+    @selected_lenses.setter
+    def selected_lenses(self, values: Optional[Union[int, Sequence[int], np.ndarray]]):
+        if isinstance(values, np.ndarray):
+            np.copyto(self._selected_lenses, values.astype(np.int32))
+            return
+
+        self._selected_lenses.fill(-1)
+        if values is None:
+            return
+
+        if isinstance(values, int):
+            values = [values]
+
+        for i, val in enumerate(list(values)[:10]):
+            self._selected_lenses[i] = val
+
+    @property
     def actuation(self):
         return self._gpu_actuation
 
     @actuation.setter
     def actuation(self, value: bool):
         self._gpu_actuation = bool(value)
-        print(f"Rhabdomere actuation {'ENABLED' if self._time_dithering else 'DISABLED'}.")
+        # print(f"Rhabdomere actuation {'ENABLED' if self._gpu_actuation else 'DISABLED'}.")
 
     def dither(self):
         """Dither once (reshuffle the dither counter)"""

@@ -117,7 +117,7 @@ class Gamepad(Controls):
     def _poll_axes(self, ctx, state):
 
         agent = ctx.agent
-        dt = ctx.dt
+        dt = ctx.wall_dt
 
         # Normalised stick inputs
         lx = self._set_deadzone(state.axes[glfw.GAMEPAD_AXIS_LEFT_X])

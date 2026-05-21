@@ -16,10 +16,15 @@ struct Material {
 
 // Lens static (read only)
 struct LensStatic {
-    vec3  right;        float sacc_local_x;
-    vec3  up;           float sacc_local_y;
-    vec3  forward;      float ioa_tilt;
-    vec2  ioa_axes;     vec2  padding;
+    vec3  right;
+    float sacc_local_x;
+    vec3  up;
+    float sacc_local_y;
+    vec3  forward;
+    float ioa_tilt;
+    vec2  ioa_axes;
+    float nodal_distance_um;
+    float lens_diameter_um;
 }; // 64 bytes
 
 // Lens dynamic
@@ -32,11 +37,16 @@ struct LensDynamic {
 
 // Receptor static (read only)
 struct ReceptorStatic {
-    vec3  position;     uint  metadata;
-    vec2  rest_acc;     vec2  rot_offset;
-    vec3  sensitivity;  float acc_tilt;
-    float tau;          uint  cartridge_src;
-    vec2  pad;
+    vec3  position;
+    uint  metadata;
+    vec2  rest_acc;
+    vec2  rot_offset;
+    vec3  sensitivity;
+    float acc_tilt;
+    float tau_membrane;
+    uint  cartridge_src;
+    float rhab_diameter_um;
+    float wavelength_um;
 }; // 64 bytes
 
 // Receptor dynamic

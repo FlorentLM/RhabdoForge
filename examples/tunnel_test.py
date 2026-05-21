@@ -136,7 +136,7 @@ for blas in renderer.BLASes:
 
 ## Run
 
-# Simulation runs at a fixed 200 Hz biological clock, decoupled from rendering speed
+# Simulation runs at a fixed 200 Hz biological clock
 context.fixed_sim_dt = 1.0 / 200.0
 
 saved_runs: Dict[str, RunLog] = {}
@@ -173,7 +173,6 @@ for mode in modes:
         context.input()
 
         dt = context.tick()
-        sim_time += dt
 
         visual_output = renderer.step()
 
@@ -196,15 +195,15 @@ for mode in modes:
 
             turn_rate = error * yaw_gain - agent.yaw * damping_gain
 
-            agent.dt(dt).rotate(yaw_delta=turn_rate)
-            agent.dt(dt).translate(agent.forward * flight_speed)
+            agent.rotate(yaw=turn_rate * dt)
+            agent.translate(agent.forward * flight_speed * dt)
 
         elif mode == "Holonomic (lateral shift)":
             # Negative gain: wall closer (error > 0) -> strafe left (-X)
             strafe_gain = -1.0
             strafe_speed = error * strafe_gain
 
-            agent.dt(dt).translate(agent.forward * flight_speed + agent.right * strafe_speed)
+            agent.translate((agent.forward * flight_speed + agent.right * strafe_speed) * dt)
 
         # Prevent agent from clipping through tunnel walls
         pos = agent.position
@@ -212,8 +211,15 @@ for mode in modes:
         pos.y = np.clip(pos.y, 0.1, h - 0.1)
         agent.position = pos
 
+        # Set overlay to display optic flow
+        renderer.set_overlay(
+            {left_eye: left_motion, right_eye: right_motion},
+            colormap=Colormap.Diverging, compression=1.0
+        )
+        context.draw()
+
         # Log
-        log.time.append(sim_time)
+        log.time.append(context.total_sim_time)
         log.x.append(float(agent.position.x))
         log.y.append(float(agent.position.y))
         log.z.append(float(agent.position.z))
@@ -221,18 +227,12 @@ for mode in modes:
         log.right_flow.append(mean_right)
         log.yaw.append(float(agent.yaw))
 
-        renderer.set_overlay(
-            {left_eye: left_motion, right_eye: right_motion},
-            colormap=Colormap.Diverging, compression=1.0
-        )
-
-        context.draw()
 
         if agent.position.z < -l:
             print(f"Finished {mode} (end of tunnel)")
             break
 
-        if sim_time >= 60.0:
+        if context.total_sim_time >= 180.0:
             print(f"Finished {mode} (time limit)")
             break
 

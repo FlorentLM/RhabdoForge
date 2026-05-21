@@ -163,21 +163,19 @@ class Context:
         """
         Advance both clocks by one step.
 
-        - Wall clock: tracks the real time elapsed since the previous tick(), hardware-dependent
-        - Sim clock: advances by fixed_sim_dt if set, otherwise by the wall delta
+        - Wall clock: real elapsed time since previous tick, hardware-dependent
+        - Sim clock: advances by fixed_sim_dt if set, otherwise by the wall_dt
 
         Must be called exactly once per loop iteration (interactive or headless).
-        Everything time-dependent downstream (renderer.step(), DeltaTimeTransformer,
-        FPS estimation) reads its dt from the clock advanced here.
+        Returns wall_dt, real-time delta, for UI, input, camera, and
+        visual animations that should track wall-clock speed.
 
-        Returns:
-            The biological dt for this step (i.e. sim_dt), so the value can be
-            chained directly into time-dependent transforms.
+        For biology (renderer, photoreceptor dynamics, SNNs, control laws), context.sim_dt
+        should be read. This keeps the biology reproducible and decoupled from framerate.
         """
         current_wall = self.current_wall_time
         self._wall_dt = current_wall - self._last_wall_time
 
-        # Determine simulation step size
         if self._fixed_sim_dt is not None:
             self._sim_dt = self._fixed_sim_dt
         else:
@@ -190,7 +188,7 @@ class Context:
         # Track hardware frame times for FPS display
         self._frame_times.append(current_wall)
 
-        return self._sim_dt
+        return self._wall_dt
 
     @property
     def fps(self) -> float:
