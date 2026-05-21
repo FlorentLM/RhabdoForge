@@ -9,20 +9,18 @@ layout(std430, binding = BINDING_EMA_STATE)    readonly buffer EmaHistory       
 layout(std430, binding = BINDING_RCPT_DYNAMIC) buffer          RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
 layout(std430, binding = BINDING_LENS_DYNAMIC) buffer          LensDynamicBlock { LensDynamic     lens_dynamic[]; };
 
-// Uniforms
-uniform int nb_lenses;
-uniform int receptors_per_lens;
-uniform float dt;
-uniform float nodal_dist_rest;
-uniform float diffraction_sq;
-uniform float acc_rest_geom_sq;
-uniform float tau_fast;
-uniform float tau_adapt;
-uniform float tau_relax;
-uniform float gain_lat;
-uniform float gain_ax;
-uniform float lum_ref;
-uniform float saccade_sign;
+uniform int   nb_lenses;
+uniform int   receptors_per_lens;
+uniform float dt;                 // simulation timestep (s)
+uniform float wavelength_um;      // single global (e.g. 0.55 for green) // TODO: This has to be per-receptor
+uniform float tau_rise;           // saccade rise time (s) (~5-10 ms)
+uniform float tau_relax;          // mechanical relaxation tau when drive falls (~80-120 ms)
+uniform float tau_fast;           // fast EMA tau for saccade trigger (~5 ms)
+uniform float tau_adapt;          // slow EMA tau for brightness adaptation (~50 ms)
+uniform float gain_lat;           // lateral displacement per unit drive (um)
+uniform float gain_ax;            // axial contraction per unit drive (um)
+uniform float lum_ref;            // operating-point luminance for biochemical gain
+uniform float saccade_sign;       // global flag for mirror symmetric L/R
 
 void main() {
     uint lens_idx = gl_GlobalInvocationID.x;
@@ -33,7 +31,7 @@ void main() {
 
     uint start_idx = lens_idx * receptors_per_lens;
 
-    // Average filtered radiance for this ommatidium
+    // Per-ommatidium average filtered radiance (from the EMA history)
     float lum = 0.0;
     for (int r = 0; r < receptors_per_lens; r++) {
         lum += ema_state[start_idx + r].w;
@@ -41,72 +39,76 @@ void main() {
     lum /= float(receptors_per_lens);
 
     LensDynamic ld = lens_dynamic[lens_idx];
+    LensStatic  ls = lens_static[lens_idx];
 
-    // [[ Luminance adaptation ]]
-
-    // decay factors (avoid 0 div)
+    // [[ Luminance EMAs ]]
+    //   adapted_lum: baseline / gain control reference
+    //   fast_lum: transient detector for saccade trigger
     float alpha_fast  = (tau_fast  > 0.0001) ? exp(-dt / tau_fast)  : 0.0;
     float alpha_adapt = (tau_adapt > 0.0001) ? exp(-dt / tau_adapt) : 0.0;
 
-    // The saccades fires on fast positive transients (bright onsets)
-
-    // Init for first frame
+    // Just for the first frame
     if (ld.adapted_lum < 1e-6) {
         ld.adapted_lum = lum;
         ld.fast_lum    = lum;
     }
 
-    // [[ Photomecanical saccade ]]
-
-    // mix(x, y, a) is x*(1-a) + y*a
-    //  so, if alpha is 1 (= no time passed) -> returns y (the old state)
-    //  and if alpha is 0 (= infinite time passed) -> returns x (the new state)
-    ld.fast_lum    = mix(lum, ld.fast_lum, alpha_fast);
+    // alpha = 1 -> keep old state
+    // alpha = 0 -> snap to new value
+    ld.fast_lum    = mix(lum, ld.fast_lum,    alpha_fast);
     ld.adapted_lum = mix(lum, ld.adapted_lum, alpha_adapt);
 
-    // Saccade drive: rectified fast-positive contrast, normalised by baseline
+    // [[ Photomechanical drive ]]
+    // Rectified fast-positive contrast, normalised by baseline
     float bright_drive = max(0.0, ld.fast_lum - ld.adapted_lum) / max(ld.adapted_lum, 0.01);
-    bright_drive = min(bright_drive, 1.0);            // saturate
+    bright_drive = min(bright_drive, 1.0);
 
     float target_lat = bright_drive * gain_lat;
     float target_ax  = bright_drive * gain_ax;
 
-    // Drive sets the shape, rate limit only on the return
-    float rate_lat = (target_lat > ld.lateral_um) ? 0.0 : tau_relax;
-    float rate_ax  = (target_ax  > ld.axial_um)   ? 0.0 : tau_relax;
-
-    // Mechanical decay factors
-    float alpha_lat = (rate_lat  > 0.0001) ? exp(-dt / rate_lat)  : 0.0;
-    float alpha_ax  = (rate_ax   > 0.0001) ? exp(-dt / rate_ax)   : 0.0;
+    // Rate-limited update: rise on tau_rise, decay on tau_relax
+    float rate_lat = (target_lat > ld.lateral_um) ? tau_rise : tau_relax;
+    float rate_ax  = (target_ax  > ld.axial_um)   ? tau_rise : tau_relax;
+    float alpha_lat = (rate_lat > 0.0001) ? exp(-dt / rate_lat) : 0.0;
+    float alpha_ax  = (rate_ax  > 0.0001) ? exp(-dt / rate_ax)  : 0.0;
 
     ld.lateral_um = mix(target_lat, ld.lateral_um, alpha_lat);
     ld.axial_um   = mix(target_ax,  ld.axial_um,   alpha_ax);
 
     lens_dynamic[lens_idx] = ld;
 
-    // [[ Optics & receptive field updates ]]
+    // [[ Optics ]]
+    // Acceptance angle scaling: when the rhabdomere is pulled away from the lens (d_eff > rest), the RF narrows
+    float d_rest = ls.nodal_distance_um;
+    float d_eff  = max(d_rest + ld.axial_um, 1.0);
 
-    // Biochemical gain, more or less like Matić & Laughlin, 1981. 10.1007/BF00605031
-    // Naka-Rushton response with an adapting half-saturation: gain settles so that the
-    // response of a 'mean' pixel is near 0.5 * lum_ref. Bounded by 1 (no amplification).
-    float target_gain = lum_ref / (lum_ref + max(ld.adapted_lum, 0.0));
+    // [[ Gain ]]
+    // lum_gain: Naka-Rushton baseline brightness adaptation (Matic & Laughlin 1981 style)
+    float lum_gain = lum_ref / (lum_ref + max(ld.adapted_lum, 0.0));
 
-    LensStatic ls = lens_static[lens_idx];
-    float d_eff = max(nodal_dist_rest - ld.axial_um, 1.0);
-
-    // Snyder optics scale
-    float geom_new_sq = acc_rest_geom_sq * ((nodal_dist_rest * nodal_dist_rest) / (d_eff * d_eff));
-    float acc_scale = sqrt(diffraction_sq + geom_new_sq) / sqrt(diffraction_sq + acc_rest_geom_sq);
-
+    // [[ Per-receptor update ]]
     for (int r = 0; r < receptors_per_lens; r++) {
         uint rcpt_idx = start_idx + r;
         ReceptorStatic rs = rcpt_static[rcpt_idx];
 
+        // Per-receptor narrowing from this receptor's own rhabdomere diameter
+        float diff = rs.wavelength_um / ls.lens_diameter_um;
+        float diff_sq = diff * diff;
+        float g_rest = rs.rhab_diameter_um / d_rest;
+        float g_new  = rs.rhab_diameter_um / d_eff;
+        float acc_scale = sqrt(diff_sq + g_new  * g_new) / sqrt(diff_sq + g_rest * g_rest);
+
+        // concentration_gain: When the RF narrows by factor s, the same input radiance goes into a smaller angle,
+        // so per-photon excitation grows by ~ 1/s^2
+        float concentration_gain = min(1.0 / max(acc_scale * acc_scale, 0.25), 3.0);
+        float target_gain        = lum_gain * concentration_gain;
+
+        // Tip re-projection
         vec2 n_xy = rs.rot_offset + (saccade_sign * ld.lateral_um * vec2(ls.sacc_local_x, ls.sacc_local_y));
         vec3 tip = (n_xy.x * ls.right) + (n_xy.y * ls.up) + (-d_eff * ls.forward);
 
-        rcpt_dynamic[rcpt_idx].direction = normalize(-tip);
-        rcpt_dynamic[rcpt_idx].acc_axes = rs.rest_acc * acc_scale;
+        rcpt_dynamic[rcpt_idx].direction        = normalize(-tip);
+        rcpt_dynamic[rcpt_idx].acc_axes         = rs.rest_acc * acc_scale;
         rcpt_dynamic[rcpt_idx].adaptation_state = target_gain;
     }
 }

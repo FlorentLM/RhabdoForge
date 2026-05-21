@@ -4,36 +4,38 @@ import numpy as np
 # Lens data
 
 LENS_STATIC_DTYPE = np.dtype([
-    ('right', np.float32, 3),         # 12 bytes: tangent right
-    ('sacc_x', np.float32),           # 4 bytes: saccade local dx
-    ('up', np.float32, 3),            # 12 bytes: tangent up
-    ('sacc_y', np.float32),           # 4 bytes: saccade local dy
-    ('forward', np.float32, 3),       # 12 bytes: optical axis
-    ('ioa_tilt', np.float32),         # 4 bytes: Local lattice tilt
-    ('ioa_axes', np.float32, 2),      # 8 bytes: Local lattice angles (minor, major)
-    ('pad', np.float32, 2)            # 8 bytes of pdding
+    ('right', np.float32, 3),          # 12 bytes: tangent right
+    ('sacc_x', np.float32),            # 4 bytes: saccade local dx
+    ('up', np.float32, 3),             # 12 bytes: tangent up
+    ('sacc_y', np.float32),            # 4 bytes: saccade local dy
+    ('forward', np.float32, 3),        # 12 bytes: optical axis
+    ('ioa_tilt', np.float32),          # 4 bytes: Local lattice tilt
+    ('ioa_axes', np.float32, 2),       # 8 bytes: Local lattice angles (minor, major)
+    ('nodal_distance_um', np.float32), # 4 bytes: rest lens-to-rhabdomere distance
+    ('lens_diameter_um', np.float32),  # 4 bytes: lens aperture (for diffraction term)
 ]) # 64 bytes
 
 LENS_DYNAMIC_DTYPE = np.dtype([
-    ('adapted_lum', np.float32),      # 4 bytes: slow baseline (~50 ms), gain adaptation
-    ('fast_lum', np.float32),         # 4 bytes: fast tracker (~5 ms), saccade drive
-    ('lateral_um', np.float32),       # 4 bytes: current focal plane displacement (um)
-    ('axial_um', np.float32),         # 4 bytes: current contraction (um)
+    ('adapted_lum', np.float32),       # 4 bytes: slow baseline (~50 ms), gain adaptation
+    ('fast_lum', np.float32),          # 4 bytes: fast tracker (~5 ms), saccade drive
+    ('lateral_um', np.float32),        # 4 bytes: current focal plane displacement (um)
+    ('axial_um', np.float32),          # 4 bytes: current contraction (um)
 ]) # 16 bytes
 
 
 # Receptor data
 
 RCPT_STATIC_DTYPE = np.dtype([
-    ('position', np.float32, 3),      # 12 bytes: receptor position x, y, z
-    ('metadata', np.uint32),          # 4 bytes (see below): eye_id, R_type, neighbour_count, lens_id, chirality
-    ('rest_acc', np.float32, 2),      # 8 bytes: acceptance angles (minor, major) at rest
-    ('rot_offset', np.float32, 2),    # 8 bytes: focal offset
-    ('sensitivity', np.float32, 3),   # 12 bytes: multipliers for UV, blue, green
-    ('acc_tilt', np.float32),         # 4 bytes: acceptance angle ellipse tilt
-    ('tau', np.float32),              # 4 bytes: EMA integration time for temporal accumulation (ms)
-    ('cartridge_src', np.uint32),     # 4 bytes: Neural superposition wiring
-    ('pad', np.float32, 2)            # 8 bytes of padding
+    ('position', np.float32, 3),       # 12 bytes: receptor position x, y, z
+    ('metadata', np.uint32),           # 4 bytes (see below): eye_id, R_type, neighbour_count, lens_id, chirality
+    ('rest_acc', np.float32, 2),       # 8 bytes: acceptance angles (minor, major) at rest
+    ('rot_offset', np.float32, 2),     # 8 bytes: focal offset
+    ('sensitivity', np.float32, 3),    # 12 bytes: multipliers for UV, blue, green
+    ('acc_tilt', np.float32),          # 4 bytes: acceptance angle ellipse tilt
+    ('tau_membrane', np.float32),      # 4 bytes: photoreceptor membrane constant (for EMA integration time of photon temporal accumulation (ms))
+    ('cartridge_src', np.uint32),      # 4 bytes: Neural superposition wiring
+    ('rhab_diameter_um', np.float32),  # 4 bytes: Rhabdomere diameter
+    ('wavelength_um', np.float32)      # 4 bytes: Peak wavelength (nm)
 ]) # 64 bytes
 
 # metadata bit layout:

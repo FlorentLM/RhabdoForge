@@ -400,12 +400,12 @@ class ReceptorView:
         self._ra.dirty_mask[self._gi] = True
 
     @property
-    def tau(self) -> np.ndarray:
-        return self._ra.rcpt_static_data['tau'][self._gi]
+    def tau_membrane(self) -> np.ndarray:
+        return self._ra.rcpt_static_data['tau_membrane'][self._gi]
 
-    @tau.setter
-    def tau(self, value):
-        self._ra.rcpt_static_data['tau'][self._gi] = np.asarray(value, dtype=np.float32)
+    @tau_membrane.setter
+    def tau_membrane(self, value):
+        self._ra.rcpt_static_data['tau_membrane'][self._gi] = np.asarray(value, dtype=np.float32)
         self._ra.dirty_mask[self._gi] = True
 
     # Metadata

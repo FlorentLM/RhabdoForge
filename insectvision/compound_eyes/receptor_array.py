@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import Optional, Union, Tuple, Sequence, List
 import numpy as np
@@ -382,7 +383,8 @@ def _acceptance_angles(
         ioa_major: np.ndarray,
         wavelength_nm: float,
         eye_parameter: Optional[Union[float, Tuple]],
-        explicit_angles_rad: Optional[ArrayLike]
+        explicit_angles_rad: Optional[ArrayLike],
+        lens_diameters_um: np.ndarray,
 ) -> np.ndarray:
     """
     Computes the acceptance angles for all receptors.
@@ -409,30 +411,34 @@ def _acceptance_angles(
 
         raise ValueError(f"Invalid explicit_angles_rad shape: {angles_arr.shape}")
 
-    # If nodal distance is unset (simplified model) or eye_parameter explicitly given, use p * IOA
-    if eye_parameter is not None or kernel.nodal_distance_um is None:
-        p = eye_parameter if eye_parameter is not None else 1.0
-        p_min, p_maj = (p, p) if isinstance(p, (int, float, np.number)) else p
+    # Resolve eye parameter p to a (p_min, p_maj) pair. Defaults to 1.0 (pure Snyder / pure IOA)
+    p = eye_parameter if eye_parameter is not None else 1.0
+    p_min, p_maj = (p, p) if isinstance(p, (int, float, np.number)) else p
 
-        # Scale acceptance by relative receptor diameters
-        max_d = np.max(kernel.diameters_um)
-        rel_d = kernel.diameters_um / max_d if max_d > 0 else np.ones(R)
-
-        acc_min = np.repeat(p_min * ioa_minor, R) * np.tile(rel_d, N)
-        acc_maj = np.repeat(p_maj * ioa_major, R) * np.tile(rel_d, N)
-
+    if kernel.nodal_distance_um is not None:
+        # Optics available: Snyder is the physical baseline
+        # eye_parameter acts as a multiplicative scale
+        #       p = 1.0 -> pure Snyder optics (diffraction-limited)
+        #       p > 1.0 -> RFs wider than Snyder
+        #       p < 1.0 -> RFs narrower than Snyder
+        # Snyder (1979): Δρ = sqrt( (λ/D)² + (d_rhab/f)²)
+        wavelengths_um = kernel.wavelengths_nm * 1e-3
+        diffraction = wavelengths_um[None, :] / lens_diameters_um[:, None]
+        diffraction = diffraction.ravel()
+        geometric = np.tile(kernel.diameters_um / kernel.nodal_distance_um, N)
+        snyder_acc = np.sqrt(diffraction ** 2 + geometric ** 2)
+        acc_min = p_min * snyder_acc
+        acc_maj = p_maj * snyder_acc
+        # TODO: anisotropic Snyder (different λ/D in two axes for non-circular lenses)
         return np.column_stack([acc_min, acc_maj])
 
-    # Acceptance angles computed from the Snyder optical model (Snyder 1979):
-    # Δρ = sqrt( (λ/D)² + (d_rhab/f)² )
-    wavelength_um = wavelength_nm * 1e-3
-    diffraction = wavelength_um / kernel.lens_diameter_um
-    geometric = kernel.diameters_um / kernel.nodal_distance_um
-    full_acceptance = np.sqrt(diffraction ** 2 + geometric ** 2)
-
-    acc_1d = np.tile(full_acceptance, N)
-    # TODO: Elliptical acceptance angles here too?
-    return np.column_stack([acc_1d, acc_1d])
+    # No optical model: fallback to the eye parameter / lattice convention
+    # (also scaled by relative rhabdomere diameter so smaller rhabdomeres still get smaller RFs)
+    max_d = np.max(kernel.diameters_um)
+    rel_d = kernel.diameters_um / max_d if max_d > 0 else np.ones(R)
+    acc_min = np.repeat(p_min * ioa_minor, R) * np.tile(rel_d, N)
+    acc_maj = np.repeat(p_maj * ioa_major, R) * np.tile(rel_d, N)
+    return np.column_stack([acc_min, acc_maj])
 
 
 def _lattice_properties(
@@ -440,10 +446,17 @@ def _lattice_properties(
         positions: np.ndarray,
         eyes: list,
         k: int = 8,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Estimate local lattice properties by separating structural topology (positions)
     from optical axes (directions).
+
+    Returns:
+        ioa_minor, ioa_major: Per-lens interommatidial angles (rad)
+        tilts: Per-lens hexatic lattice orientation (rad)
+        neighb_counts: Per-lens immediate-neighbour count
+        lens_spacing: Per-lens median distance to immediate neighbours (same units as positions)
+                      Used as a default for lens_diameter_um (close-packing)
     """
 
     N = len(directions)
@@ -451,13 +464,10 @@ def _lattice_properties(
     ioa_major = np.zeros(N, dtype=np.float32)
     tilts = np.zeros(N, dtype=np.float32)
     neighb_counts = np.zeros(N, dtype=np.uint32)
+    lens_spacing = np.zeros(N, dtype=np.float32)
 
     for eye in eyes:
-        neighb = eye.neighbours(
-            points=positions,
-            k=k,
-            immediate_only=True
-        )
+        neighb = eye.neighbours(points=positions, k=k, immediate_only=True)
         if neighb is None:
             continue
 
@@ -468,7 +478,7 @@ def _lattice_properties(
         nb_immediate_neighb = np.maximum(np.sum(neighb.is_immediate, axis=1), 1, dtype=np.float64)
         neighb_counts[mask] = nb_immediate_neighb
 
-        # Optical IOA: angular separation to each neighbour
+        # Optical IOA
         dots = np.sum(e_dirs[:, None, :] * e_dirs[neighb.indices], axis=2)
         angular_sep = np.arccos(np.clip(dots, -1.0, 1.0))
 
@@ -478,22 +488,27 @@ def _lattice_properties(
         proj_x = np.sum(delta_pos * local_x[:, None, :], axis=2)
         proj_y = np.sum(delta_pos * local_y[:, None, :], axis=2)
 
+        # Physical lattice spacing in world units (median over immediate neighbours)
+        nbr_dist = np.linalg.norm(delta_pos, axis=2)
+        nbr_dist_masked = np.where(neighb.is_immediate, nbr_dist, np.nan)
+        with np.errstate(all='ignore'):
+            e_lens_spacing = np.nanmedian(nbr_dist_masked, axis=1).astype(np.float32)
+        e_lens_spacing = np.where(np.isfinite(e_lens_spacing), e_lens_spacing, 0.0)
+
         # Hexatic order parameter (Ψ6)
         angles = np.arctan2(proj_y, proj_x)
         phasors = np.exp(1j * 6 * angles)
         phasors[~neighb.is_immediate] = 0.0
-
         z_avg = np.sum(phasors, axis=1) / nb_immediate_neighb
         e_psi6 = np.abs(z_avg)
         e_tilts = np.angle(z_avg) / 6.0
 
-        # IOA from sorted angular separations (mask non-immediate to inf)
+        # IOA from sorted angular separations
         sep_masked = np.where(neighb.is_immediate, angular_sep, np.inf)
         sep_sorted = np.sort(sep_masked, axis=1)
 
         # Minor = mean of 2 smallest, major = mean of 2 largest immediate neighb
         e_ioa_minor = np.mean(sep_sorted[:, :2], axis=1).astype(np.float32)
-
         sep_rev = np.where(neighb.is_immediate, -angular_sep, np.inf)
         top2_rev = np.sort(sep_rev, axis=1)[:, :2]
         e_ioa_major = np.mean(-top2_rev, axis=1).astype(np.float32)
@@ -510,10 +525,11 @@ def _lattice_properties(
         tilts[mask] = e_tilts
         ioa_minor[mask] = e_ioa_minor
         ioa_major[mask] = e_ioa_major
+        lens_spacing[mask] = e_lens_spacing
 
         print(f"Eye {eye.eye_id} lattice hexatic quality (Ψ6): {np.mean(e_psi6):.3f}")
 
-    return ioa_minor, ioa_major, tilts, neighb_counts
+    return ioa_minor, ioa_major, tilts, neighb_counts, lens_spacing
 
 
 def _pack_metadata(
@@ -569,6 +585,7 @@ class ReceptorArray:
                  eye_ids: Optional[Union[int, ArrayLike]] = None,
                  receptor_types: Optional[Union[int, ArrayLike]] = None,
                  eye_parameter: Optional[Union[float, Tuple]] = None,
+                 lens_diameter_um: Optional[Union[float, ArrayLike]] = None,
                  interommatidial_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
                  acceptance_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
                  wavelength_nm: float = 500.0,
@@ -600,8 +617,14 @@ class ReceptorArray:
             bundle_orientation: (N,) chi per lens (radians in tangent plane)
             chirality:
             eye_ids: (N,) integer eye id per lens, 0-7
-            eye_parameter: Optional p = delta_rho / delta_phi override
-                Bypasses the optical formula and computes acceptance as p * IOA (as in the simplified path)
+            eye_parameter: Optional scale factor on acceptance angles
+                When the kernel provides nodal_distance_um (optical model available),
+                p multiplies the Snyder acceptance angles uniformly
+                    Δρ_actual = p × √((λ/D)² + (d_rhab/f)²)
+
+                When no nodal distance is available (simplified eye model), p falls
+                back to the classical meaning as acceptance-to-interommatidial ratio:
+                    Δρ_actual = p × Δφ × (d_rhab / max_d_rhab)
             interommatidial_angles_rad: (N,) or (N,2) if known, otherwise estimated
         """
         # TODO: Add missing args in docstring
@@ -648,6 +671,7 @@ class ReceptorArray:
             # User-provided values
             lattice_tilts = np.zeros(N, dtype=np.float32)
             nb_counts = np.zeros(N, dtype=np.uint32)
+            lens_spacing = np.zeros(N, dtype=np.float32)
 
             ioa_arr = self._prepare_param(interommatidial_angles_rad, 'interommatidial_angles', N, allow_2d=True)
 
@@ -656,7 +680,7 @@ class ReceptorArray:
 
         elif N > 1 and np.ptp(self._lens_positions, axis=0).max() > 1e-6:
             # Positions have meaningful spatial extent: estimate from lattice
-            ioa_minor, ioa_major, lattice_tilts, nb_counts = _lattice_properties(
+            ioa_minor, ioa_major, lattice_tilts, nb_counts, lens_spacing = _lattice_properties(
                 directions=self._lens_directions,
                 positions=self._lens_positions,
                 eyes=self.eyes,
@@ -669,6 +693,48 @@ class ReceptorArray:
             ioa_major = np.zeros(N, dtype=np.float32)
             lattice_tilts = np.zeros(N, dtype=np.float32)
             nb_counts = np.zeros(N, dtype=np.uint32)
+            lens_spacing = np.zeros(N, dtype=np.float32)
+
+        # Resolve lenses diameters
+        # Priority: explicit override > lattice-derived (close-packed) > zero
+        HEX_PACKING_FACTOR = 1.0  # 1.0 = fully touching lenses, 0.9 for small intercommatidial cuticle gaps, etc
+
+        if lens_diameter_um is not None:
+            # Explicit override
+            diam = np.asarray(lens_diameter_um, dtype=np.float32)
+            if diam.ndim == 0:
+                lens_diameters_um = np.full(N, diam.item(), dtype=np.float32)
+            elif diam.shape == (N,):
+                lens_diameters_um = diam
+            else:
+                raise ValueError(f"lens_diameter_um must be scalar or shape ({N},); got {diam.shape}")
+
+        elif np.any(lens_spacing > 0):
+            # Lattice-derived, sanity check
+            lens_diameters_um = HEX_PACKING_FACTOR * lens_spacing
+            med = float(np.median(lens_diameters_um[lens_diameters_um > 0]))
+            if not (0.5 <= med <= 5000.0):
+                warnings.warn(
+                    f"Lattice-derived lens diameter has median {med:.4g}. "
+                    "This is outside the typical 1-1000 μm range: your lens positions "
+                    "may not be in micrometres..."
+                )
+
+        else:
+            lens_diameters_um = np.zeros(N, dtype=np.float32)
+            if interommatidial_angles_rad is not None:
+                warnings.warn(
+                    "lens_diameter_um was not provided, and interommatidial_angles_rad was given "
+                    "instead of an extensive lens-position array, so no physical lattice spacing "
+                    "could be derived. Lens diameter is independent of IOA in general. Pass "
+                    "lens_diameter_um explicitly. Diffraction term in the Snyder formula will be invalid."
+                )
+            else:
+                warnings.warn(
+                    "lens_diameter_um was not provided and lens positions are degenerate "
+                    "(single lens or all coincident). Diffraction term in the Snyder formula "
+                    "will be invalid. Pass lens_diameter_um explicitly."
+                )
 
         # Chirality
         if chirality is not None:
@@ -729,13 +795,23 @@ class ReceptorArray:
             ioa_major=ioa_major,
             wavelength_nm=wavelength_nm,
             eye_parameter=eye_parameter,
-            explicit_angles_rad=acceptance_angles_rad
+            explicit_angles_rad=acceptance_angles_rad,
+            lens_diameters_um=lens_diameters_um,
+        )
+
+        # Saccades directions
+        sacc = _saccades_field(
+            yaws=chi,
+            kernel=self._kernel,
+            chirality=chirality_arr,
+            dorsal_sign=dorsal_sign,
+            local_right=local_right,
+            local_up=local_up,
+            positions=lens_positions,
+            eyes=self.eyes
         )
 
         # Fill main data structures
-
-        sacc = _saccades_field(chi, self._kernel, chirality_arr, dorsal_sign, local_right, local_up, lens_positions,
-                               self.eyes)
 
         # Lens static
         self.lens_static_data = np.zeros(N, dtype=LENS_STATIC_DTYPE)
@@ -747,6 +823,8 @@ class ReceptorArray:
         self.lens_static_data['ioa_tilt'] = lattice_tilts
         self.lens_static_data['ioa_axes'][:, 0] = ioa_minor
         self.lens_static_data['ioa_axes'][:, 1] = ioa_major
+        self.lens_static_data['nodal_distance_um'] = self._kernel.nodal_distance_um or 0.0  # TODO: This broadcasts to every lens, there should be a way to do it per-lens
+        self.lens_static_data['lens_diameter_um']  = lens_diameters_um
 
         # Lens dynamic
         self.lens_dynamic_data = np.zeros(N, dtype=LENS_DYNAMIC_DTYPE)
@@ -763,11 +841,14 @@ class ReceptorArray:
         self.rcpt_static_data['rot_offset'][:, 1] = rot_dy.ravel()
 
         self.rcpt_static_data['acc_tilt'] = np.repeat(chi + dorsal_offset, R)
-        self.rcpt_static_data['tau'] = self._kernel.tau_s
+        self.rcpt_static_data['tau_membrane'] = self._kernel.tau_membrane
         self.rcpt_static_data['sensitivity'] = np.tile(self._kernel.sensitivity, (N, 1))
 
         # Default cartridge wiring: straight down
         self.rcpt_static_data['cartridge_src'] = np.repeat(np.arange(N), R) * R + np.tile(np.arange(R), N)
+
+        self.rcpt_static_data['rhab_diameter_um'] = np.tile(self._kernel.diameters_um, N)
+        self.rcpt_static_data['wavelength_um'] = np.tile(self._kernel.wavelengths_nm * 1e-3, N)
 
         # Receptor dynamic
         self.rcpt_dynamic_data = np.zeros(N * R, dtype=RCPT_DYNAMIC_DTYPE)

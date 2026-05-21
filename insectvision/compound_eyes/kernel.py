@@ -29,7 +29,7 @@ class RhabdomereKernel:
     - saccade_offset_deg: angular offset (from the main axis) of the microsaccade actuation direction.
         In Drosophila, microsaccade axis is about 28.6° off of the main axis (roughly aligned with R1-R2-R3).
 
-    - tau_s: Temporal integration in seconds. The receptor's output is an exponential moving average.
+    - tau_membrane: Temporal integration in seconds. The receptor's output is an exponential moving average.
         Realistic values (e.g., 0.012 sec for Drosophila) absorb ray noise and create realistic motion blur.
     """
 
@@ -37,24 +37,43 @@ class RhabdomereKernel:
             self,
             name: str = 'Simple',
             offsets_um: ArrayLike = np.array([[0.0, 0.0]]),
-            nodal_distance_um: Optional[float] = 21.0,
             diameters_um: Union[float, np.floating, ArrayLike] = 2.0,
-            lens_diameter_um: float = 16.0,
-            tau_s: float = 0.0,
+            nodal_distance_um: Optional[float] = 21.0,
             sensitivity: Union[float, np.floating, ArrayLike] = 1.0,
+            wavelengths_nm: Optional[Union[float, ArrayLike]] = 540.0,
+
+            # Photoreceptor temporal integration (per-receptor membrane RC)
+            tau_membrane: float = 0.012,
+
+            # Photomechanical microsaccade biophysics (per-bundle)
+            tau_rise: float = 0.008,   # mechanical rise time (s)
+            tau_relax: float = 0.080,  # mechanical relaxation time (s)
+            tau_fast: float = 0.005,   # fast adaptation EMA (s, ~PIP2 hydrolysis)
+            tau_adapt: float = 0.050,  # slow adaptation EMA (s, ~Ca2+ feedback)
+            gain_lat_um: float = 2.0,  # max lateral displacement (μm) at full drive
+            gain_ax_um: float = 8.0,   # max axial contraction (μm) at full drive
+
+            # Bundle geometry and identity
             center_index: int = 0,
             peripheral_indices: Optional[ArrayLike] = None,
             main_axis_indices: ArrayLike = np.array([0, 0]),
             flow_axis_deg: float = -81.0,
-            saccade_offset_deg: float = 0.0
+            saccade_offset_deg: float = 0.0,
     ):
 
         self.name = name
-
         self.nodal_distance_um = nodal_distance_um
-        self.lens_diameter_um = lens_diameter_um
-        self.tau_s = tau_s
 
+        # Photoreceptor & bundle dynamics
+        self.tau_membrane = tau_membrane
+        self.gain_lat_um = gain_lat_um
+        self.gain_ax_um = gain_ax_um
+        self.tau_rise = tau_rise
+        self.tau_relax = tau_relax
+        self.tau_fast = tau_fast
+        self.tau_adapt = tau_adapt
+
+        # Identity / topology
         self.center_index = center_index
         self.main_axis_indices = main_axis_indices
         self.flow_axis_deg = flow_axis_deg
@@ -104,6 +123,15 @@ class RhabdomereKernel:
                 f"main_axis_indices=({i1}, {i2}) are identical. Tissue alignment calculations may fail.",
                 stacklevel=2
             )
+
+        # Per-receptor peak wavelengths (nm) default to a single representative wavelength applied to all receptors
+        wl = np.atleast_1d(np.asarray(wavelengths_nm, dtype=np.float32))
+        if wl.size == 1:
+            self.wavelengths_nm = np.full(R, wl.item(), dtype=np.float32)
+        elif wl.size == R:
+            self.wavelengths_nm = wl.flatten()
+        else:
+            raise ValueError(f"wavelengths_nm size ({wl.size}) must be 1 or match receptor count R={R}")
 
     def __len__(self) -> int:
         return self.offsets_um.shape[0]

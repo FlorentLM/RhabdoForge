@@ -296,8 +296,6 @@ if __name__ == "__main__":
 
     print(f"\nFinal model:  L={len(L_positions)}  R={len(R_positions)}")
 
-    all_positions *= 0.001
-
     np.savez_compressed(
         "species_models/drosophila_custom.npz",
         directions=all_directions,

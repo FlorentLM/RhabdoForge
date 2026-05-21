@@ -21,7 +21,7 @@ def main():
     # eye_model = ReceptorArray.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
     eye_model = ReceptorArray.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
 
-    eye_model.scale(0.01)
+    eye_model.scale(1e-6)
 
     agent = Agent(position=(0.0, 0.0, 4.0))
 

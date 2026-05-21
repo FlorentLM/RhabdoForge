@@ -107,9 +107,9 @@ scene.add_instance(top_wall)
 
 ## Setup eye model and agent
 
-receptor_array = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
-receptor_array.scale(0.01)
-receptor_array.receptors.tau = 0.012   # 12 ms time accumulation
+receptor_array = ReceptorArray.from_file('species_models/drosophila_custom.npz')
+receptor_array.scale(1e-6)
+receptor_array.receptors.tau_membrane = 0.012
 
 left_eye = receptor_array.eye(0)
 right_eye = receptor_array.eye(1)

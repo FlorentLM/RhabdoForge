@@ -31,8 +31,8 @@ void main() {
         total_color += ray_results[start_idx + i].rgb;
     }
 
-    vec3 spec_sens = rcpt_static[rcpt_idx].sensitivity;
-    float tau      = rcpt_static[rcpt_idx].tau;
+    vec3 spec_sens     = rcpt_static[rcpt_idx].sensitivity;
+    float tau_membrane = rcpt_static[rcpt_idx].tau_membrane;
 
     total_color = (nb_samples > 0) ? (total_color / float(nb_samples)) : total_color;
     total_color *= spec_sens;
@@ -41,9 +41,9 @@ void main() {
     float raw_radiance = (total_color.r + total_color.g + total_color.b) / 3.0;
 
      vec4 ema_val;
-    if (tau > 0.0 && dt > 0.0) {
+    if (tau_membrane > 0.0 && dt > 0.0) {
         // Exponential moving average (first-order low-pass)
-        float alpha = clamp(dt / (tau + dt), 0.0, 1.0);
+        float alpha = clamp(dt / (tau_membrane + dt), 0.0, 1.0);
         vec4 prev = ema_state[rcpt_idx];
 
         // If prev is 0 (first frame) pop it instantly

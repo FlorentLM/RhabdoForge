@@ -230,12 +230,15 @@ class BaseRenderer(ABC):
         self.sky_intensity = getattr(self, 'sky_intensity', 1.0)
 
         # Dynamics parameters
-        self.gain_lat = 1.5      # saccade lateral gain (μm) per unit drive
-        self.gain_ax = 4.0       # saccade axial gain (μm) per unit drive
-        self.tau_fast = 0.001    # 1 ms: fast saccade trigger
-        self.tau_adapt = 0.050   # 50 ms: light adaptation baseline
-        self.tau_relax = 0.080   # 80 ms: Mechanical relaxation (elastic return)
-        self.lum_ref = 1.0       # target operating-point luminance for biochemical adaptation
+        k = self._ra.kernel
+        self.tau_rise = k.tau_rise      # 8 ms: saccade onset rise time
+        self.tau_relax = k.tau_relax    # 80 ms: saccade relaxation (elastic return)
+        self.tau_fast = k.tau_fast      # 5 ms: fast saccade trigger
+        self.tau_adapt = k.tau_adapt    # 50 ms: light adaptation baseline
+        self.gain_lat = k.gain_lat_um   # saccade lateral gain (μm) per unit drive
+        self.gain_ax = k.gain_ax_um     # saccade axial gain (μm) per unit drive
+
+        self.lum_ref = 1.0  # target operating-point luminance
 
         # Visualisation shaders (lazy-loaded)
         self.__fp_colour_shader: Optional[ShaderProgram] = None    # 1st person colour mode
@@ -294,9 +297,6 @@ class BaseRenderer(ABC):
 
             # Rhabdomere kernel params (constants during runtime)
             kernel_centre_idx=self._ra.kernel.center_index,
-            diffraction_sq=(self._ra._wavelength_nm * 1e-3 / self._ra.kernel.lens_diameter_um) ** 2,
-            acc_rest_geom_sq=(self._ra.kernel.diameters_um[self._ra.kernel.center_index] / self._ra.kernel.nodal_distance_um) ** 2,
-            nodal_dist_rest=self._ra.kernel.nodal_distance_um,
 
             # Various visualisation parameters (currently fixed and not modifiable)
             visualisation_eye_surface_albedo=1.0,
@@ -327,11 +327,12 @@ class BaseRenderer(ABC):
             dither_counter=self._dither_counter,
 
             # Receptors dynamics
+            tau_rise=self.tau_rise,
+            tau_relax=self.tau_relax,
             tau_fast=self.tau_fast,
             tau_adapt=self.tau_adapt,
             gain_lat=self.gain_lat if self._gpu_actuation else 0.0,
             gain_ax=self.gain_ax if self._gpu_actuation else 0.0,
-            tau_relax=self.tau_relax,
             lum_ref=self.lum_ref,
             saccade_sign=1.0
         )
@@ -521,9 +522,10 @@ class BaseRenderer(ABC):
         )
 
         self._eye_uniforms.update(
+            tau_rise=self.tau_rise,
+            tau_relax=self.tau_relax,
             tau_fast=self.tau_fast,
             tau_adapt=self.tau_adapt,
-            tau_relax=self.tau_relax,
             gain_lat=self.gain_lat if self._gpu_actuation else 0.0,
             gain_ax=self.gain_ax if self._gpu_actuation else 0.0,
             lum_ref=self.lum_ref
