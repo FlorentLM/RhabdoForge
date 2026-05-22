@@ -46,6 +46,10 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
     Generates an eye mesh.
     eye_sign = 1 for Left Eye, -1 for Right Eye.
     """
+
+    # eyes_sep = 0.0
+    eyes_sep = 0.5
+
     sphere = pv.Icosphere(radius=1.0, nsub=n_sub)
     sphere = sphere.compute_normals(point_normals=True, cell_normals=False)
 
@@ -153,15 +157,15 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
     clipped_mesh = sphere.clip(normal=clip_normal, origin=(0, 0, 0), invert=True)
 
     # Translate slightly to create separation between eyes
-    clipped_mesh.translate([0, -0.5 * eye_sign, 0], inplace=True)
+    clipped_mesh.translate([0, -eyes_sep * eye_sign, 0], inplace=True)
 
     return clipped_mesh
 
 
 def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
     n_sub = 4
-    # cut_angle_deg = 90.0  # makes the eyes perfectly hemispherical
-    cut_angle_deg = 75.0  # ~15 deg binocular overlap (and ~30 deg blind zone in the back)
+    cut_angle_deg = 90.0  # makes the eyes perfectly hemispherical
+    # cut_angle_deg = 75.0  # ~15 deg binocular overlap (and ~30 deg blind zone in the back)
 
     tilt_rad = np.radians(tilt_deg)
     pitch_rad = np.radians(pitch_deg)
@@ -208,7 +212,7 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
     plotter.subplot(0, 0)
     add_standard_setup(plotter, "Optical Flow")
     g = both_eyes.glyph(geom=vector_arrow, orient='RawFlow', tolerance=sparsity, factor=0.08, scale=False)
-    plotter.add_mesh(g, color='magenta')
+    plotter.add_mesh(g, color='magenta', line_width=2)
 
     # Panel 2: Combed phasors
     plotter.subplot(0, 1)
@@ -230,34 +234,35 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
 
     g_a = chir_a.glyph(geom=vector_arrow, orient='MajorAxis', tolerance=sparsity, factor=0.08, scale=False)
     g_b = chir_b.glyph(geom=vector_arrow, orient='MajorAxis', tolerance=sparsity, factor=0.08, scale=False)
-    plotter.add_mesh(g_a, color='#5D4037')  # Brown (A)
+    plotter.add_mesh(g_a, color='#B95D21')  # Brown (A)
     plotter.add_mesh(g_b, color='#FF9800')  # Orange (B)
 
     # Panel 5: Raw saccade field (Phasors)
     plotter.subplot(1, 0)
     add_standard_setup(plotter, "Saccade Axes (Chirality-Dependent)")
     g = both_eyes.glyph(geom=phasor_line, orient='SaccadeAxis', tolerance=sparsity, factor=0.08, scale=False)
-    plotter.add_mesh(g, color='red', line_width=2)
+    plotter.add_mesh(g, color='#FF94BD', line_width=2)
 
     # Panel 6: Smoothed saccade field
     plotter.subplot(1, 1)
     add_standard_setup(plotter, "Saccade Axes (Smoothed Vector Field)")
     g = both_eyes.glyph(geom=vector_arrow, orient='SaccadeAxisSmooth', tolerance=sparsity, factor=0.08, scale=False)
-    plotter.add_mesh(g, color='pink')
+    plotter.add_mesh(g, color='red', line_width=2)
 
     # Panel 7: Smoothing comparison heatmap
     plotter.subplot(1, 2)
     add_standard_setup(plotter, "Smoothing Consistency")
     plotter.add_mesh(both_eyes.copy(), scalars='SmoothnessComparison', cmap='inferno', clim=[0.9, 1])
 
-    # Panel 8: Chirality map
-    plotter.subplot(1, 3)
-    add_standard_setup(plotter, "Chirality Map (A vs B)")
-    plotter.add_mesh(both_eyes.copy(), scalars='Chirality', cmap='copper')
+    # # Panel 8: Chirality map
+    # plotter.subplot(1, 3)
+    # add_standard_setup(plotter, "Chirality Map (A vs B)")
+    # plotter.add_mesh(both_eyes.copy(), scalars='Chirality', cmap='copper')
 
     plotter.link_views()
 
     plotter.camera_position = [(-3.5, 0.0, 1.0), (0, 0, 0), (0, 0, 1)]
+    plotter.disable_shadows()
     plotter.show()
 
 
