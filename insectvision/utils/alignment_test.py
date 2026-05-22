@@ -53,25 +53,33 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
     normals = sphere.point_data['Normals']
 
     # Calculate local basis vectors
+    # Primary axis (forward/flow)
     e_x = flow_dir / np.linalg.norm(flow_dir)
-    if np.abs(e_x[2]) > 0.999:
-        e_y = np.array([0.0, 1.0, 0.0])
-    else:
-        e_y = np.cross(np.array([0.0, 0.0, 1.0]), e_x)
-        e_y /= np.linalg.norm(e_y)
-    e_z = np.cross(e_x, e_y)
 
-    # Determine Chirality
-    # p_height > 0 is Dorsal, < 0 is Ventral
+    # Lateral axis (Right/Left)
+    # cross Global Up with Flow to get a horizontal vector relative to flow
+    world_up = np.array([0.0, 0.0, 1.0])
+    if np.abs(np.dot(e_x, world_up)) > 0.999:
+        e_y = np.array([0.0, 1.0, 0.0]) if eye_sign > 0 else np.array([0.0, -1.0, 0.0])
+    else:
+        e_y = np.cross(world_up, e_x)
+        e_y /= np.linalg.norm(e_y)
+
+    # Vertical axis (Dorsal/Ventral)
+    # This vector is the normal to the equatorial plane defined by the flow
+    e_z = np.cross(e_x, e_y)
+    e_z /= np.linalg.norm(e_z)
+
+    # Calculate height relative to the Flow-Equatorial plane
     p_height = np.einsum('ij,j->i', points, e_z)
     hemisphere_sign = np.sign(p_height)
     hemisphere_sign[hemisphere_sign == 0] = 1.0
 
     # Chirality Logic:
-    # Left(1)*Ventral(-1) = -1 (A) | Right(-1)*Dorsal(1) = -1 (A)
-    # Left(1)*Dorsal(1)  =  1 (B) | Right(-1)*Ventral(-1) =  1 (B)
+    # A (Brown/ -1): Left-Ventral or Right-Dorsal
+    # B (Orange/ 1): Left-Dorsal or Right-Ventral
     chirality = eye_sign * hemisphere_sign
-    sphere.point_data['Chirality'] = chirality  # -1: A (Brown), 1: B (Orange)
+    sphere.point_data['Chirality'] = chirality
 
     # Optic flow projection
     dot_p = np.dot(normals, flow_dir)
