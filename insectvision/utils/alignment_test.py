@@ -1,6 +1,9 @@
 import pyvista as pv
 import numpy as np
 
+HEAD_PITCH = 10.1
+MAIN_AXIS_OFFSET = -81.0
+SACCADE_AXIS_OFFSET = -28.6
 
 def smooth_phasor_field(mesh, array_name, iterations=5):
     """Smooths a vector field treating it as a phasor (180-deg agnostic)."""
@@ -88,9 +91,9 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
     sphere.point_data['RawFlow'] = raw_flow_unit
     sphere.point_data['AlignmentPhasors'] = combed_flow
 
-    # -81° Offset (Orange)
+    # Main axis -81° offset (orange)
     # Multiply rotation by eye_sign to mirror right-hand rule cross products
-    rot_angle_rad_81 = np.radians(-81.0 * eye_sign)
+    rot_angle_rad_81 = np.radians(MAIN_AXIS_OFFSET * eye_sign)
     cross_nv_81 = np.cross(normals, combed_flow)
     rotated_flow_81 = combed_flow * np.cos(rot_angle_rad_81) + cross_nv_81 * np.sin(rot_angle_rad_81)
 
@@ -107,7 +110,7 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
     hemisphere_sign[hemisphere_sign == 0] = 1.0
 
     # Mirror the angle for right eye
-    rot_angle_rad_28_base = np.radians(-28.6 * eye_sign)
+    rot_angle_rad_28_base = np.radians(SACCADE_AXIS_OFFSET * eye_sign)
     angles_28 = rot_angle_rad_28_base * hemisphere_sign
 
     cos_28 = np.cos(angles_28)[:, np.newaxis]
@@ -139,7 +142,7 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
     return clipped_mesh
 
 
-def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=10.0, pitch_deg=5.0):
+def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
     n_sub = 4
     # cut_angle_deg = 90.0  # makes the eyes perfectly hemispherical
     cut_angle_deg = 75.0  # ~15 deg binocular overlap (and ~30 deg blind zone in the back)
@@ -244,4 +247,4 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=10.0, pitch_deg=5.0):
 
 
 if __name__ == "__main__":
-    alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=10.1)
+    alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=HEAD_PITCH)
