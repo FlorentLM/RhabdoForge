@@ -115,9 +115,10 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
     rotated_81 = combed_flow * np.cos(rot_angle_81) + cross_nv_81 * np.sin(rot_angle_81)
 
     # Standardize phasor direction
-    ref_binormal = np.cross(normals, combed_flow)
-    dot_check = np.einsum('ij,ij->i', rotated_81, ref_binormal)
+    dot_check = np.einsum('ij,ij->i', rotated_81, combed_flow * -hemisphere_sign[:, None])
+
     rotated_81[dot_check < 0] *= -1.0
+
     sphere.point_data['MajorAxis'] = rotated_81 / np.linalg.norm(rotated_81, axis=1, keepdims=True).clip(min=1e-8)
 
     # Saccade axis (28.6°)
