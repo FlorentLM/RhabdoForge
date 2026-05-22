@@ -125,10 +125,19 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
     rot_angle_28 = np.radians(SACCADE_AXIS_OFFSET * chirality)
     cross_nv_28 = np.cross(normals, sphere.point_data['MajorAxis'])
     rotated_28 = (sphere.point_data['MajorAxis'] * np.cos(rot_angle_28)[:, None]) + (
-                cross_nv_28 * np.sin(rot_angle_28)[:, None])
+            cross_nv_28 * np.sin(rot_angle_28)[:, None])
 
     sphere.point_data['SaccadeAxis'] = rotated_28 / np.linalg.norm(rotated_28, axis=1, keepdims=True).clip(min=1e-8)
-    sphere.point_data['SaccadeAxisSmooth'] = smooth_phasor_field(sphere, 'SaccadeAxis', iterations=10)
+
+    # Smoothing
+    smoothed_v = smooth_phasor_field(sphere, 'SaccadeAxis', iterations=10)
+
+    # Polarise: Ensure vectors point generally "Up" (Dorsal)
+    # We use the dot product with the vertical basis vector e_z
+    dot_z = np.einsum('ij,j->i', smoothed_v, e_z)
+    smoothed_v[dot_z < 0] *= -1.0
+
+    sphere.point_data['SaccadeAxisSmooth'] = smoothed_v
 
     # Heatmaps
     sphere.point_data['Collinearity'] = np.abs(np.einsum('ij,ij->i', raw_flow_unit,
@@ -200,13 +209,13 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
     g = both_eyes.glyph(geom=vector_arrow, orient='RawFlow', tolerance=sparsity, factor=0.08, scale=False)
     plotter.add_mesh(g, color='magenta')
 
-    # Panel 2: Green alignment phasors
+    # Panel 2: Combed phasors
     plotter.subplot(0, 1)
     add_standard_setup(plotter, "Alignment Axes (Combed)")
     g = both_eyes.glyph(geom=phasor_line, orient='AlignmentPhasors', tolerance=sparsity, factor=0.08, scale=False)
     plotter.add_mesh(g, color='green', line_width=2)
 
-    # Panel 3: Collinearity heatmap
+    # Panel 3: Collinearity
     plotter.subplot(0, 2)
     add_standard_setup(plotter, "Collinearity Heatmap")
     plotter.add_mesh(both_eyes.copy(), scalars='Collinearity', cmap='inferno', clim=[0, 1])
@@ -223,7 +232,7 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
     plotter.add_mesh(g_a, color='#5D4037')  # Brown (A)
     plotter.add_mesh(g_b, color='#FF9800')  # Orange (B)
 
-    # Panel 5: Saccade field
+    # Panel 5: Raw saccade field (Phasors)
     plotter.subplot(1, 0)
     add_standard_setup(plotter, "Saccade Axes (Chirality-Dependent)")
     g = both_eyes.glyph(geom=phasor_line, orient='SaccadeAxis', tolerance=sparsity, factor=0.08, scale=False)
@@ -231,9 +240,9 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
 
     # Panel 6: Smoothed saccade field
     plotter.subplot(1, 1)
-    add_standard_setup(plotter, "Saccade Axes (Smoothed)")
-    g = both_eyes.glyph(geom=phasor_line, orient='SaccadeAxisSmooth', tolerance=sparsity, factor=0.08, scale=False)
-    plotter.add_mesh(g, color='pink', line_width=2)
+    add_standard_setup(plotter, "Saccade Axes (Smoothed Vector Field)")
+    g = both_eyes.glyph(geom=vector_arrow, orient='SaccadeAxisSmooth', tolerance=sparsity, factor=0.08, scale=False)
+    plotter.add_mesh(g, color='pink')
 
     # Panel 7: Smoothing comparison heatmap
     plotter.subplot(1, 2)
