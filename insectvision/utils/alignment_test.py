@@ -5,6 +5,7 @@ HEAD_PITCH = 10.1
 MAIN_AXIS_OFFSET = -81.0
 SACCADE_AXIS_OFFSET = -28.6
 
+
 def smooth_phasor_field(mesh, array_name, iterations=5):
     """Smooths a vector field treating it as a phasor (180-deg agnostic)."""
 
@@ -60,11 +61,24 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
         e_y /= np.linalg.norm(e_y)
     e_z = np.cross(e_x, e_y)
 
-    # Base projection
+    # Determine Chirality
+    # p_height > 0 is Dorsal, < 0 is Ventral
+    p_height = np.einsum('ij,j->i', points, e_z)
+    hemisphere_sign = np.sign(p_height)
+    hemisphere_sign[hemisphere_sign == 0] = 1.0
+
+    # Chirality Logic:
+    # Left(1)*Ventral(-1) = -1 (A) | Right(-1)*Dorsal(1) = -1 (A)
+    # Left(1)*Dorsal(1)  =  1 (B) | Right(-1)*Ventral(-1) =  1 (B)
+    chirality = eye_sign * hemisphere_sign
+    sphere.point_data['Chirality'] = chirality  # -1: A (Brown), 1: B (Orange)
+
+    # Optic flow projection
     dot_p = np.dot(normals, flow_dir)
     raw_flow = flow_dir - (dot_p[:, np.newaxis] * normals)
     raw_flow_unit = raw_flow / np.linalg.norm(raw_flow, axis=1, keepdims=True).clip(min=1e-8)
 
+    # Combing / Alignment phasors
     source_point = -1.0 * e_x
     combed_flow = np.zeros_like(raw_flow)
 
@@ -73,12 +87,8 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
         dist_from_source = np.linalg.norm(p - source_point)
         local_w = max(0, 1.0 - (dist_from_source * 0.7)) * strength
 
-        # Invert e_y influence for the right eye to mirror bilateral symmetry
-        if np.dot(p, e_z) >= 0:
-            v_target_ideal = -e_x - (e_y * eye_sign) + e_z
-        else:
-            v_target_ideal = -e_x - (e_y * eye_sign) - e_z
-
+        # Mirror target ideal by eye_sign
+        v_target_ideal = -e_x - (e_y * eye_sign) + (e_z * hemisphere_sign[i])
         v_target_proj = v_target_ideal - np.dot(v_target_ideal, n) * n
         mag = np.linalg.norm(v_raw)
         if np.linalg.norm(v_target_proj) > 1e-6:
@@ -91,45 +101,33 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
     sphere.point_data['RawFlow'] = raw_flow_unit
     sphere.point_data['AlignmentPhasors'] = combed_flow
 
-    # Main axis -81° offset (orange)
-    # Multiply rotation by eye_sign to mirror right-hand rule cross products
-    rot_angle_rad_81 = np.radians(MAIN_AXIS_OFFSET * eye_sign)
+    # Major axis (-81° offset)
+    rot_angle_81 = np.radians(MAIN_AXIS_OFFSET * eye_sign)
     cross_nv_81 = np.cross(normals, combed_flow)
-    rotated_flow_81 = combed_flow * np.cos(rot_angle_rad_81) + cross_nv_81 * np.sin(rot_angle_rad_81)
+    rotated_81 = combed_flow * np.cos(rot_angle_81) + cross_nv_81 * np.sin(rot_angle_81)
 
-    p_height = np.einsum('ij,j->i', points, e_z)
+    # Standardize phasor direction
     ref_binormal = np.cross(normals, combed_flow)
-    dot_check = np.einsum('ij,ij->i', rotated_flow_81, ref_binormal)
-    rotated_flow_81[dot_check < 0] *= -1.0
+    dot_check = np.einsum('ij,ij->i', rotated_81, ref_binormal)
+    rotated_81[dot_check < 0] *= -1.0
+    sphere.point_data['MajorAxis'] = rotated_81 / np.linalg.norm(rotated_81, axis=1, keepdims=True).clip(min=1e-8)
 
-    rotated_flow_81_unit = rotated_flow_81 / np.linalg.norm(rotated_flow_81, axis=1, keepdims=True).clip(min=1e-8)
-    sphere.point_data['MajorAxis'] = rotated_flow_81_unit
+    # Saccade axis (28.6°)
+    # The saccade axis depends explicitly on chirality (mirrors across equator)
+    rot_angle_28 = np.radians(SACCADE_AXIS_OFFSET * chirality)
+    cross_nv_28 = np.cross(normals, sphere.point_data['MajorAxis'])
+    rotated_28 = (sphere.point_data['MajorAxis'] * np.cos(rot_angle_28)[:, None]) + (
+                cross_nv_28 * np.sin(rot_angle_28)[:, None])
 
-    # Saccade offsets
-    hemisphere_sign = np.sign(p_height)
-    hemisphere_sign[hemisphere_sign == 0] = 1.0
+    sphere.point_data['SaccadeAxis'] = rotated_28 / np.linalg.norm(rotated_28, axis=1, keepdims=True).clip(min=1e-8)
+    sphere.point_data['SaccadeAxisSmooth'] = smooth_phasor_field(sphere, 'SaccadeAxis', iterations=10)
 
-    # Mirror the angle for right eye
-    rot_angle_rad_28_base = np.radians(SACCADE_AXIS_OFFSET * eye_sign)
-    angles_28 = rot_angle_rad_28_base * hemisphere_sign
-
-    cos_28 = np.cos(angles_28)[:, np.newaxis]
-    sin_28 = np.sin(angles_28)[:, np.newaxis]
-
-    cross_nv_28 = np.cross(normals, rotated_flow_81_unit)
-    rotated_flow_28 = (rotated_flow_81_unit * cos_28) + (cross_nv_28 * sin_28)
-
-    rotated_flow_28_unit = rotated_flow_28 / np.linalg.norm(rotated_flow_28, axis=1, keepdims=True).clip(min=1e-8)
-
+    # Heatmaps
     sphere.point_data['Collinearity'] = np.abs(np.einsum('ij,ij->i', raw_flow_unit,
                                                          combed_flow / np.linalg.norm(combed_flow, axis=1,
                                                                                       keepdims=True).clip(min=1e-8)))
-
-    sphere.point_data['SaccadeAxis'] = rotated_flow_28_unit
-    sphere.point_data['SaccadeAxisSmooth'] = smooth_phasor_field(sphere, 'SaccadeAxis', iterations=10)
-    sphere.point_data['SmoothnessComparison'] = np.abs(np.einsum('ij,ij->i',
-                                                                 sphere.point_data['SaccadeAxis'],
-                                                                 sphere.point_data['SaccadeAxisSmooth']))
+    sphere.point_data['SmoothnessComparison'] = np.abs(
+        np.einsum('ij,ij->i', sphere.point_data['SaccadeAxis'], sphere.point_data['SaccadeAxisSmooth']))
 
     # Clip appropriate side for left vs right
     angle_rad = np.radians(cut_angle_deg * eye_sign)
@@ -159,7 +157,7 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
     left_eye = generate_eye(1, strength, n_sub, cut_angle_deg, flow_dir)
     right_eye = generate_eye(-1, strength, n_sub, cut_angle_deg, flow_dir)
 
-    both_eyes_mesh = left_eye.merge(right_eye)
+    both_eyes = left_eye.merge(right_eye)
 
     # Reference elements
     e_x = flow_dir / np.linalg.norm(flow_dir)
@@ -175,13 +173,14 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
 
     # Geometry definitions
     phasor_line = pv.Line(pointa=(-0.5, 0, 0), pointb=(0.5, 0, 0))
-    vector_arrow_geom = pv.Arrow(tip_radius=0.08, shaft_radius=0.03, tip_length=0.25)
+    vector_arrow = pv.Arrow(tip_radius=0.08, shaft_radius=0.03, tip_length=0.25)
     flow_arrow = pv.Arrow(start=-2.0 * e_x, direction=e_x, scale=0.5)
 
-    # Visualisation
     plotter = pv.Plotter(shape=(2, 4), window_size=(2500, 1000))
 
-    def add_ref(p):
+    def add_standard_setup(p, title):
+        p.add_text(title, font_size=10)
+        p.add_mesh(both_eyes, color='white', opacity=0.15)
         p.add_mesh(plane_sagittal, color='gray', opacity=0.1)
         p.add_mesh(plane_equatorial, color='blue', opacity=0.1)
         p.add_mesh(flow_arrow, color='purple', lighting=False)
@@ -189,56 +188,54 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
 
     # Panel 1: Raw flow
     plotter.subplot(0, 0)
-    plotter.add_text("Optical flow", font_size=10)
-    g1 = both_eyes_mesh.glyph(geom=vector_arrow_geom, orient='RawFlow', tolerance=sparsity, scale=False, factor=0.08)
-    plotter.add_mesh(g1, color='magenta', lighting=False)
-    plotter.add_mesh(both_eyes_mesh, color='white', opacity=0.3)
-    add_ref(plotter)
+    add_standard_setup(plotter, "Optical Flow")
+    g = both_eyes.glyph(geom=vector_arrow, orient='RawFlow', tolerance=sparsity, factor=0.08, scale=False)
+    plotter.add_mesh(g, color='magenta')
 
     # Panel 2: Green alignment phasors
     plotter.subplot(0, 1)
-    plotter.add_text("Alignment axes", font_size=10)
-    g2 = both_eyes_mesh.glyph(geom=phasor_line, orient='AlignmentPhasors', tolerance=sparsity, scale=False, factor=0.08)
-    plotter.add_mesh(g2, color='green', line_width=2, lighting=False)
-    plotter.add_mesh(both_eyes_mesh, color='white', opacity=0.3)
-    add_ref(plotter)
+    add_standard_setup(plotter, "Alignment Axes (Combed)")
+    g = both_eyes.glyph(geom=phasor_line, orient='AlignmentPhasors', tolerance=sparsity, factor=0.08, scale=False)
+    plotter.add_mesh(g, color='green', line_width=2)
 
     # Panel 3: Collinearity heatmap
     plotter.subplot(0, 2)
-    plotter.add_text("Collinearity heatmap", font_size=10)
-    plotter.add_mesh(both_eyes_mesh.copy(), scalars='Collinearity', cmap='inferno', clim=[0, 1])
-    add_ref(plotter)
+    add_standard_setup(plotter, "Collinearity Heatmap")
+    plotter.add_mesh(both_eyes.copy(), scalars='Collinearity', cmap='inferno', clim=[0, 1])
 
     # Panel 4: Major axis
     plotter.subplot(0, 3)
-    plotter.add_text("Major axes", font_size=10)
-    g3 = both_eyes_mesh.glyph(geom=vector_arrow_geom, orient='MajorAxis', tolerance=sparsity, scale=False, factor=0.08)
-    plotter.add_mesh(g3, color='orange', lighting=False)
-    plotter.add_mesh(both_eyes_mesh, color='white', opacity=0.3)
-    add_ref(plotter)
+    add_standard_setup(plotter, "Major Axes (Brown: Chirality A | Orange: Chirality B)")
+    # Filter by chirality for distinct colors
+    chir_a = both_eyes.threshold(value=-0.5, scalars='Chirality', preference='point', invert=True)
+    chir_b = both_eyes.threshold(value=0.5, scalars='Chirality', preference='point')
+
+    g_a = chir_a.glyph(geom=vector_arrow, orient='MajorAxis', tolerance=sparsity, factor=0.08, scale=False)
+    g_b = chir_b.glyph(geom=vector_arrow, orient='MajorAxis', tolerance=sparsity, factor=0.08, scale=False)
+    plotter.add_mesh(g_a, color='#5D4037')  # Brown (A)
+    plotter.add_mesh(g_b, color='#FF9800')  # Orange (B)
 
     # Panel 5: Saccade field
     plotter.subplot(1, 0)
-    plotter.add_text("Saccade axes", font_size=10)
-    g4 = both_eyes_mesh.glyph(geom=phasor_line, orient='SaccadeAxis', tolerance=sparsity, scale=False, factor=0.08)
-    plotter.add_mesh(g4, color='red', line_width=2, lighting=False)
-    plotter.add_mesh(both_eyes_mesh, color='white', opacity=0.3)
-    add_ref(plotter)
+    add_standard_setup(plotter, "Saccade Axes (Chirality-Dependent)")
+    g = both_eyes.glyph(geom=phasor_line, orient='SaccadeAxis', tolerance=sparsity, factor=0.08, scale=False)
+    plotter.add_mesh(g, color='red', line_width=2)
 
     # Panel 6: Smoothed saccade field
     plotter.subplot(1, 1)
-    plotter.add_text("Saccade axes (Smoothed)", font_size=10)
-    g5 = both_eyes_mesh.glyph(geom=phasor_line, orient='SaccadeAxisSmooth', tolerance=sparsity, scale=False,
-                              factor=0.08)
-    plotter.add_mesh(g5, color='pink', line_width=2, lighting=False)
-    plotter.add_mesh(both_eyes_mesh, color='white', opacity=0.3)
-    add_ref(plotter)
+    add_standard_setup(plotter, "Saccade Axes (Smoothed)")
+    g = both_eyes.glyph(geom=phasor_line, orient='SaccadeAxisSmooth', tolerance=sparsity, factor=0.08, scale=False)
+    plotter.add_mesh(g, color='pink', line_width=2)
 
     # Panel 7: Smoothing comparison heatmap
     plotter.subplot(1, 2)
-    plotter.add_text("Smoothing Consistency", font_size=10)
-    plotter.add_mesh(both_eyes_mesh.copy(), scalars='SmoothnessComparison', cmap='inferno', clim=[0.9, 1])
-    add_ref(plotter)
+    add_standard_setup(plotter, "Smoothing Consistency")
+    plotter.add_mesh(both_eyes.copy(), scalars='SmoothnessComparison', cmap='inferno', clim=[0.9, 1])
+
+    # Panel 8: Chirality map
+    plotter.subplot(1, 3)
+    add_standard_setup(plotter, "Chirality Map (A vs B)")
+    plotter.add_mesh(both_eyes.copy(), scalars='Chirality', cmap='copper')
 
     plotter.link_views()
 
