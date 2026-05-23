@@ -4,12 +4,10 @@ from typing import Optional, Union, Tuple, Sequence, List
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import linear_sum_assignment
+from scipy.spatial import cKDTree
 
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
-from insectvision.utils.math import (
-    normalise_vectors, tangent_frames, fibonacci_sphere, icosphere,
-    project_to_tangent,
-)
+from insectvision.utils.math import normalise_vectors, tangent_frames, fibonacci_sphere, icosphere
 from insectvision.compound_eyes.datatypes import (
     LENS_STATIC_DTYPE, LENS_DYNAMIC_DTYPE, RCPT_STATIC_DTYPE, RCPT_DYNAMIC_DTYPE
 )
@@ -20,265 +18,228 @@ from insectvision.compound_eyes.proxies import Eye, Ommatidium, Cartridge, LensV
 ## Build helpers
 
 
-def _consensus_yaws(
-        yaws,
-        chirality,
-        eyes,
-        lens_positions,
-        local_right,
-        local_up,
-        k=15,
-        max_passes=5,
-) -> np.ndarray:
+def _flow_aligned_frame(flow_direction: ArrayLike) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Resolve mod-pi ambiguity in a yaw field using 3D vector majority vote.
+    Orthonormal frame aligned with optic flow.
+      e_x : flow direction (anterior)
+      e_y : lateral axis (cross of WORLD_UP with e_x)
+      e_z : dorsal axis (perpendicular to both). Coincides with WORLD_UP when flow is purely sagittal
     """
-    out = yaws.copy()
+    S = np.asarray(flow_direction, dtype=np.float32)
+    S = S / np.linalg.norm(S)
 
-    for eye in eyes:
-        neighb = eye.neighbours(
-            points=lens_positions, k=k, chirality=chirality, include_self=True
-        )
-        if neighb is None: continue
-
-        for _pass in range(max_passes):
-            g_yaws = out[neighb.mask]
-
-            V = np.cos(g_yaws)[:, None] * local_right[neighb.mask] + np.sin(g_yaws)[:, None] * local_up[neighb.mask]
-
-            V_nb = V[neighb.indices]
-            V_mean = np.sum(V_nb * neighb.same_chirality[:, :, None], axis=1)
-
-            agreement = np.sum(V * V_mean, axis=1)
-
-            flip = agreement < 0
-            if not np.any(flip):
-                break
-            out[neighb.mask[flip]] += np.pi
-
-    return (out + np.pi) % (2 * np.pi) - np.pi
+    up = np.asarray(WORLD_UP, dtype=np.float32)
+    if abs(float(S @ up)) > 0.999:
+        ref = np.asarray(WORLD_FORWARD, dtype=np.float32)
+        e_y = np.cross(ref, S)
+    else:
+        e_y = np.cross(up, S)
+    e_y = e_y / np.linalg.norm(e_y)
+    e_z = np.cross(S, e_y)
+    return S.astype(np.float32), e_y.astype(np.float32), e_z.astype(np.float32)
 
 
-def _floodfill_yaws(yaws, chirality, eyes, lens_positions, local_right, local_up, k=15):
-    """Flood fill propagation from most locally consistent 3D seed."""
-
-    out = yaws.copy()
-
-    for eye in eyes:
-        neighb = eye.neighbours(
-            points=lens_positions, k=k, chirality=chirality, include_self=True
-        )
-        if neighb is None: continue
-
-        g_chirality = chirality[neighb.mask]
-        g_yaws = out[neighb.mask]
-
-        V = np.cos(g_yaws)[:, None] * local_right[neighb.mask] + np.sin(g_yaws)[:, None] * local_up[neighb.mask]
-
-        V_nb = V[neighb.indices]
-        agreement = np.sum(V[:, None, :] * V_nb, axis=2) * neighb.same_chirality
-        confidence = np.sum(agreement, axis=1)
-
-        n_g = len(neighb.mask)
-        seed = np.argmax(confidence)
-        visited = np.zeros(n_g, dtype=bool)
-        visited[seed] = True
-        queue = [seed]
-
-        while queue:
-            current = queue.pop(0)
-            for j in neighb.indices[current]:
-                if visited[j]: continue
-                visited[j] = True
-
-                dot = np.sum(V[current] * V[j])
-                if dot < 0 and g_chirality[current] == g_chirality[j]:
-                    out[neighb.mask[j]] += np.pi
-                    V[j] *= -1.0  # keep the vector updated for the next iters
-
-                queue.append(j)
-
-    return (out + np.pi) % (2 * np.pi) - np.pi
-
-
-def _orient_rhabdomeres(
-        kernel: 'RhabdomereKernel',
-        lens_positions: np.ndarray,
+def _alignment_phasor_field(
         lens_directions: np.ndarray,
-        local_right: np.ndarray,
-        local_up: np.ndarray,
-        chirality: np.ndarray,
-        flow_direction: np.ndarray,
-        weight_tissue: float,
-        weight_flow: float,
-        eyes: list,
-        k: int = 15,
+        e_x: np.ndarray,
+        e_y: np.ndarray,
+        e_z: np.ndarray,
+        eye_sign: np.ndarray,
+        hemisphere_sign: np.ndarray,
+        strength: float = 1.0,
+        falloff: float = 0.7,
+        diagonal_strength: float = 1.0,
 ) -> np.ndarray:
     """
-    Compute per-ommatidium rhabdomere bundle yaw via a orientation compromise.
-    """
+    Combed-flow alignment phasor field.
 
-    # Tangent plane projection of external flow
-    flow_vec = np.asarray(flow_direction, dtype=np.float32)
-    v_proj = project_to_tangent(flow_vec, lens_directions)
-    flow_mags = np.linalg.norm(v_proj, axis=1)
-
-    angle_flow_external = np.arctan2(
-        np.sum(v_proj * local_up, axis=1),
-        np.sum(v_proj * local_right, axis=1)
-    )
-
-    # Intrinsic target: kernel flow axis (after chirality x-flip only: the D/V y-flip is handled
-    # separately via a dorsal pi-offset applied at placement time, invisible in the doubled-angle line-field space used here.
-    flow_angle_kernel = kernel.flow_axis_rad
-    intrinsic_target = np.arctan2(
-        np.sin(flow_angle_kernel),
-        np.cos(flow_angle_kernel) * chirality
-    )
-
-    yaw_flow = angle_flow_external - intrinsic_target
-
-    # Confidence weighting
-    max_f = np.max(flow_mags)
-    flow_conf = flow_mags / max_f if max_f > 1e-12 else np.zeros_like(flow_mags)
-    uncertainty = 1.0 - flow_conf
-
-    # Represent in 2-theta space (line field)
-    # (magnitude is the strength of opinion)
-    Z_flow = (weight_flow * flow_conf).astype(np.complex64) * np.exp(2j * yaw_flow)
-
-    # Diffusion passes
-    Z_final = Z_flow.copy()
-
-    n_passes = 5 if weight_tissue > 0 else 0
-    for _pass in range(n_passes):
-        Z_next = Z_final.copy()
-
-        for eye in eyes:
-            neighb = eye.neighbours(
-                points=lens_positions,
-                k=k,
-                chirality=chirality,
-                include_self=True
-            )
-            if neighb is None:
-                continue
-
-            g_indices = neighb.mask
-            Z_nb = Z_final[g_indices][neighb.indices]
-
-            # Distance weights (Gaussian)
-            sigma = neighb.distances[:, -1] / 2.0
-            sigma = np.where(sigma < 1e-6, 1.0, sigma)
-            w_dist = np.exp(-neighb.distances ** 2 / (2.0 * sigma[:, None] ** 2))
-
-            w_total = w_dist * neighb.same_chirality
-
-            sum_w = np.sum(w_total, axis=1)
-            Z_smooth = np.sum(Z_nb * w_total, axis=1) / np.where(sum_w > 0, sum_w, 1.0)
-
-            # Compromise: flow + (tissue weight * neighbour opinion)
-            w_t = weight_tissue * (1.0 + uncertainty[g_indices])
-            Z_next[g_indices] = Z_flow[g_indices] + w_t.astype(np.complex64) * Z_smooth
-
-        Z_final = Z_next
-
-    final_yaws = 0.5 * np.angle(Z_final)
-
-    # Disambiguation (resolution of the mod-pi line field into a vector field)
-    final_yaws = _consensus_yaws(
-        yaws=final_yaws,
-        chirality=chirality,
-        eyes=eyes,
-        lens_positions=lens_positions,
-        local_right=local_right,
-        local_up=local_up,
-        k=k,
-        max_passes=15
-    )
-
-    final_yaws = _floodfill_yaws(
-        yaws=final_yaws,
-        chirality=chirality,
-        eyes=eyes,
-        lens_positions=lens_positions,
-        local_right=local_right,
-        local_up=local_up,
-        k=k
-    )
-
-    return final_yaws.astype(np.float32)
-
-
-def _saccades_field(
-        yaws: np.ndarray,
-        kernel: 'RhabdomereKernel',
-        chirality: np.ndarray,
-        dorsal_sign: np.ndarray,
-        local_right: np.ndarray,
-        local_up: np.ndarray,
-        positions: np.ndarray,
-        eyes: list,
-        k: int = 8,
-        max_cleanup_passes: int = 5
-) -> np.ndarray:
-    """
-    Compute a consistent saccade vector field and per-ommatidium actuation signs.
+    For each lens we blend the projected optic flow with a diagonal target
+    that depends on which eye and which D/V hemisphere the lens is on.
 
     Args:
-        yaws:           (N,) bundle rotation angles from tissue mechanics
-        kernel:         Rhabdomere kernel (for saccade_axis_deg, axis_indices)
-        chirality:      (N,) +1/-1 per ommatidium (combined L/R × D/V)
-        dorsal_sign:    (N,) +1 ventral, -1 dorsal
-        local_right:    (N, 3) local tangent frame right vectors
-        local_up:       (N, 3) local tangent frame up vectors
-        positions:      (N, 3) lens positions (for neighbour lookup)
-        eyes:           List of Eye objects for per-eye neighbour iteration
-        k:              Neighbour count for majority vote cleanup
-        max_cleanup_passes: Maximum iterations for majority vote convergence
+        - eye_sign: +1 on one eye and -1 on the other. Mirrors the e_y component across the body midline.
+        - hemisphere_sign: +1 dorsal / -1 ventral. Mirrors the e_z component across the flow-frame equator.
+
+        Together they give the 4-quadrants pattern, with only the equator discontinuous (no radial expansion at the FoC)
+
+        - diagonal_strength: Controls how strongly the target leans into the diagonal vs. the pure anti-flow direction
+        1.0: equal weighting (default), <1: make the combed field more "backwards", >1: push it more strongly off-axis
     """
+    source = -e_x
 
-    # Dorsal ommatidia need a pi offset to convert the x-flip (combined
-    # chirality) into the correct diag(chi_lr, dorsal_sign) transform
-    dorsal_offset = np.where(dorsal_sign < 0, np.pi, 0.0)
-    effective_yaw = yaws + dorsal_offset
+    # projection of flow onto each tangent plane
+    proj_S = e_x[None, :] - (lens_directions @ e_x)[:, None] * lens_directions
 
-    # Saccade vectors
-    sx = np.cos(kernel.saccade_axis_rad) * chirality
-    sy = np.sin(kernel.saccade_axis_rad)
-    cos_y = np.cos(effective_yaw)
-    sin_y = np.sin(effective_yaw)
+    # Bilateral + hemisphere target
+    target_world = (
+        -e_x[None, :]
+        + diagonal_strength * (
+            - eye_sign[:, None]        * e_y[None, :]
+            + hemisphere_sign[:, None] * e_z[None, :]
+        )
+    ).astype(np.float32)
 
-    bx = sx * cos_y - sy * sin_y
-    by = sx * sin_y + sy * cos_y
-    vectors = bx[:, None] * local_right + by[:, None] * local_up
-    vectors = normalise_vectors(vectors)
+    # Project target in each tangent plane
+    target_proj = target_world - np.sum(target_world * lens_directions,
+                                        axis=1, keepdims=True) * lens_directions
+    target_norm = np.linalg.norm(target_proj, axis=1, keepdims=True)
+    proj_S_mag  = np.linalg.norm(proj_S,      axis=1, keepdims=True)
+    target_proj = np.where(target_norm > 1e-6,
+                           target_proj / target_norm.clip(min=1e-8) * proj_S_mag,
+                           proj_S)
 
-    vectors[dorsal_sign < 0] *= -1.0
+    # Falloff: chord distance from the FoC on the unit sphere of lens directions
+    dist = np.linalg.norm(lens_directions - source[None, :], axis=1)
+    w = np.clip(1.0 - dist * falloff, 0.0, None) * strength
+
+    combed = (1.0 - w[:, None]) * proj_S + w[:, None] * target_proj
+    norms = np.linalg.norm(combed, axis=1, keepdims=True).clip(min=1e-8)
+    return (combed / norms).astype(np.float32)
+
+
+def _major_axis_field(
+        alignment_phasor: np.ndarray,
+        lens_directions: np.ndarray,
+        base_rotation_rad: float,
+        eye_sign: np.ndarray,
+        hemisphere_sign: np.ndarray,
+) -> np.ndarray:
+    """
+    Bundle main axis (R3-R6 in Drosophila): per-eye rotation of the alignment
+    phasor in each tangent plane, then hemisphere-aware disambiguation.
+
+    - Rotation is `base_rotation_rad * eye_sign`. For Drosophila this is -81°
+    on one eye and +81° on the other, so the bundle's main axis ends up bilaterally symmetric.
+    - Disambiguation reference is `-hemisphere_sign * alignment_phasor`, not the binormal `n × alignment_phasor`.
+    This produces the strong equatorial flip: major axis points up in the dorsal hemisphere and down in the ventral.
+    """
+    angles = (base_rotation_rad * eye_sign).astype(np.float32)
+    cos_a = np.cos(angles)[:, None]
+    sin_a = np.sin(angles)[:, None]
+
+    n_cross_v = np.cross(lens_directions, alignment_phasor)
+    rotated = alignment_phasor * cos_a + n_cross_v * sin_a
+
+    ref = -hemisphere_sign[:, None] * alignment_phasor
+    dot_check = np.einsum('ij,ij->i', rotated, ref)
+    rotated[dot_check < 0] *= -1.0
+
+    norms = np.linalg.norm(rotated, axis=1, keepdims=True).clip(min=1e-8)
+    return (rotated / norms).astype(np.float32)
+
+
+def _saccade_phasor_field(
+        major_axis: np.ndarray,
+        lens_directions: np.ndarray,
+        base_rotation_rad: float,
+        chirality: np.ndarray,
+) -> np.ndarray:
+    """
+    Saccade phasor field: rotate the major axis by `base_rotation_rad * chirality` in each tangent plane.
+
+    Four-zone pattern (chirality = eye_sign * hemisphere_sign), so that the rotation
+    sign flips both between eyes and across the equator.
+
+    Returns a nematic field (direction is locally ambiguous, the downstream smoothing step is gives global coherence).
+    """
+    angles = (base_rotation_rad * chirality).astype(np.float32)
+    cos_a = np.cos(angles)[:, None]
+    sin_a = np.sin(angles)[:, None]
+
+    n_cross_v = np.cross(lens_directions, major_axis)
+    sacc = major_axis * cos_a + n_cross_v * sin_a
+
+    norms = np.linalg.norm(sacc, axis=1, keepdims=True).clip(min=1e-8)
+    return (sacc / norms).astype(np.float32)
+
+
+def _smooth_phasor_field(
+        field: np.ndarray,
+        eyes: List['Eye'],
+        lens_positions: np.ndarray,
+        n_neighbours: int = 8,
+        iterations: int = 10,
+) -> np.ndarray:
+    """
+    Smooths a phasor field (runs per-eye).
+    Nematic averaging: each neighbour is flipped to align with the centre vector before averaging.
+    """
+    out = field.copy()
 
     for eye in eyes:
         neighb = eye.neighbours(
-            points=positions,
-            k=k,
-            chirality=chirality
+            points=lens_positions,
+            k=n_neighbours,
+            immediate_only=False,
         )
         if neighb is None:
             continue
 
-        for _pass in range(max_cleanup_passes):
-            g_vectors = vectors[neighb.mask]
+        mask = neighb.mask
+        nidx_local = neighb.indices
+        eye_field = out[mask].copy()
 
-            neighbour_vectors = g_vectors[neighb.indices]
-            dots = np.sum(g_vectors[:, None, :] * neighbour_vectors, axis=2)
+        for _ in range(iterations):
+            base = eye_field
+            neigh = eye_field[nidx_local]
 
-            agreement = np.sum(dots * neighb.same_chirality, axis=1)
-            flip = agreement < 0
-            if not np.any(flip):
-                break
+            dots = np.einsum('ik,ijk->ij', base, neigh)
+            neigh = np.where(dots[..., None] < 0, -neigh, neigh)
 
-            vectors[neighb.mask[flip]] *= -1.0
+            stacked = np.concatenate([base[:, None, :], neigh], axis=1)
+            avg = stacked.mean(axis=1)
+            norms = np.linalg.norm(avg, axis=1, keepdims=True)
+            eye_field = np.where(norms > 1e-8, avg / norms.clip(min=1e-8), base)
 
-    return vectors
+        out[mask] = eye_field.astype(np.float32)
+
+    return out
+
+
+def _smooth_phasor_field_zoned(
+        field: np.ndarray,
+        partition: np.ndarray,
+        lens_positions: np.ndarray,
+        n_neighbours: int = 8,
+        iterations: int = 10,
+) -> np.ndarray:
+    """
+    Per-zone nematic phasor smoothing: like `_smooth_phasor_field`, but the partition is an arbitrary per-lens label.
+    Lenses sharing a label smooth together.
+    Singletons / empty groups are passed through unchanged.
+    """
+    if iterations <= 0:
+        return field
+
+    out = field.copy()
+    for label in np.unique(partition):
+        idx = np.flatnonzero(partition == label)
+        n_zone = idx.size
+        if n_zone < 2:
+            continue
+
+        positions_zone = lens_positions[idx]
+        k = min(n_neighbours, n_zone - 1)
+        tree = cKDTree(positions_zone)
+        _, nidx_local = tree.query(positions_zone, k=k + 1)
+        nidx_local = nidx_local[:, 1:]
+
+        zone_field = out[idx].copy()
+        for _ in range(iterations):
+            base = zone_field
+            neigh = zone_field[nidx_local]
+
+            dots = np.einsum('ik,ijk->ij', base, neigh)
+            neigh = np.where(dots[..., None] < 0, -neigh, neigh)
+
+            stacked = np.concatenate([base[:, None, :], neigh], axis=1)
+            avg = stacked.mean(axis=1)
+            norms = np.linalg.norm(avg, axis=1, keepdims=True)
+            zone_field = np.where(norms > 1e-8, avg / norms.clip(min=1e-8), base)
+
+        out[idx] = zone_field.astype(np.float32)
+
+    return out
 
 
 def _lens_geometry(
@@ -323,8 +284,7 @@ def _receptors_geometry(
         local_up: np.ndarray,
         kernel: 'RhabdomereKernel',
         bundle_orientation: np.ndarray,
-        chirality: np.ndarray,
-        dorsal_sign: np.ndarray
+        chirality: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Calculates 3D world directions and positions for every rhabdomere behind each lens.
@@ -347,12 +307,7 @@ def _receptors_geometry(
             )
         nodal_dist = 1.0  # R=1 with zero offsets: any positive value gives the lens axis
 
-    # Dorsal pi-offset converts the chirality x-flip into the full
-    # diag(chi_lr, dorsal_sign) mirror before rotation.
-    dorsal_offset = np.where(dorsal_sign < 0, np.pi, 0.0).astype(np.float32)
-    effective_yaw = bundle_orientation + dorsal_offset
-
-    rot_dx, rot_dy = kernel.rotated_offsets(effective_yaw, chirality)
+    rot_dx, rot_dy = kernel.rotated_offsets(bundle_orientation, chirality)
 
     # Tip offset in local frame (μm), only used for direction
     local_tip = np.stack([
@@ -381,7 +336,6 @@ def _acceptance_angles(
         kernel: 'RhabdomereKernel',
         ioa_minor: np.ndarray,
         ioa_major: np.ndarray,
-        wavelength_nm: float,
         eye_parameter: Optional[Union[float, Tuple]],
         explicit_angles_rad: Optional[ArrayLike],
         lens_diameters_um: np.ndarray,
@@ -416,12 +370,10 @@ def _acceptance_angles(
     p_min, p_maj = (p, p) if isinstance(p, (int, float, np.number)) else p
 
     if kernel.nodal_distance_um is not None:
-        # Optics available: Snyder is the physical baseline
-        # eye_parameter acts as a multiplicative scale
-        #       p = 1.0 -> pure Snyder optics (diffraction-limited)
-        #       p > 1.0 -> RFs wider than Snyder
-        #       p < 1.0 -> RFs narrower than Snyder
-        # Snyder (1979): Δρ = sqrt( (λ/D)² + (d_rhab/f)²)
+        # Optics available: Snyder is the physical baseline and eye_parameter acts as a multiplicative scale
+        #   p = 1.0 -> pure Snyder optics (diffraction-limited)
+        #   p > 1.0 -> RFs wider than Snyder
+        #   p < 1.0 -> RFs narrower than Snyder
         wavelengths_um = kernel.wavelengths_nm * 1e-3
         diffraction = wavelengths_um[None, :] / lens_diameters_um[:, None]
         diffraction = diffraction.ravel()
@@ -473,7 +425,7 @@ def _lattice_properties(
 
         mask = neighb.mask
         e_dirs = directions[mask]
-        e_pos = positions[mask]
+        e_pos  = positions[mask]
 
         nb_immediate_neighb = np.maximum(np.sum(neighb.is_immediate, axis=1), 1, dtype=np.float64)
         neighb_counts[mask] = nb_immediate_neighb
@@ -496,24 +448,22 @@ def _lattice_properties(
         e_lens_spacing = np.where(np.isfinite(e_lens_spacing), e_lens_spacing, 0.0)
 
         # Hexatic order parameter (Ψ6)
-        angles = np.arctan2(proj_y, proj_x)
+        angles  = np.arctan2(proj_y, proj_x)
         phasors = np.exp(1j * 6 * angles)
         phasors[~neighb.is_immediate] = 0.0
-        z_avg = np.sum(phasors, axis=1) / nb_immediate_neighb
-        e_psi6 = np.abs(z_avg)
+        z_avg   = np.sum(phasors, axis=1) / nb_immediate_neighb
+        e_psi6  = np.abs(z_avg)
         e_tilts = np.angle(z_avg) / 6.0
 
         # IOA from sorted angular separations
         sep_masked = np.where(neighb.is_immediate, angular_sep, np.inf)
         sep_sorted = np.sort(sep_masked, axis=1)
-
-        # Minor = mean of 2 smallest, major = mean of 2 largest immediate neighb
         e_ioa_minor = np.mean(sep_sorted[:, :2], axis=1).astype(np.float32)
         sep_rev = np.where(neighb.is_immediate, -angular_sep, np.inf)
         top2_rev = np.sort(sep_rev, axis=1)[:, :2]
         e_ioa_major = np.mean(-top2_rev, axis=1).astype(np.float32)
 
-        # Fallback to simple mean if < 2 immediate neighbours
+        # Sparse fallback
         sparse = nb_immediate_neighb < 2
         if np.any(sparse):
             has_any = nb_immediate_neighb[sparse] > 0
@@ -571,8 +521,6 @@ def _pack_metadata(
 class ReceptorArray:
     """
     Flat (GPU-friendly) structured array of receptors for the renderer.
-    Every element is one rhabdomere.
-    The GPU traces rays for len(data) rhabdomeres.
     """
 
     def __init__(self,
@@ -588,12 +536,12 @@ class ReceptorArray:
                  lens_diameter_um: Optional[Union[float, ArrayLike]] = None,
                  interommatidial_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
                  acceptance_angles_rad: Optional[Union[ArrayLike, Tuple, float]] = None,
-                 wavelength_nm: float = 500.0,
                  eye_radius: float = 0.01,
                  icosphere_method: bool = True,
                  flow_direction: Optional[ArrayLike] = None,
-                 weight_flow: float = 1.0,
-                 weight_tissue: float = 0.6,
+                 diagonal_strength: float = 1.0,
+                 alignment_smoothing_iterations: int = 0,
+                 saccade_smoothing_iterations: int = 10,
                  ):
         """
         Construct a full receptor array.
@@ -605,7 +553,7 @@ class ReceptorArray:
 
             Δρ = sqrt( (λ/D)² + (d_rhab/f)² )
 
-        where λ = wavelength_nm, D = kernel.lens_diameter_um, d_rhab = kernel.diameters_um, f = kernel.nodal_distance_um
+        where λ = kernel.wavelength_nm, D = kernel.lens_diameter_um, d_rhab = kernel.diameters_um, f = kernel.nodal_distance_um
 
         This can be overridden with eye_parameter: p = delta_rho / delta_phi
 
@@ -647,8 +595,6 @@ class ReceptorArray:
 
         self._kernel = kernel if kernel is not None else RhabdomereKernel()
         R = self._kernel.count
-
-        self._wavelength_nm = wavelength_nm
 
         if eye_ids is not None:
             # User-provided values
@@ -716,7 +662,7 @@ class ReceptorArray:
                 warnings.warn(
                     f"Lattice-derived lens diameter has median {med:.4g}. "
                     "This is outside the typical 1-1000 μm range: your lens positions "
-                    "may not be in micrometres..."
+                    "may not be in micrometres."
                 )
 
         else:
@@ -735,44 +681,99 @@ class ReceptorArray:
                     "will be invalid. Pass lens_diameter_um explicitly."
                 )
 
-        # Chirality
+        e_x_flow, e_y_flow, e_z_flow = _flow_aligned_frame(flow_direction)
+        self._flow_frame = (e_x_flow, e_y_flow, e_z_flow)
+
+        right_axis = np.asarray(WORLD_RIGHT, dtype=np.float32)
+        eye_sign = -np.sign(self._lens_positions @ right_axis).astype(np.float32)
+        eye_sign[eye_sign == 0] = 1.0           # midline -> left
+
+        hemisphere_sign = np.sign(self._lens_positions @ e_z_flow).astype(np.float32)
+        hemisphere_sign[hemisphere_sign == 0] = 1.0   # equator -> dorsal
+
+        # Chirality: user-supplied wins. Default is eye_sign * hemisphere_sign.
         if chirality is not None:
-            # User-provided values
             chirality_arr = self._prepare_param(chirality, 'chirality', N)
-
         else:
-            right_side = np.dot(self._lens_positions, np.asarray(WORLD_RIGHT)) >= 0
-            dorsal = np.dot(self._lens_positions, np.asarray(WORLD_UP)) >= 0
+            chirality_arr = (eye_sign * hemisphere_sign).astype(np.float32)
 
-            chirality_arr = np.where(right_side == dorsal, -1.0, 1.0).astype(np.float32)
+        self._chirality_arr = chirality_arr
 
-        # Dorsal sign: independent of chirality, but needed so that the kernel placement can apply the D/V y-flip
-        is_dorsal = np.dot(self._lens_positions, np.asarray(WORLD_UP)) >= 0
-        dorsal_sign = np.where(is_dorsal, -1.0, 1.0).astype(np.float32)
-        self._dorsal_sign = dorsal_sign
+        # Alignment phasor (4-zone diagonal target)
+        alignment = _alignment_phasor_field(
+            lens_directions=self._lens_directions,
+            e_x=e_x_flow,
+            e_y=e_y_flow,
+            e_z=e_z_flow,
+            eye_sign=eye_sign,
+            hemisphere_sign=hemisphere_sign,
+            strength=1.0,
+            falloff=0.7,
+            diagonal_strength=diagonal_strength,
+        )
 
-        # Rhabdomere kernel orientation
-
-        if bundle_orientation is not None:
-            # User-provided values
-            chi = self._prepare_param(bundle_orientation, 'bundle_orientation', N)
-
-        else:
-            flow_vec = np.asarray(flow_direction if flow_direction is not None else WORLD_FORWARD, dtype=np.float32)
-
-            chi = _orient_rhabdomeres(
-                kernel=self._kernel,
-                lens_positions=self._lens_positions,
-                lens_directions=self._lens_directions,
-                local_right=self._local_right,
-                local_up=self._local_up,
-                chirality=chirality_arr,
-                flow_direction=flow_vec,
-                weight_tissue=weight_tissue,
-                weight_flow=weight_flow,
-                eyes=self.eyes,
+        if alignment_smoothing_iterations > 0:
+            zone_labels = (
+                (eye_sign > 0).astype(np.int32) * 2
+                + (hemisphere_sign > 0).astype(np.int32)
             )
+            alignment = _smooth_phasor_field_zoned(
+                field=alignment,
+                partition=zone_labels,
+                lens_positions=self._lens_positions,
+                n_neighbours=8,
+                iterations=alignment_smoothing_iterations,
+            )
+        self._alignment_phasor = alignment
+
+        # Major axis: alignment rotated by +/- radians(flow_axis_deg) per eye
+        base_flow_rot = float(np.radians(self._kernel.flow_axis_deg))
+        major = _major_axis_field(
+            alignment_phasor=alignment,
+            lens_directions=self._lens_directions,
+            base_rotation_rad=base_flow_rot,
+            eye_sign=eye_sign,
+            hemisphere_sign=hemisphere_sign,
+        )
+        self._major_axis = major
+
+        # Bundle yaw chi from the major axis direction
+        if bundle_orientation is not None:
+            chi = self._prepare_param(bundle_orientation, 'bundle_orientation', N)
+        else:
+            major_angle = np.arctan2(
+                np.sum(major * self._local_up, axis=1),
+                np.sum(major * self._local_right, axis=1),
+            )
+            effective_main = np.where(
+                chirality_arr > 0,
+                float(self._kernel.main_axis_rad),
+                np.pi - float(self._kernel.main_axis_rad),
+            ).astype(np.float32)
+            chi = (major_angle - effective_main).astype(np.float32)
+            chi = (chi + np.pi) % (2.0 * np.pi) - np.pi
         self._bundle_orientation = chi
+
+        # Saccade phasor: major axis rotated by base * chirality (4-zone)
+        base_sacc_rot = -float(np.radians(self._kernel.saccade_offset_deg))
+        sacc_raw = _saccade_phasor_field(
+            major_axis=major,
+            lens_directions=self._lens_directions,
+            base_rotation_rad=base_sacc_rot,
+            chirality=chirality_arr,
+        )
+        sacc = _smooth_phasor_field(
+            field=sacc_raw,
+            eyes=self.eyes,
+            lens_positions=self._lens_positions,
+            n_neighbours=8,
+            iterations=saccade_smoothing_iterations,
+        )
+
+        # Polarise the smoothed (nematic) saccade field so it points consistently "up" in the head frame
+        dot_z = sacc @ e_z_flow
+        sacc[dot_z < 0] *= -1.0
+        self._saccade_cache = sacc.astype(np.float32)
 
         # Receptors geometry
         receptor_dirs, receptor_pos = _receptors_geometry(
@@ -783,7 +784,6 @@ class ReceptorArray:
             local_up=self._local_up,
             bundle_orientation=self._bundle_orientation,
             chirality=chirality_arr,
-            dorsal_sign=dorsal_sign
         )
 
         # Acceptance angles
@@ -792,22 +792,9 @@ class ReceptorArray:
             kernel=self._kernel,
             ioa_minor=ioa_minor,
             ioa_major=ioa_major,
-            wavelength_nm=wavelength_nm,
             eye_parameter=eye_parameter,
             explicit_angles_rad=acceptance_angles_rad,
             lens_diameters_um=lens_diameters_um,
-        )
-
-        # Saccades directions
-        sacc = _saccades_field(
-            yaws=chi,
-            kernel=self._kernel,
-            chirality=chirality_arr,
-            dorsal_sign=dorsal_sign,
-            local_right=local_right,
-            local_up=local_up,
-            positions=lens_positions,
-            eyes=self.eyes
         )
 
         # Fill main data structures
@@ -815,8 +802,8 @@ class ReceptorArray:
         # Lens static
         self.lens_static_data = np.zeros(N, dtype=LENS_STATIC_DTYPE)
         self.lens_static_data['right'] = local_right
-        self.lens_static_data['sacc_x'] = np.sum(sacc * local_right, axis=1)
         self.lens_static_data['up'] = local_up
+        self.lens_static_data['sacc_x'] = np.sum(sacc * local_right, axis=1)
         self.lens_static_data['sacc_y'] = np.sum(sacc * local_up, axis=1)
         self.lens_static_data['forward'] = lens_directions
         self.lens_static_data['ioa_tilt'] = lattice_tilts
@@ -834,12 +821,10 @@ class ReceptorArray:
         self.rcpt_static_data['metadata'] = _pack_metadata(N, R, e_ids, receptor_types, nb_counts, chirality_arr)
         self.rcpt_static_data['rest_acc'] = acc_axes
 
-        dorsal_offset = np.where(dorsal_sign < 0, np.pi, 0.0).astype(np.float32)
-        rot_dx, rot_dy = self._kernel.rotated_offsets(chi + dorsal_offset, chirality_arr)
+        rot_dx, rot_dy = self._kernel.rotated_offsets(chi, chirality_arr)
         self.rcpt_static_data['rot_offset'][:, 0] = rot_dx.ravel()
         self.rcpt_static_data['rot_offset'][:, 1] = rot_dy.ravel()
-
-        self.rcpt_static_data['acc_tilt'] = np.repeat(chi + dorsal_offset, R)
+        self.rcpt_static_data['acc_tilt'] = np.repeat(chi, R)
         self.rcpt_static_data['tau_membrane'] = self._kernel.tau_membrane
         self.rcpt_static_data['sensitivity'] = np.tile(self._kernel.sensitivity, (N, 1))
 
@@ -861,7 +846,6 @@ class ReceptorArray:
         # Cached namespace views (invalidated by geometry changes)
         self._lenses_view = None
         self._receptors_view = None
-        self._saccade_cache = None
 
         if R > 1:
             self.wire_cartridges()
@@ -1031,21 +1015,8 @@ class ReceptorArray:
         """
         Compute (and cache) the saccades vector field.
         """
-        if self._saccade_cache is not None:
-            return self._saccade_cache
 
-        result = _saccades_field(
-            yaws=self._bundle_orientation,
-            kernel=self._kernel,
-            chirality=self.lenses.chirality.astype(np.float32),
-            dorsal_sign=self._dorsal_sign,
-            local_right=self._local_right,
-            local_up=self._local_up,
-            positions=self._lens_positions,
-            eyes=self.eyes
-        )
-        self._saccade_cache = result
-        return result
+        return self._saccade_cache
 
     @property
     def chirality(self) -> np.ndarray:
@@ -1265,8 +1236,7 @@ class ReceptorArray:
                 neighb_uv = np.column_stack([neighb_u, neighb_v]) / local_spacing
 
                 # Rotated and scaled template in 'lattice units'
-                dorsal_offset = np.pi if self._dorsal_sign[i_glob] < 0 else 0.0
-                effective_chi = self._bundle_orientation[i_glob] + dorsal_offset
+                effective_chi = self._bundle_orientation[i_glob]
                 cos_chi, sin_chi = np.cos(effective_chi), np.sin(effective_chi)
 
                 periph_offsets = norm_rhab_offsets[periph_rhab]
