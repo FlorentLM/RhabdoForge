@@ -117,11 +117,11 @@ def pack_metadata(eye_id, receptor_types, neighbour_counts, lens_id, chirality_n
     eid, rt, nc, li, ch = np.broadcast_arrays(eid, rt, nc, li, ch)
 
     out = np.zeros(eid.shape, dtype=np.uint32)
-    out = set_metadata_field(out, 'eye_id',        eid)
-    out = set_metadata_field(out, 'rcpt_type',     rt)
-    out = set_metadata_field(out, 'neighbour_count',      nc)
-    out = set_metadata_field(out, 'lens_id',       li)
-    out = set_metadata_field(out, 'chirality_neg', ch)
+    out = set_metadata_field(out, 'eye_id',          eid)
+    out = set_metadata_field(out, 'rcpt_type',       rt)
+    out = set_metadata_field(out, 'neighbour_count', nc)
+    out = set_metadata_field(out, 'lens_id',         li)
+    out = set_metadata_field(out, 'chirality_neg',   ch)
     return out
 
 

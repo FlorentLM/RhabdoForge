@@ -292,7 +292,6 @@ class RhabdomereKernel:
 # (values from Kemppainen et al., 2022)
 #
 
-
 def drosophila_kernel(name: str = 'Drosophila') -> RhabdomereKernel:
     """Reference Drosophila melanogaster kernel."""
 

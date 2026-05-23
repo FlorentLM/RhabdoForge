@@ -1,11 +1,11 @@
 from .kernel import RhabdomereKernel
 from .receptor_array import ReceptorArray
-from .proxies import Ommatidium, Cartridge, Eye, VisualOutput
+from .proxies import Cartridge, Eye, VisualOutput, LensView
 
 __all__ = [
     'RhabdomereKernel',
     'ReceptorArray',
-    'Ommatidium',
+    'LensView',
     'Cartridge',
     'Eye',
     'VisualOutput'

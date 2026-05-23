@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 @dataclass
 class OrientationResult:
     """
-    Output of BundleOrientationField.compute().
+    Output of BundlesAligner.compute().
     """
 
     chi: np.ndarray                 # Bundle yaw (rad)
@@ -204,7 +204,7 @@ def _smooth_phasor_field(
     return out
 
 
-class BundleOrientationField:
+class BundlesAligner:
     """
     Computes per-lens bundle orientation (chi, chirality, saccade phasor)
     from a global optic flow direction and the head frame.
@@ -394,7 +394,7 @@ def _prepare_per_lens(value: ArrayLike, N: int, name: str) -> np.ndarray:
 
 
 
-def orientation_from_chi_chirality(
+def apply_chirality(
     ra: 'ReceptorArray',
     chi: ArrayLike,
     chirality: ArrayLike,

@@ -4,7 +4,7 @@ import vtk
 
 from insectvision.compound_eyes.receptor_array import ReceptorArray
 from insectvision.compound_eyes.kernel import drosophila_kernel
-from insectvision.compound_eyes.orientation import BundleOrientationField
+from insectvision.compound_eyes.orientation import BundlesAligner
 from insectvision.compound_eyes.datatypes import get_metadata_field
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
 
@@ -657,7 +657,7 @@ if __name__ == "__main__":
 
     kernel = drosophila_kernel()
 
-    orientation = BundleOrientationField(
+    orientation = BundlesAligner(
         flow_direction=optic_flow,
         diagonal_strength=1.0,
         alignment_smoothing_iterations=2,
@@ -668,10 +668,10 @@ if __name__ == "__main__":
         'species_models/drosophila_custom.npz',
         kernel=kernel, orientation=orientation,
     )
+
     # ra = ReceptorArray.from_sphere(
     #     n=1600,
-    #     kernel=kernel,
-    #     orientation=orientation,
+    #     kernel=kernel, orientation=orientation,
     # )
 
     EyeViewer(ra, optic_flow_world=optic_flow).show()

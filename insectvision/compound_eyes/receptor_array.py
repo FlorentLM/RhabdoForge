@@ -22,10 +22,10 @@ from insectvision.compound_eyes.datatypes import (
 )
 from insectvision.compound_eyes.kernel import RhabdomereKernel
 from insectvision.compound_eyes.orientation import (
-    BundleOrientationField,
+    BundlesAligner,
     OrientationResult,
     trivial_orientation,
-    orientation_from_chi_chirality,
+    apply_chirality,
 )
 from insectvision.compound_eyes.proxies import (
     LensView,
@@ -44,7 +44,7 @@ class ReceptorArray:
     of R rhabdomeres per ommatidium.
 
     The data lives in four numpy structured arrays.
-    Views (LensView, ReceptorView, Ommatidium, Cartridge, Eye) wrap subsets of these arrays for typed access.
+    Views (LensView, ReceptorView, Cartridge, Eye) wrap subsets of these arrays for typed access.
 
     Args:
         - directions: (N, 3) array_like, Lens optical-axis (forward) directions. Will be normalised.
@@ -59,25 +59,25 @@ class ReceptorArray:
             If None, computed via Snyder's combined geometric + diffraction formula.
         - bundle_orientations: (N,) array_like or None, Override chi from the orientation pipeline (rad).
         - chiralities: (N,) array_like or None, Override chirality from the orientation pipeline (±1).
-        - orientation: BundleOrientationField or None, Explicit pipeline configuration.
+        - orientation: BundlesAligner or None, Explicit pipeline configuration.
             Required when R > 1 unless both 'bundle_orientations' and 'chiralities' are supplied.
-        - flow_direction: (3,) array_like or None, Shorthand for 'orientation=BundleOrientationField(flow_direction)'.
+        - flow_direction: (3,) array_like or None, Shorthand for 'orientation=BundlesAligner(flow_direction)'.
             Defaults to forward-facing optic flow.
     """
 
     def __init__(self,
-        directions: ArrayLike,
-        positions: ArrayLike,
-        kernel: Optional[RhabdomereKernel] = None,
-        eye_ids: Optional[ArrayLike] = None,
-        lens_diameter_um: Union[float, ArrayLike] = 16.0,
-        interommatidial_angles_rad: Optional[ArrayLike] = None,
-        acceptance_angles_rad: Optional[ArrayLike] = None,
-        bundle_orientations: Optional[ArrayLike] = None,
-        chiralities: Optional[ArrayLike] = None,
-        orientation: Optional[BundleOrientationField] = None,
-        flow_direction: Optional[ArrayLike] = None
-    ):
+                 directions: ArrayLike,
+                 positions: ArrayLike,
+                 kernel: Optional[RhabdomereKernel] = None,
+                 eye_ids: Optional[ArrayLike] = None,
+                 lens_diameter_um: Union[float, ArrayLike] = 16.0,
+                 interommatidial_angles_rad: Optional[ArrayLike] = None,
+                 acceptance_angles_rad: Optional[ArrayLike] = None,
+                 bundle_orientations: Optional[ArrayLike] = None,
+                 chiralities: Optional[ArrayLike] = None,
+                 orientation: Optional[BundlesAligner] = None,
+                 flow_direction: Optional[ArrayLike] = None
+                 ):
 
         # Validate geometry
 
@@ -106,9 +106,8 @@ class ReceptorArray:
         self._local_right = self._local_right.astype(np.float32)
         self._local_up = self._local_up.astype(np.float32)
 
-        # Eye membership
+        # Eye membership (island detection if eye_ids is None)
         self._lens_eye_ids = self._resolve_eye_ids(self._lens_positions, eye_ids, N)
-        # TODO: Any n>2 eyes model should have left and right groups of eyes
 
         # Allocate structured arrays
         self.lens_static_data = np.zeros(N, dtype=LENS_STATIC_DTYPE)
@@ -209,11 +208,11 @@ class ReceptorArray:
             result = trivial_orientation(N)
         elif bundle_orientations is not None and chiralities is not None:
             # User supplied both so no flow pipeline needed
-            result = orientation_from_chi_chirality(self, bundle_orientations, chiralities)
+            result = apply_chirality(self, bundle_orientations, chiralities)
         else:
             # Pipeline needed
             if orientation is None:
-                orientation = BundleOrientationField(flow_direction or -WORLD_FORWARD)
+                orientation = BundlesAligner(flow_direction or -WORLD_FORWARD)
             result = orientation.compute(
                 self,
                 override_chi=bundle_orientations,
@@ -311,13 +310,14 @@ class ReceptorArray:
                     f"Available keys: {available}"
                 )
 
-            # Resolve eye ids: explicit field, else infer from is_left / is_right
+            # Resolve eye ids: explicit field, else infer from is_left / is_right.
+            # If neither is present, falls back to island detection, and auto-assign sides from centroid x.
             if 'eye_ids' not in kwargs:
                 eye_ids = first_present(['eye_ids', 'eye_id'])
                 if eye_ids is None:
                     is_left = first_present(['l', 'left', 'is_left'])
                     if is_left is not None:
-                        # Convention: 0 = left, 1 = right (matches the default x-split)
+                        # Convention: 0 = left, 1 = right
                         eye_ids = (~is_left.astype(bool)).astype(np.uint32)
                     else:
                         is_right = first_present(['r', 'right', 'is_right'])
@@ -377,6 +377,43 @@ class ReceptorArray:
             if e.eye_id == int(eye_id):
                 return e
         raise KeyError(f"no eye with id {eye_id}")
+
+    def eyes_by_side(self, side: str) -> List[Eye]:
+        """All eyes on a given side ('left', 'right', or 'midline')."""
+        s = str(side)
+        return [e for e in self._eyes if e.side == s]
+
+    @property
+    def left_eyes(self) -> List[Eye]:
+        return self.eyes_by_side('left')
+
+    @property
+    def right_eyes(self) -> List[Eye]:
+        return self.eyes_by_side('right')
+
+    @property
+    def midline_eyes(self) -> List[Eye]:
+        return self.eyes_by_side('midline')
+
+    def lenses_by_side(self, side: str) -> LensView:
+        """All lenses belonging to eyes on the given side."""
+        eyes = self.eyes_by_side(side)
+        if not eyes:
+            return LensView(self, np.empty(0, dtype=np.intp))
+        idx = np.concatenate([e.lens_indices for e in eyes])
+        return LensView(self, idx)
+
+    @property
+    def left_lenses(self) -> LensView:
+        return self.lenses_by_side('left')
+
+    @property
+    def right_lenses(self) -> LensView:
+        return self.lenses_by_side('right')
+
+    @property
+    def midline_lenses(self) -> LensView:
+        return self.lenses_by_side('midline')
 
     @property
     def lenses(self) -> LensView:
@@ -511,7 +548,7 @@ class ReceptorArray:
     def _apply_orientation(self, result: OrientationResult) -> None:
         """
         Write an OrientationResult into corresponding data fields.
-        Called by 'BundleOrientationField.apply()' and during construction.
+        Called by 'BundlesAligner.apply()' and during construction.
         """
         N, R = self.lens_count, self.receptors_per_lens
         chi = result.chi.astype(np.float32)
@@ -632,30 +669,125 @@ class ReceptorArray:
     # Private helpers
 
     @staticmethod
+    def _detect_eye_islands(
+        positions: np.ndarray,
+        k: int = 6,
+        distance_multiplier: float = 2.5,
+    ) -> np.ndarray:
+        """
+        Spatial connected-components clustering.
+
+        Builds the kNN graph and keeps an edge (i, j) only if its length is
+        below 'distance_multiplier * median_edge_length' over the full graph.
+        Connected components of the resulting graph are the eye islands.
+
+        Returns:
+            (N,) uint32 array of island labels (0-indexed, in arbitrary order).
+        """
+        from scipy.sparse import csr_matrix
+        from scipy.sparse.csgraph import connected_components
+
+        N = positions.shape[0]
+        if N == 0:
+            return np.empty(0, dtype=np.uint32)
+        if N == 1:
+            return np.zeros(1, dtype=np.uint32)
+
+        actual_k = min(k, N - 1)
+        tree = cKDTree(positions)
+        dists, idx = tree.query(positions, k=actual_k + 1)
+        dists = dists[:, 1:]   # drop self
+        idx = idx[:, 1:]
+
+        median_edge = float(np.median(dists))
+        if median_edge <= 0.0:
+            # Degenerate: all points coincident, return a single island
+            return np.zeros(N, dtype=np.uint32)
+        threshold = distance_multiplier * median_edge
+
+        keep = dists < threshold
+        rows = np.repeat(np.arange(N), actual_k)[keep.ravel()]
+        cols = idx.ravel()[keep.ravel()]
+        data = np.ones(rows.size, dtype=np.int8)
+        adj = csr_matrix((data, (rows, cols)), shape=(N, N))
+
+        _, labels = connected_components(adj, directed=False, return_labels=True)
+        return labels.astype(np.uint32)
+
+    @staticmethod
     def _resolve_eye_ids(
         positions: np.ndarray,
         eye_ids: Optional[ArrayLike],
         N: int,
+        max_eyes: int = 8,
     ) -> np.ndarray:
+        """
+        Resolve per-lens eye membership.
 
-        if eye_ids is None:
-            # Auto-split on x-coordinate. x < 0 -> eye 0 (left), x >= 0 -> eye 1 (right).
-            return (positions[:, 0] >= 0).astype(np.uint32)
+        If 'eye_ids' is provided, use it directly.
+        Otherwise, infer islands by spatial clustering on 'positions' and
+        relabel them in order of ascending centroid x (so eye 0 is the
+        leftmost island). Caps at 'max_eyes' due to the 3-bit metadata field.
+        """
 
-        arr = np.asarray(eye_ids, dtype=np.uint32).reshape(-1)
-        if arr.size != N:
-            raise ValueError(f"eye_ids size {arr.size} must equal N={N}")
-        if int(arr.max()) > 7:
-            raise ValueError(f"eye_ids exceed 3-bit range, max is 7, got {arr.max()}")
+        if eye_ids is not None:
+            arr = np.asarray(eye_ids, dtype=np.uint32).reshape(-1)
+            if arr.size != N:
+                raise ValueError(f"eye_ids size {arr.size} must equal N={N}")
+            if int(arr.max()) >= max_eyes:
+                raise ValueError(f"eye_ids exceed {max_eyes - 1} (3-bit field), got max={arr.max()}")
+            return arr
 
-        return arr
+        raw = ReceptorArray._detect_eye_islands(positions)
+        unique = np.unique(raw)
+        if unique.size > max_eyes:
+            raise ValueError(
+                f"Detected {unique.size} eye islands but the metadata field "
+                f"supports at most {max_eyes}. Pass 'eye_ids=' explicitly or "
+                f"check that the lens positions are not over-fragmented."
+            )
 
-    def _build_eyes(self) -> None:
+        # Reorder: ascending centroid x. Stable tie-break on centroid y, z.
+        centroids = np.stack([positions[raw == u].mean(axis=0) for u in unique])
+        order = np.lexsort((centroids[:, 2], centroids[:, 1], centroids[:, 0]))
+
+        # Build map raw -> new index
+        remap = np.empty(unique.size, dtype=np.uint32)
+        for new_id, raw_pos in enumerate(order):
+            remap[unique[raw_pos]] = np.uint32(new_id)
+        return remap[raw]
+
+    def _build_eyes(self, midline_fraction: float = 0.1) -> None:
+        """
+        Build per-eye objects with a side label inferred from the eye centroid.
+
+        Each eye gets side='left' / 'right' / 'midline'. The side is decided
+        by comparing the eye's centroid_x to a threshold scaled to the *whole*
+        receptor array, not the individual eye, so that small midline eyes
+        (e.g. a median ocellus) get classified correctly even when paired eyes
+        are present.
+
+        With midline_fraction=0.1, an eye whose centroid is within 10% of the
+        most-lateral lens x is considered on the midline.
+        """
+        self._eyes = []
         unique_ids = np.unique(self._lens_eye_ids)
-        self._eyes = [
-            Eye(self, int(eid), np.flatnonzero(self._lens_eye_ids == eid).astype(np.intp))
-            for eid in unique_ids
-        ]
+        if self._lens_positions.shape[0] > 0:
+            scale = float(np.max(np.abs(self._lens_positions[:, 0])))
+        else:
+            scale = 0.0
+        threshold = midline_fraction * scale
+
+        for eid in unique_ids:
+            lens_idx = np.flatnonzero(self._lens_eye_ids == eid).astype(np.intp)
+            centroid_x = float(self._lens_positions[lens_idx, 0].mean())
+            if scale == 0.0:
+                side = 'midline'
+            elif abs(centroid_x) <= threshold:
+                side = 'midline'
+            else:
+                side = 'left' if centroid_x < 0.0 else 'right'
+            self._eyes.append(Eye(self, int(eid), lens_idx, side=side))
 
     def _invalidate_spatial(self) -> None:
         for eye in self._eyes:
@@ -703,15 +835,16 @@ class ReceptorArray:
     def _compute_acceptance_baseline(self) -> np.ndarray:
         """
         Snyder's combined acceptance half-width:
-            rho² = rho_geom² + rho_diff²
+            rho^2 = rho_geom^2 + rho_diff^2
             rho_geom = arctan(rhab_diameter / nodal_distance)
             rho_diff = wavelength / lens_diameter
 
-        Isotropic per receptor (minor = major). For anisotropic ellipse aligned with the IOA,
-        pass 'acceptance_angles_rad' of shape (N, R, 2) at construction.
+        Isotropic per receptor (minor = major). The kernel's rhabdomeres are
+        modelled as circular disks (a scalar 'diameters_um' per receptor), so
+        the Snyder baseline is also circular. For lattice-derived
+        anisotropy (e.g. matching the local IOA ellipse), pass
+        'acceptance_angles_rad' of shape (N, R, 2) at construction.
         """
-        # TODO: Should probably be anisotropic by default?
-        
         N, R = self.lens_count, self.receptors_per_lens
         kernel = self._kernel
 
@@ -729,32 +862,85 @@ class ReceptorArray:
 
     def _compute_ioa_baseline(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Per-lens (minor, major) IOA from the local neighbour graph.
+        Per-lens (minor, major) IOA and tilt from the local neighbour graph.
 
-        Baseline: isotropic (minor == major) using the mean angular distance to lattice neighbours.
-        For an anisotropic per-lens IOA, pass 'interommatidial_angles_rad' of shape (N, 2) at construction.
+        For each lens we take its k=6 immediate neighbours in the eye's k-NN
+        graph and compute the angular separation 'd' (= IOA) to each. The
+        anisotropy is read off directly:
+            minor = min(d) over immediate neighbours (closest pair spacing)
+            major = max(d) over immediate neighbours (farthest pair spacing)
+            tilt  = bearing of the closest neighbour in the lens's tangent
+                    frame (i.e. orientation of the minor axis / lattice row)
+
+        This matches how IOA is reported in the insect-vision literature: an
+        eye region is characterised by a 'horizontal' (close-packed) and a
+        'vertical' (wide-spaced) IOA along the lattice rows and columns. The
+        major axis here is the literal max spacing, not the value perpendicular
+        to the minor (so for a stretched hex lattice major sits at +/-60 deg
+        from minor, not 90 deg); the (minor, major, tilt) triple captures the
+        lattice rather than enforcing a strict ellipse.
+
+        Tilt is folded to [-pi/2, +pi/2] since an axis has 180 deg symmetry.
+
+        Note: receptors inherit a separate per-receptor 'acc_tilt' written by
+        the orientation pipeline (= chi)
+        TODO: Deal with that cleanly
         """
-        # TODO: Should be anisotropic by default? Info is there...
-        
         N = self.lens_count
-        ioa = np.zeros(N, dtype=np.float32)
+        ioa_minor = np.zeros(N, dtype=np.float32)
+        ioa_major = np.zeros(N, dtype=np.float32)
+        ioa_tilts = np.zeros(N, dtype=np.float32)
 
         for eye in self._eyes:
             graph = eye._ensure_neighbour_graph(k=6)
             if graph.size == 0:
                 continue
 
-            local_dirs = self._lens_directions[eye._lens_indices]
-            neigh_dirs = local_dirs[graph]
-            dots = np.einsum('ik,ijk->ij', local_dirs, neigh_dirs)
-            dots = np.clip(dots, -1.0, 1.0)
-            angles = np.arccos(dots).astype(np.float32)
-            ioa[eye._lens_indices] = angles.mean(axis=1)
+            local_idx = eye._lens_indices
+            home_dirs = self._lens_directions[local_idx]
+            home_right = self._local_right[local_idx]
+            home_up = self._local_up[local_idx]
+            home_pos = self._lens_positions[local_idx]
 
-        ioa_axes = np.stack([ioa, ioa], axis=-1).astype(np.float32)
-        ioa_tilts = np.zeros(N, dtype=np.float32)
+            # Global indices for the neighbour columns
+            neigh_global = local_idx[graph]
+            neigh_dirs = self._lens_directions[neigh_global]
+            neigh_pos = self._lens_positions[neigh_global]
+
+            # Angular distances (IOA per neighbour)
+            dots = np.einsum('ik,ijk->ij', home_dirs, neigh_dirs)
+            dots = np.clip(dots, -1.0, 1.0)
+            d = np.arccos(dots).astype(np.float32)  # (n, k)
+
+            # Bearings in the home tangent frame
+            delta = neigh_pos - home_pos[:, None, :]
+            proj_x = np.einsum('ijk,ik->ij', delta, home_right)
+            proj_y = np.einsum('ijk,ik->ij', delta, home_up)
+            theta = np.arctan2(proj_y, proj_x).astype(np.float32)  # (n, k)
+
+            # Min/max over immediate neighbours
+            n_lens = d.shape[0]
+            rows = np.arange(n_lens)
+            min_idx = np.argmin(d, axis=1)
+            max_idx = np.argmax(d, axis=1)
+
+            minor = d[rows, min_idx]
+            major = d[rows, max_idx]
+            tilt = theta[rows, min_idx]
+
+            # Fold axis to [-pi/2, +pi/2]
+            tilt = np.where(tilt > 0.5 * np.pi, tilt - np.pi, tilt)
+            tilt = np.where(tilt < -0.5 * np.pi, tilt + np.pi, tilt)
+
+            ioa_minor[local_idx] = minor.astype(np.float32)
+            ioa_major[local_idx] = major.astype(np.float32)
+            ioa_tilts[local_idx] = tilt.astype(np.float32)
+
+        ioa_axes = np.stack([ioa_minor, ioa_major], axis=-1).astype(np.float32)
         return ioa_axes, ioa_tilts
 
+
+##
 
 if __name__ == '__main__':
     from insectvision.compound_eyes.kernel import drosophila_kernel
