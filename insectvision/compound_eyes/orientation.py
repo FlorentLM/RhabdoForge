@@ -315,8 +315,8 @@ class BundleOrientationField:
             )
             effective_main = np.where(
                 chirality > 0,
-                float(kernel.main_axis_rad),
-                np.pi - float(kernel.main_axis_rad),
+                float(kernel.main_axis_rad) + np.pi,
+                -float(kernel.main_axis_rad),
             ).astype(np.float32)
             chi = (major_angle - effective_main).astype(np.float32)
             chi = (chi + np.pi) % (2.0 * np.pi) - np.pi
