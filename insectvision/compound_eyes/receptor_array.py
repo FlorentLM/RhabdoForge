@@ -279,8 +279,80 @@ class ReceptorArray:
         return cls(directions=directions, positions=positions, **kwargs)
 
     @classmethod
-    def from_file(cls, path: str) -> 'ReceptorArray':
-        raise NotImplementedError('Save/load temporarily disabled.')
+    def from_file(cls, path: str, **kwargs) -> 'ReceptorArray':
+        """
+        Load a species model from a .npz archive.
+
+        Required fields (any of these names accepted, in order of preference):
+            - positions: (N, 3), lens world positions
+                aliases: 'positions', 'pos', 'lens_positions'
+            - directions: (N, 3), lens optical axes
+                aliases: 'directions', 'dirs', 'lens_directions', 'forward'
+
+        Optional fields (used when present, otherwise defaults apply):
+            - eye_ids: 'eye_ids', 'eye_id'
+            - left / right: (N,) bool, fallback if no eye_ids
+            - lens_diameter_um: 'lens_diameter_um', 'lens_diameter', 'aperture_um'
+            - interommatidial_angles_rad: 'interommatidial_angles_rad', 'ioa', 'ioa_axes'
+            - acceptance_angles_rad: 'acceptance_angles_rad', 'acceptance', 'rho'
+            - bundle_orientations: 'bundle_orientations', 'chi'
+            - chiralities: 'chiralities', 'chirality'
+
+        Any keyword argument forwarded explicitly via **kwargs overrides what's found in the file.
+        """
+
+        with np.load(path, allow_pickle=False) as data:
+            available = [s.lower() for s in data.files]
+
+            def first_present(candidates):
+                for name in candidates:
+                    if name in available:
+                        return np.asarray(data[name])
+                return None
+
+            positions = first_present(['positions', 'pos', 'lens_positions'])
+            directions = first_present(['directions', 'dirs', 'lens_directions', 'forward'])
+            if positions is None or directions is None:
+                raise ValueError(
+                    f"{path}: required 'positions' and 'directions' not found. "
+                    f"Available keys: {available}"
+                )
+
+            # Resolve eye ids: explicit field, else infer from is_left / is_right
+            if 'eye_ids' not in kwargs:
+                eye_ids = first_present(['eye_ids', 'eye_id'])
+                if eye_ids is None:
+                    is_left = first_present(['l', 'left', 'is_left'])
+                    if is_left is not None:
+                        # Convention: 0 = left, 1 = right (matches the default x-split)
+                        eye_ids = (~is_left.astype(bool)).astype(np.uint32)
+                    else:
+                        is_right = first_present(['r', 'right', 'is_right'])
+                        if is_right is not None:
+                            eye_ids = is_right.astype(np.uint32)
+                if eye_ids is not None:
+                    kwargs['eye_ids'] = eye_ids
+
+            # Optional geometry fields: only set if not overridden in kwargs.
+            optional_field_aliases = {
+                'lens_diameter_um': ['lens_diameter_um', 'lens_diameter', 'aperture_um'],
+                'interommatidial_angles_rad': ['interommatidial_angles_rad', 'ioa', 'ioa_axes'],
+                'acceptance_angles_rad': ['acceptance_angles_rad', 'acceptance', 'rho'],
+                'bundle_orientations': ['bundle_orientations', 'chi'],
+                'chiralities': ['chiralities', 'chirality'],
+            }
+            for param, aliases in optional_field_aliases.items():
+                if param in kwargs:
+                    continue
+                value = first_present(aliases)
+                if value is not None:
+                    kwargs[param] = value
+
+        logger.info(
+            "Loaded %d lenses from %s (fields: %s)",
+            positions.shape[0], path, available,
+        )
+        return cls(directions=directions, positions=positions, **kwargs)
 
     # Sizing and basic accessors
 
