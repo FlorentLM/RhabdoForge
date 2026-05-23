@@ -27,8 +27,7 @@ class RhabdomereKernel:
             Used by the Snyder diffraction term. Scalar broadcasts.
 
         - tau_membrane: float, Membrane RC integration time (s).
-            The receptor's output is an EMA with this time constant.
-            ~0.012 s in Drosophila.
+            The receptor's output is an EMA with this time constant. ~0.012 s in Drosophila.
         - tau_rise, tau_relax: float, Mechanical rise / relaxation time constants of the microsaccade (s).
         - tau_fast, tau_adapt: float, Fast (~PIP2 hydrolysis, ~5 ms) and slow (~Ca²+, ~50 ms) adaptation EMA times (s).
         - gain_lat_um, gain_ax_um: float, Max lateral / axial bundle displacement at full microsaccade drive (μm).

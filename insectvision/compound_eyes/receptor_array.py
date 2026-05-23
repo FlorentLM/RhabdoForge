@@ -4,6 +4,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
+from insectvision.engine.world_utils import WORLD_FORWARD
 from insectvision.utils.math import (
     normalise_vectors,
     tangent_frames,
@@ -60,8 +61,8 @@ class ReceptorArray:
         - chiralities: (N,) array_like or None, Override chirality from the orientation pipeline (±1).
         - orientation: BundleOrientationField or None, Explicit pipeline configuration.
             Required when R > 1 unless both 'bundle_orientations' and 'chiralities' are supplied.
-        - flow_direction: (3,) array_like or None, Shorthand for `orientation=BundleOrientationField(flow_direction)`.
-        - auto_wire_cartridges: bool, If True (default) and R > 1, calls `wire_cartridges()` after construction.
+        - flow_direction: (3,) array_like or None, Shorthand for 'orientation=BundleOrientationField(flow_direction)'.
+            Defaults to forward-facing optic flow.
     """
 
     def __init__(self,
@@ -75,8 +76,7 @@ class ReceptorArray:
         bundle_orientations: Optional[ArrayLike] = None,
         chiralities: Optional[ArrayLike] = None,
         orientation: Optional[BundleOrientationField] = None,
-        flow_direction: Optional[ArrayLike] = None,
-        auto_wire_cartridges: bool = True,
+        flow_direction: Optional[ArrayLike] = None
     ):
 
         # Validate geometry
@@ -85,7 +85,7 @@ class ReceptorArray:
         pos = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
         if dirs.shape != pos.shape:
             raise ValueError(
-                f"directions and positions must have the same shape; "
+                f"Directions and Positions must have the same shape, "
                 f"got {dirs.shape} and {pos.shape}"
             )
         N = dirs.shape[0]
@@ -213,16 +213,7 @@ class ReceptorArray:
         else:
             # Pipeline needed
             if orientation is None:
-                if flow_direction is None:
-                    raise ValueError(
-                        "Multi-receptor kernel (R={}) requires bundle orientation. "
-                        "Supply one of:\n"
-                        "  flow_direction=[ax, ay, az]\n"
-                        "  orientation=BundleOrientationField(flow_direction=..., ...)\n"
-                        "  both bundle_orientations=... and chiralities=..."
-                        .format(R)
-                    )
-                orientation = BundleOrientationField(flow_direction)
+                orientation = BundleOrientationField(flow_direction or -WORLD_FORWARD)
             result = orientation.compute(
                 self,
                 override_chi=bundle_orientations,
@@ -231,13 +222,13 @@ class ReceptorArray:
 
         self._apply_orientation(result)
 
-        # Book keeping
+        # Bookkeeping
         self._cartridges_wired = False
         self._cartridge_members: dict = {}
         self._lens_dirty = True
 
         # Cartridges wiring
-        if auto_wire_cartridges and R > 1:
+        if R > 1:
             self.wire_cartridges()
 
     # Factory methods
@@ -258,6 +249,8 @@ class ReceptorArray:
             - method: {'icosphere', 'fibonacci'}, Spherical sampling method.
             - **kwargs: Forwarded to __init__.
         """
+        method = method.lower()
+
         if method == 'icosphere':
             dirs = icosphere(n)
         elif method == 'fibonacci':
