@@ -2,7 +2,7 @@ import numpy as np
 import pyvista as pv
 from scipy.spatial import Delaunay
 
-from insectvision.compound_eyes.receptor_array import CompoundEyeModel
+from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.compound_eyes.kernel import drosophila_kernel
 from insectvision.compound_eyes.orientation import BundlesAligner
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
