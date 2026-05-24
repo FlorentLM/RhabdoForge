@@ -27,7 +27,7 @@ Notes:
     the orientation pipeline, so they can't be set directly.
 """
 from dataclasses import dataclass
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Optional, Tuple, Union, TYPE_CHECKING
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
@@ -46,14 +46,24 @@ class NeighbourResult:
     Result of an Eye.neighbours() query.
 
     Attributes:
-   
+
     mask: (Q,) bool array, Which input query points were inside this eye and got results.
     indices: (M, k) int array, Global lens indices of the k nearest neighbours, M = mask.sum().
     distances: (M, k) float array, Distances to those neighbours.
+    is_immediate: (M, k) bool array (optional), True where the neighbour is in the
+        first lattice ring of the query lens (distance <= neighbour_dist_factor * closest).
+        Only populated when Eye.neighbours() is called with neighbour_dist_factor != None,
+        or when immediate_only=True (in which case all entries are True).
+    same_chirality: (M, k) bool array (optional), True where the neighbour's chirality
+        matches the query lens's chirality. Only populated when Eye.neighbours() is
+        called with a chirality array AND in lens_indices mode (so the query has an
+        identifiable lens id).
     """
     mask: np.ndarray
     indices: np.ndarray
     distances: np.ndarray
+    is_immediate: Optional[np.ndarray] = None
+    same_chirality: Optional[np.ndarray] = None
 
     def __bool__(self) -> bool:
         return bool(self.indices.size)
@@ -350,6 +360,43 @@ class LensView:
             return None
         return Cartridge(self._ra, idx)
 
+    # Directional neighbour search (delegates to parent Eye)
+
+    def directed_neighbours(self,
+        direction: ArrayLike,
+        k: int = 1,
+        coordinate: str = 'spherical',
+        return_weights: bool = False,
+        k_search: int = 8,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """
+        For each lens in this view, find the k neighbour(s) lying closest to
+        the given search direction. See Eye.directed_neighbours for details
+        on 'direction' / 'coordinate'.
+
+        The view must be within a single eye (otherwise it will raise).
+        """
+        if self._gi.size == 0:
+            empty = np.empty(0, dtype=np.intp) if k == 1 else np.empty((0, k), dtype=np.intp)
+            if return_weights:
+                return empty, np.empty(empty.shape, dtype=np.float32)
+            return empty
+        eye_ids = self._ra._lens_eye_ids[self._gi]
+        if np.unique(eye_ids).size > 1:
+            raise ValueError(
+                "directed_neighbours() requires a single-eye LensView, "
+                "this view spans multiple eyes"
+            )
+        eye = self._ra.eye(int(eye_ids[0]))
+        return eye.directed_neighbours(
+            direction=direction,
+            query_lens_indices=self._gi,
+            k=k,
+            coordinate=coordinate,
+            return_weights=return_weights,
+            k_search=k_search,
+        )
+
 
 class ReceptorView:
     """
@@ -633,6 +680,7 @@ class Eye:
     __slots__ = (
         '_ra', '_eye_id', '_lens_indices', '_side',
         '_position_tree', '_direction_tree', '_neighbour_graph', '_neighbour_k',
+        '_directional_graph',
     )
 
     def __init__(self,
@@ -649,6 +697,7 @@ class Eye:
         self._direction_tree: Optional[cKDTree] = None
         self._neighbour_graph: Optional[np.ndarray] = None
         self._neighbour_k: int = -1
+        self._directional_graph: Optional[dict] = None
 
     def __repr__(self) -> str:
         return f"Eye(id={self._eye_id}, side={self._side!r}, n_lenses={len(self._lens_indices)})"
@@ -696,6 +745,7 @@ class Eye:
         self._direction_tree = None
         self._neighbour_graph = None
         self._neighbour_k = -1
+        self._directional_graph = None
 
     def _ensure_position_tree(self) -> cKDTree:
         if self._position_tree is None:
@@ -737,17 +787,29 @@ class Eye:
             points: Optional[ArrayLike] = None,
             k: int = 6,
             immediate_only: bool = False,
+            neighbour_dist_factor: float = 1.3,
+            chirality: Optional[ArrayLike] = None,
         ) -> NeighbourResult:
         """
         k-nearest lens neighbours within this eye.
 
         Args:
-            - lens_indices: global lens query indices (only those in this eye are queried, others are masked out)
-            - points: (Q, 3) world-space query points
-            - immediate_only: Equivalent to passing the precomputed lattice graph for 'k'.
-                Useful for downstream code that wants "hexagonal-immediate" semantics for boundary lenses too.
+            - lens_indices: global lens query indices (only lenses in this eye are
+                queried, others are masked out).
+            - points: (Q, 3) world-space query points.
+            - k: number of neighbours per query.
+            - immediate_only: if True, return only first lattice ring neighbours.
+                The result's 'is_immediate' field is all True.
+            - neighbour_dist_factor: when immediate_only=False, tags 'is_immediate'
+                in the result: a neighbour at distance d is "immediate" if
+                d <= neighbour_dist_factor * closest_neighbour_dist. Set to None
+                to skip the tagging.
+            - chirality: optional (N_animal,) array of per-lens chirality (+/-1).
+                When provided and in 'lens_indices' mode, the result's
+                'same_chirality' field is populated. Ignored in 'points' mode
+                (queries have no lens identity to compare from).
 
-        Returns a NeighbourResult with .mask, .indices (global), .distances.
+        Returns a NeighbourResult.
         """
 
         if (lens_indices is None) == (points is None):
@@ -787,7 +849,22 @@ class Eye:
                 distances = distances[:, 1:]
 
             global_nidx = local_to_global[local_nidx]
-            return NeighbourResult(mask=in_this_eye, indices=global_nidx, distances=distances)
+            result = NeighbourResult(mask=in_this_eye, indices=global_nidx, distances=distances)
+
+            if immediate_only:
+                # all returned neighbours are by definition first ring
+                result.is_immediate = np.ones_like(global_nidx, dtype=bool)
+            elif neighbour_dist_factor is not None and distances.size > 0:
+                closest = distances[:, 0:1]
+                result.is_immediate = distances <= closest * float(neighbour_dist_factor)
+
+            if chirality is not None and valid_global.size > 0:
+                chir = np.asarray(chirality)
+                query_chir = chir[valid_global]
+                neigh_chir = chir[global_nidx]
+                result.same_chirality = neigh_chir == query_chir[:, None]
+
+            return result
 
         # Points path
         pts = np.asarray(points, dtype=np.float32).reshape(-1, 3)
@@ -800,11 +877,18 @@ class Eye:
             distances = distances.reshape(-1, 1)
         global_nidx = local_to_global[local_nidx]
 
-        return NeighbourResult(
+        result = NeighbourResult(
             mask=np.ones(pts.shape[0], dtype=bool),
             indices=global_nidx,
             distances=distances,
         )
+
+        if neighbour_dist_factor is not None and distances.size > 0:
+            closest = distances[:, 0:1]
+            result.is_immediate = distances <= closest * float(neighbour_dist_factor)
+        # not possible in points mode (no query lens identity)
+
+        return result
 
     def query_directions(self,
         directions: ArrayLike,
@@ -828,21 +912,133 @@ class Eye:
 
         return self._lens_indices[local_idx], distances
 
-    def directed_neighbours(self,
+    def query_positions(self,
+        positions: ArrayLike,
+        k: int = 1,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Find the k lenses closest in world-space position to each query point.
+
+        Returns (indices, distances) of shape (Q, k) with global lens indices
+        and Euclidean distances in world units.
+        """
+        pts = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
+        tree = self._ensure_position_tree()
+        actual_k = min(k, len(self._lens_indices))
+        distances, local_idx = tree.query(pts, k=actual_k)
+        if local_idx.ndim == 1:
+            local_idx = local_idx.reshape(-1, 1)
+            distances = distances.reshape(-1, 1)
+        return self._lens_indices[local_idx], distances
+
+    def query_lookat(self,
+        targets: ArrayLike,
+        k: int = 1,
+    ) -> np.ndarray:
+        """
+        Find the k lenses best looking at world-space target points.
+
+        Unlike query_directions (which only matches optical-axis vectors),
+        this accounts for lens *position*: the score is the dot product of
+        each lens's optical axis with the unit vector from that lens to the
+        target.
+
+        Returns global lens indices of shape (Q, k), best-first.
+        """
+        if k < 1:
+            raise ValueError("k must be >= 1")
+        q = np.asarray(targets, dtype=np.float32).reshape(-1, 3)
+        Q = q.shape[0]
+        if len(self._lens_indices) == 0:
+            return np.empty((Q, k), dtype=np.intp)
+
+        pos = self._ra._lens_positions[self._lens_indices]
+        dirs = self._ra._lens_directions[self._lens_indices]
+
+        desired = q[:, None, :] - pos[None, :, :]
+        norms = np.linalg.norm(desired, axis=-1, keepdims=True)
+        np.divide(desired, norms, out=desired, where=norms > 0)
+        dots = np.einsum('jk,ijk->ij', dirs, desired)
+
+        k_eff = min(k, dots.shape[1])
+        part = np.argpartition(dots, -k_eff, axis=1)[:, -k_eff:]
+        top = np.take_along_axis(dots, part, axis=1)
+        order = np.argsort(top, axis=1)[:, ::-1]
+        best = np.take_along_axis(part, order, axis=1)
+        return self._lens_indices[best]
+
+    def query_cone(self,
+        center_direction: ArrayLike,
+        angle: float,
+        degrees: bool = True,
+    ) -> np.ndarray:
+        """
+        All lenses whose optical axis lies within 'angle' of 'center_direction'.
+
+        Returns global lens indices (in arbitrary order).
+        """
+        c = np.asarray(center_direction, dtype=np.float32)
+        n = float(np.linalg.norm(c))
+        if n < 1e-12:
+            return np.empty(0, dtype=np.intp)
+        c = c / n
+        a = np.deg2rad(angle) if degrees else float(angle)
+        radius = 2.0 * np.sin(a / 2.0)  # chord on unit sphere
+        tree = self._ensure_direction_tree()
+        hits = tree.query_ball_point(c, r=radius)
+        local = np.atleast_1d(np.asarray(hits, dtype=np.intp))
+        return self._lens_indices[local]
+
+    def query_ball(self,
+        center_position: ArrayLike,
+        radius: float,
+    ) -> np.ndarray:
+        """
+        All lenses whose world-space position is within 'radius' of
+        'center_position'.
+
+        Returns global lens indices (arbitrary order).
+        """
+        c = np.asarray(center_position, dtype=np.float32)
+        tree = self._ensure_position_tree()
+        hits = tree.query_ball_point(c, r=float(radius))
+        local = np.atleast_1d(np.asarray(hits, dtype=np.intp))
+        return self._lens_indices[local]
+
+    def max_gap(self) -> float:
+        """
+        Largest angular gap (in radians) between any lens and its nearest neighbour
+        in this eye.
+        """
+        if len(self._lens_indices) <= 1:
+            return 0.0
+        tree = self._ensure_direction_tree()
+        dirs = self._ra._lens_directions[self._lens_indices]
+        chord_dists, _ = tree.query(dirs, k=2)
+        max_chord = float(np.max(chord_dists[:, 1]))
+        # Convert chord to great-circle angle
+        return float(np.arccos(np.clip(1.0 - (max_chord ** 2) / 2.0, -1.0, 1.0)))
+
+    def neighbours_by_bearing(self,
         query_lens_indices: Optional[ArrayLike] = None,
         k: int = 6,
     ) -> NeighbourResult:
         """
-        Lattice-aware neighbours: KNN in position space, but with results
-        ordered by angular bearing within each lens's tangent frame.
+        First-ring lattice neighbours, ordered around each lens by their
+        angular bearing in the lens's tangent frame.
 
-        Useful when downstream code expects a consistent neighbour ordering around the hex.
+        Useful when downstream code expects a consistent CCW ordering of the
+        hex ring (e.g. for indexing into a per-direction filter bank).
+
+        Args:
+            - query_lens_indices: lenses to query (defaults to all lenses in this eye).
+            - k: number of neighbours per query (typically 6 for a hex lattice).
         """
-        result = self.neighbours(lens_indices=query_lens_indices, k=k, immediate_only=True)
+        result = self.neighbours(
+            lens_indices=query_lens_indices, k=k, immediate_only=True
+        )
         if not result:
             return result
-
-        # Compute angular bearing of each neighbour in the home lens's tangent frame
 
         query_global = (np.asarray(query_lens_indices, dtype=np.intp)[result.mask]
                         if query_lens_indices is not None
@@ -866,7 +1062,238 @@ class Eye:
         sorted_idx = result.indices[rows, order]
         sorted_dist = result.distances[rows, order]
 
-        return NeighbourResult(mask=result.mask, indices=sorted_idx, distances=sorted_dist)
+        is_imm = (result.is_immediate[rows, order]
+                  if result.is_immediate is not None else None)
+        same_chir = (result.same_chirality[rows, order]
+                     if result.same_chirality is not None else None)
+
+        return NeighbourResult(
+            mask=result.mask,
+            indices=sorted_idx,
+            distances=sorted_dist,
+            is_immediate=is_imm,
+            same_chirality=same_chir,
+        )
+
+    # Directional neighbour search (per-lens, "find the neighbour along this direction")
+
+    def _ensure_directional_graph(self, k_search: int = 8) -> dict:
+        """
+        Build (and cache) a directional neighbour graph for this eye.
+
+        For each lens in this eye, finds its k_search nearest neighbours in
+        direction space (chord distance on the unit sphere of optical axes)
+        and projects each neighbour's direction into the lens's tangent
+        frame.
+
+        Cached on the Eye. Invalidated by _invalidate().
+        """
+        cached = getattr(self, '_directional_graph', None)
+        if cached is not None and cached.get('k_search') == k_search:
+            return cached
+
+        n = self._lens_indices.size
+        if n <= 1:
+            empty = {
+                'proj_x': np.zeros((n, 0), dtype=np.float32),
+                'proj_y': np.zeros((n, 0), dtype=np.float32),
+                'angular_sep': np.zeros((n, 0), dtype=np.float32),
+                'neighbour_local_indices': np.zeros((n, 0), dtype=np.intp),
+                'local_x': np.zeros((n, 3), dtype=np.float32),
+                'local_y': np.zeros((n, 3), dtype=np.float32),
+                'k_search': 0,
+            }
+            self._directional_graph = empty
+            return empty
+
+        k_eff = min(k_search, n - 1)
+        tree = self._ensure_direction_tree()
+        dirs = self._ra._lens_directions[self._lens_indices]
+        dists, kd_idx = tree.query(dirs, k=k_eff + 1)
+        if kd_idx.ndim == 1:
+            kd_idx = kd_idx.reshape(-1, 1)
+            dists = dists.reshape(-1, 1)
+        nb_idx = kd_idx[:, 1:]
+        nb_chord = dists[:, 1:]
+        angular_sep = 2.0 * np.arcsin(np.clip(nb_chord / 2.0, -1.0, 1.0))
+
+        # Tangent frame for each lens
+        local_x = self._ra._local_right[self._lens_indices]
+        local_y = self._ra._local_up[self._lens_indices]
+
+        nb_dirs = dirs[nb_idx]
+        delta = nb_dirs - dirs[:, None, :]
+        proj_x = np.sum(delta * local_x[:, None, :], axis=2)
+        proj_y = np.sum(delta * local_y[:, None, :], axis=2)
+
+        graph = {
+            'proj_x': proj_x.astype(np.float32),
+            'proj_y': proj_y.astype(np.float32),
+            'angular_sep': angular_sep.astype(np.float32),
+            'neighbour_local_indices': nb_idx.astype(np.intp),
+            'local_x': local_x.astype(np.float32),
+            'local_y': local_y.astype(np.float32),
+            'k_search': k_eff,
+        }
+        self._directional_graph = graph
+        return graph
+
+    def directed_neighbours(self,
+        direction: ArrayLike,
+        query_lens_indices: Optional[ArrayLike] = None,
+        k: int = 1,
+        coordinate: str = 'spherical',
+        return_weights: bool = False,
+        k_search: int = 8,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """
+        For each lens, find the k lattice neighbour(s) lying closest to the
+        given search direction.
+
+        Useful for spatial/temporal correlation filters: "for each
+        lens, get the neighbour that looks at the world point just ahead of where I look".
+
+        Args:
+            - direction: the search direction. Depends on 'coordinate':
+                  - 'spherical' (default): (d_az, d_el) in radians. The
+                    search direction is built from the gradient of each
+                    lens's azimuth & elevation.
+                    +d_az points right (towards larger azimuth) in the tangent plane
+                    +d_el points up
+                  - 'cartesian': (dx, dy, dz) world-space direction. The
+                    world vector is projected into each lens's tangent
+                    plane.
+            - query_lens_indices: lenses to query (defaults to all in this
+                eye). Returned indices are global.
+            - k: number of neighbours per lens.
+            - coordinate: 'spherical' or 'cartesian'. (see above).
+            - return_weights: if True, also return the magnitude of the target direction
+                in the tangent plane (small magnitude = the search direction was nearly
+                parallel to the lens's optical axis, so the projected target is poorly defined).
+            - k_search: number of candidate lattice neighbours to consider
+                per lens before angular filtering. Higher = more thorough, slightly slower.
+
+        Returns:
+            indices: (Q,) if k == 1 else (Q, k) global lens indices of the
+                chosen neighbours.
+            weights: (Q,) or (Q, k), only if return_weights=True.
+        """
+        graph = self._ensure_directional_graph(k_search)
+        n_eye = self._lens_indices.size
+
+        if query_lens_indices is None:
+            valid_local = np.arange(n_eye, dtype=np.intp)
+        else:
+            qidx_global = np.asarray(query_lens_indices, dtype=np.intp).reshape(-1)
+            global_to_local = {int(g): i for i, g in enumerate(self._lens_indices)}
+            in_eye_mask = np.array([int(g) in global_to_local for g in qidx_global], dtype=bool)
+            valid_global = qidx_global[in_eye_mask]
+            valid_local = np.array([global_to_local[int(g)] for g in valid_global], dtype=np.intp)
+
+        Q = valid_local.size
+        if Q == 0 or graph['k_search'] == 0:
+            if k == 1:
+                empty = np.empty(0, dtype=np.intp)
+            else:
+                empty = np.empty((0, k), dtype=np.intp)
+            if return_weights:
+                return empty, np.empty(empty.shape, dtype=np.float32)
+            return empty
+
+        local_x = graph['local_x'][valid_local]
+        local_y = graph['local_y'][valid_local]
+
+        # target direction(s) in each lens's tangent plane
+        direction = np.asarray(direction, dtype=np.float32)
+
+        if coordinate == 'spherical':
+            if direction.shape != (2,):
+                raise ValueError(
+                    f"spherical 'direction' must have shape (2,) = (d_az, d_el), got {direction.shape}"
+                )
+            d_az, d_el = float(direction[0]), float(direction[1])
+            dirs = self._ra._lens_directions[self._lens_indices][valid_local]
+
+            # Convention: az = arctan2(x, -z) (i.e. +z = forward, +x = right, +y = up)
+            # TODO: This is wrong, coords are OpenGL, forward is -Z
+            az = np.arctan2(dirs[:, 0], -dirs[:, 2])
+            el = np.arcsin(np.clip(dirs[:, 1], -1.0, 1.0))
+            cos_az, sin_az = np.cos(az), np.sin(az)
+            cos_el, sin_el = np.cos(el), np.sin(el)
+
+            # Gradients of position with respect to az and el on the unit sphere
+            az_grad = np.column_stack([cos_az * cos_el, np.zeros(Q), sin_az * cos_el])
+            el_grad = np.column_stack([-sin_az * sin_el, cos_el, cos_az * sin_el])
+            target_world = d_az * az_grad + d_el * el_grad
+
+            target_dx = np.sum(target_world * local_x, axis=1)
+            target_dy = np.sum(target_world * local_y, axis=1)
+
+        elif coordinate == 'cartesian':
+            if direction.shape != (3,):
+                raise ValueError(
+                    f"Cartesian 'direction' must have shape (3,), got {direction.shape}"
+                )
+            target_dx = local_x @ direction
+            target_dy = local_y @ direction
+
+        else:
+            raise ValueError(
+                f"Coordinate must be 'spherical' or 'cartesian', got {coordinate!r}"
+            )
+
+        target_norms = np.sqrt(target_dx ** 2 + target_dy ** 2)
+        zero_mask = target_norms < 1e-12
+        target_dx_n = np.where(zero_mask, 1.0, target_dx / np.where(zero_mask, 1.0, target_norms))
+        target_dy_n = np.where(zero_mask, 0.0, target_dy / np.where(zero_mask, 1.0, target_norms))
+        target_angle = np.arctan2(target_dy_n, target_dx_n)
+
+        # Score candidate neighbours by angular deviation from the target
+        nb_proj_x = graph['proj_x'][valid_local]
+        nb_proj_y = graph['proj_y'][valid_local]
+        nb_local = graph['neighbour_local_indices'][valid_local]
+
+        nb_angles = np.arctan2(nb_proj_y, nb_proj_x)
+        angle_diff = (nb_angles - target_angle[:, None] + np.pi) % (2 * np.pi) - np.pi
+        score = np.abs(angle_diff)
+        # Anything more than 90 deg off is rejected
+        score = np.where(score > (np.pi / 2.0), 1e6, score)
+
+        k_eff = min(k, score.shape[1])
+        if k_eff <= 0:
+            # No candidates available, return zeros
+            if k == 1:
+                indices = np.zeros(Q, dtype=np.intp)
+            else:
+                indices = np.zeros((Q, k), dtype=np.intp)
+            if return_weights:
+                w = target_norms if k == 1 else np.tile(target_norms[:, None], (1, k))
+                return indices, w
+            return indices
+
+        if k_eff == 1:
+            best = np.argmin(score, axis=1)
+            local_winners = nb_local[np.arange(Q), best]
+            indices = self._lens_indices[local_winners]
+            if k > 1:
+                # Pad with the same winner (degenerate case, k_search<k)
+                indices = np.tile(indices[:, None], (1, k))
+        else:
+            top_k_local = np.argpartition(score, k_eff - 1, axis=1)[:, :k_eff]
+            top_scores = np.take_along_axis(score, top_k_local, axis=1)
+            order = np.argsort(top_scores, axis=1)
+            top_k_sorted = np.take_along_axis(top_k_local, order, axis=1)
+            local_winners = np.take_along_axis(nb_local, top_k_sorted, axis=1)
+            indices = self._lens_indices[local_winners]
+            if k > k_eff:
+                # Pad missing columns with the first (best) winner
+                pad = np.tile(indices[:, 0:1], (1, k - k_eff))
+                indices = np.concatenate([indices, pad], axis=1)
+
+        if return_weights:
+            w = target_norms if k == 1 else np.tile(target_norms[:, None], (1, k))
+            return indices, w.astype(np.float32)
+        return indices
 
 
 # TODO: VisualOutput probably should be a thinner wrapper and just take a ra and a data array to return the correct slices
