@@ -5,7 +5,6 @@ from scipy.spatial import Delaunay
 from insectvision.compound_eyes.receptor_array import ReceptorArray
 from insectvision.compound_eyes.kernel import drosophila_kernel
 from insectvision.compound_eyes.orientation import BundlesAligner
-from insectvision.compound_eyes.datatypes import get_metadata_field
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
 from insectvision.utils.math import project_to_stereo
 
@@ -22,13 +21,12 @@ RECEPTOR_PALETTE = [
 CHIRALITY_NEG_COLOR = '#B95D21'
 CHIRALITY_POS_COLOR = '#FF9800'
 
-SURFACE_COLOR  = 'white'
-SURFACE_OPAC   = 0.18
-EQUATOR_COLOR  = '#3b6dff'
+SURFACE_COLOR = 'white'
+SURFACE_OPAC = 0.18
+EQUATOR_COLOR = '#3b6dff'
 SAGITTAL_COLOR = '#888888'
-PLANE_OPAC     = 0.06
-FLOW_COLOR     = '#9b3ddc'
-
+PLANE_OPAC = 0.06
+FLOW_COLOR = '#9b3ddc'
 
 # Templates for glyph rendering (built once, shared across panels)
 
@@ -40,70 +38,6 @@ _DISC_TEMPLATE = None
 ##
 
 # Helper functions
-
-def cartridge_map_dense(ra) -> np.ndarray:
-    """
-    Build the (N, R) cartridge map: result[L, r] is the lens index that
-    donates its R-r receptor to cartridge L.
-
-    ReceptorArray stores wiring as forward links (each receptor knows which
-    cartridge it feeds via rcpt_static_data['cartridge_src']), this
-    reconstructs the inverse view used by the cartridge-map visualisation.
-
-    If two source receptors of the same type feed the same cartridge
-    (a receiving conflict) only the last-written source survives here
-    """
-    N, R = ra.lens_count, ra.receptors_per_lens
-    result = np.tile(np.arange(N, dtype=np.intp)[:, None], (1, R))
-    if not ra._cartridges_wired:
-        return result
-
-    cartridge_src = ra.rcpt_static_data['cartridge_src']
-    cart_lens = (cartridge_src // R).astype(np.intp)
-    types = get_metadata_field(ra.rcpt_static_data['metadata'], 'rcpt_type').astype(np.intp)
-    sources = (np.arange(N * R, dtype=np.intp) // R)
-
-    result[cart_lens, types] = sources
-    return result
-
-
-def compute_cartridge_conflicts(ra) -> dict:
-    """
-    Detect receiving conflicts in the wired cartridges.
-
-    A clean neural-superposition cartridge gets exactly one receptor of each
-    peripheral type (plus the home ommatidium's own central R7/8). If two
-    source receptors of type r both have their 'cartridge_src' pointing to
-    the same cartridge L, that's a receiving conflict for L.
-
-    # TODO: Donation conflicts!!!!!
-    """
-    N, R = ra.lens_count, ra.receptors_per_lens
-    center = ra.kernel.center_index
-
-    cart_lens = (ra.rcpt_static_data['cartridge_src'] // R).astype(np.intp)
-    types = get_metadata_field(ra.rcpt_static_data['metadata'], 'rcpt_type').astype(np.intp)
-
-    counts = np.zeros((N, R), dtype=np.intp)
-    np.add.at(counts, (cart_lens, types), 1)
-
-    incoming = np.zeros(N, dtype=np.intp)
-    per_rhab = np.zeros(R, dtype=np.intp)
-    for r in range(R):
-        if r == center:
-            continue
-        excess = np.maximum(counts[:, r] - 1, 0)
-        incoming += excess
-        per_rhab[r] = int(excess.sum())
-
-    return {
-        'incoming': incoming,
-        'per_rhab': per_rhab,
-        'counts': counts,
-        'total': int(per_rhab.sum()),
-    }
-
-# TODO: some of these helpers can be replaced by the actual eye model query methods and/or the math utils
 
 def receptor_tip_offsets(ra) -> np.ndarray:
     N, R = ra.lens_count, ra.receptors_per_lens
@@ -203,6 +137,7 @@ def eye_boundary_line(lens_data_mesh: pv.PolyData) -> pv.PolyData:
 
     return edges
 
+
 def _tangent_coords(eye_pos: np.ndarray):
     """
     Tangent-plane (u, v) coordinates of 'eye_pos' around its centroid.
@@ -296,8 +231,8 @@ class EyeViewer:
         self.sparsity = float(sparsity)
 
         self.right = np.asarray(WORLD_RIGHT, dtype=np.float32)
-        self.up    = np.asarray(WORLD_UP,    dtype=np.float32)
-        self.fwd   = np.asarray(WORLD_FORWARD, dtype=np.float32)
+        self.up = np.asarray(WORLD_UP, dtype=np.float32)
+        self.fwd = np.asarray(WORLD_FORWARD, dtype=np.float32)
 
         if aligner is None:
             flow = optic_flow_world if optic_flow_world is not None else -self.fwd
@@ -315,7 +250,7 @@ class EyeViewer:
         self.optic_flow_world = aligner.flow_direction.astype(np.float32)
 
         self.result_smooth = self.aligner_smooth.compute(self.ra)
-        self.result_raw    = self.aligner_raw.compute(self.ra)
+        self.result_raw = self.aligner_raw.compute(self.ra)
 
         # Cache geometry
         self.p = ra.lenses.positions
@@ -336,10 +271,14 @@ class EyeViewer:
         # Heatmap scalars
         self.collinearity = self._compute_collinearity()
         self.smoothness = self._compute_smoothness()
-        self.conflicts_field = (
-            compute_cartridge_conflicts(self.ra)['incoming'].astype(np.float32)
-            if self.R > 1 and self.ra._cartridges_wired else None
-        )
+
+        if self.R > 1 and getattr(self.ra, '_cartridges_wired', False):
+            c_field = np.zeros(self.N, dtype=np.float32)
+            c_field[self.ra.donation_conflicts] += 1.0
+            c_field[self.ra.receiving_conflicts] += 2.0
+            self.conflicts_field = c_field
+        else:
+            self.conflicts_field = None
 
         # Plot bookkeeping
         self.plotter = None
@@ -358,7 +297,7 @@ class EyeViewer:
         self.state_bigpanel = 1
         self._BIGPANEL_LABELS = ['Bundles', 'Wiring debugger', 'Conflicts']
 
-        self._debugger_subplot = None          # filled in show()
+        self._debugger_subplot = None  # filled in show()
 
     ##
 
@@ -375,16 +314,16 @@ class EyeViewer:
 
         # Panel layout
         panel_setups = [
-            ((0, 0), "Optic Flow",                self._add_optic_flow_panel),
-            ((0, 1), "Alignment Axes  [A]",       self._add_alignment_panel),
-            ((0, 2), "Major Axes",                self._add_major_axis_panel),
-            ((0, 3), "Saccade Axes  [S]",         self._add_saccade_panel),
+            ((0, 0), "Optic Flow", self._add_optic_flow_panel),
+            ((0, 1), "Alignment Axes  [A]", self._add_alignment_panel),
+            ((0, 2), "Major Axes", self._add_major_axis_panel),
+            ((0, 3), "Saccade Axes  [S]", self._add_saccade_panel),
             ((1, 0), "Flow / Alignment collinearity",
-                                                  self._add_collinearity_panel),
+             self._add_collinearity_panel),
             ((1, 1), "Saccade smoothing consistency",
-                                                  self._add_smoothness_panel),
+             self._add_smoothness_panel),
             ((1, 2), "Bundles / Wiring / Conflicts  [B]  [N]",
-                                                  self._add_bigpanel),
+             self._add_bigpanel),
         ]
 
         for (row, col), title, builder in panel_setups:
@@ -415,7 +354,7 @@ class EyeViewer:
                       i_size=plane_size, j_size=plane_size)
         sag = pv.Plane(center=(0, 0, 0), direction=self.right,
                        i_size=plane_size, j_size=plane_size)
-        self.plotter.add_mesh(eq,  color=EQUATOR_COLOR,  opacity=PLANE_OPAC)
+        self.plotter.add_mesh(eq, color=EQUATOR_COLOR, opacity=PLANE_OPAC)
         self.plotter.add_mesh(sag, color=SAGITTAL_COLOR, opacity=PLANE_OPAC)
 
         # Optic flow direction (big arrow at the head front)
@@ -431,7 +370,7 @@ class EyeViewer:
     def _add_eye_surface(
         self,
         scalars: np.ndarray = None,
-        cmap: str = None,
+        cmap=None,
         clim=None,
         sbar_title: str = None,
         faint: bool = False,
@@ -637,21 +576,26 @@ class EyeViewer:
             pd.point_data['conflicts'] = self.conflicts_field
             discs = pd.glyph(geom=_disc_template(), orient='vectors',
                              scale='radius', factor=1.1)
-            clim_top = max(1.0, float(self.conflicts_field.max()))
+
+            # Discrete colormap:
+            # 0: Light gray (OK), 1: Yellow (Donation), 2: Cyan (Receiving), 3: Red (Both)
+            cmap_colors = ['#e0e0e0', '#f1c40f', '#00bcd4', '#e74c3c']
+
             act = self.plotter.add_mesh(
                 discs, scalars='conflicts',
-                cmap='RdYlGn_r', clim=[0, clim_top],
+                cmap=cmap_colors, clim=[-0.5, 3.5],
                 show_scalar_bar=True,
-                scalar_bar_args={'title': 'Incoming conflicts', 'n_labels': 3,
-                                 'position_x': 0.78, 'position_y': 0.05,
-                                 'width': 0.18, 'height': 0.06,
-                                 'color': 'black'},
+                scalar_bar_args={
+                    'title': 'Conflicts (0:OK 1:Don 2:Rcv 3:Both)', 'n_labels': 5,
+                    'position_x': 0.70, 'position_y': 0.05,
+                    'width': 0.28, 'height': 0.06, 'color': 'black',
+                },
                 ambient=0.4, diffuse=0.7,
             )
             self.actors_conflicts.append(act)
 
         # Mode 3: wiring debugger
-        if self.ra._cartridges_wired and self.R > 1:
+        if getattr(self.ra, '_cartridges_wired', False) and self.R > 1:
             self._redraw_debugger()
 
     ##
@@ -670,7 +614,7 @@ class EyeViewer:
             self.plotter.remove_actor(act)
         self.actors_debugger.clear()
 
-        if not self.ra._cartridges_wired or self.R <= 1:
+        if not getattr(self.ra, '_cartridges_wired', False) or self.R <= 1:
             return
 
         if target_idx is None:
@@ -687,7 +631,7 @@ class EyeViewer:
         dists = result.distances[0]
 
         # Cartridge partners for this lens
-        partners = cartridge_map_dense(self.ra)[target_idx]
+        partners = self.ra.cartridges[target_idx].sources
         partner_to_type = {
             int(lens_idx): r
             for r, lens_idx in enumerate(partners)
@@ -889,8 +833,7 @@ class EyeViewer:
     def _setup_camera(self) -> None:
         cam_dir = self.fwd + self.right + self.up
         cam_pos = cam_dir / np.linalg.norm(cam_dir) * (self.r_sphere * 6.5)
-        for (row, col) in [(0, 0), (0, 1), (0, 2), (0, 3),
-                           (1, 0), (1, 1), (1, 2)]:
+        for (row, col) in [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]:
             self.plotter.subplot(row, col)
             self.plotter.camera_position = [cam_pos.tolist(), (0, 0, 0), self.up.tolist()]
 
