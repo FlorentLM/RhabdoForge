@@ -1,10 +1,10 @@
 from .kernel import RhabdomereKernel
-from .receptor_array import ReceptorArray
+from .receptor_array import CompoundEyeModel
 from .proxies import Cartridge, Eye, VisualOutput, LensView
 
 __all__ = [
     'RhabdomereKernel',
-    'ReceptorArray',
+    'CompoundEyeModel',
     'LensView',
     'Cartridge',
     'Eye',

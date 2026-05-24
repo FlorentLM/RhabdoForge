@@ -1,8 +1,8 @@
 """
-User-facing views of ReceptorArray data buffers.
+User-facing views of CompoundEyeModel data buffers.
 
 Views (LensView, ReceptorView, Cartridge) are slice-like handles into the array.
-They hold a reference to the parent ReceptorArray and a '_gi' array of global indices into its data buffers.
+They hold a reference to the parent CompoundEyeModel and a '_gi' array of global indices into its data buffers.
 
 Hierarchy:
     LensView                 # M lenses, iterable yields size-1 LensViews
@@ -18,7 +18,7 @@ Notes:
     - A LensView spanning multiple eyes raises on eye-dependent operations,
     use 'eye.lenses' directly for eye-scoped queries.
 
-    - LensView geometry is read-only. Only global transforms with ra.translate/scale/rotate are possible.
+    - LensView geometry is read-only. Only global transforms with model.translate/scale/rotate are possible.
 
     - ReceptorView allows setting cell-level properties (sensitivity, tau_membrane, acceptance)
     and the actuated 'directions' field (it is dynamic state).
@@ -35,7 +35,7 @@ from scipy.spatial import cKDTree
 from insectvision.compound_eyes.datatypes import get_metadata_field
 
 if TYPE_CHECKING:
-    from insectvision.compound_eyes.receptor_array import ReceptorArray
+    from insectvision.compound_eyes.receptor_array import CompoundEyeModel
     from insectvision.compound_eyes.kernel import RhabdomereKernel
 
 
@@ -73,7 +73,7 @@ class NeighbourResult:
 
 class LensView:
     """
-    A subset of M lenses in a ReceptorArray.
+    A subset of M lenses in a CompoundEyeModel.
 
     A size-1 LensView exposes 'singular' convenience properties (position,
     direction, chirality, ...) that return scalars / 1D vectors rather than
@@ -81,16 +81,16 @@ class LensView:
     chiralities, ...) always return arrays.
     """
 
-    __slots__ = ('_ra', '_gi')
+    __slots__ = ('_model', '_gi')
     __hash__ = None     # disable hashing, views are mutable handles, not values
 
-    def __init__(self, ra: 'ReceptorArray', indices: ArrayLike):
-        self._ra = ra
+    def __init__(self, model: 'CompoundEyeModel', indices: ArrayLike):
+        self._model = model
         self._gi = np.asarray(indices, dtype=np.intp).reshape(-1)
 
         if self._gi.size > 0:
-            if int(self._gi.min()) < 0 or int(self._gi.max()) >= ra.lens_count:
-                raise IndexError(f"Lens indices out of range for ReceptorArray with {ra.lens_count} lenses")
+            if int(self._gi.min()) < 0 or int(self._gi.max()) >= model.lens_count:
+                raise IndexError(f"Lens indices out of range for CompoundEyeModel with {model.lens_count} lenses")
 
     # Basics
 
@@ -103,15 +103,15 @@ class LensView:
     def __eq__(self, other) -> bool:
         if not isinstance(other, LensView):
             return NotImplemented
-        return self._ra is other._ra and np.array_equal(self._gi, other._gi)
+        return self._model is other._model and np.array_equal(self._gi, other._gi)
 
     def __iter__(self):
         # Iterating yields size-1 LensViews (i.e. ommatidia)
         for i in self._gi:
-            yield LensView(self._ra, np.array([i], dtype=np.intp))
+            yield LensView(self._model, np.array([i], dtype=np.intp))
 
     def __getitem__(self, idx) -> 'LensView':
-        return LensView(self._ra, self._gi[idx])
+        return LensView(self._model, self._gi[idx])
 
     def _require_single(self, name: str) -> int:
         if len(self) != 1:
@@ -120,7 +120,7 @@ class LensView:
 
     @property
     def global_indices(self) -> np.ndarray:
-        """Global lens indices into the ReceptorArray (read-only copy)."""
+        """Global lens indices into the CompoundEyeModel (read-only copy)."""
         return self._gi.copy()
 
     @property
@@ -133,22 +133,22 @@ class LensView:
     @property
     def positions(self) -> np.ndarray:
         """(M, 3) lens world positions."""
-        return self._ra._lens_positions[self._gi].copy()
+        return self._model._lens_positions[self._gi].copy()
 
     @property
     def directions(self) -> np.ndarray:
         """(M, 3) lens optical-axis (forward) unit vectors."""
-        return self._ra._lens_directions[self._gi].copy()
+        return self._model._lens_directions[self._gi].copy()
 
     @property
     def right_axes(self) -> np.ndarray:
         """(M, 3) tangent 'right' vectors (lens-local x)."""
-        return self._ra._local_right[self._gi].copy()
+        return self._model._local_right[self._gi].copy()
 
     @property
     def up_axes(self) -> np.ndarray:
         """(M, 3) tangent 'up' vectors (lens-local y)."""
-        return self._ra._local_up[self._gi].copy()
+        return self._model._local_up[self._gi].copy()
 
     @property
     def azimuths_rad(self) -> np.ndarray:
@@ -174,91 +174,91 @@ class LensView:
     @property
     def ioa_axes(self) -> np.ndarray:
         """(M, 2) per-lens (minor, major) interommatidial angles (rad)."""
-        return self._ra.lens_static_data['ioa_axes'][self._gi].copy()
+        return self._model.lens_static_data['ioa_axes'][self._gi].copy()
 
     @property
     def ioa_tilts(self) -> np.ndarray:
         """(M,) per-lens hex-lattice tilts (rad)."""
-        return self._ra.lens_static_data['ioa_tilt'][self._gi].copy()
+        return self._model.lens_static_data['ioa_tilt'][self._gi].copy()
 
     @property
     def lens_diameters_um(self) -> np.ndarray:
         """(M,) lens apertures (μm)."""
-        return self._ra.lens_static_data['lens_diameter_um'][self._gi].copy()
+        return self._model.lens_static_data['lens_diameter_um'][self._gi].copy()
 
     @property
     def nodal_distances_um(self) -> np.ndarray:
         """(M,) lens-to-rhabdomere lever arms (μm)."""
-        return self._ra.lens_static_data['nodal_distance_um'][self._gi].copy()
+        return self._model.lens_static_data['nodal_distance_um'][self._gi].copy()
 
     # Bundle orientation
 
     @property
     def bundle_orientations(self) -> np.ndarray:
         """(M,) per-lens bundle yaw (chi, rad)."""
-        return self._ra._bundle_orientation[self._gi].copy()
+        return self._model._bundle_orientation[self._gi].copy()
 
     @property
     def chiralities(self) -> np.ndarray:
         """(M,) per-lens chirality (+1 or -1)."""
-        return self._ra._chirality_arr[self._gi].copy()
+        return self._model._chirality_arr[self._gi].copy()
 
     @property
     def saccade_axes_local(self) -> np.ndarray:
         """(M, 2) saccade actuation axis in each lens (right, up) tangent frame."""
-        d = self._ra.lens_static_data
+        d = self._model.lens_static_data
         return np.column_stack([d['sacc_x'][self._gi], d['sacc_y'][self._gi]])
 
     @property
     def saccade_axes(self) -> np.ndarray:
         """(M, 3) saccade actuation axis in world coordinates."""
-        sx = self._ra.lens_static_data['sacc_x'][self._gi][:, None]
-        sy = self._ra.lens_static_data['sacc_y'][self._gi][:, None]
-        return sx * self._ra._local_right[self._gi] + sy * self._ra._local_up[self._gi]
+        sx = self._model.lens_static_data['sacc_x'][self._gi][:, None]
+        sy = self._model.lens_static_data['sacc_y'][self._gi][:, None]
+        return sx * self._model._local_right[self._gi] + sy * self._model._local_up[self._gi]
 
     # Photomechanical biophysics (per-lens, broadcast from kernel)
 
     @property
     def tau_rises(self) -> np.ndarray:
-        return self._ra.lens_static_data['tau_rise'][self._gi].copy()
+        return self._model.lens_static_data['tau_rise'][self._gi].copy()
 
     @property
     def tau_relaxes(self) -> np.ndarray:
-        return self._ra.lens_static_data['tau_relax'][self._gi].copy()
+        return self._model.lens_static_data['tau_relax'][self._gi].copy()
 
     @property
     def tau_fasts(self) -> np.ndarray:
-        return self._ra.lens_static_data['tau_fast'][self._gi].copy()
+        return self._model.lens_static_data['tau_fast'][self._gi].copy()
 
     @property
     def tau_adapts(self) -> np.ndarray:
-        return self._ra.lens_static_data['tau_adapt'][self._gi].copy()
+        return self._model.lens_static_data['tau_adapt'][self._gi].copy()
 
     @property
     def gain_lat_ums(self) -> np.ndarray:
-        return self._ra.lens_static_data['gain_lat_um'][self._gi].copy()
+        return self._model.lens_static_data['gain_lat_um'][self._gi].copy()
 
     @property
     def gain_ax_ums(self) -> np.ndarray:
-        return self._ra.lens_static_data['gain_ax_um'][self._gi].copy()
+        return self._model.lens_static_data['gain_ax_um'][self._gi].copy()
 
     # Dynamic state
 
     @property
     def adapted_luminances(self) -> np.ndarray:
-        return self._ra.lens_dynamic_data['adapted_lum'][self._gi].copy()
+        return self._model.lens_dynamic_data['adapted_lum'][self._gi].copy()
 
     @property
     def fast_luminances(self) -> np.ndarray:
-        return self._ra.lens_dynamic_data['fast_lum'][self._gi].copy()
+        return self._model.lens_dynamic_data['fast_lum'][self._gi].copy()
 
     @property
     def lateral_displacements_um(self) -> np.ndarray:
-        return self._ra.lens_dynamic_data['lateral_um'][self._gi].copy()
+        return self._model.lens_dynamic_data['lateral_um'][self._gi].copy()
 
     @property
     def axial_displacements_um(self) -> np.ndarray:
-        return self._ra.lens_dynamic_data['axial_um'][self._gi].copy()
+        return self._model.lens_dynamic_data['axial_um'][self._gi].copy()
 
     # TODO: Setters for indirect buffer access?
 
@@ -267,49 +267,49 @@ class LensView:
     @property
     def donation_conflicts(self) -> np.ndarray:
         """(M,) True if any peripheral receptor in this lens is donated to != 1 cartridge."""
-        return self._ra.donation_conflicts[self._gi].copy()
+        return self._model.donation_conflicts[self._gi].copy()
 
     @property
     def receiving_conflicts(self) -> np.ndarray:
         """(M,) True if this lens's cartridge failed to gather a neighbour for any slot."""
-        return self._ra.receiving_conflicts[self._gi].copy()
+        return self._model.receiving_conflicts[self._gi].copy()
 
     @property
     def have_conflicts(self) -> np.ndarray:
         """(M,) True if the lens has a donation or receiving conflict."""
-        return self._ra.have_conflicts[self._gi].copy()
+        return self._model.have_conflicts[self._gi].copy()
 
     # Linking to receptors / eye
 
     @property
     def receptors(self) -> 'ReceptorView':
         """The R*M receptors behind these lenses (R = receptors_per_lens)."""
-        R = self._ra.receptors_per_lens
+        R = self._model.receptors_per_lens
         rcpt_indices = (self._gi[:, None] * R + np.arange(R, dtype=np.intp)[None, :]).ravel()
-        return ReceptorView(self._ra, rcpt_indices)
+        return ReceptorView(self._model, rcpt_indices)
 
     @property
     def eye_ids(self) -> np.ndarray:
         """(M,) eye id (0-7) of each lens."""
-        return self._ra._lens_eye_ids[self._gi].copy()
+        return self._model._lens_eye_ids[self._gi].copy()
 
     @property
     def sides(self) -> np.ndarray:
         """(M,) per-lens side string ('left' / 'right' / 'midline') from each parent eye."""
-        side_by_eid = {e.eye_id: e.side for e in self._ra._eyes}
-        ids = self._ra._lens_eye_ids[self._gi]
+        side_by_eid = {e.eye_id: e.side for e in self._model._eyes}
+        ids = self._model._lens_eye_ids[self._gi]
         return np.array([side_by_eid.get(int(i), 'unknown') for i in ids], dtype=object)
 
     @property
     def eye(self) -> 'Eye':
         """The single Eye these lenses belong to. Raises if the view spans multiple eyes."""
-        ids = self._ra._lens_eye_ids[self._gi]
+        ids = self._model._lens_eye_ids[self._gi]
         if ids.size == 0:
             raise ValueError("Empty LensView has no eye")
         first = ids[0]
         if not np.all(ids == first):
             raise ValueError("LensView spans multiple eyes")
-        return self._ra.eye(int(first))
+        return self._model.eye(int(first))
 
     # Singular accessors (require size-1 LensView)
 
@@ -319,19 +319,19 @@ class LensView:
 
     @property
     def position(self) -> np.ndarray:
-        return self._ra._lens_positions[self._require_single('position')].copy()
+        return self._model._lens_positions[self._require_single('position')].copy()
 
     @property
     def direction(self) -> np.ndarray:
-        return self._ra._lens_directions[self._require_single('direction')].copy()
+        return self._model._lens_directions[self._require_single('direction')].copy()
 
     @property
     def right_axis(self) -> np.ndarray:
-        return self._ra._local_right[self._require_single('right_axis')].copy()
+        return self._model._local_right[self._require_single('right_axis')].copy()
 
     @property
     def up_axis(self) -> np.ndarray:
-        return self._ra._local_up[self._require_single('up_axis')].copy()
+        return self._model._local_up[self._require_single('up_axis')].copy()
 
     @property
     def azimuth_rad(self) -> float:
@@ -352,27 +352,27 @@ class LensView:
 
     @property
     def ioa_axis(self) -> np.ndarray:
-        return self._ra.lens_static_data['ioa_axes'][self._require_single('ioa_axis')].copy()
+        return self._model.lens_static_data['ioa_axes'][self._require_single('ioa_axis')].copy()
 
     @property
     def ioa_tilt(self) -> float:
-        return float(self._ra.lens_static_data['ioa_tilt'][self._require_single('ioa_tilt')])
+        return float(self._model.lens_static_data['ioa_tilt'][self._require_single('ioa_tilt')])
 
     @property
     def lens_diameter_um(self) -> float:
-        return float(self._ra.lens_static_data['lens_diameter_um'][self._require_single('lens_diameter_um')])
+        return float(self._model.lens_static_data['lens_diameter_um'][self._require_single('lens_diameter_um')])
 
     @property
     def nodal_distance_um(self) -> float:
-        return float(self._ra.lens_static_data['nodal_distance_um'][self._require_single('nodal_distance_um')])
+        return float(self._model.lens_static_data['nodal_distance_um'][self._require_single('nodal_distance_um')])
 
     @property
     def bundle_orientation(self) -> float:
-        return float(self._ra._bundle_orientation[self._require_single('bundle_orientation')])
+        return float(self._model._bundle_orientation[self._require_single('bundle_orientation')])
 
     @property
     def chirality(self) -> float:
-        return float(self._ra._chirality_arr[self._require_single('chirality')])
+        return float(self._model._chirality_arr[self._require_single('chirality')])
 
     @property
     def saccade_axis(self) -> np.ndarray:
@@ -386,7 +386,7 @@ class LensView:
 
     @property
     def eye_id(self) -> int:
-        return int(self._ra._lens_eye_ids[self._require_single('eye_id')])
+        return int(self._model._lens_eye_ids[self._require_single('eye_id')])
 
     @property
     def side(self) -> str:
@@ -396,15 +396,15 @@ class LensView:
 
     @property
     def has_conflicts(self) -> bool:
-        return bool(self._ra.have_conflicts[self._require_single('has_conflicts')])
+        return bool(self._model.have_conflicts[self._require_single('has_conflicts')])
 
     @property
     def cartridge(self) -> Optional['Cartridge']:
         """The cartridge anchored at this lens's central rhabdomere (size-1 view only, if wired)."""
         idx = self._require_single('cartridge')
-        if not self._ra._cartridges_wired:
+        if not self._model._cartridges_wired:
             return None
-        return Cartridge(self._ra, idx)
+        return Cartridge(self._model, idx)
 
     # Directional neighbour search (delegates to parent Eye)
 
@@ -427,12 +427,12 @@ class LensView:
             if return_weights:
                 return empty, np.empty(empty.shape, dtype=np.float32)
             return empty
-        eye_ids = self._ra._lens_eye_ids[self._gi]
+        eye_ids = self._model._lens_eye_ids[self._gi]
 
         if np.unique(eye_ids).size > 1:
             raise ValueError("directed_neighbours() requires a single-eye LensView")
 
-        eye = self._ra.eye(int(eye_ids[0]))
+        eye = self._model.eye(int(eye_ids[0]))
         return eye.directed_neighbours(
             direction=direction,
             query_lens_indices=self._gi,
@@ -445,21 +445,21 @@ class LensView:
 
 class ReceptorView:
     """
-    A subset of M receptors in a ReceptorArray.
+    A subset of M receptors in a CompoundEyeModel.
 
     Read-only: positions (derived from parent lens), all metadata fields.
     Settable: sensitivities, tau_membrane, rest acceptance, acceptance tilt, actuated direction.
     """
 
-    __slots__ = ('_ra', '_gi')
+    __slots__ = ('_model', '_gi')
     __hash__ = None     # disable hashing, views are mutable handles, not values
 
-    def __init__(self, ra: 'ReceptorArray', indices: ArrayLike):
-        self._ra = ra
+    def __init__(self, model: 'CompoundEyeModel', indices: ArrayLike):
+        self._model = model
         self._gi = np.asarray(indices, dtype=np.intp).reshape(-1)
 
         if self._gi.size > 0:
-            if int(self._gi.min()) < 0 or int(self._gi.max()) >= ra.total_receptors:
+            if int(self._gi.min()) < 0 or int(self._gi.max()) >= model.total_receptors:
                 raise IndexError("Receptor indices out of range")
 
     def __len__(self) -> int:
@@ -471,14 +471,14 @@ class ReceptorView:
     def __eq__(self, other) -> bool:
         if not isinstance(other, ReceptorView):
             return NotImplemented
-        return self._ra is other._ra and np.array_equal(self._gi, other._gi)
+        return self._model is other._model and np.array_equal(self._gi, other._gi)
 
     def __getitem__(self, idx) -> 'ReceptorView':
-        return ReceptorView(self._ra, self._gi[idx])
+        return ReceptorView(self._model, self._gi[idx])
 
     @property
     def global_indices(self) -> np.ndarray:
-        """Global receptor indices into the ReceptorArray (read-only copy)."""
+        """Global receptor indices into the CompoundEyeModel (read-only copy)."""
         return self._gi.copy()
 
     @property
@@ -491,54 +491,54 @@ class ReceptorView:
     @property
     def positions(self) -> np.ndarray:
         """(M, 3) world positions (= parent lens positions). Read-only."""
-        return self._ra.rcpt_static_data['position'][self._gi].copy()
+        return self._model.rcpt_static_data['position'][self._gi].copy()
 
     @property
     def lens_indices(self) -> np.ndarray:
         """(M,) parent lens global index for each receptor."""
-        meta = self._ra.rcpt_static_data['metadata'][self._gi]
+        meta = self._model.rcpt_static_data['metadata'][self._gi]
         return get_metadata_field(meta, 'lens_id').astype(np.intp)
 
     @property
     def types(self) -> np.ndarray:
         """(M,) receptor type within bundle (R1=0, R2=1, ..., R7/8=6)."""
-        meta = self._ra.rcpt_static_data['metadata'][self._gi]
+        meta = self._model.rcpt_static_data['metadata'][self._gi]
         return get_metadata_field(meta, 'rcpt_type').astype(np.intp)
 
     @property
     def eye_ids(self) -> np.ndarray:
-        meta = self._ra.rcpt_static_data['metadata'][self._gi]
+        meta = self._model.rcpt_static_data['metadata'][self._gi]
         return get_metadata_field(meta, 'eye_id').astype(np.intp)
 
     @property
     def neighbour_counts(self) -> np.ndarray:
         """(M,) number of lattice neighbours this receptor's parent lens has."""
-        meta = self._ra.rcpt_static_data['metadata'][self._gi]
+        meta = self._model.rcpt_static_data['metadata'][self._gi]
         return get_metadata_field(meta, 'neighbour_count').astype(np.intp)
 
     @property
     def chiralities_neg(self) -> np.ndarray:
         """(M,) 1 if parent lens has chirality -1, else 0."""
-        meta = self._ra.rcpt_static_data['metadata'][self._gi]
+        meta = self._model.rcpt_static_data['metadata'][self._gi]
         return get_metadata_field(meta, 'chirality_neg').astype(np.intp)
 
     @property
     def cartridge_sources(self) -> np.ndarray:
         """(M,) global receptor index of the cartridge source (R7/8) each member targets."""
-        return self._ra.rcpt_static_data['cartridge_src'][self._gi].copy()
+        return self._model.rcpt_static_data['cartridge_src'][self._gi].copy()
 
     @property
     def rest_offsets_um(self) -> np.ndarray:
         """(M, 2) focal-plane offset behind lens (μm), already rotated by chi/chirality."""
-        return self._ra.rcpt_static_data['rot_offset'][self._gi].copy()
+        return self._model.rcpt_static_data['rot_offset'][self._gi].copy()
 
     @property
     def rhab_diameters_um(self) -> np.ndarray:
-        return self._ra.rcpt_static_data['rhab_diameter_um'][self._gi].copy()
+        return self._model.rcpt_static_data['rhab_diameter_um'][self._gi].copy()
 
     @property
     def wavelengths_um(self) -> np.ndarray:
-        return self._ra.rcpt_static_data['wavelength_um'][self._gi].copy()
+        return self._model.rcpt_static_data['wavelength_um'][self._gi].copy()
 
     @property
     def azimuths_rad(self) -> np.ndarray:
@@ -564,90 +564,90 @@ class ReceptorView:
     @property
     def sensitivities(self) -> np.ndarray:
         """(M, 3) channel multipliers (UV, G, B)."""
-        return self._ra.rcpt_static_data['sensitivity'][self._gi].copy()
+        return self._model.rcpt_static_data['sensitivity'][self._gi].copy()
 
     @sensitivities.setter
     def sensitivities(self, value: ArrayLike):
         v = np.broadcast_to(np.asarray(value, dtype=np.float32), (len(self), 3))
-        self._ra.rcpt_static_data['sensitivity'][self._gi] = v
+        self._model.rcpt_static_data['sensitivity'][self._gi] = v
 
     @property
     def sensitivities_uv(self) -> np.ndarray:
-        return self._ra.rcpt_static_data['sensitivity'][self._gi, 0].copy()
+        return self._model.rcpt_static_data['sensitivity'][self._gi, 0].copy()
 
     @sensitivities_uv.setter
     def sensitivities_uv(self, value: ArrayLike):
-        self._ra.rcpt_static_data['sensitivity'][self._gi, 0] = np.asarray(value, dtype=np.float32)
+        self._model.rcpt_static_data['sensitivity'][self._gi, 0] = np.asarray(value, dtype=np.float32)
 
     @property
     def sensitivities_g(self) -> np.ndarray:
-        return self._ra.rcpt_static_data['sensitivity'][self._gi, 1].copy()
+        return self._model.rcpt_static_data['sensitivity'][self._gi, 1].copy()
 
     @sensitivities_g.setter
     def sensitivities_g(self, value: ArrayLike):
-        self._ra.rcpt_static_data['sensitivity'][self._gi, 1] = np.asarray(value, dtype=np.float32)
+        self._model.rcpt_static_data['sensitivity'][self._gi, 1] = np.asarray(value, dtype=np.float32)
 
     @property
     def sensitivities_b(self) -> np.ndarray:
-        return self._ra.rcpt_static_data['sensitivity'][self._gi, 2].copy()
+        return self._model.rcpt_static_data['sensitivity'][self._gi, 2].copy()
 
     @sensitivities_b.setter
     def sensitivities_b(self, value: ArrayLike):
-        self._ra.rcpt_static_data['sensitivity'][self._gi, 2] = np.asarray(value, dtype=np.float32)
+        self._model.rcpt_static_data['sensitivity'][self._gi, 2] = np.asarray(value, dtype=np.float32)
 
     @property
     def tau_membranes(self) -> np.ndarray:
-        return self._ra.rcpt_static_data['tau_membrane'][self._gi].copy()
+        return self._model.rcpt_static_data['tau_membrane'][self._gi].copy()
 
     @tau_membranes.setter
     def tau_membranes(self, value: ArrayLike):
-        self._ra.rcpt_static_data['tau_membrane'][self._gi] = np.asarray(value, dtype=np.float32)
+        self._model.rcpt_static_data['tau_membrane'][self._gi] = np.asarray(value, dtype=np.float32)
 
     @property
     def rest_acceptance_axes(self) -> np.ndarray:
         """(M, 2) acceptance angles (minor, major) at rest (rad)."""
-        return self._ra.rcpt_static_data['rest_acc'][self._gi].copy()
+        return self._model.rcpt_static_data['rest_acc'][self._gi].copy()
 
     @rest_acceptance_axes.setter
     def rest_acceptance_axes(self, value: ArrayLike):
         v = np.broadcast_to(np.asarray(value, dtype=np.float32), (len(self), 2))
-        self._ra.rcpt_static_data['rest_acc'][self._gi] = v
+        self._model.rcpt_static_data['rest_acc'][self._gi] = v
 
     @property
     def acceptance_tilts(self) -> np.ndarray:
-        return self._ra.rcpt_static_data['acc_tilt'][self._gi].copy()
+        return self._model.rcpt_static_data['acc_tilt'][self._gi].copy()
 
     @acceptance_tilts.setter
     def acceptance_tilts(self, value: ArrayLike):
-        self._ra.rcpt_static_data['acc_tilt'][self._gi] = np.asarray(value, dtype=np.float32)
+        self._model.rcpt_static_data['acc_tilt'][self._gi] = np.asarray(value, dtype=np.float32)
 
     @property
     def directions(self) -> np.ndarray:
         """(M, 3) current (actuated) viewing directions. Settable."""
-        return self._ra.rcpt_dynamic_data['direction'][self._gi].copy()
+        return self._model.rcpt_dynamic_data['direction'][self._gi].copy()
 
     @directions.setter
     def directions(self, value: ArrayLike):
         v = np.broadcast_to(np.asarray(value, dtype=np.float32), (len(self), 3))
-        self._ra.rcpt_dynamic_data['direction'][self._gi] = v
+        self._model.rcpt_dynamic_data['direction'][self._gi] = v
 
     @property
     def acceptance_axes(self) -> np.ndarray:
         """(M, 2) current (actuated) acceptance axes (rad)."""
-        return self._ra.rcpt_dynamic_data['acc_axes'][self._gi].copy()
+        return self._model.rcpt_dynamic_data['acc_axes'][self._gi].copy()
 
     @acceptance_axes.setter
     def acceptance_axes(self, value: ArrayLike):
         v = np.broadcast_to(np.asarray(value, dtype=np.float32), (len(self), 2))
-        self._ra.rcpt_dynamic_data['acc_axes'][self._gi] = v
+        self._model.rcpt_dynamic_data['acc_axes'][self._gi] = v
 
     @property
     def adaptation_states(self) -> np.ndarray:
-        return self._ra.rcpt_dynamic_data['adaptation_state'][self._gi].copy()
+        return self._model.rcpt_dynamic_data['adaptation_state'][self._gi].copy()
 
     @adaptation_states.setter
     def adaptation_states(self, value: ArrayLike):
-        self._ra.rcpt_dynamic_data['adaptation_state'][self._gi] = np.asarray(value, dtype=np.float32)
+        self._model.rcpt_dynamic_data['adaptation_state'][self._gi] = np.asarray(value, dtype=np.float32)
 
 
 class Cartridge:
@@ -662,17 +662,17 @@ class Cartridge:
     the global lens index of the ommatidium that contributes that receptor.
     """
 
-    __slots__ = ('_ra', '_central_lens_idx', '_member_indices')
+    __slots__ = ('_model', '_central_lens_idx', '_member_indices')
     __hash__ = None
 
-    def __init__(self, ra: 'ReceptorArray', central_lens_idx: int):
-        self._ra = ra
+    def __init__(self, model: 'CompoundEyeModel', central_lens_idx: int):
+        self._model = model
         self._central_lens_idx = int(central_lens_idx)
-        if not getattr(ra, '_cartridges_wired', False):
+        if not getattr(model, '_cartridges_wired', False):
             raise ValueError("Cartridges not wired")
 
-        R = ra.receptors_per_lens
-        sources = ra._cartridge_map[self._central_lens_idx]
+        R = model.receptors_per_lens
+        sources = model._cartridge_map[self._central_lens_idx]
         self._member_indices = (sources * R + np.arange(R, dtype=np.intp))
 
     def __len__(self) -> int:
@@ -684,17 +684,17 @@ class Cartridge:
     @property
     def lens(self) -> LensView:
         """The home (central) ommatidium for this cartridge."""
-        return LensView(self._ra, np.array([self._central_lens_idx], dtype=np.intp))
+        return LensView(self._model, np.array([self._central_lens_idx], dtype=np.intp))
 
     @property
     def receptors(self) -> ReceptorView:
         """All member receptors (the R1-R6 contributors from neighbouring lenses)."""
-        return ReceptorView(self._ra, self._member_indices)
+        return ReceptorView(self._model, self._member_indices)
 
     @property
     def sources(self) -> np.ndarray:
         """(R,) global lens index of the source ommatidium for each member slot."""
-        return self._ra._cartridge_map[self._central_lens_idx].copy()
+        return self._model._cartridge_map[self._central_lens_idx].copy()
 
 
 class Eye:
@@ -709,18 +709,18 @@ class Eye:
       - The lattice neighbour graph (lazy)
 
     Spatial queries are eye-local.
-    For animal-wide queries, iterate over eyes or use 'ra.query_directions()' (it dispatches across eyes).
+    For animal-wide queries, iterate over eyes or use 'model.query_directions()' (it dispatches across eyes).
     """
 
     __slots__ = (
-        '_ra', '_eye_id', '_lens_indices', '_side',
+        '_model', '_eye_id', '_lens_indices', '_side',
         '_position_tree', '_direction_tree',
         '_position_tree_cf', '_direction_tree_cf', '_cf_local_indices',
         '_neighbour_graph', '_neighbour_k', '_directional_graph',
     )
 
-    def __init__(self, ra: 'ReceptorArray', eye_id: int, lens_indices: np.ndarray, side: str = 'left'):
-        self._ra = ra
+    def __init__(self, model: 'CompoundEyeModel', eye_id: int, lens_indices: np.ndarray, side: str = 'left'):
+        self._model = model
         self._eye_id = int(eye_id)
         self._lens_indices = np.asarray(lens_indices, dtype=np.intp)
         self._side = str(side)
@@ -757,14 +757,14 @@ class Eye:
 
     @property
     def lenses(self) -> LensView:
-        return LensView(self._ra, self._lens_indices)
+        return LensView(self._model, self._lens_indices)
 
     @property
     def receptors(self) -> ReceptorView:
-        R = self._ra.receptors_per_lens
+        R = self._model.receptors_per_lens
         rcpt_indices = (self._lens_indices[:, None] * R
                         + np.arange(R, dtype=np.intp)[None, :]).ravel()
-        return ReceptorView(self._ra, rcpt_indices)
+        return ReceptorView(self._model, rcpt_indices)
 
     @property
     def ommatidia(self) -> LensView:
@@ -788,12 +788,12 @@ class Eye:
 
     def _ensure_position_tree(self) -> cKDTree:
         if self._position_tree is None:
-            self._position_tree = cKDTree(self._ra._lens_positions[self._lens_indices])
+            self._position_tree = cKDTree(self._model._lens_positions[self._lens_indices])
         return self._position_tree
 
     def _ensure_direction_tree(self) -> cKDTree:
         if self._direction_tree is None:
-            self._direction_tree = cKDTree(self._ra._lens_directions[self._lens_indices])
+            self._direction_tree = cKDTree(self._model._lens_directions[self._lens_indices])
         return self._direction_tree
 
     def _ensure_neighbour_graph(self, k: int) -> np.ndarray:
@@ -803,7 +803,7 @@ class Eye:
 
         if self._neighbour_graph is None or self._neighbour_k != k:
             tree = self._ensure_position_tree()
-            positions = self._ra._lens_positions[self._lens_indices]
+            positions = self._model._lens_positions[self._lens_indices]
             n = positions.shape[0]
             actual_k = min(k, n - 1) if n > 1 else 0
 
@@ -822,11 +822,11 @@ class Eye:
     def _ensure_trees_cf(self) -> Tuple[Optional[cKDTree], Optional[cKDTree], np.ndarray]:
         """Lazy-build conflict-free trees (used when exclude_conflicts=True)."""
         if self._direction_tree_cf is None:
-            valid_mask = ~self._ra.have_conflicts[self._lens_indices]
+            valid_mask = ~self._model.have_conflicts[self._lens_indices]
             self._cf_local_indices = np.flatnonzero(valid_mask)
             if self._cf_local_indices.size > 0:
-                dirs = self._ra._lens_directions[self._lens_indices[self._cf_local_indices]]
-                pos = self._ra._lens_positions[self._lens_indices[self._cf_local_indices]]
+                dirs = self._model._lens_directions[self._lens_indices[self._cf_local_indices]]
+                pos = self._model._lens_positions[self._lens_indices[self._cf_local_indices]]
                 self._direction_tree_cf = cKDTree(dirs)
                 self._position_tree_cf = cKDTree(pos)
             else:
@@ -884,7 +884,7 @@ class Eye:
             if immediate_only:
                 graph = self._ensure_neighbour_graph(k)
                 local_nidx = graph[valid_local]
-                positions = self._ra._lens_positions[self._lens_indices]
+                positions = self._model._lens_positions[self._lens_indices]
 
                 # Recompute distances because the graph only stores indices
                 q_pos = positions[valid_local]
@@ -893,7 +893,7 @@ class Eye:
 
             else:
                 tree = self._ensure_position_tree()
-                positions = self._ra._lens_positions[self._lens_indices][valid_local]
+                positions = self._model._lens_positions[self._lens_indices][valid_local]
                 actual_k = min(k, len(local_to_global) - 1)
                 distances, local_nidx = tree.query(positions, k=actual_k + 1)
                 if local_nidx.ndim == 1:
@@ -1006,8 +1006,8 @@ class Eye:
         if len(self._lens_indices) == 0:
             return np.empty((Q, k), dtype=np.intp)
 
-        pos = self._ra._lens_positions[self._lens_indices]
-        dirs = self._ra._lens_directions[self._lens_indices]
+        pos = self._model._lens_positions[self._lens_indices]
+        dirs = self._model._lens_directions[self._lens_indices]
 
         desired = q[:, None, :] - pos[None, :, :]
         norms = np.linalg.norm(desired, axis=-1, keepdims=True)
@@ -1067,7 +1067,7 @@ class Eye:
         if len(self._lens_indices) <= 1:
             return 0.0
         tree = self._ensure_direction_tree()
-        dirs = self._ra._lens_directions[self._lens_indices]
+        dirs = self._model._lens_directions[self._lens_indices]
         chord_dists, _ = tree.query(dirs, k=2)
         max_chord = float(np.max(chord_dists[:, 1]))
         # Convert chord to great-circle angle
@@ -1098,11 +1098,11 @@ class Eye:
                         if query_lens_indices is not None
                         else self._lens_indices)
 
-        right = self._ra._local_right[query_global]
-        up = self._ra._local_up[query_global]
-        centre_pos = self._ra._lens_positions[query_global]
+        right = self._model._local_right[query_global]
+        up = self._model._local_up[query_global]
+        centre_pos = self._model._lens_positions[query_global]
 
-        neigh_pos = self._ra._lens_positions[result.indices]
+        neigh_pos = self._model._lens_positions[result.indices]
         delta = neigh_pos - centre_pos[:, None, :]
 
         # Project into each home lens's tangent plane
@@ -1162,7 +1162,7 @@ class Eye:
 
         k_eff = min(k_search, n - 1)
         tree = self._ensure_direction_tree()
-        dirs = self._ra._lens_directions[self._lens_indices]
+        dirs = self._model._lens_directions[self._lens_indices]
         dists, kd_idx = tree.query(dirs, k=k_eff + 1)
         if kd_idx.ndim == 1:
             kd_idx = kd_idx.reshape(-1, 1)
@@ -1172,8 +1172,8 @@ class Eye:
         angular_sep = 2.0 * np.arcsin(np.clip(nb_chord / 2.0, -1.0, 1.0))
 
         # Tangent frame for each lens
-        local_x = self._ra._local_right[self._lens_indices]
-        local_y = self._ra._local_up[self._lens_indices]
+        local_x = self._model._local_right[self._lens_indices]
+        local_y = self._model._local_up[self._lens_indices]
 
         nb_dirs = dirs[nb_idx]
         delta = nb_dirs - dirs[:, None, :]
@@ -1266,7 +1266,7 @@ class Eye:
                     f"spherical 'direction' must have shape (2,) = (d_az, d_el), got {direction.shape}"
                 )
             d_az, d_el = float(direction[0]), float(direction[1])
-            dirs = self._ra._lens_directions[self._lens_indices][valid_local]
+            dirs = self._model._lens_directions[self._lens_indices][valid_local]
 
             # Convention: az = arctan2(x, -z) (i.e. +z = forward, +x = right, +y = up)
             # TODO: This is wrong, coords are OpenGL, forward is -Z
@@ -1364,15 +1364,15 @@ class VisualOutput:
         .colours        -> data[..., :3]           on any layout via the channel helpers
         .radiance       -> data[..., 3]            on any layout via the channel helpers
     """
-    __slots__ = ('_data', '_ra', '_R', '_N')
+    __slots__ = ('_data', '_model', '_R', '_N')
 
-    def __init__(self, data: np.ndarray, ra: 'ReceptorArray'):
-        if data.shape[0] % ra.receptors_per_lens != 0:
-            raise ValueError(f"data length {data.shape[0]} not divisible by R={ra.receptors_per_lens}")
+    def __init__(self, data: np.ndarray, model: 'CompoundEyeModel'):
+        if data.shape[0] % model.receptors_per_lens != 0:
+            raise ValueError(f"data length {data.shape[0]} not divisible by R={model.receptors_per_lens}")
 
         self._data = data
-        self._ra = ra
-        self._R = ra.receptors_per_lens
+        self._model = model
+        self._R = model.receptors_per_lens
         self._N = data.shape[0] // self._R
 
     @property
@@ -1390,7 +1390,7 @@ class VisualOutput:
 
     @property
     def cartridge_count(self) -> int:
-        return self._N if self._ra._cartridges_wired else 0
+        return self._N if self._model._cartridges_wired else 0
 
     # Channel helpers
 
@@ -1418,21 +1418,21 @@ class VisualOutput:
         """
         (N, R, ...) gather of receptor outputs by cartridge.
         """
-        if not self._ra._cartridges_wired:
+        if not self._model._cartridges_wired:
             # return self.per_lens # fallback to physical grouping if not wired
             raise ValueError("VisualOutput has no cartridge wiring.")
-        return self._data[self._ra.cartridge_indices]
+        return self._data[self._model.cartridge_indices]
 
     @property
     def cartridge_central_indices(self) -> np.ndarray:
         """(N,) global receptor index of each cartridge's central (R7/8)."""
-        c = self._ra._kernel.center_index
+        c = self._model._kernel.center_index
         return np.arange(self._N, dtype=np.intp) * self._R + c
 
     @property
     def central_per_cartridge(self) -> np.ndarray:
         """(N, ...) output of just the central receptor of each cartridge."""
-        c = self._ra._kernel.center_index
+        c = self._model._kernel.center_index
         return self.per_cartridge[:, c, ...]
 
     def central(self, kernel: 'RhabdomereKernel') -> np.ndarray:
@@ -1446,5 +1446,5 @@ class VisualOutput:
         return int(self._data.shape[0])
 
     def __repr__(self) -> str:
-        c_str = f", cartridges={self._N}" if self._ra._cartridges_wired else ""
+        c_str = f", cartridges={self._N}" if self._model._cartridges_wired else ""
         return f"VisualOutput(N={self._N}, R={self._R}{c_str}, shape={self._data.shape})"

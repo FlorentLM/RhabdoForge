@@ -2,7 +2,7 @@ import numpy as np
 import pyvista as pv
 from scipy.spatial import Delaunay
 
-from insectvision.compound_eyes.receptor_array import ReceptorArray
+from insectvision.compound_eyes.receptor_array import CompoundEyeModel
 from insectvision.compound_eyes.kernel import drosophila_kernel
 from insectvision.compound_eyes.orientation import BundlesAligner
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
@@ -213,21 +213,21 @@ def _disc_template() -> pv.PolyData:
 
 class EyeViewer:
     """
-    Multi-panel 3D viewer for a ReceptorArray.
+    Multi-panel 3D viewer for a CompoundEyeModel.
     """
 
     def __init__(
         self,
-        ra: ReceptorArray,
+        model: CompoundEyeModel,
         aligner: BundlesAligner = None,
         optic_flow_world=None,
         sparsity: float = 0.0,
     ):
 
-        self.ra = ra
-        self.kernel = ra.kernel
-        self.N = ra.lens_count
-        self.R = ra.receptors_per_lens
+        self.model = model
+        self.kernel = model.kernel
+        self.N = model.lens_count
+        self.R = model.receptors_per_lens
         self.sparsity = float(sparsity)
 
         self.right = np.asarray(WORLD_RIGHT, dtype=np.float32)
@@ -249,33 +249,33 @@ class EyeViewer:
         )
         self.optic_flow_world = aligner.flow_direction.astype(np.float32)
 
-        self.result_smooth = self.aligner_smooth.compute(self.ra)
-        self.result_raw = self.aligner_raw.compute(self.ra)
+        self.result_smooth = self.aligner_smooth.compute(self.model)
+        self.result_raw = self.aligner_raw.compute(self.model)
 
         # Cache geometry
-        self.p = ra.lenses.positions
-        self.d = ra.lenses.directions
+        self.p = model.lenses.positions
+        self.d = model.lenses.directions
         self.r_sphere = float(np.mean(np.linalg.norm(self.p, axis=1)))
         self.arrow_len = self.r_sphere * 0.08
 
         # Per-eye Delaunay mesh (vertex i = lens i)
-        self.lens_data_mesh = make_eye_mesh(self.ra)
+        self.lens_data_mesh = make_eye_mesh(self.model)
         self.eye_boundary_lines = eye_boundary_line(self.lens_data_mesh)
 
         # Per-lens chirality
-        self.chirality = self.ra.lenses.chiralities.astype(np.float32)
+        self.chirality = self.model.lenses.chiralities.astype(np.float32)
 
         # Per-lens lattice spacing
-        self.disc_radii = radii_from_lattice(self.ra) * 0.4
+        self.disc_radii = radii_from_lattice(self.model) * 0.4
 
         # Heatmap scalars
         self.collinearity = self._compute_collinearity()
         self.smoothness = self._compute_smoothness()
 
-        if self.R > 1 and getattr(self.ra, '_cartridges_wired', False):
+        if self.R > 1 and getattr(self.model, '_cartridges_wired', False):
             c_field = np.zeros(self.N, dtype=np.float32)
-            c_field[self.ra.donation_conflicts] += 1.0
-            c_field[self.ra.receiving_conflicts] += 2.0
+            c_field[self.model.donation_conflicts] += 1.0
+            c_field[self.model.receiving_conflicts] += 2.0
             self.conflicts_field = c_field
         else:
             self.conflicts_field = None
@@ -531,12 +531,12 @@ class EyeViewer:
 
         # Mode 1: rhabdomere-tip bundles overview
         if self.R > 1:
-            offsets = receptor_tip_offsets(self.ra)
+            offsets = receptor_tip_offsets(self.model)
             max_off = float(np.max(np.linalg.norm(offsets, axis=2)))
             if max_off > 1e-8:
                 tip_scale = (self.r_sphere * 0.012) / max_off
                 tip_positions = self.p[:, None, :] + offsets * tip_scale
-                is_mirrored = self.ra.lenses.chiralities < 0
+                is_mirrored = self.model.lenses.chiralities < 0
                 i1, i2 = self.kernel.main_axis_indices
 
                 groups = {
@@ -595,7 +595,7 @@ class EyeViewer:
             self.actors_conflicts.append(act)
 
         # Mode 3: wiring debugger
-        if getattr(self.ra, '_cartridges_wired', False) and self.R > 1:
+        if getattr(self.model, '_cartridges_wired', False) and self.R > 1:
             self._redraw_debugger()
 
     ##
@@ -614,13 +614,13 @@ class EyeViewer:
             self.plotter.remove_actor(act)
         self.actors_debugger.clear()
 
-        if not getattr(self.ra, '_cartridges_wired', False) or self.R <= 1:
+        if not getattr(self.model, '_cartridges_wired', False) or self.R <= 1:
             return
 
         if target_idx is None:
             target_idx = int(np.random.randint(0, self.N))
 
-        omm = self.ra.lenses[target_idx]
+        omm = self.model.lenses[target_idx]
         eye = omm.eye
         target_pos = omm.position
 
@@ -631,7 +631,7 @@ class EyeViewer:
         dists = result.distances[0]
 
         # Cartridge partners for this lens
-        partners = self.ra.cartridges[target_idx].sources
+        partners = self.model.cartridges[target_idx].sources
         partner_to_type = {
             int(lens_idx): r
             for r, lens_idx in enumerate(partners)
@@ -696,7 +696,7 @@ class EyeViewer:
             self.actors_debugger.append(act)
 
         # Coloured receptor dots on the home ommatidium
-        offsets = receptor_tip_offsets(self.ra)[target_idx]
+        offsets = receptor_tip_offsets(self.model)[target_idx]
         max_off = float(np.max(np.linalg.norm(offsets, axis=1)))
         if max_off > 1e-8:
             dot_scale = disc_rad * 0.7 / max_off
@@ -855,12 +855,12 @@ if __name__ == "__main__":
         saccade_smoothing_iterations=15,
     )
 
-    ra = ReceptorArray.from_file(
+    ra = CompoundEyeModel.from_file(
         'species_models/drosophila_custom.npz',
         kernel=kernel, orientation=aligner,
     )
 
-    # ra = ReceptorArray.from_sphere(
+    # ra = CompoundEyeModel.from_sphere(
     #     n=1600, kernel=kernel, orientation=aligner,
     # )
 

@@ -13,12 +13,8 @@ from insectvision.utils.math import (
     icosphere,
 )
 
+from insectvision.compound_eyes.buffers import EyesBuffer
 from insectvision.compound_eyes.datatypes import (
-    LENS_STATIC_DTYPE,
-    LENS_DYNAMIC_DTYPE,
-    RCPT_STATIC_DTYPE,
-    RCPT_DYNAMIC_DTYPE,
-    pack_metadata,
     set_metadata_field,
 )
 from insectvision.compound_eyes.kernel import RhabdomereKernel
@@ -32,20 +28,29 @@ from insectvision.compound_eyes.proxies import (
     LensView,
     ReceptorView,
     Cartridge,
-    Eye,
-    VisualOutput
+    Eye
 )
 
 logger = logging.getLogger(__name__)
 
 
-class ReceptorArray:
+class CompoundEyeModel:
     """
     A compound eye specified as N lens positions / directions and a kernel
     of R rhabdomeres per ommatidium.
 
-    The data lives in four numpy structured arrays.
-    Views (LensView, ReceptorView, Cartridge, Eye) wrap subsets of these arrays for typed access.
+    The packed per-lens / per-receptor data lives in an EyesBuffer class.
+
+    This class owns that buffer and adds everything the model needs:
+      - the RhabdomereKernel and the list of per-eye objects
+        (KDtrees, neighbour graphs, side-aware queries),
+      - the orientation / chirality / saccade fields produced by the
+        BundlesAligner pipeline,
+      - neural-superposition wiring,
+      - world-frame transforms (translate / scale / rotate),
+      - across-eye spatial queries (query_directions, query_positions, ...).
+
+    Views (LensView, ReceptorView, Cartridge, Eye) hold a ref to this model and read/write the buffer through it.
 
     Args:
         - directions: (N, 3) array_like, Lens optical-axis (forward) directions. Will be normalised.
@@ -104,7 +109,7 @@ class ReceptorArray:
             )
         N = dirs.shape[0]
         if N == 0:
-            raise ValueError("ReceptorArray needs at least 1 lens")
+            raise ValueError("CompoundEyeModel needs at least 1 lens")
 
         self._lens_directions = normalise_vectors(dirs).astype(np.float32)
         self._lens_positions = pos.astype(np.float32).copy()
@@ -115,6 +120,9 @@ class ReceptorArray:
         self._kernel = kernel
         R = kernel.count
 
+        # Allocate the packed buffer
+        self._buffer = EyesBuffer(n_lenses=N, receptors_per_lens=R)
+
         # Tangent frames
         self._local_right, self._local_up = tangent_frames(self._lens_directions)
         self._local_right = self._local_right.astype(np.float32)
@@ -123,25 +131,19 @@ class ReceptorArray:
         # Eye membership (island detection if eye_ids is None)
         self._lens_eye_ids = self._resolve_eye_ids(self._lens_positions, eye_ids, N)
 
-        # Allocate structured arrays
-        self.lens_static_data = np.zeros(N, dtype=LENS_STATIC_DTYPE)
-        self.lens_dynamic_data = np.zeros(N, dtype=LENS_DYNAMIC_DTYPE)
-        self.rcpt_static_data = np.zeros(N * R, dtype=RCPT_STATIC_DTYPE)
-        self.rcpt_dynamic_data = np.zeros(N * R, dtype=RCPT_DYNAMIC_DTYPE)
-
         # Fill lens static data
-        self.lens_static_data['right'] = self._local_right
-        self.lens_static_data['up'] = self._local_up
-        self.lens_static_data['forward'] = self._lens_directions
-        self.lens_static_data['nodal_distance_um'] = kernel.nodal_distance_um or 1.0
+        self._buffer.lens_static_data['right'] = self._local_right
+        self._buffer.lens_static_data['up'] = self._local_up
+        self._buffer.lens_static_data['forward'] = self._lens_directions
+        self._buffer.lens_static_data['nodal_distance_um'] = kernel.nodal_distance_um or 1.0
 
         # Broadcast kernel-level photomechanical biophysics to every lens
-        self.lens_static_data['tau_rise'] = kernel.tau_rise
-        self.lens_static_data['tau_relax'] = kernel.tau_relax
-        self.lens_static_data['tau_fast'] = kernel.tau_fast
-        self.lens_static_data['tau_adapt'] = kernel.tau_adapt
-        self.lens_static_data['gain_lat_um'] = kernel.gain_lat_um
-        self.lens_static_data['gain_ax_um'] = kernel.gain_ax_um
+        self._buffer.lens_static_data['tau_rise'] = kernel.tau_rise
+        self._buffer.lens_static_data['tau_relax'] = kernel.tau_relax
+        self._buffer.lens_static_data['tau_fast'] = kernel.tau_fast
+        self._buffer.lens_static_data['tau_adapt'] = kernel.tau_adapt
+        self._buffer.lens_static_data['gain_lat_um'] = kernel.gain_lat_um
+        self._buffer.lens_static_data['gain_ax_um'] = kernel.gain_ax_um
 
         self._eyes: List[Eye] = []
         self._build_eyes()
@@ -152,8 +154,8 @@ class ReceptorArray:
             ioa_axes, ioa_tilts = self._broadcast_ioa(interommatidial_angles_rad, N)
         else:
             ioa_axes, ioa_tilts = baseline_axes, baseline_tilts
-        self.lens_static_data['ioa_axes'] = ioa_axes
-        self.lens_static_data['ioa_tilt'] = ioa_tilts
+        self._buffer.lens_static_data['ioa_axes'] = ioa_axes
+        self._buffer.lens_static_data['ioa_tilt'] = ioa_tilts
 
         # Lens diameter: if caller supplied a value, use it.
         # Otherwise derive from lattice spacing.
@@ -162,22 +164,22 @@ class ReceptorArray:
             # Sparse lattices (single-lens eye, etc): fallback to a reasonable default of 20 μm
             # TODO: Maybe just raise instead? Why would a single lens be any useful?
             ld_arr = np.where(ld_arr > 0, ld_arr, np.float32(20.0))
-            self.lens_static_data['lens_diameter_um'] = ld_arr
+            self._buffer.lens_static_data['lens_diameter_um'] = ld_arr
         else:
             ld = np.atleast_1d(np.asarray(lens_diameter_um, dtype=np.float32))
             if ld.size == 1:
-                self.lens_static_data['lens_diameter_um'] = ld.item()
+                self._buffer.lens_static_data['lens_diameter_um'] = ld.item()
             elif ld.size == N:
-                self.lens_static_data['lens_diameter_um'] = ld
+                self._buffer.lens_static_data['lens_diameter_um'] = ld
             else:
                 raise ValueError(f"lens_diameter_um size {ld.size} must be 1 or N={N}")
 
         # Fill receptors static data
-        self.rcpt_static_data['position'] = np.repeat(self._lens_positions, R, axis=0)
-        self.rcpt_static_data['sensitivity'] = np.tile(kernel.sensitivity, (N, 1))
-        self.rcpt_static_data['tau_membrane'] = kernel.tau_membrane
-        self.rcpt_static_data['rhab_diameter_um'] = np.tile(kernel.diameters_um, N)
-        self.rcpt_static_data['wavelength_um'] = np.tile(kernel.wavelengths_nm * 1e-3, N)
+        self._buffer.rcpt_static_data['position'] = np.repeat(self._lens_positions, R, axis=0)
+        self._buffer.rcpt_static_data['sensitivity'] = np.tile(kernel.sensitivity, (N, 1))
+        self._buffer.rcpt_static_data['tau_membrane'] = kernel.tau_membrane
+        self._buffer.rcpt_static_data['rhab_diameter_um'] = np.tile(kernel.diameters_um, N)
+        self._buffer.rcpt_static_data['wavelength_um'] = np.tile(kernel.wavelengths_nm * 1e-3, N)
 
         # Acceptance angles (rest + initial dynamic)
         if acceptance_angles_rad is not None:
@@ -185,8 +187,8 @@ class ReceptorArray:
         else:
             acc = self._compute_acceptance_baseline(eye_parameter=eye_parameter)
 
-        self.rcpt_static_data['rest_acc'] = acc
-        self.rcpt_dynamic_data['acc_axes'] = acc
+        self._buffer.rcpt_static_data['rest_acc'] = acc
+        self._buffer.rcpt_dynamic_data['acc_axes'] = acc
 
         # Pack metadata bits (chirality_neg filled in _apply_orientation)
         lens_ids = np.repeat(np.arange(N, dtype=np.uint32), R)
@@ -194,7 +196,7 @@ class ReceptorArray:
         eye_ids_per_rcpt = np.repeat(self._lens_eye_ids, R)
         neighbour_counts = np.zeros(N * R, dtype=np.uint32)
 
-        self.rcpt_static_data['metadata'] = pack_metadata(
+        self._buffer.pack_metadata(
             eye_id=eye_ids_per_rcpt,
             receptor_types=rcpt_types,
             neighbour_counts=neighbour_counts,
@@ -210,8 +212,8 @@ class ReceptorArray:
                 eye._lens_indices[:, None] * R + np.arange(R, dtype=np.intp)[None, :]
             ).ravel()
 
-            self.rcpt_static_data['metadata'][rcpt_indices_eye] = set_metadata_field(
-                self.rcpt_static_data['metadata'][rcpt_indices_eye],
+            self._buffer.rcpt_static_data['metadata'][rcpt_indices_eye] = set_metadata_field(
+                self._buffer.rcpt_static_data['metadata'][rcpt_indices_eye],
                 'neighbour_count',
                 n_in_eye_per_lens,
             )
@@ -241,19 +243,16 @@ class ReceptorArray:
         self._apply_orientation(result)
 
         # Cartridge mapping and diagnostics
-        self._cartridges_wired = False
-        self._cartridge_map = np.tile(np.arange(N)[:, None], (1, R))
-
+        # (buffer.cartridge_map starts as identity, buffer.cartridges_wired starts False)
         self.donation_conflicts = np.zeros(N, dtype=bool)
         self.receiving_conflicts = np.zeros(N, dtype=bool)
         self.have_conflicts = np.zeros(N, dtype=bool)
-        self._lens_dirty = True
+        self._buffer.lens_dirty = True
 
         if R > 1:
             self.wire_cartridges()
         else:
-            self.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
-
+            self._buffer.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
 
     # Factory methods
 
@@ -263,7 +262,7 @@ class ReceptorArray:
         eye_radius: float = 0.01,
         method: str = 'icosphere',
         **kwargs,
-        ) -> 'ReceptorArray':
+        ) -> 'CompoundEyeModel':
         """
         Construct a uniform spherical compound eye.
 
@@ -289,16 +288,23 @@ class ReceptorArray:
         directions: ArrayLike,
         positions: ArrayLike,
         **kwargs,
-        ) -> 'ReceptorArray':
+        ) -> 'CompoundEyeModel':
         """
         Explicit lens placement. Forwards to __init__.
         """
         return cls(directions=directions, positions=positions, **kwargs)
 
     @classmethod
-    def from_file(cls, path: str, **kwargs) -> 'ReceptorArray':
+    def from_file(cls, path: str, **kwargs) -> 'CompoundEyeModel':
         """
-        Load a species model from a .npz archive.
+        Load a species model from a .npz archive of raw geometry.
+
+        This is a geometry-level loader: it reads lens positions and
+        directions (plus a few optional fields) and re-runs the full
+        construction pipeline.
+
+        To save/load an already-built model (post-orientation, post-wiring),
+        use EyesBuffer.to_file() / EyesBuffer.from_file().
 
         Required fields (any of these names accepted, in order of preference):
             - positions: (N, 3), lens world positions
@@ -376,12 +382,17 @@ class ReceptorArray:
 
     def __repr__(self) -> str:
         return (
-            f"ReceptorArray(N={self.lens_count}, R={self.receptors_per_lens}, "
+            f"CompoundEyeModel(N={self.lens_count}, R={self.receptors_per_lens}, "
             f"eyes={len(self._eyes)}, kernel={self._kernel.name!r})"
         )
 
     def __len__(self) -> int:
         return int(self._lens_directions.shape[0])
+
+    @property
+    def buffer(self) -> EyesBuffer:
+        """The underlying packed-data buffer (GPU-ready)."""
+        return self._buffer
 
     @property
     def lens_count(self) -> int:
@@ -461,25 +472,58 @@ class ReceptorArray:
 
     @property
     def cartridges(self) -> List[Cartridge]:
-        if not self._cartridges_wired:
+        if not self._buffer.cartridges_wired:
             return []
         return [Cartridge(self, i) for i in range(self.lens_count)]
+
+    # Buffer passthroughs
+
+    @property
+    def lens_static_data(self) -> np.ndarray:
+        return self._buffer.lens_static_data
+
+    @property
+    def lens_dynamic_data(self) -> np.ndarray:
+        return self._buffer.lens_dynamic_data
+
+    @property
+    def rcpt_static_data(self) -> np.ndarray:
+        return self._buffer.rcpt_static_data
+
+    @property
+    def rcpt_dynamic_data(self) -> np.ndarray:
+        return self._buffer.rcpt_dynamic_data
 
     @property
     def lens_dirty(self) -> bool:
         """True if lens-level data has been modified since the last renderer upload."""
-        return self._lens_dirty
+        return self._buffer.lens_dirty
 
     @lens_dirty.setter
     def lens_dirty(self, value: bool) -> None:
-        self._lens_dirty = bool(value)
+        self._buffer.lens_dirty = bool(value)
 
     @property
     def cartridge_indices(self) -> np.ndarray:
         """(N, R) global receptor indices grouped by cartridge mapping."""
-        if not self._cartridges_wired:
-            raise RuntimeError("Cartridges not wired")
-        return self._cartridge_map * self.receptors_per_lens + np.arange(self.receptors_per_lens)
+        return self._buffer.cartridge_indices
+
+    # TODO: These legacy aliases (used by proxies.py & orientation.py) can be removed now
+    @property
+    def _cartridge_map(self) -> np.ndarray:
+        return self._buffer.cartridge_map
+
+    @property
+    def _cartridges_wired(self) -> bool:
+        return self._buffer.cartridges_wired
+
+    @property
+    def _lens_dirty(self) -> bool:
+        return self._buffer.lens_dirty
+
+    @_lens_dirty.setter
+    def _lens_dirty(self, value: bool) -> None:
+        self._buffer.lens_dirty = bool(value)
 
     # Animal-wide spatial queries (dispatch across eyes)
 
@@ -626,17 +670,17 @@ class ReceptorArray:
 
     # Geometry transforms (on the whole array)
 
-    def translate(self, offset: ArrayLike) -> 'ReceptorArray':
+    def translate(self, offset: ArrayLike) -> 'CompoundEyeModel':
         """
         Translate all lens (and receptor) positions by 'offset'.
         """
         off = np.asarray(offset, dtype=np.float32).reshape(3)
         self._lens_positions += off
-        self.rcpt_static_data['position'] += off
+        self._buffer.rcpt_static_data['position'] += off
         self._invalidate_spatial()
         return self
 
-    def scale(self, factor: float) -> 'ReceptorArray':
+    def scale(self, factor: float) -> 'CompoundEyeModel':
         """
         Scale all positions about the origin by 'factor'.
 
@@ -646,11 +690,11 @@ class ReceptorArray:
         """
         f = float(factor)
         self._lens_positions *= f
-        self.rcpt_static_data['position'] *= f
+        self._buffer.rcpt_static_data['position'] *= f
         self._invalidate_spatial()
         return self
 
-    def rotate(self, R: ArrayLike) -> 'ReceptorArray':
+    def rotate(self, R: ArrayLike) -> 'CompoundEyeModel':
         """
         Rotate all positions, directions, and tangent frames by the 3x3
         rotation matrix 'R'.
@@ -672,12 +716,12 @@ class ReceptorArray:
         self._local_right = self._local_right @ Rt
         self._local_up = self._local_up @ Rt
 
-        self.lens_static_data['right'] = self._local_right
-        self.lens_static_data['up'] = self._local_up
-        self.lens_static_data['forward'] = self._lens_directions
+        self._buffer.lens_static_data['right'] = self._local_right
+        self._buffer.lens_static_data['up'] = self._local_up
+        self._buffer.lens_static_data['forward'] = self._lens_directions
 
-        self.rcpt_static_data['position'] = self.rcpt_static_data['position'] @ Rt
-        self.rcpt_dynamic_data['direction'] = self.rcpt_dynamic_data['direction'] @ Rt
+        self._buffer.rcpt_static_data['position'] = self._buffer.rcpt_static_data['position'] @ Rt
+        self._buffer.rcpt_dynamic_data['direction'] = self._buffer.rcpt_dynamic_data['direction'] @ Rt
         self._saccade_cache = self._saccade_cache @ Rt
 
         self._invalidate_spatial()
@@ -704,29 +748,27 @@ class ReceptorArray:
         # Per-lens
         self._bundle_orientation = chi
         self._chirality_arr = chirality
-        self.lens_static_data['sacc_x'] = np.einsum('ij,ij->i', sacc, self._local_right)
-        self.lens_static_data['sacc_y'] = np.einsum('ij,ij->i', sacc, self._local_up)
+        self._buffer.lens_static_data['sacc_x'] = np.einsum('ij,ij->i', sacc, self._local_right)
+        self._buffer.lens_static_data['sacc_y'] = np.einsum('ij,ij->i', sacc, self._local_up)
 
         # Per-receptor: rotated focal-plane offsets
         rot_dx, rot_dy = self._kernel.rotated_offsets(chi, chirality)
         rot_offset = np.stack([rot_dx.ravel(), rot_dy.ravel()], axis=-1).astype(np.float32)
-        self.rcpt_static_data['rot_offset'] = rot_offset
+        self._buffer.rcpt_static_data['rot_offset'] = rot_offset
 
         # Per-receptor: acceptance ellipse tilt = chi (broadcast)
-        self.rcpt_static_data['acc_tilt'] = np.repeat(chi, R).astype(np.float32)
+        self._buffer.rcpt_static_data['acc_tilt'] = np.repeat(chi, R).astype(np.float32)
 
         # Per-receptor: chirality_neg bit in metadata
         is_mirrored = (np.repeat(chirality, R) < 0).astype(np.uint32)
-        self.rcpt_static_data['metadata'] = set_metadata_field(
-            self.rcpt_static_data['metadata'], 'chirality_neg', is_mirrored
-        )
+        self._buffer.set_metadata('chirality_neg', is_mirrored)
 
         # Per-receptor: actuated direction (rest direction post-orientation)
         rec_dirs, _ = self._compute_receptor_geometry()
-        self.rcpt_dynamic_data['direction'] = rec_dirs
+        self._buffer.rcpt_dynamic_data['direction'] = rec_dirs
 
         self._saccade_cache = sacc.copy()
-        self._lens_dirty = True
+        self._buffer.lens_dirty = True
 
     def _compute_receptor_geometry(self) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -811,7 +853,7 @@ class ReceptorArray:
         R = self.receptors_per_lens
 
         if R == 1:
-            self._cartridges_wired = False
+            self._buffer.cartridges_wired = False
             return
 
         center = self._kernel.center_index
@@ -821,10 +863,10 @@ class ReceptorArray:
         cartridge_map = np.tile(np.arange(N)[:, None], (1, R))
 
         if P == 0:
-            self._cartridge_map = cartridge_map
-            self.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
-            self._cartridges_wired = True
-            self._lens_dirty = True
+            self._buffer.cartridge_map = cartridge_map
+            self._buffer.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
+            self._buffer.cartridges_wired = True
+            self._buffer.lens_dirty = True
             return
 
         kernel_periph = self._kernel.offsets_um[periph_rhab] - self._kernel.offsets_um[center]
@@ -832,10 +874,10 @@ class ReceptorArray:
 
         if kernel_scale < 1e-12:
             # Degenerate kernel: peripherals = centre
-            self._cartridge_map = cartridge_map
-            self.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
-            self._cartridges_wired = True
-            self._lens_dirty = True
+            self._buffer.cartridge_map = cartridge_map
+            self._buffer.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
+            self._buffer.cartridges_wired = True
+            self._buffer.lens_dirty = True
             return
 
         # Apply per-lens chi + chirality
@@ -964,10 +1006,10 @@ class ReceptorArray:
                 if np.any(valid_mask):
                     cartridge_map[i_glob, periph_rhab[rhab_idx[valid_mask]]] = neighb_global[om_idx[valid_mask]]
 
-        self._cartridge_map = cartridge_map
-        self.rcpt_static_data['cartridge_src'] = (cartridge_map * R + np.arange(R)).flatten().astype(np.uint32)
-        self._cartridges_wired = True
-        self._lens_dirty = True
+        self._buffer.cartridge_map = cartridge_map
+        self._buffer.rcpt_static_data['cartridge_src'] = (cartridge_map * R + np.arange(R)).flatten().astype(np.uint32)
+        self._buffer.cartridges_wired = True
+        self._buffer.lens_dirty = True
 
         # Diagnostics
         is_periph = np.ones(R, dtype=bool)
@@ -1056,7 +1098,7 @@ class ReceptorArray:
                 raise ValueError(f"eye_ids exceed {max_eyes - 1} (3-bit field), got max={arr.max()}")
             return arr
 
-        raw = ReceptorArray._detect_eye_islands(positions)
+        raw = CompoundEyeModel._detect_eye_islands(positions)
         unique = np.unique(raw)
         if unique.size > max_eyes:
             raise ValueError(
@@ -1110,7 +1152,7 @@ class ReceptorArray:
     def _invalidate_spatial(self) -> None:
         for eye in self._eyes:
             eye._invalidate()
-        self._lens_dirty = True
+        self._buffer.lens_dirty = True
 
     @staticmethod
     def _broadcast_ioa(
@@ -1203,8 +1245,8 @@ class ReceptorArray:
 
         if kernel.nodal_distance_um is not None:
             # Snyder mode: physical baseline from diffraction + geometric optics
-            nd = self.lens_static_data['nodal_distance_um'].astype(np.float32)
-            ld = self.lens_static_data['lens_diameter_um'].astype(np.float32)
+            nd = self._buffer.lens_static_data['nodal_distance_um'].astype(np.float32)
+            ld = self._buffer.lens_static_data['lens_diameter_um'].astype(np.float32)
 
             rho_geom = np.arctan(rhab[None, :] / np.clip(nd[:, None], 1e-6, None))
             rho_diff = wl_um[None, :] / np.clip(ld[:, None], 1e-6, None)
@@ -1214,7 +1256,7 @@ class ReceptorArray:
             acc_maj = (p_maj * rho).reshape(N * R)
         else:
             # No optical model: lattice spacing mode
-            ioa_axes = self.lens_static_data['ioa_axes'].astype(np.float32)
+            ioa_axes = self._buffer.lens_static_data['ioa_axes'].astype(np.float32)
             ioa_minor = ioa_axes[:, 0]
             ioa_major = ioa_axes[:, 1]
 
@@ -1364,16 +1406,17 @@ class ReceptorArray:
 if __name__ == '__main__':
     from insectvision.compound_eyes.kernel import drosophila_kernel
 
-    ra = ReceptorArray.from_sphere(n=500)
+    ra = CompoundEyeModel.from_sphere(n=500)
 
     print(ra)
     print(f"  Total receptors: {ra.total_receptors}")
     print(f"  Eyes: {ra.eyes}")
+    print(f"  Buffer: {ra.buffer}")
 
     # Drosophila with flow direction
     droso = drosophila_kernel()
 
-    ra2 = ReceptorArray.from_sphere(
+    ra2 = CompoundEyeModel.from_sphere(
         n=1600,
         kernel=droso,
         flow_direction=[1.0, 0.0, 0.0],  # Anterior flow
@@ -1381,5 +1424,5 @@ if __name__ == '__main__':
     print(ra2)
     print(f"  Bundle orientations (first 5): {ra2.lenses[:5].bundle_orientations}")
     print(f"  Chiralities (first 5): {ra2.lenses[:5].chiralities}")
-    print(f"  Cartridges wired: {ra2._cartridges_wired}")
+    print(f"  Cartridges wired: {ra2.buffer.cartridges_wired}")
     print(f"  Cartridge[0]: {ra2.cartridges[0]}")
