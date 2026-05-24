@@ -65,6 +65,7 @@ def _alignment_phasor_field(
     strength: float = 1.0,
     falloff: float = 0.7,
     diagonal_strength: float = 1.0,
+    diagonal_angle_deg: float = 45.0,
 ) -> np.ndarray:
     """
     Four-zone combed-flow alignment phasor field.
@@ -72,17 +73,29 @@ def _alignment_phasor_field(
     Args:
         - 'eye_sign': mirrors e_y across the body midline
         - 'hemisphere_sign': mirrors e_z across the flow-frame equator.
-        - 'diagonal_strength': ratio between the flow and the diagonal pull
-            (because the combed target is renormalised against |proj_S| downstream)
+        - 'diagonal_strength': magnitude of the diagonal pull relative
+            to the flow target (the combed target is renormalised against
+            |proj_S| downstream, so this is effectively a ratio).
+        - 'diagonal_angle_deg': angle of the diagonal pull in the focus
+            tangent plane (perpendicular to e_x at the point of expansion).
+            Decomposes the pull into lateral (e_y) and vertical (e_z) parts:
+                  0° -> purely lateral  (collapses chirality / dorsoventral split)
+                 45° -> equal lateral and vertical (default)
+                 90° -> purely vertical (collapses the L/R distinction)
     """
     proj_S = e_x[None, :] - (lens_directions @ e_x)[:, None] * lens_directions
 
+    a = float(np.radians(diagonal_angle_deg))
+
+    # sqrt(2) normalisation keeps the total diagonal magnitude constant across the sweep
+    sqrt2 = float(np.sqrt(2.0))
+    lateral_scale = diagonal_strength * np.cos(a) * sqrt2
+    vertical_scale = diagonal_strength * np.sin(a) * sqrt2
+
     target_world = (
-        -e_x[None, :]
-        + diagonal_strength * (
-            -eye_sign[:, None]        * e_y[None, :]
-            + hemisphere_sign[:, None] * e_z[None, :]
-        )
+            -e_x[None, :]
+            + lateral_scale * (-eye_sign[:, None]) * e_y[None, :]
+            + vertical_scale * hemisphere_sign[:, None] * e_z[None, :]
     ).astype(np.float32)
 
     target_proj = target_world - np.sum(target_world * lens_directions,
@@ -106,11 +119,11 @@ def _alignment_phasor_field(
 
 
 def _major_axis_field(
-    alignment_phasor: np.ndarray,
-    lens_directions: np.ndarray,
-    base_rotation_rad: float,
-    eye_sign: np.ndarray,
-    hemisphere_sign: np.ndarray,
+        alignment_phasor: np.ndarray,
+        lens_directions: np.ndarray,
+        base_rotation_rad: float,
+        eye_sign: np.ndarray,
+        hemisphere_sign: np.ndarray,
 ) -> np.ndarray:
     """
     Bundle main axis: per-eye rotation of the alignment phasor in each
@@ -214,6 +227,8 @@ class BundlesAligner:
             The point of expansion is at -flow_direction on the unit sphere.
         - diagonal_strength: float, Ratio of diagonal pull to pure flow target in the alignment phasor.
             1.0 equal pull (default), <1.0 makes the field more aligned with the flow, >1.0 pushes it off-axis.
+        - diagonal_angle_deg: float, Angle of the diagonal pull in the focus tangent plane (default 45°).
+            0° -> purely lateral, 45° -> balanced, 90° -> purely vertical.
         - alignment_smoothing_iterations: int, Per-zone nematic smoothing passes on the alignment phasor field.
         - saccade_smoothing_iterations: int, Per-eye nematic smoothing passes on the saccade phasor field.
         - falloff: float, Spatial falloff of the diagonal target (away from the point of expansion).
@@ -222,11 +237,12 @@ class BundlesAligner:
     def __init__(self,
         flow_direction: ArrayLike,
         diagonal_strength: float = 1.0,
+        diagonal_angle_deg: float = 45.0,
         alignment_smoothing_iterations: int = 0,
         saccade_smoothing_iterations: int = 10,
         falloff: float = 0.7,
         strength: float = 1.0,
-    ):
+        ):
 
         S = np.asarray(flow_direction, dtype=np.float32).reshape(-1)
 
@@ -237,6 +253,7 @@ class BundlesAligner:
 
         self.flow_direction = S / float(np.linalg.norm(S))
         self.diagonal_strength = float(diagonal_strength)
+        self.diagonal_angle_deg = float(diagonal_angle_deg)
         self.alignment_smoothing_iterations = int(alignment_smoothing_iterations)
         self.saccade_smoothing_iterations = int(saccade_smoothing_iterations)
         self.falloff = float(falloff)
@@ -246,7 +263,7 @@ class BundlesAligner:
         ra: 'ReceptorArray',
         override_chi: Optional[ArrayLike] = None,
         override_chirality: Optional[ArrayLike] = None,
-    ) -> OrientationResult:
+        ) -> OrientationResult:
         """
         Compute the orientation field for the receptor array's lens geometry.
         'override_chi' or 'override_chirality' can be supplied to bypass the corresponding pipeline step.
@@ -282,6 +299,7 @@ class BundlesAligner:
             strength=self.strength,
             falloff=self.falloff,
             diagonal_strength=self.diagonal_strength,
+            diagonal_angle_deg=self.diagonal_angle_deg,
         )
         if self.alignment_smoothing_iterations > 0:
             zone_labels = (
@@ -356,7 +374,7 @@ class BundlesAligner:
         ra: 'ReceptorArray',
         override_chi: Optional[ArrayLike] = None,
         override_chirality: Optional[ArrayLike] = None,
-    ) -> OrientationResult:
+        ) -> OrientationResult:
         """
         Compute and write the result into the receptor array (also return it).
         """
@@ -380,7 +398,6 @@ def trivial_orientation(N: int) -> OrientationResult:
     )
 
 
-
 def _prepare_per_lens(value: ArrayLike, N: int, name: str) -> np.ndarray:
     arr = np.asarray(value, dtype=np.float32)
 
@@ -391,7 +408,6 @@ def _prepare_per_lens(value: ArrayLike, N: int, name: str) -> np.ndarray:
         return arr.astype(np.float32)
 
     raise ValueError(f"'{name}' must be scalar or shape ({N},); got {arr.shape}")
-
 
 
 def apply_chirality(
