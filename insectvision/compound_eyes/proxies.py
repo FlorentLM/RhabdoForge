@@ -150,6 +150,25 @@ class LensView:
         """(M, 3) tangent 'up' vectors (lens-local y)."""
         return self._ra._local_up[self._gi].copy()
 
+    @property
+    def azimuths_rad(self) -> np.ndarray:
+        """(M,) lens azimuths (rad)."""
+        d = self.directions
+        return np.arctan2(d[:, 0], -d[:, 2])
+
+    @property
+    def azimuths_deg(self) -> np.ndarray:
+        return np.degrees(self.azimuths_rad)
+
+    @property
+    def elevations_rad(self) -> np.ndarray:
+        """(M,) lens elevations (rad)."""
+        return np.arcsin(np.clip(self.directions[:, 1], -1.0, 1.0))
+
+    @property
+    def elevations_deg(self) -> np.ndarray:
+        return np.degrees(self.elevations_rad)
+
     # Lattice geometry
 
     @property
@@ -313,6 +332,23 @@ class LensView:
     @property
     def up_axis(self) -> np.ndarray:
         return self._ra._local_up[self._require_single('up_axis')].copy()
+
+    @property
+    def azimuth_rad(self) -> float:
+        d = self.direction
+        return float(np.arctan2(d[0], -d[2]))
+
+    @property
+    def azimuth_deg(self) -> float:
+        return float(np.degrees(self.azimuth_rad))
+
+    @property
+    def elevation_rad(self) -> float:
+        return float(np.arcsin(np.clip(self.direction[1], -1.0, 1.0)))
+
+    @property
+    def elevation_deg(self) -> float:
+        return float(np.degrees(self.elevation_rad))
 
     @property
     def ioa_axis(self) -> np.ndarray:
@@ -503,6 +539,25 @@ class ReceptorView:
     @property
     def wavelengths_um(self) -> np.ndarray:
         return self._ra.rcpt_static_data['wavelength_um'][self._gi].copy()
+
+    @property
+    def azimuths_rad(self) -> np.ndarray:
+        """(M,) current viewing azimuths (rad)."""
+        d = self.directions
+        return np.arctan2(d[:, 0], -d[:, 2])
+
+    @property
+    def azimuths_deg(self) -> np.ndarray:
+        return np.degrees(self.azimuths_rad)
+
+    @property
+    def elevations_rad(self) -> np.ndarray:
+        """(M,) current viewing elevations (rad)."""
+        return np.arcsin(np.clip(self.directions[:, 1], -1.0, 1.0))
+
+    @property
+    def elevations_deg(self) -> np.ndarray:
+        return np.degrees(self.elevations_rad)
 
     # Settable cell-level properties
 
