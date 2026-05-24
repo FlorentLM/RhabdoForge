@@ -3,6 +3,7 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
+from scipy.optimize import linear_sum_assignment
 
 from insectvision.engine.world_utils import WORLD_FORWARD
 from insectvision.utils.math import (
@@ -52,11 +53,20 @@ class ReceptorArray:
         - kernel: RhabdomereKernel (optional), Per-species bundle model. Defaults to a single panchromatic receptor.
         - eye_ids: (N,) array_like of uint (optional), Eye membership for each lens (0-7).
             If None, splits in two eyes on x: x < 0 -> 0 (left), x ≥ 0 -> 1 (right).
-        - lens_diameter_um: float or (N,) array_like, Lens aperture (μm). Default 16 μm.
+        - lens_diameter_um: float or (N,) array_like or None, Lens aperture (μm).
+            If None (default), auto-derived per-lens from the local lattice spacing.
         - interommatidial_angles_rad: (2,), (N, 2), or None, Per-lens (minor, major) IOA.
-            If None, computed as the mean angular distance to lattice neighbours (isotropic baseline).
+            If None, computed from the local lattice (sorted mean over first ring,
+            tilt from the hexatic Ψ6 order parameter).
         - acceptance_angles_rad: (R,), (N, R), (N, R, 2), or None, Per-receptor acceptance half-widths.
-            If None, computed via Snyder's combined geometric + diffraction formula.
+            If None, computed from optics (Snyder, when nodal distance is known) or
+            from the local IOA (lattice-convention fallback), scaled by 'eye_parameter'.
+        - eye_parameter: float or 2-tuple (p_min, p_maj) or None,
+            Multiplier on the optical/lattice baseline that controls how wide the
+            RFs are relative to physical optics.
+            p=1.0 (default) is pure Snyder / pure IOA
+            p>1 makes RFs wider, p<1 narrower.
+            A 2-tuple gives anisotropic scaling per (minor, major).
         - bundle_orientations: (N,) array_like or None, Override chi from the orientation pipeline (rad).
         - chiralities: (N,) array_like or None, Override chirality from the orientation pipeline (±1).
         - orientation: BundlesAligner or None, Explicit pipeline configuration.
@@ -65,14 +75,18 @@ class ReceptorArray:
             Defaults to forward-facing optic flow.
     """
 
+    HEX_PACKING_FACTOR = 1.0 # Fraction spacing that the lens diameter occupies (1.0 = fully
+    # touching, 0.9 leaves a small interommatidial cuticle gap, etc)
+
     def __init__(self,
                  directions: ArrayLike,
                  positions: ArrayLike,
                  kernel: Optional[RhabdomereKernel] = None,
                  eye_ids: Optional[ArrayLike] = None,
-                 lens_diameter_um: Union[float, ArrayLike] = 16.0,
+                 lens_diameter_um: Optional[Union[float, ArrayLike]] = None,
                  interommatidial_angles_rad: Optional[ArrayLike] = None,
                  acceptance_angles_rad: Optional[ArrayLike] = None,
+                 eye_parameter: Optional[Union[float, Tuple[float, float]]] = None,
                  bundle_orientations: Optional[ArrayLike] = None,
                  chiralities: Optional[ArrayLike] = None,
                  orientation: Optional[BundlesAligner] = None,
@@ -123,14 +137,6 @@ class ReceptorArray:
         nd_value = kernel.nodal_distance_um if kernel.nodal_distance_um is not None else 1.0
         self.lens_static_data['nodal_distance_um'] = nd_value
 
-        ld = np.atleast_1d(np.asarray(lens_diameter_um, dtype=np.float32))
-        if ld.size == 1:
-            self.lens_static_data['lens_diameter_um'] = ld.item()
-        elif ld.size == N:
-            self.lens_static_data['lens_diameter_um'] = ld
-        else:
-            raise ValueError(f"lens_diameter_um size {ld.size} must be 1 or N={N}")
-
         # Broadcast kernel-level photomechanical biophysics to every lens
         self.lens_static_data['tau_rise'] = kernel.tau_rise
         self.lens_static_data['tau_relax'] = kernel.tau_relax
@@ -143,13 +149,31 @@ class ReceptorArray:
         self._eyes: List[Eye] = []
         self._build_eyes()
 
-        # Interommatidial angles
+        # Lattice properties: IOA (minor, major), tilt, and per-lens lens spacing
+        baseline_axes, baseline_tilts, lens_spacing = self._compute_ioa_baseline()
         if interommatidial_angles_rad is not None:
             ioa_axes, ioa_tilts = self._broadcast_ioa(interommatidial_angles_rad, N)
         else:
-            ioa_axes, ioa_tilts = self._compute_ioa_baseline()
+            ioa_axes, ioa_tilts = baseline_axes, baseline_tilts
         self.lens_static_data['ioa_axes'] = ioa_axes
         self.lens_static_data['ioa_tilt'] = ioa_tilts
+
+        # Lens diameter: if caller supplied a value, use it.
+        # Otherwise derive from lattice spacing.
+        if lens_diameter_um is None:
+            ld_arr = (self.HEX_PACKING_FACTOR * lens_spacing).astype(np.float32)
+            # Sparse lattices (single-lens eye, etc): fallback to a reasonable default of 20 μm
+            # TODO: Maybe just raise instead? Why would a single lens be any useful?
+            ld_arr = np.where(ld_arr > 0, ld_arr, np.float32(20.0))
+            self.lens_static_data['lens_diameter_um'] = ld_arr
+        else:
+            ld = np.atleast_1d(np.asarray(lens_diameter_um, dtype=np.float32))
+            if ld.size == 1:
+                self.lens_static_data['lens_diameter_um'] = ld.item()
+            elif ld.size == N:
+                self.lens_static_data['lens_diameter_um'] = ld
+            else:
+                raise ValueError(f"lens_diameter_um size {ld.size} must be 1 or N={N}")
 
         # Fill receptors static data
         self.rcpt_static_data['position'] = np.repeat(self._lens_positions, R, axis=0)
@@ -164,7 +188,7 @@ class ReceptorArray:
         if acceptance_angles_rad is not None:
             acc = self._broadcast_acceptance(acceptance_angles_rad, N, R)
         else:
-            acc = self._compute_acceptance_baseline()
+            acc = self._compute_acceptance_baseline(eye_parameter=eye_parameter)
 
         self.rcpt_static_data['rest_acc'] = acc
         self.rcpt_dynamic_data['acc_axes'] = acc
@@ -174,7 +198,7 @@ class ReceptorArray:
         rcpt_types = np.tile(np.arange(R, dtype=np.uint32), N)
         eye_ids_per_rcpt = np.repeat(self._lens_eye_ids, R)
         neighbour_counts = np.zeros(N * R, dtype=np.uint32)
-        
+
         self.rcpt_static_data['metadata'] = pack_metadata(
             eye_id=eye_ids_per_rcpt,
             receptor_types=rcpt_types,
@@ -238,7 +262,7 @@ class ReceptorArray:
         eye_radius: float = 0.01,
         method: str = 'icosphere',
         **kwargs,
-    ) -> 'ReceptorArray':
+        ) -> 'ReceptorArray':
         """
         Construct a uniform spherical compound eye.
 
@@ -264,7 +288,7 @@ class ReceptorArray:
         directions: ArrayLike,
         positions: ArrayLike,
         **kwargs,
-    ) -> 'ReceptorArray':
+        ) -> 'ReceptorArray':
         """
         Explicit lens placement. Forwards to __init__.
         """
@@ -452,9 +476,9 @@ class ReceptorArray:
     # Animal-wide spatial queries (dispatch across eyes)
 
     def query_directions(self,
-        directions: ArrayLike,
-        k: int = 1,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+         directions: ArrayLike,
+         k: int = 1,
+         ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Find the k lenses (across all eyes) whose optical axes lie closest to
         each query direction.
@@ -479,6 +503,114 @@ class ReceptorArray:
             best_dist = combined_dist[rows, order]
 
         return best_idx, best_dist
+
+    def query_positions(self,
+        positions: ArrayLike,
+        k: int = 1,
+        ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Find the k lenses (across all eyes) closest in world-space position
+        to each query point.
+
+        Returns (indices, distances) of shape (Q, k).
+        """
+        pts = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
+        Q = pts.shape[0]
+        best_idx = np.full((Q, k), -1, dtype=np.intp)
+        best_dist = np.full((Q, k), np.inf, dtype=np.float32)
+
+        for eye in self._eyes:
+            eye_k = min(k, len(eye))
+            if eye_k == 0:
+                continue
+            idx, dist = eye.query_positions(pts, k=eye_k)
+            combined_idx = np.concatenate([best_idx, idx], axis=1)
+            combined_dist = np.concatenate([best_dist, dist], axis=1)
+            order = np.argsort(combined_dist, axis=1)[:, :k]
+            rows = np.arange(Q)[:, None]
+            best_idx = combined_idx[rows, order]
+            best_dist = combined_dist[rows, order]
+
+        return best_idx, best_dist
+
+    def query_lookat(self,
+         targets: ArrayLike,
+         k: int = 1,
+         ) -> np.ndarray:
+        """
+        Find the k lenses (across all eyes) best looking at each world-space
+        target point. See Eye.query_lookat for the scoring.
+
+        Returns global lens indices of shape (Q, k), best-first.
+        """
+        if k < 1:
+            raise ValueError("k must be >= 1")
+        q = np.asarray(targets, dtype=np.float32).reshape(-1, 3)
+        Q = q.shape[0]
+        if self.lens_count == 0:
+            return np.empty((Q, k), dtype=np.intp)
+
+        # Score against all lenses (across all eyes)
+        pos = self._lens_positions
+        dirs = self._lens_directions
+        desired = q[:, None, :] - pos[None, :, :]
+        norms = np.linalg.norm(desired, axis=-1, keepdims=True)
+        np.divide(desired, norms, out=desired, where=norms > 0)
+        dots = np.einsum('jk,ijk->ij', dirs, desired)
+
+        k_eff = min(k, dots.shape[1])
+        part = np.argpartition(dots, -k_eff, axis=1)[:, -k_eff:]
+        top = np.take_along_axis(dots, part, axis=1)
+        order = np.argsort(top, axis=1)[:, ::-1]
+        best = np.take_along_axis(part, order, axis=1)
+        return best.astype(np.intp)
+
+    def query_cone(self,
+        center_direction: ArrayLike,
+        angle: float,
+        degrees: bool = True,
+        ) -> np.ndarray:
+        """
+        All lenses (across all eyes) whose optical axis lies within 'angle'
+        of 'center_direction'.
+
+        Returns global lens indices (union across eyes, arbitrary order).
+        """
+        hits = []
+        for eye in self._eyes:
+            h = eye.query_cone(center_direction, angle, degrees=degrees)
+            if h.size > 0:
+                hits.append(h)
+        if hits:
+            return np.concatenate(hits)
+        return np.empty(0, dtype=np.intp)
+
+    def query_ball(self,
+        center_position: ArrayLike,
+        radius: float,
+        ) -> np.ndarray:
+        """
+        All lenses (across all eyes) whose world position lies within 'radius'
+        of 'center_position'.
+
+        Returns global lens indices (union across eyes, arbitrary order).
+        """
+        hits = []
+        for eye in self._eyes:
+            h = eye.query_ball(center_position, radius)
+            if h.size > 0:
+                hits.append(h)
+        if hits:
+            return np.concatenate(hits)
+        return np.empty(0, dtype=np.intp)
+
+    @property
+    def max_gap(self) -> float:
+        """
+        Largest angular gap (in radians) between any lens and its nearest neighbour,
+        over all eyes.
+        """
+        return float(max((e.max_gap() for e in self._eyes), default=0.0))
 
     def saccade_field(self) -> np.ndarray:
         """Per-lens microsaccade actuation axis in world coordinates. Shape (N, 3)."""
@@ -622,42 +754,248 @@ class ReceptorArray:
 
     # Cartridges (neural-superposition wiring)
 
-    def wire_cartridges(self) -> None:
+    def wire_cartridges(self,
+            snap_radius: float = 0.2,
+            assign_radius: float = 1.0,
+            angular_dev: float = 25.0,
+            scale_dev: float = 0.3,
+            pre_cull: bool = False,
+            first_ring_only: bool = False,
+            neighbour_dist_factor: float = 1.3,
+            min_snap_matches: int = 2,
+            k_search: int = 30,
+            snap_priority_bonus: Optional[float] = None,
+        ) -> None:
         """
-        Wire each peripheral receptor to a cartridge anchored at the
-        central R7/8 of the neighbouring ommatidium whose optical axis is
-        closest to the peripheral's line of sight.
+        Lattice-aware neural-superposition wiring via template snapping.
+
+        For each home lens i (= its central R7/8 hosts the cartridge),
+        the kernel's rhabdomere offsets and orientation act as a template in i's tangent plane,
+        scaled to local lattice units.
+        Search for the best similarity transform that snaps the template onto the
+        positions of i's nearest neighbours, and use Hungarian assignment to
+        match one-to-one between peripheral rhabdomere positions and neighbour lenses.
+
+        Matches outside 'assign_radius' or with mismatched chirality are ignored.
+
+        Args:
+            - snap_radius: Max lattice-unit distance for template-to-neighbour
+                pair to count as a successful snap.
+            - assign_radius: Max lattice-unit distance allowed in the final
+                Hungarian assignment. Matches beyond this radius are dropped.
+            - angular_dev: Max angular deviation (degrees) of candidate rotations from identity.
+            - scale_dev: Max scale deviation of candidate from 1.0.
+            - pre_cull: If True, only consider template anchors with at least
+                one immediate neighbour within 'assign_radius' before
+                generating candidates.
+            - first_ring_only: If True, restrict snap targets to first-ring neighbours.
+            - neighbour_dist_factor: A neighbour is first-ring if its distance
+                is <= 'neighbour_dist_factor * closest_neighbour_dist'.
+            - min_snap_matches: Minimum successful snaps for a candidate to survive scoring.
+            - k_search: Number of nearest neighbours to query per lens (up to a few rings).
+            - snap_priority_bonus: Penalty added to non-snap cells in the
+                Hungarian cost matrix. Forces Hungarian to prefer assignments
+                that preserve snap-quality matches over assignments that
+                spread the cost uniformly across larger distances.
+                If None, defaults to '100 * assign_radius'.
         """
+        N = self.lens_count
         R = self.receptors_per_lens
+
         if R == 1:
             self._cartridges_wired = False
             return
 
         center = self._kernel.center_index
-        cartridge_src = self.rcpt_static_data['cartridge_src'].copy()
+        periph_rhab = np.array(
+            [i for i in range(R) if i != center], dtype=np.intp
+        )
+        P = periph_rhab.size
+
+        # Default: every receptor anchors at its own lens's central R7/8
+        # Unmatched peripheral rhabdomeres also fall through to their own ommatidium's cartridge.
+        lens_idx_per_rcpt = np.repeat(np.arange(N, dtype=np.uint32), R)
+        cartridge_src = (lens_idx_per_rcpt * R + np.uint32(center)).astype(np.uint32)
+
+        if P == 0:
+            self.rcpt_static_data['cartridge_src'] = cartridge_src
+            self._cartridge_members = {
+                int(c): np.flatnonzero(cartridge_src == c).astype(np.intp)
+                for c in np.unique(cartridge_src)
+            }
+            self._cartridges_wired = True
+            self._lens_dirty = True
+            return
+
+        kernel_periph = (
+            self._kernel.offsets_um[periph_rhab] - self._kernel.offsets_um[center]
+        )
+        kernel_scale = float(np.mean(np.linalg.norm(kernel_periph, axis=1)))
+        if kernel_scale < 1e-12:
+            # Degenerate kernel: peripherals = centre
+            self.rcpt_static_data['cartridge_src'] = cartridge_src
+            self._cartridge_members = {
+                int(c): np.flatnonzero(cartridge_src == c).astype(np.intp)
+                for c in np.unique(cartridge_src)
+            }
+            self._cartridges_wired = True
+            self._lens_dirty = True
+            return
+
+        # Apply per-lens chi + chirality
+        rot_dx_all, rot_dy_all = self._kernel.rotated_offsets(
+            self._bundle_orientation, self._chirality_arr
+        )
+
+        # Centre on central rhab, normalise to lattice units
+        template_dx_all = (rot_dx_all - rot_dx_all[:, center:center + 1]) / kernel_scale
+        template_dy_all = (rot_dy_all - rot_dy_all[:, center:center + 1]) / kernel_scale
+
+        min_required = max(1, min(min_snap_matches, P))
+        angular_dev_rad = float(np.radians(angular_dev))
+        anchor_target = (np.uint32(R) * np.arange(N, dtype=np.uint32)
+                         + np.uint32(center))
+
+        # Snap priority penalty
+        if snap_priority_bonus is None:
+            snap_priority_bonus = 100.0 * float(assign_radius)
+        snap_priority_bonus = float(snap_priority_bonus)
 
         for eye in self._eyes:
-            if len(eye) == 0:
+            n_in_eye = len(eye)
+            if n_in_eye < 2:
                 continue
-            central_rcpt_indices = (eye._lens_indices * R + center).astype(np.intp)
-            central_directions = self.rcpt_dynamic_data['direction'][central_rcpt_indices]
-            tree = cKDTree(central_directions)
+            k_eff = min(k_search, n_in_eye - 1)
 
-            for r in range(R):
-                if r == center:
-                    # Central receptor: cartridge_src is self (default identity).
-                    rcpt_indices = (eye._lens_indices * R + r).astype(np.intp)
-                    cartridge_src[rcpt_indices] = rcpt_indices.astype(np.uint32)
+            nb = eye.neighbours(
+                lens_indices=eye._lens_indices,
+                k=k_eff,
+                immediate_only=False,
+                neighbour_dist_factor=neighbour_dist_factor,
+                chirality=self._chirality_arr,
+            )
+            if not nb:
+                continue
+
+            is_immediate_all = nb.is_immediate
+            same_chir_all = nb.same_chirality
+
+            for i_loc in range(n_in_eye):
+                i_glob = int(eye._lens_indices[i_loc])
+
+                row_immediate = is_immediate_all[i_loc]
+                if not np.any(row_immediate):
                     continue
 
-                rcpt_indices = (eye._lens_indices * R + r).astype(np.intp)
-                rcpt_directions = self.rcpt_dynamic_data['direction'][rcpt_indices]
-                _, nearest_central_local = tree.query(rcpt_directions, k=1)
-                cartridge_src[rcpt_indices] = central_rcpt_indices[nearest_central_local].astype(np.uint32)
+                nb_global = nb.indices[i_loc].astype(np.intp)
+                nb_dists = nb.distances[i_loc]
+
+                local_spacing = float(np.median(nb_dists[row_immediate]))
+                if local_spacing < 1e-12:
+                    continue
+
+                # Project neighbours into i's tangent frame (in lattice units)
+                central_pos = self._lens_positions[i_glob]
+                nb_vectors = self._lens_positions[nb_global] - central_pos
+                nb_u = nb_vectors @ self._local_right[i_glob]
+                nb_v = nb_vectors @ self._local_up[i_glob]
+                nb_uv = np.column_stack([nb_u, nb_v]) / local_spacing
+
+                # Template (peripheral rhabs only) for this lens
+                template_uv = np.column_stack([
+                    template_dx_all[i_glob, periph_rhab],
+                    template_dy_all[i_glob, periph_rhab],
+                ])
+
+                z_template = template_uv[:, 0] + 1j * template_uv[:, 1]
+                z_nb = nb_uv[:, 0] + 1j * nb_uv[:, 1]
+                z_snap = z_nb[row_immediate] if first_ring_only else z_nb
+
+                # Candidate similarity transforms w = scale * exp(i*theta)
+                if pre_cull:
+                    z_immediate = z_nb[row_immediate]
+                    diffs = np.abs(z_template[:, None] - z_immediate[None, :])
+                    anchors = np.flatnonzero(np.min(diffs, axis=1) < assign_radius)
+                else:
+                    anchors = np.arange(P)
+
+                valid_anchors = anchors[np.abs(z_template[anchors]) >= 1e-8]
+                candidates_w = [1.0 + 0j]
+                if valid_anchors.size > 0:
+                    w_all = z_snap[None, :] / z_template[valid_anchors, None]
+                    angle_ok = np.abs(np.angle(w_all)) <= angular_dev_rad
+                    scale_ok = np.abs(np.abs(w_all) - 1.0) <= scale_dev
+                    valid = angle_ok & scale_ok
+                    if np.any(valid):
+                        candidates_w.extend(w_all[valid].tolist())
+
+                # Score candidates with snap priority Hungarian
+                # Score = (-n_snaps, |angle(w)|, sum_of_matched_dists)
+                # -> prefer more snaps, then near-identity rotations, then total snap quality
+                best_score = (0, np.inf, np.inf)
+                best_w = None
+                for w in candidates_w:
+                    z_placed = w * z_template
+                    placed_uv = np.column_stack([z_placed.real, z_placed.imag])
+                    cost = np.linalg.norm(
+                        placed_uv[:, None, :] - nb_uv[None, :, :], axis=2
+                    )
+                    # Penalise non-snap cells
+                    cost_with_penalty = cost + np.where(
+                        cost >= snap_radius, snap_priority_bonus, 0.0
+                    )
+                    row_idx, col_idx = linear_sum_assignment(cost_with_penalty)
+                    matched_dists = cost[row_idx, col_idx]  # real distances for scoring
+                    n_snaps = int(np.sum(matched_dists < snap_radius))
+                    if n_snaps < min_required:
+                        continue
+                    score = (
+                        -n_snaps,
+                        float(np.abs(np.angle(w))),
+                        float(np.sum(matched_dists)),
+                    )
+                    if score < best_score:
+                        best_score = score
+                        best_w = w
+
+                if best_w is None:
+                    continue
+
+                # Final Hungarian assignment with the chosen candidate
+                z_best = best_w * z_template
+                corrected_uv = np.column_stack([z_best.real, z_best.imag])
+                cost_final = np.linalg.norm(
+                    corrected_uv[:, None, :] - nb_uv[None, :, :], axis=2
+                )
+                cost_final_penalised = cost_final + np.where(
+                    cost_final >= snap_radius, snap_priority_bonus, 0.0
+                )
+                rhab_idx, om_idx = linear_sum_assignment(cost_final_penalised)
+
+                # Same-chirality + assign_radius filter (real distances)
+                same_chir_row = same_chir_all[i_loc]
+                valid_mask = (
+                    (cost_final[rhab_idx, om_idx] < assign_radius)
+                    & same_chir_row[om_idx]
+                )
+
+                if not np.any(valid_mask):
+                    continue
+
+                matched_rhab = periph_rhab[rhab_idx[valid_mask]]
+                matched_src_lens = nb_global[om_idx[valid_mask]]
+                src_rcpt_global = (matched_src_lens.astype(np.uint32) * np.uint32(R)
+                                   + matched_rhab.astype(np.uint32))
+                cartridge_src[src_rcpt_global] = anchor_target[i_glob]
+
+        # Final check: centrals should still anchor themselves
+        central_indices = (np.arange(N, dtype=np.uint32) * np.uint32(R) + np.uint32(center))
+        assert np.array_equal(cartridge_src[central_indices], central_indices), \
+            "Central receptors lost their self-anchor (this should not happen :( )"
 
         self.rcpt_static_data['cartridge_src'] = cartridge_src
 
-        # Also build inverse mapping for fast Cartridge construction
+        # Inverse mapping for cartridge construction
         self._cartridge_members = {}
         for global_central in np.unique(cartridge_src):
             members = np.flatnonzero(cartridge_src == global_central).astype(np.intp)
@@ -673,7 +1011,7 @@ class ReceptorArray:
         positions: np.ndarray,
         k: int = 6,
         distance_multiplier: float = 2.5,
-    ) -> np.ndarray:
+        ) -> np.ndarray:
         """
         Spatial connected-components clustering.
 
@@ -720,7 +1058,7 @@ class ReceptorArray:
         eye_ids: Optional[ArrayLike],
         N: int,
         max_eyes: int = 8,
-    ) -> np.ndarray:
+        ) -> np.ndarray:
         """
         Resolve per-lens eye membership.
 
@@ -798,7 +1136,7 @@ class ReceptorArray:
     def _broadcast_ioa(
         value: ArrayLike,
         N: int,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        ) -> Tuple[np.ndarray, np.ndarray]:
 
         arr = np.asarray(value, dtype=np.float32)
         if arr.shape == (2,):
@@ -816,7 +1154,7 @@ class ReceptorArray:
         value: ArrayLike,
         N: int,
         R: int,
-    ) -> np.ndarray:
+        ) -> np.ndarray:
 
         arr = np.asarray(value, dtype=np.float32)
         if arr.shape == (R,):
@@ -832,112 +1170,213 @@ class ReceptorArray:
             )
         return acc
 
-    def _compute_acceptance_baseline(self) -> np.ndarray:
+    def _compute_acceptance_baseline(
+        self,
+        eye_parameter: Optional[Union[float, Tuple[float, float]]] = None,
+        ) -> np.ndarray:
         """
-        Snyder's combined acceptance half-width:
-            rho^2 = rho_geom^2 + rho_diff^2
-            rho_geom = arctan(rhab_diameter / nodal_distance)
-            rho_diff = wavelength / lens_diameter
+        Per-receptor acceptance half-widths (rad), as (M, 2) (minor, major).
 
-        Isotropic per receptor (minor = major). The kernel's rhabdomeres are
-        modelled as circular disks (a scalar 'diameters_um' per receptor), so
-        the Snyder baseline is also circular. For lattice-derived
-        anisotropy (e.g. matching the local IOA ellipse), pass
-        'acceptance_angles_rad' of shape (N, R, 2) at construction.
+        Two cases:
+
+        - Snyder optics (kernel.nodal_distance_um is not None):
+              rho_geom = arctan(d_rhab / nodal_distance)
+              rho_diff = lambda / lens_diameter
+              rho = sqrt(rho_geom^2 + rho_diff^2)
+          Then scaled by the eye parameter p:
+              acc_minor = p_min * rho
+              acc_major = p_maj * rho
+          p = 1 -> pure Snyder, p > 1 -> wider RFs than Snyder predicts, p < 1 -> narrower
+          Tuple p = (p_min, p_maj) gives anisotropic RFs (same Snyder baseline, different per-axis scaling).
+
+          Note / TODO: per-receptor Snyder baseline is currently isotropic (single rhab_diameter and single lens_diameter). Anisotropy comes only from p_min vs p_maj.
+
+        - No optics (kernel.nodal_distance_um is None):
+              acc_minor = p_min * ioa_minor * (d_rhab / max(d_rhab))
+              acc_major = p_maj * ioa_major * (d_rhab / max(d_rhab))
+          Uses lattice spacing: RF width is the local IOA scaled
+          by the eye parameter p and modulated by the per-receptor
+          rhabdomere diameter (smaller rhabdomeres still get smaller RFs).
+
+        Args:
+            - eye_parameter: scalar 'p' applied to both axes, or a tuple '(p_min, p_maj)' for anisotropic scaling.
+                None defaults to 1.0.
         """
         N, R = self.lens_count, self.receptors_per_lens
         kernel = self._kernel
 
-        nd = self.lens_static_data['nodal_distance_um'].astype(np.float32)
-        ld = self.lens_static_data['lens_diameter_um'].astype(np.float32)
+        # Resolve eye parameter to (p_min, p_maj)
+        if eye_parameter is None:
+            p_min = p_maj = 1.0
+        elif isinstance(eye_parameter, (int, float, np.number)):
+            p_min = p_maj = float(eye_parameter)
+        else:
+            p = tuple(eye_parameter)
+            if len(p) != 2:
+                raise ValueError(
+                    f"eye_parameter must be a scalar or 2-tuple, got length {len(p)}"
+                )
+            p_min, p_maj = float(p[0]), float(p[1])
+
         rhab = kernel.diameters_um
         wl_um = (kernel.wavelengths_nm * 1e-3).astype(np.float32)
 
-        rho_geom = np.arctan(rhab[None, :] / np.clip(nd[:, None], 1e-6, None))
-        rho_diff = wl_um[None, :] / np.clip(ld[:, None], 1e-6, None)
-        rho = np.sqrt(rho_geom ** 2 + rho_diff ** 2).astype(np.float32)
+        if kernel.nodal_distance_um is not None:
+            # Snyder mode: physical baseline from diffraction + geometric optics
+            nd = self.lens_static_data['nodal_distance_um'].astype(np.float32)
+            ld = self.lens_static_data['lens_diameter_um'].astype(np.float32)
 
-        acc = np.stack([rho, rho], axis=-1).reshape(N * R, 2)
+            rho_geom = np.arctan(rhab[None, :] / np.clip(nd[:, None], 1e-6, None))
+            rho_diff = wl_um[None, :] / np.clip(ld[:, None], 1e-6, None)
+            rho = np.sqrt(rho_geom ** 2 + rho_diff ** 2).astype(np.float32)
+
+            acc_min = (p_min * rho).reshape(N * R)
+            acc_maj = (p_maj * rho).reshape(N * R)
+        else:
+            # No optical model: lattice spacing mode
+            ioa_axes = self.lens_static_data['ioa_axes'].astype(np.float32)
+            ioa_minor = ioa_axes[:, 0]
+            ioa_major = ioa_axes[:, 1]
+
+            max_d = float(np.max(rhab)) if rhab.size > 0 else 1.0
+            rel_d = (rhab / max_d).astype(np.float32) if max_d > 0 else np.ones(R, dtype=np.float32)
+
+            acc_min = (np.repeat(p_min * ioa_minor, R)
+                       * np.tile(rel_d, N)).astype(np.float32)
+            acc_maj = (np.repeat(p_maj * ioa_major, R)
+                       * np.tile(rel_d, N)).astype(np.float32)
+
+        acc = np.column_stack([acc_min, acc_maj]).astype(np.float32)
         return acc
 
-    def _compute_ioa_baseline(self) -> Tuple[np.ndarray, np.ndarray]:
+    def _compute_ioa_baseline(
+            self,
+            k_search: int = 8,
+            neighbour_dist_factor: float = 1.5,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Per-lens (minor, major) IOA and tilt from the local neighbour graph.
+        Per-lens lattice properties from the local first-ring neighbour graph.
 
-        For each lens we take its k=6 immediate neighbours in the eye's k-NN
-        graph and compute the angular separation 'd' (= IOA) to each. The
-        anisotropy is read off directly:
-            minor = min(d) over immediate neighbours (closest pair spacing)
-            major = max(d) over immediate neighbours (farthest pair spacing)
-            tilt  = bearing of the closest neighbour in the lens's tangent
-                    frame (i.e. orientation of the minor axis / lattice row)
+        Computes three things:
 
-        This matches how IOA is reported in the insect-vision literature: an
-        eye region is characterised by a 'horizontal' (close-packed) and a
-        'vertical' (wide-spaced) IOA along the lattice rows and columns. The
-        major axis here is the literal max spacing, not the value perpendicular
-        to the minor (so for a stretched hex lattice major sits at +/-60 deg
-        from minor, not 90 deg); the (minor, major, tilt) triple captures the
-        lattice rather than enforcing a strict ellipse.
+        - IOA (minor, major): angular separations in optical axis space.
+            Sorted over first-ring neighbours.
+            minor = mean of the 2 smallest,
+            major = mean of the 2 largest
+        - Tilt: lattice rotation in the lens's tangent frame, computed via the hexatic order
+              Ψ6 over first-ring neighbour bearings.
+              Magnitude of Ψ6: 1.0 = perfect hex, 0.0 = isotropic disorder
+        - Lens spacing: median first-ring distance in world units
 
-        Tilt is folded to [-pi/2, +pi/2] since an axis has 180 deg symmetry.
+        Args:
+            - k_search: number of neighbours to query per lens (~ a few rings).
+            - neighbour_dist_factor: a neighbour is first-ring if its
+                distance <= neighbour_dist_factor * closest.
 
-        Note: receptors inherit a separate per-receptor 'acc_tilt' written by
-        the orientation pipeline (= chi)
-        TODO: Deal with that cleanly
+        Returns:
+            ioa_axes: (N, 2) (minor, major) in radians
+            ioa_tilts: (N,) lattice tilt in radians, in [-π/6, +π/6]
+            lens_spacing: (N,) median first-ring distance, world units
+
+        Note: receptors get a separate per-receptor 'acc_tilt' written
+        by the orientation pipeline (chi).
+        The ioa_tilt here is the lattice's own rotation, the orientation pipeline does not overwrite this.
         """
         N = self.lens_count
         ioa_minor = np.zeros(N, dtype=np.float32)
         ioa_major = np.zeros(N, dtype=np.float32)
         ioa_tilts = np.zeros(N, dtype=np.float32)
+        lens_spacing = np.zeros(N, dtype=np.float32)
 
         for eye in self._eyes:
-            graph = eye._ensure_neighbour_graph(k=6)
-            if graph.size == 0:
+            n = len(eye)
+            if n < 2:
+                continue
+            k_eff = min(k_search, n - 1)
+
+            nb = eye.neighbours(
+                lens_indices=eye._lens_indices,
+                k=k_eff,
+                immediate_only=False,
+                neighbour_dist_factor=neighbour_dist_factor,
+            )
+            if not nb:
                 continue
 
-            local_idx = eye._lens_indices
-            home_dirs = self._lens_directions[local_idx]
-            home_right = self._local_right[local_idx]
-            home_up = self._local_up[local_idx]
-            home_pos = self._lens_positions[local_idx]
+            eye_idx = eye._lens_indices
+            home_dirs = self._lens_directions[eye_idx]
+            home_pos = self._lens_positions[eye_idx]
+            home_right = self._local_right[eye_idx]
+            home_up = self._local_up[eye_idx]
 
-            # Global indices for the neighbour columns
-            neigh_global = local_idx[graph]
-            neigh_dirs = self._lens_directions[neigh_global]
-            neigh_pos = self._lens_positions[neigh_global]
+            nb_global = nb.indices
+            nb_dirs = self._lens_directions[nb_global]
+            nb_pos = self._lens_positions[nb_global]
+            is_immediate = nb.is_immediate
+            n_imm = np.maximum(is_immediate.sum(axis=1), 1).astype(np.float64)
 
-            # Angular distances (IOA per neighbour)
-            dots = np.einsum('ik,ijk->ij', home_dirs, neigh_dirs)
-            dots = np.clip(dots, -1.0, 1.0)
-            d = np.arccos(dots).astype(np.float32)  # (n, k)
+            # Optical IOA: angular separation in optical-axis space
+            dots = np.clip(np.einsum('ik,ijk->ij', home_dirs, nb_dirs), -1.0, 1.0)
+            angular_sep = np.arccos(dots).astype(np.float32)
 
-            # Bearings in the home tangent frame
-            delta = neigh_pos - home_pos[:, None, :]
-            proj_x = np.einsum('ijk,ik->ij', delta, home_right)
-            proj_y = np.einsum('ijk,ik->ij', delta, home_up)
-            theta = np.arctan2(proj_y, proj_x).astype(np.float32)  # (n, k)
+            # Bearings in home lens's tangent frame
+            delta_pos = nb_pos - home_pos[:, None, :]
+            proj_x = np.einsum('ijk,ik->ij', delta_pos, home_right)
+            proj_y = np.einsum('ijk,ik->ij', delta_pos, home_up)
+            bearings = np.arctan2(proj_y, proj_x)
 
-            # Min/max over immediate neighbours
-            n_lens = d.shape[0]
-            rows = np.arange(n_lens)
-            min_idx = np.argmin(d, axis=1)
-            max_idx = np.argmax(d, axis=1)
+            # Hexatic order parameter Ψ6( over first ring only)
+            phasors = np.where(is_immediate, np.exp(1j * 6 * bearings), 0.0 + 0.0j)
+            z_avg = phasors.sum(axis=1) / n_imm
+            e_tilts = (np.angle(z_avg) / 6.0).astype(np.float32)
+            e_psi6_mag = np.abs(z_avg)
 
-            minor = d[rows, min_idx]
-            major = d[rows, max_idx]
-            tilt = theta[rows, min_idx]
+            # IOA: mean of 2 smallest / 2 largest first ring separations
+            sep_for_min = np.where(is_immediate, angular_sep, np.inf)
+            sep_for_max = np.where(is_immediate, -angular_sep, np.inf)
 
-            # Fold axis to [-pi/2, +pi/2]
-            tilt = np.where(tilt > 0.5 * np.pi, tilt - np.pi, tilt)
-            tilt = np.where(tilt < -0.5 * np.pi, tilt + np.pi, tilt)
+            min2 = np.sort(sep_for_min, axis=1)[:, :2]
+            max2 = -np.sort(sep_for_max, axis=1)[:, :2]
+            min2_valid = np.where(np.isfinite(min2), min2, np.nan)
+            max2_valid = np.where(np.isfinite(max2), max2, np.nan)
+            with np.errstate(all='ignore'):
+                e_ioa_minor = np.nanmean(min2_valid, axis=1).astype(np.float32)
+                e_ioa_major = np.nanmean(max2_valid, axis=1).astype(np.float32)
 
-            ioa_minor[local_idx] = minor.astype(np.float32)
-            ioa_major[local_idx] = major.astype(np.float32)
-            ioa_tilts[local_idx] = tilt.astype(np.float32)
+            # neighbourhood too sparse: fallback to simple mean over whatever is immediate, zero if nothing
+            sparse_mask = is_immediate.sum(axis=1) < 2
+            if np.any(sparse_mask):
+                sep_imm = np.where(is_immediate, angular_sep, np.nan)
+                with np.errstate(all='ignore'):
+                    fallback = np.nanmean(sep_imm, axis=1)
+                fallback = np.where(np.isfinite(fallback), fallback, 0.0).astype(np.float32)
+                e_ioa_minor = np.where(sparse_mask, fallback, e_ioa_minor)
+                e_ioa_major = np.where(sparse_mask, fallback, e_ioa_major)
+                e_tilts = np.where(sparse_mask, 0.0, e_tilts).astype(np.float32)
+
+            e_ioa_minor = np.where(np.isfinite(e_ioa_minor), e_ioa_minor, 0.0)
+            e_ioa_major = np.where(np.isfinite(e_ioa_major), e_ioa_major, 0.0)
+
+            # Lens spacing: median first-ring distance (in world units)
+            nbr_dist = np.linalg.norm(delta_pos, axis=2)
+            nbr_dist_masked = np.where(is_immediate, nbr_dist, np.nan)
+            with np.errstate(all='ignore'):
+                e_lens_spacing = np.nanmedian(nbr_dist_masked, axis=1).astype(np.float32)
+            e_lens_spacing = np.where(np.isfinite(e_lens_spacing), e_lens_spacing, 0.0)
+
+            ioa_minor[eye_idx] = e_ioa_minor
+            ioa_major[eye_idx] = e_ioa_major
+            ioa_tilts[eye_idx] = e_tilts
+            lens_spacing[eye_idx] = e_lens_spacing
+
+            logger.debug(
+                f"Eye {eye.eye_id} lattice |Ψ6|: {float(np.mean(e_psi6_mag)):.3f} "
+                f"(1.0 = perfect hex, 0.0 = isotropic disorder); "
+                f"median lens_spacing: {float(np.median(e_lens_spacing)):.3f}"
+            )
 
         ioa_axes = np.stack([ioa_minor, ioa_major], axis=-1).astype(np.float32)
-        return ioa_axes, ioa_tilts
+        return ioa_axes, ioa_tilts, lens_spacing
 
 
 ##
