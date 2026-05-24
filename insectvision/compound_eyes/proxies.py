@@ -39,7 +39,6 @@ if TYPE_CHECKING:
     from insectvision.compound_eyes.kernel import RhabdomereKernel
 
 
-
 @dataclass
 class NeighbourResult:
     """
@@ -114,16 +113,9 @@ class LensView:
     def __getitem__(self, idx) -> 'LensView':
         return LensView(self._ra, self._gi[idx])
 
-    def __len__(self) -> int:
-        return self._gi.size
-
     def _require_single(self, name: str) -> int:
         if len(self) != 1:
-            raise ValueError(
-                f"'{name}' is a singular accessor and requires a size-1 LensView "
-                f"(got n={self._gi.size}). Use the plural '{name}s' or index "
-                f"with an int first."
-            )
+            raise ValueError(f"'{name}' requires a size-1 LensView")
         return int(self._gi[0])
 
     @property
@@ -251,6 +243,23 @@ class LensView:
 
     # TODO: Setters for indirect buffer access?
 
+    # Diagnostics, conflicts
+
+    @property
+    def donation_conflicts(self) -> np.ndarray:
+        """(M,) True if any peripheral receptor in this lens is donated to != 1 cartridge."""
+        return self._ra.donation_conflicts[self._gi].copy()
+
+    @property
+    def receiving_conflicts(self) -> np.ndarray:
+        """(M,) True if this lens's cartridge failed to gather a neighbour for any slot."""
+        return self._ra.receiving_conflicts[self._gi].copy()
+
+    @property
+    def have_conflicts(self) -> np.ndarray:
+        """(M,) True if the lens has a donation or receiving conflict."""
+        return self._ra.have_conflicts[self._gi].copy()
+
     # Linking to receptors / eye
 
     @property
@@ -280,10 +289,7 @@ class LensView:
             raise ValueError("Empty LensView has no eye")
         first = ids[0]
         if not np.all(ids == first):
-            raise ValueError(
-                f"LensView spans {len(np.unique(ids))} eyes, "
-                "use ra.eyes or 'lens.eye_ids' for mixed-eye views"
-            )
+            raise ValueError("LensView spans multiple eyes")
         return self._ra.eye(int(first))
 
     # Singular accessors (require size-1 LensView)
@@ -353,6 +359,10 @@ class LensView:
         return self.eye.side
 
     @property
+    def has_conflicts(self) -> bool:
+        return bool(self._ra.have_conflicts[self._require_single('has_conflicts')])
+
+    @property
     def cartridge(self) -> Optional['Cartridge']:
         """The cartridge anchored at this lens's central rhabdomere (size-1 view only, if wired)."""
         idx = self._require_single('cartridge')
@@ -382,11 +392,10 @@ class LensView:
                 return empty, np.empty(empty.shape, dtype=np.float32)
             return empty
         eye_ids = self._ra._lens_eye_ids[self._gi]
+
         if np.unique(eye_ids).size > 1:
-            raise ValueError(
-                "directed_neighbours() requires a single-eye LensView, "
-                "this view spans multiple eyes"
-            )
+            raise ValueError("directed_neighbours() requires a single-eye LensView")
+
         eye = self._ra.eye(int(eye_ids[0]))
         return eye.directed_neighbours(
             direction=direction,
@@ -415,12 +424,7 @@ class ReceptorView:
 
         if self._gi.size > 0:
             if int(self._gi.min()) < 0 or int(self._gi.max()) >= ra.total_receptors:
-                raise IndexError(
-                    f"receptor indices out of range for ReceptorArray with "
-                    f"{ra.total_receptors} receptors"
-                )
-
-    # Basics
+                raise IndexError("Receptor indices out of range")
 
     def __len__(self) -> int:
         return int(self._gi.size)
@@ -434,8 +438,6 @@ class ReceptorView:
         return self._ra is other._ra and np.array_equal(self._gi, other._gi)
 
     def __getitem__(self, idx) -> 'ReceptorView':
-        if isinstance(idx, (int, np.integer)):
-            return ReceptorView(self._ra, self._gi[int(idx):int(idx) + 1])
         return ReceptorView(self._ra, self._gi[idx])
 
     @property
@@ -611,40 +613,23 @@ class Cartridge:
     def __init__(self, ra: 'ReceptorArray', central_lens_idx: int):
         self._ra = ra
         self._central_lens_idx = int(central_lens_idx)
+        if not getattr(ra, '_cartridges_wired', False):
+            raise ValueError("Cartridges not wired")
 
-        # Uses precomputed inverse mapping if wire_cartridges has filled it in
-        # or falls back to a linear scan otherwise.
-        my_central = self.central_receptor_index
-        cached = getattr(self._ra, '_cartridge_members', None)
-        if cached is not None and my_central in cached:
-            self._member_indices = cached[my_central]
-        else:
-            self._member_indices = np.flatnonzero(
-                self._ra.rcpt_static_data['cartridge_src'] == my_central
-            ).astype(np.intp)
+        R = ra.receptors_per_lens
+        sources = ra._cartridge_map[self._central_lens_idx]
+        self._member_indices = (sources * R + np.arange(R, dtype=np.intp))
 
     def __len__(self) -> int:
         return int(self._member_indices.size)
 
     def __repr__(self) -> str:
-        return f"Cartridge(lens={self._central_lens_idx}, members={len(self)})"
+        return f"Cartridge(lens={self._central_lens_idx}, R={len(self)})"
 
     @property
     def lens(self) -> LensView:
         """The home (central) ommatidium for this cartridge."""
         return LensView(self._ra, np.array([self._central_lens_idx], dtype=np.intp))
-
-    @property
-    def central_receptor_index(self) -> int:
-        R = self._ra.receptors_per_lens
-        c = self._ra._kernel.center_index
-        return self._central_lens_idx * R + c
-
-    @property
-    def central_receptor(self) -> ReceptorView:
-        return ReceptorView(
-            self._ra, np.array([self.central_receptor_index], dtype=np.intp)
-        )
 
     @property
     def receptors(self) -> ReceptorView:
@@ -653,13 +638,8 @@ class Cartridge:
 
     @property
     def sources(self) -> np.ndarray:
-        """
-        (n_members,) global lens index of the source ommatidium for each member.
-
-        That is, receptor 'members[i]' lives in 'ra.lenses[sources[i]]'.
-        """
-        R = self._ra.receptors_per_lens
-        return (self._member_indices // R).astype(np.intp)
+        """(R,) global lens index of the source ommatidium for each member slot."""
+        return self._ra._cartridge_map[self._central_lens_idx].copy()
 
 
 class Eye:
@@ -679,28 +659,29 @@ class Eye:
 
     __slots__ = (
         '_ra', '_eye_id', '_lens_indices', '_side',
-        '_position_tree', '_direction_tree', '_neighbour_graph', '_neighbour_k',
-        '_directional_graph',
+        '_position_tree', '_direction_tree',
+        '_position_tree_cf', '_direction_tree_cf', '_cf_local_indices',
+        '_neighbour_graph', '_neighbour_k', '_directional_graph',
     )
 
-    def __init__(self,
-        ra: 'ReceptorArray',
-        eye_id: int,
-        lens_indices: np.ndarray,
-        side: str = 'left',
-    ):
+    def __init__(self, ra: 'ReceptorArray', eye_id: int, lens_indices: np.ndarray, side: str = 'left'):
         self._ra = ra
         self._eye_id = int(eye_id)
         self._lens_indices = np.asarray(lens_indices, dtype=np.intp)
         self._side = str(side)
         self._position_tree: Optional[cKDTree] = None
         self._direction_tree: Optional[cKDTree] = None
+
+        self._position_tree_cf: Optional[cKDTree] = None
+        self._direction_tree_cf: Optional[cKDTree] = None
+        self._cf_local_indices: Optional[np.ndarray] = None
+
         self._neighbour_graph: Optional[np.ndarray] = None
         self._neighbour_k: int = -1
         self._directional_graph: Optional[dict] = None
 
     def __repr__(self) -> str:
-        return f"Eye(id={self._eye_id}, side={self._side!r}, n_lenses={len(self._lens_indices)})"
+        return f"Eye(id={self._eye_id}, side={self._side!r}, lenses={len(self._lens_indices)})"
 
     def __len__(self) -> int:
         return int(self._lens_indices.size)
@@ -743,6 +724,9 @@ class Eye:
         """
         self._position_tree = None
         self._direction_tree = None
+        self._position_tree_cf = None
+        self._direction_tree_cf = None
+        self._cf_local_indices = None
         self._neighbour_graph = None
         self._neighbour_k = -1
         self._directional_graph = None
@@ -779,6 +763,21 @@ class Eye:
             self._neighbour_k = k
 
         return self._neighbour_graph
+
+    def _ensure_trees_cf(self) -> Tuple[Optional[cKDTree], Optional[cKDTree], np.ndarray]:
+        """Lazy-build conflict-free trees (used when exclude_conflicts=True)."""
+        if self._direction_tree_cf is None:
+            valid_mask = ~self._ra.have_conflicts[self._lens_indices]
+            self._cf_local_indices = np.flatnonzero(valid_mask)
+            if self._cf_local_indices.size > 0:
+                dirs = self._ra._lens_directions[self._lens_indices[self._cf_local_indices]]
+                pos = self._ra._lens_positions[self._lens_indices[self._cf_local_indices]]
+                self._direction_tree_cf = cKDTree(dirs)
+                self._position_tree_cf = cKDTree(pos)
+            else:
+                self._direction_tree_cf = None
+                self._position_tree_cf = None
+        return self._direction_tree_cf, self._position_tree_cf, self._cf_local_indices
 
     # Queries
 
@@ -1296,98 +1295,30 @@ class Eye:
         return indices
 
 
-# TODO: VisualOutput probably should be a thinner wrapper and just take a ra and a data array to return the correct slices
-
 class VisualOutput:
     """
-    Per-receptor output array with convenience reshape and indexing.
+    Per-receptor output array with reshaping via the (N, R) cartridge map.
 
     The renderers return a (N, 4) float array where N is the total
     receptor count and the last axis is (R/UV, G, B, radiance), with radiance the
     mean of the colour channels.
 
     Layouts:
-        .per_lens       -> (n_lenses, R, ...)        regular grid
-        .per_cartridge  -> (n_cartridges, K, ...)    K = max members, padded
-        .cartridge_mask -> (n_cartridges, K)         bool, True where valid
-        .colours        -> data[..., :3]             on any layout via the channel helpers
-        .radiance       -> data[..., 3]              on any layout via the channel helpers
-
-    Convenience:
-        .for_lens(i)       -> single lens, shape (R, ...)
-        .for_cartridge(i)  -> single cartridge, ragged, shape (n_members_i, ...)
-        .central(kernel)   -> central rhabdomere per lens, shape (n_lenses, ...)
+        .per_lens       -> (n_lenses, R, ...)      regular grid (physical grouping)
+        .per_cartridge  -> (n_cartridges, R, ...)  regular grid (neural grouping)
+        .colours        -> data[..., :3]           on any layout via the channel helpers
+        .radiance       -> data[..., 3]            on any layout via the channel helpers
     """
+    __slots__ = ('_data', '_ra', '_R', '_N')
 
-    __slots__ = (
-        '_data', '_N', '_R',
-        '_cartridge_index_map', '_cartridge_mask',
-        '_cartridge_centrals',
-    )
+    def __init__(self, data: np.ndarray, ra: 'ReceptorArray'):
+        if data.shape[0] % ra.receptors_per_lens != 0:
+            raise ValueError(f"data length {data.shape[0]} not divisible by R={ra.receptors_per_lens}")
 
-    def __init__(self,
-        data: np.ndarray,
-        receptors_per_lens: int,
-        cartridge_index_map: Optional[np.ndarray] = None,
-        cartridge_mask: Optional[np.ndarray] = None,
-        cartridge_centrals: Optional[np.ndarray] = None,
-    ):
-        """
-        Args:
-            - data: (N_total, ...) per-receptor output. Typically (N_total, 4).
-            - receptors_per_lens: R, so n_lenses = N_total / R.
-            - cartridge_index_map: (n_cartridges, K) global receptor indices
-                per cartridge, padded with 0 in unused slots. Optional.
-            - cartridge_mask: (n_cartridges, K) bool, True where index_map is real.
-            - cartridge_centrals: (n_cartridges,) global receptor index of the
-                central (R7/8) member of each cartridge. Used to pick out the
-                anchor in central_per_cartridge().
-        """
-        if data.shape[0] % receptors_per_lens != 0:
-            raise ValueError(
-                f"data length {data.shape[0]} not divisible by R={receptors_per_lens}"
-            )
         self._data = data
-        self._R = int(receptors_per_lens)
+        self._ra = ra
+        self._R = ra.receptors_per_lens
         self._N = data.shape[0] // self._R
-        self._cartridge_index_map = cartridge_index_map
-        self._cartridge_mask = cartridge_mask
-        self._cartridge_centrals = cartridge_centrals
-
-    @classmethod
-    def from_receptor_array(cls,
-        data: np.ndarray,
-        ra: 'ReceptorArray',
-    ) -> 'VisualOutput':
-        """
-        Build a VisualOutput from a renderer output and the parent ReceptorArray,
-        with cartridge wiring (if present) baked in.
-        """
-        R = ra.receptors_per_lens
-        if not getattr(ra, '_cartridges_wired', False):
-            return cls(data, R)
-
-        members_by_central = ra._cartridge_members  # dict[int -> (k,) intp]
-
-        # Order cartridges by central receptor index for deterministic layout
-        centrals = np.array(sorted(members_by_central.keys()), dtype=np.intp)
-        max_k = max((members_by_central[int(c)].size for c in centrals), default=0)
-        n_carts = centrals.size
-
-        idx_map = np.zeros((n_carts, max_k), dtype=np.intp)
-        mask = np.zeros((n_carts, max_k), dtype=bool)
-        for i, c in enumerate(centrals):
-            members = members_by_central[int(c)]
-            idx_map[i, :members.size] = members
-            mask[i, :members.size] = True
-
-        return cls(
-            data,
-            receptors_per_lens=R,
-            cartridge_index_map=idx_map,
-            cartridge_mask=mask,
-            cartridge_centrals=centrals,
-        )
 
     @property
     def data(self) -> np.ndarray:
@@ -1404,91 +1335,50 @@ class VisualOutput:
 
     @property
     def cartridge_count(self) -> int:
-        return 0 if self._cartridge_index_map is None else int(self._cartridge_index_map.shape[0])
+        return self._N if self._ra._cartridges_wired else 0
 
     # Channel helpers
 
     @property
     def colours(self) -> np.ndarray:
         if self._data.ndim < 2 or self._data.shape[-1] < 3:
-            raise ValueError(f"colours requires last axis >= 3, got shape {self._data.shape}")
+            raise ValueError(f"Colours requires last axis >= 3, got shape {self._data.shape}")
         return self._data[..., :3]
 
     @property
     def radiance(self) -> np.ndarray:
         if self._data.ndim < 2 or self._data.shape[-1] < 4:
-            raise ValueError(f"radiance requires last axis >= 4, got shape {self._data.shape}")
+            raise ValueError(f"Radiance requires last axis >= 4, got shape {self._data.shape}")
         return self._data[..., 3]
 
     # Group layouts
 
     @property
     def per_lens(self) -> np.ndarray:
-        """Reshape to (N, R, ...). One block of R rows per lens."""
+        """Reshape to (N, R, ...). One block of R rows per physical lens."""
         return self._data.reshape(self._N, self._R, *self._data.shape[1:])
 
     @property
     def per_cartridge(self) -> np.ndarray:
         """
-        Padded (n_cartridges, K, ...) gather of receptor outputs by cartridge.
-        Slots beyond a cartridge's true member count are zero; check 'cartridge_mask'.
-
-        Raises if cartridge wiring was not supplied at construction.
+        (N, R, ...) gather of receptor outputs by cartridge.
         """
-        if self._cartridge_index_map is None:
-            raise ValueError(
-                "VisualOutput has no cartridge wiring. Build via "
-                "VisualOutput.from_receptor_array(data, ra) or pass "
-                "cartridge_index_map at construction."
-            )
-        gathered = self._data[self._cartridge_index_map]
-        # Zero the padded slots so reductions (sum / mean with care) behave
-        if self._cartridge_mask is not None and gathered.ndim > self._cartridge_mask.ndim:
-            extra = gathered.ndim - self._cartridge_mask.ndim
-            m = self._cartridge_mask.reshape(self._cartridge_mask.shape + (1,) * extra)
-            gathered = gathered * m
-        return gathered
-
-    @property
-    def cartridge_mask(self) -> np.ndarray:
-        """(n_cartridges, K) bool: True where per_cartridge holds a real member."""
-        if self._cartridge_mask is None:
+        if not self._ra._cartridges_wired:
+            # return self.per_lens # fallback to physical grouping if not wired
             raise ValueError("VisualOutput has no cartridge wiring.")
-        return self._cartridge_mask
+        return self._data[self._ra.cartridge_indices]
 
     @property
     def cartridge_central_indices(self) -> np.ndarray:
-        """(n_cartridges,) global receptor index of each cartridge's central (R7/8)."""
-        if self._cartridge_centrals is None:
-            raise ValueError("VisualOutput has no cartridge wiring.")
-        return self._cartridge_centrals
+        """(N,) global receptor index of each cartridge's central (R7/8)."""
+        c = self._ra._kernel.center_index
+        return np.arange(self._N, dtype=np.intp) * self._R + c
 
     @property
     def central_per_cartridge(self) -> np.ndarray:
-        """
-        (n_cartridges, ...) output of just the central receptor of each cartridge.
-        Equivalent to 'data[cartridge_central_indices]'.
-        """
-        return self._data[self.cartridge_central_indices]
-
-    # Per-element gather
-
-    def for_lens(self, lens_indices) -> np.ndarray:
-        """Output for lens(es) 'lens_indices' (int or array). Shape (R, ...) or (M, R, ...)."""
-        return self.per_lens[lens_indices]
-
-    def for_cartridge(self, cartridge_index: int) -> np.ndarray:
-        """
-        Output for one cartridge, with padding stripped. Shape (n_members_i, ...).
-        """
-        if self._cartridge_index_map is None:
-            raise ValueError("VisualOutput has no cartridge wiring.")
-        i = int(cartridge_index)
-        if self._cartridge_mask is not None:
-            idx = self._cartridge_index_map[i][self._cartridge_mask[i]]
-        else:
-            idx = self._cartridge_index_map[i]
-        return self._data[idx]
+        """(N, ...) output of just the central receptor of each cartridge."""
+        c = self._ra._kernel.center_index
+        return self.per_cartridge[:, c, ...]
 
     def central(self, kernel: 'RhabdomereKernel') -> np.ndarray:
         """Just the central rhabdomere output per lens. Shape (N, ...)."""
@@ -1501,5 +1391,5 @@ class VisualOutput:
         return int(self._data.shape[0])
 
     def __repr__(self) -> str:
-        carts = f", cartridges={self.cartridge_count}" if self._cartridge_index_map is not None else ""
-        return f"VisualOutput(N={self._N}, R={self._R}{carts}, shape={self._data.shape})"
+        c_str = f", cartridges={self._N}" if self._ra._cartridges_wired else ""
+        return f"VisualOutput(N={self._N}, R={self._R}{c_str}, shape={self._data.shape})"

@@ -133,9 +133,7 @@ class ReceptorArray:
         self.lens_static_data['right'] = self._local_right
         self.lens_static_data['up'] = self._local_up
         self.lens_static_data['forward'] = self._lens_directions
-
-        nd_value = kernel.nodal_distance_um if kernel.nodal_distance_um is not None else 1.0
-        self.lens_static_data['nodal_distance_um'] = nd_value
+        self.lens_static_data['nodal_distance_um'] = kernel.nodal_distance_um or 1.0
 
         # Broadcast kernel-level photomechanical biophysics to every lens
         self.lens_static_data['tau_rise'] = kernel.tau_rise
@@ -145,7 +143,6 @@ class ReceptorArray:
         self.lens_static_data['gain_lat_um'] = kernel.gain_lat_um
         self.lens_static_data['gain_ax_um'] = kernel.gain_ax_um
 
-        # Build Eye objects (KDtrees & neighbour graphs lazy)
         self._eyes: List[Eye] = []
         self._build_eyes()
 
@@ -181,8 +178,6 @@ class ReceptorArray:
         self.rcpt_static_data['tau_membrane'] = kernel.tau_membrane
         self.rcpt_static_data['rhab_diameter_um'] = np.tile(kernel.diameters_um, N)
         self.rcpt_static_data['wavelength_um'] = np.tile(kernel.wavelengths_nm * 1e-3, N)
-        # cartridge_src defaults to self (will be overwritten by wire_cartridges)
-        self.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
 
         # Acceptance angles (rest + initial dynamic)
         if acceptance_angles_rad is not None:
@@ -245,14 +240,20 @@ class ReceptorArray:
 
         self._apply_orientation(result)
 
-        # Bookkeeping
+        # Cartridge mapping and diagnostics
         self._cartridges_wired = False
-        self._cartridge_members: dict = {}
+        self._cartridge_map = np.tile(np.arange(N)[:, None], (1, R))
+
+        self.donation_conflicts = np.zeros(N, dtype=bool)
+        self.receiving_conflicts = np.zeros(N, dtype=bool)
+        self.have_conflicts = np.zeros(N, dtype=bool)
         self._lens_dirty = True
 
-        # Cartridges wiring
         if R > 1:
             self.wire_cartridges()
+        else:
+            self.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
+
 
     # Factory methods
 
@@ -371,14 +372,20 @@ class ReceptorArray:
         )
         return cls(directions=directions, positions=positions, **kwargs)
 
-    # Sizing and basic accessors
+    # Some basic stuff
+
+    def __repr__(self) -> str:
+        return (
+            f"ReceptorArray(N={self.lens_count}, R={self.receptors_per_lens}, "
+            f"eyes={len(self._eyes)}, kernel={self._kernel.name!r})"
+        )
 
     def __len__(self) -> int:
         return int(self._lens_directions.shape[0])
 
     @property
     def lens_count(self) -> int:
-        return int(self._lens_directions.shape[0])
+        return len(self)
 
     @property
     def receptors_per_lens(self) -> int:
@@ -467,17 +474,19 @@ class ReceptorArray:
     def lens_dirty(self, value: bool) -> None:
         self._lens_dirty = bool(value)
 
-    def __repr__(self) -> str:
-        return (
-            f"ReceptorArray(N={self.lens_count}, R={self.receptors_per_lens}, "
-            f"eyes={len(self._eyes)}, kernel={self._kernel.name!r})"
-        )
+    @property
+    def cartridge_indices(self) -> np.ndarray:
+        """(N, R) global receptor indices grouped by cartridge mapping."""
+        if not self._cartridges_wired:
+            raise RuntimeError("Cartridges not wired")
+        return self._cartridge_map * self.receptors_per_lens + np.arange(self.receptors_per_lens)
 
     # Animal-wide spatial queries (dispatch across eyes)
 
     def query_directions(self,
          directions: ArrayLike,
          k: int = 1,
+         exclude_conflicts: bool = False
          ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Find the k lenses (across all eyes) whose optical axes lie closest to
@@ -491,10 +500,10 @@ class ReceptorArray:
         best_dist = np.full((Q, k), np.inf, dtype=np.float32)
 
         for eye in self._eyes:
-            eye_k = min(k, len(eye))
-            if eye_k == 0:
+            idx, dist = eye.query_directions(dirs, k=k, exclude_conflicts=exclude_conflicts)
+            if idx.size == 0:
                 continue
-            idx, dist = eye.query_directions(dirs, k=eye_k)
+
             combined_idx = np.concatenate([best_idx, idx], axis=1)
             combined_dist = np.concatenate([best_dist, dist], axis=1)
             order = np.argsort(combined_dist, axis=1)[:, :k]
@@ -507,6 +516,7 @@ class ReceptorArray:
     def query_positions(self,
         positions: ArrayLike,
         k: int = 1,
+        exclude_conflicts: bool = False
         ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Find the k lenses (across all eyes) closest in world-space position
@@ -520,10 +530,10 @@ class ReceptorArray:
         best_dist = np.full((Q, k), np.inf, dtype=np.float32)
 
         for eye in self._eyes:
-            eye_k = min(k, len(eye))
-            if eye_k == 0:
+            idx, dist = eye.query_positions(pts, k=k, exclude_conflicts=exclude_conflicts)
+            if idx.size == 0:
                 continue
-            idx, dist = eye.query_positions(pts, k=eye_k)
+
             combined_idx = np.concatenate([best_idx, idx], axis=1)
             combined_dist = np.concatenate([best_dist, dist], axis=1)
             order = np.argsort(combined_dist, axis=1)[:, :k]
@@ -536,6 +546,7 @@ class ReceptorArray:
     def query_lookat(self,
          targets: ArrayLike,
          k: int = 1,
+         exclude_conflicts: bool = False
          ) -> np.ndarray:
         """
         Find the k lenses (across all eyes) best looking at each world-space
@@ -545,6 +556,7 @@ class ReceptorArray:
         """
         if k < 1:
             raise ValueError("k must be >= 1")
+
         q = np.asarray(targets, dtype=np.float32).reshape(-1, 3)
         Q = q.shape[0]
         if self.lens_count == 0:
@@ -558,17 +570,22 @@ class ReceptorArray:
         np.divide(desired, norms, out=desired, where=norms > 0)
         dots = np.einsum('jk,ijk->ij', dirs, desired)
 
+        if exclude_conflicts:
+            dots[:, self.have_conflicts] = -np.inf
+
         k_eff = min(k, dots.shape[1])
         part = np.argpartition(dots, -k_eff, axis=1)[:, -k_eff:]
         top = np.take_along_axis(dots, part, axis=1)
         order = np.argsort(top, axis=1)[:, ::-1]
         best = np.take_along_axis(part, order, axis=1)
+
         return best.astype(np.intp)
 
     def query_cone(self,
         center_direction: ArrayLike,
         angle: float,
         degrees: bool = True,
+        exclude_conflicts: bool = False
         ) -> np.ndarray:
         """
         All lenses (across all eyes) whose optical axis lies within 'angle'
@@ -576,18 +593,14 @@ class ReceptorArray:
 
         Returns global lens indices (union across eyes, arbitrary order).
         """
-        hits = []
-        for eye in self._eyes:
-            h = eye.query_cone(center_direction, angle, degrees=degrees)
-            if h.size > 0:
-                hits.append(h)
-        if hits:
-            return np.concatenate(hits)
-        return np.empty(0, dtype=np.intp)
+        hits = [eye.query_cone(center_direction, angle, degrees, exclude_conflicts) for eye in self._eyes]
+        hits = [h for h in hits if h.size > 0]
+        return np.concatenate(hits) if hits else np.empty(0, dtype=np.intp)
 
     def query_ball(self,
         center_position: ArrayLike,
         radius: float,
+        exclude_conflicts: bool = False
         ) -> np.ndarray:
         """
         All lenses (across all eyes) whose world position lies within 'radius'
@@ -595,14 +608,9 @@ class ReceptorArray:
 
         Returns global lens indices (union across eyes, arbitrary order).
         """
-        hits = []
-        for eye in self._eyes:
-            h = eye.query_ball(center_position, radius)
-            if h.size > 0:
-                hits.append(h)
-        if hits:
-            return np.concatenate(hits)
-        return np.empty(0, dtype=np.intp)
+        hits = [eye.query_ball(center_position, radius, exclude_conflicts) for eye in self._eyes]
+        hits = [h for h in hits if h.size > 0]
+        return np.concatenate(hits) if hits else np.empty(0, dtype=np.intp)
 
     @property
     def max_gap(self) -> float:
@@ -807,45 +815,31 @@ class ReceptorArray:
             return
 
         center = self._kernel.center_index
-        periph_rhab = np.array(
-            [i for i in range(R) if i != center], dtype=np.intp
-        )
+        periph_rhab = np.array([i for i in range(R) if i != center], dtype=np.intp)
         P = periph_rhab.size
 
-        # Default: every receptor anchors at its own lens's central R7/8
-        # Unmatched peripheral rhabdomeres also fall through to their own ommatidium's cartridge.
-        lens_idx_per_rcpt = np.repeat(np.arange(N, dtype=np.uint32), R)
-        cartridge_src = (lens_idx_per_rcpt * R + np.uint32(center)).astype(np.uint32)
+        cartridge_map = np.tile(np.arange(N)[:, None], (1, R))
 
         if P == 0:
-            self.rcpt_static_data['cartridge_src'] = cartridge_src
-            self._cartridge_members = {
-                int(c): np.flatnonzero(cartridge_src == c).astype(np.intp)
-                for c in np.unique(cartridge_src)
-            }
+            self._cartridge_map = cartridge_map
+            self.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
             self._cartridges_wired = True
             self._lens_dirty = True
             return
 
-        kernel_periph = (
-            self._kernel.offsets_um[periph_rhab] - self._kernel.offsets_um[center]
-        )
+        kernel_periph = self._kernel.offsets_um[periph_rhab] - self._kernel.offsets_um[center]
         kernel_scale = float(np.mean(np.linalg.norm(kernel_periph, axis=1)))
+
         if kernel_scale < 1e-12:
             # Degenerate kernel: peripherals = centre
-            self.rcpt_static_data['cartridge_src'] = cartridge_src
-            self._cartridge_members = {
-                int(c): np.flatnonzero(cartridge_src == c).astype(np.intp)
-                for c in np.unique(cartridge_src)
-            }
+            self._cartridge_map = cartridge_map
+            self.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
             self._cartridges_wired = True
             self._lens_dirty = True
             return
 
         # Apply per-lens chi + chirality
-        rot_dx_all, rot_dy_all = self._kernel.rotated_offsets(
-            self._bundle_orientation, self._chirality_arr
-        )
+        rot_dx_all, rot_dy_all = self._kernel.rotated_offsets(self._bundle_orientation, self._chirality_arr)
 
         # Centre on central rhab, normalise to lattice units
         template_dx_all = (rot_dx_all - rot_dx_all[:, center:center + 1]) / kernel_scale
@@ -853,8 +847,6 @@ class ReceptorArray:
 
         min_required = max(1, min(min_snap_matches, P))
         angular_dev_rad = float(np.radians(angular_dev))
-        anchor_target = (np.uint32(R) * np.arange(N, dtype=np.uint32)
-                         + np.uint32(center))
 
         # Snap priority penalty
         if snap_priority_bonus is None:
@@ -865,41 +857,37 @@ class ReceptorArray:
             n_in_eye = len(eye)
             if n_in_eye < 2:
                 continue
-            k_eff = min(k_search, n_in_eye - 1)
 
-            nb = eye.neighbours(
+            neighb = eye.neighbours(
                 lens_indices=eye._lens_indices,
-                k=k_eff,
+                k=min(k_search, n_in_eye - 1),
                 immediate_only=False,
                 neighbour_dist_factor=neighbour_dist_factor,
-                chirality=self._chirality_arr,
+                chirality=self._chirality_arr
             )
-            if not nb:
+            if not neighb:
                 continue
-
-            is_immediate_all = nb.is_immediate
-            same_chir_all = nb.same_chirality
 
             for i_loc in range(n_in_eye):
                 i_glob = int(eye._lens_indices[i_loc])
+                row_immediate = neighb.is_immediate[i_loc]
 
-                row_immediate = is_immediate_all[i_loc]
                 if not np.any(row_immediate):
                     continue
 
-                nb_global = nb.indices[i_loc].astype(np.intp)
-                nb_dists = nb.distances[i_loc]
+                neighb_global = neighb.indices[i_loc].astype(np.intp)
+                neighb_dists = neighb.distances[i_loc]
 
-                local_spacing = float(np.median(nb_dists[row_immediate]))
+                local_spacing = float(np.median(neighb_dists[row_immediate]))
                 if local_spacing < 1e-12:
                     continue
 
                 # Project neighbours into i's tangent frame (in lattice units)
                 central_pos = self._lens_positions[i_glob]
-                nb_vectors = self._lens_positions[nb_global] - central_pos
-                nb_u = nb_vectors @ self._local_right[i_glob]
-                nb_v = nb_vectors @ self._local_up[i_glob]
-                nb_uv = np.column_stack([nb_u, nb_v]) / local_spacing
+                neighb_vectors = self._lens_positions[neighb_global] - central_pos
+                neighb_u = neighb_vectors @ self._local_right[i_glob]
+                neighb_v = neighb_vectors @ self._local_up[i_glob]
+                neighb_uv = np.column_stack([neighb_u, neighb_v]) / local_spacing
 
                 # Template (peripheral rhabs only) for this lens
                 template_uv = np.column_stack([
@@ -908,12 +896,12 @@ class ReceptorArray:
                 ])
 
                 z_template = template_uv[:, 0] + 1j * template_uv[:, 1]
-                z_nb = nb_uv[:, 0] + 1j * nb_uv[:, 1]
-                z_snap = z_nb[row_immediate] if first_ring_only else z_nb
+                z_neighb = neighb_uv[:, 0] + 1j * neighb_uv[:, 1]
+                z_snap = z_neighb[row_immediate] if first_ring_only else z_neighb
 
                 # Candidate similarity transforms w = scale * exp(i*theta)
                 if pre_cull:
-                    z_immediate = z_nb[row_immediate]
+                    z_immediate = z_neighb[row_immediate]
                     diffs = np.abs(z_template[:, None] - z_immediate[None, :])
                     anchors = np.flatnonzero(np.min(diffs, axis=1) < assign_radius)
                 else:
@@ -921,6 +909,7 @@ class ReceptorArray:
 
                 valid_anchors = anchors[np.abs(z_template[anchors]) >= 1e-8]
                 candidates_w = [1.0 + 0j]
+
                 if valid_anchors.size > 0:
                     w_all = z_snap[None, :] / z_template[valid_anchors, None]
                     angle_ok = np.abs(np.angle(w_all)) <= angular_dev_rad
@@ -934,12 +923,12 @@ class ReceptorArray:
                 # -> prefer more snaps, then near-identity rotations, then total snap quality
                 best_score = (0, np.inf, np.inf)
                 best_w = None
+
                 for w in candidates_w:
                     z_placed = w * z_template
                     placed_uv = np.column_stack([z_placed.real, z_placed.imag])
-                    cost = np.linalg.norm(
-                        placed_uv[:, None, :] - nb_uv[None, :, :], axis=2
-                    )
+                    cost = np.linalg.norm(placed_uv[:, None, :] - neighb_uv[None, :, :], axis=2)
+
                     # Penalise non-snap cells
                     cost_with_penalty = cost + np.where(
                         cost >= snap_radius, snap_priority_bonus, 0.0
@@ -965,44 +954,35 @@ class ReceptorArray:
                 z_best = best_w * z_template
                 corrected_uv = np.column_stack([z_best.real, z_best.imag])
                 cost_final = np.linalg.norm(
-                    corrected_uv[:, None, :] - nb_uv[None, :, :], axis=2
+                    corrected_uv[:, None, :] - neighb_uv[None, :, :], axis=2
                 )
-                cost_final_penalised = cost_final + np.where(
-                    cost_final >= snap_radius, snap_priority_bonus, 0.0
-                )
-                rhab_idx, om_idx = linear_sum_assignment(cost_final_penalised)
+                rhab_idx, om_idx = linear_sum_assignment(
+                    cost_final + np.where(cost_final >= snap_radius, snap_priority_bonus, 0.0))
 
-                # Same-chirality + assign_radius filter (real distances)
-                same_chir_row = same_chir_all[i_loc]
-                valid_mask = (
-                    (cost_final[rhab_idx, om_idx] < assign_radius)
-                    & same_chir_row[om_idx]
-                )
+                valid_mask = (cost_final[rhab_idx, om_idx] < assign_radius) & neighb.same_chirality[i_loc][om_idx]
 
-                if not np.any(valid_mask):
-                    continue
+                if np.any(valid_mask):
+                    cartridge_map[i_glob, periph_rhab[rhab_idx[valid_mask]]] = neighb_global[om_idx[valid_mask]]
 
-                matched_rhab = periph_rhab[rhab_idx[valid_mask]]
-                matched_src_lens = nb_global[om_idx[valid_mask]]
-                src_rcpt_global = (matched_src_lens.astype(np.uint32) * np.uint32(R)
-                                   + matched_rhab.astype(np.uint32))
-                cartridge_src[src_rcpt_global] = anchor_target[i_glob]
-
-        # Final check: centrals should still anchor themselves
-        central_indices = (np.arange(N, dtype=np.uint32) * np.uint32(R) + np.uint32(center))
-        assert np.array_equal(cartridge_src[central_indices], central_indices), \
-            "Central receptors lost their self-anchor (this should not happen :( )"
-
-        self.rcpt_static_data['cartridge_src'] = cartridge_src
-
-        # Inverse mapping for cartridge construction
-        self._cartridge_members = {}
-        for global_central in np.unique(cartridge_src):
-            members = np.flatnonzero(cartridge_src == global_central).astype(np.intp)
-            self._cartridge_members[int(global_central)] = members
-
+        self._cartridge_map = cartridge_map
+        self.rcpt_static_data['cartridge_src'] = (cartridge_map * R + np.arange(R)).flatten().astype(np.uint32)
         self._cartridges_wired = True
         self._lens_dirty = True
+
+        # Diagnostics
+        is_periph = np.ones(R, dtype=bool)
+        is_periph[center] = False
+        recv_conf, don_conf = np.zeros(N, dtype=bool), np.zeros(N, dtype=bool)
+
+        for r in range(R):
+            if is_periph[r]:
+                recv_conf |= (cartridge_map[:, r] == np.arange(N))
+                don_conf |= (np.bincount(cartridge_map[:, r], minlength=N) != 1)
+
+        self.receiving_conflicts = recv_conf
+        self.donation_conflicts = don_conf
+        self.have_conflicts = recv_conf | don_conf
+        self._invalidate_spatial()  # ensure conflict-free trees are updated
 
     # Private helpers
 
@@ -1294,13 +1274,13 @@ class ReceptorArray:
                 continue
             k_eff = min(k_search, n - 1)
 
-            nb = eye.neighbours(
+            neighbours = eye.neighbours(
                 lens_indices=eye._lens_indices,
                 k=k_eff,
                 immediate_only=False,
                 neighbour_dist_factor=neighbour_dist_factor,
             )
-            if not nb:
+            if not neighbours:
                 continue
 
             eye_idx = eye._lens_indices
@@ -1309,18 +1289,18 @@ class ReceptorArray:
             home_right = self._local_right[eye_idx]
             home_up = self._local_up[eye_idx]
 
-            nb_global = nb.indices
-            nb_dirs = self._lens_directions[nb_global]
-            nb_pos = self._lens_positions[nb_global]
-            is_immediate = nb.is_immediate
+            neighb_global = neighbours.indices
+            neighb_dirs = self._lens_directions[neighb_global]
+            neighb_pos = self._lens_positions[neighb_global]
+            is_immediate = neighbours.is_immediate
             n_imm = np.maximum(is_immediate.sum(axis=1), 1).astype(np.float64)
 
             # Optical IOA: angular separation in optical-axis space
-            dots = np.clip(np.einsum('ik,ijk->ij', home_dirs, nb_dirs), -1.0, 1.0)
+            dots = np.clip(np.einsum('ik,ijk->ij', home_dirs, neighb_dirs), -1.0, 1.0)
             angular_sep = np.arccos(dots).astype(np.float32)
 
             # Bearings in home lens's tangent frame
-            delta_pos = nb_pos - home_pos[:, None, :]
+            delta_pos = neighb_pos - home_pos[:, None, :]
             proj_x = np.einsum('ijk,ik->ij', delta_pos, home_right)
             proj_y = np.einsum('ijk,ik->ij', delta_pos, home_up)
             bearings = np.arctan2(proj_y, proj_x)
