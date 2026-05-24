@@ -6,6 +6,36 @@ MAIN_AXIS_OFFSET = -81.0
 SACCADE_AXIS_OFFSET = -28.6
 
 
+def combing_weight(dist, amount=1.0, radius=1.0 / 0.7):
+    """
+    Spatial falloff of the combing pull around the focus of expansion.
+
+    amount: blend weight at the focus, in [0, 1].
+            0 = no combing (raw radial flow kept), 1 = full replacement by target.
+    radius: distance beyond which the combing has no effect (linear falloff).
+    """
+    x = np.clip(dist / radius, 0.0, 1.0)
+    return amount * (1.0 - x)
+
+
+def diagonal_target(e_x, e_y, e_z, eye_sign, hemisphere_sign, angle_deg=45.0):
+    """
+    Target direction the combing pulls toward, at the focus of expansion.
+
+    angle_deg: angle of the diagonal from the equatorial plane, measured in
+               the focus tangent plane (the plane perpendicular to e_x).
+        0   -> purely lateral (no dorsoventral component, collapses chirality)
+        45  -> equal lateral / vertical inside the tangent plane
+        90  -> purely vertical (no lateral component, collapses L/R)
+    """
+    a = np.radians(angle_deg)
+    lateral = np.cos(a) * eye_sign * e_y * np.sqrt(2)
+    vertical = np.sin(a) * e_z * np.sqrt(2)
+    if np.ndim(hemisphere_sign) == 0:
+        return -e_x - lateral + hemisphere_sign * vertical
+    return -e_x[None, :] - lateral[None, :] + hemisphere_sign[:, None] * vertical[None, :]
+
+
 def smooth_phasor_field(mesh, array_name, iterations=5):
     """Smooths a vector field treating it as a phasor (180-deg agnostic)."""
 
@@ -41,10 +71,16 @@ def smooth_phasor_field(mesh, array_name, iterations=5):
     return vectors
 
 
-def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
+def generate_eye(eye_sign, n_sub, cut_angle_deg, flow_dir,
+                 comb_amount=1.0, comb_radius=1.0 / 0.7, comb_angle_deg=45.0):
     """
     Generates an eye mesh.
     eye_sign = 1 for Left Eye, -1 for Right Eye.
+
+    Combing knobs:
+      comb_amount: pull strength at the focus, in [0, 1]
+      comb_radius: spatial extent of the falloff (linear)
+      comb_angle_deg: direction of the diagonal pull in the focus tangent plane
     """
 
     # eyes_sep = 0.0
@@ -97,10 +133,11 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
     for i in range(sphere.n_points):
         p, n, v_raw = points[i], normals[i], raw_flow[i]
         dist_from_source = np.linalg.norm(p - source_point)
-        local_w = max(0, 1.0 - (dist_from_source * 0.7)) * strength
+        local_w = combing_weight(dist_from_source, amount=comb_amount, radius=comb_radius)
 
-        # Mirror target ideal by eye_sign
-        v_target_ideal = -e_x - (e_y * eye_sign) + (e_z * hemisphere_sign[i])
+        # Target diagonal in the focus tangent plane, projected onto local tangent
+        v_target_ideal = diagonal_target(e_x, e_y, e_z, eye_sign, hemisphere_sign[i],
+                                         angle_deg=comb_angle_deg)
         v_target_proj = v_target_ideal - np.dot(v_target_ideal, n) * n
         mag = np.linalg.norm(v_raw)
         if np.linalg.norm(v_target_proj) > 1e-6:
@@ -162,10 +199,11 @@ def generate_eye(eye_sign, strength, n_sub, cut_angle_deg, flow_dir):
     return clipped_mesh
 
 
-def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
+def alignment_study(comb_amount=1.0, comb_radius=1.0 / 0.7, comb_angle_deg=45.0,
+                    sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
     n_sub = 4
-    cut_angle_deg = 90.0  # makes the eyes perfectly hemispherical
-    # cut_angle_deg = 75.0  # ~15 deg binocular overlap (and ~30 deg blind zone in the back)
+    # cut_angle_deg = 90.0  # makes the eyes perfectly hemispherical
+    cut_angle_deg = 75.0  # ~15 deg binocular overlap (and ~30 deg blind zone in the back)
 
     tilt_rad = np.radians(tilt_deg)
     pitch_rad = np.radians(pitch_deg)
@@ -176,8 +214,10 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
         np.sin(pitch_rad)
     ])
 
-    left_eye = generate_eye(1, strength, n_sub, cut_angle_deg, flow_dir)
-    right_eye = generate_eye(-1, strength, n_sub, cut_angle_deg, flow_dir)
+    eye_kwargs = dict(comb_amount=comb_amount, comb_radius=comb_radius,
+                      comb_angle_deg=comb_angle_deg)
+    left_eye = generate_eye(1, n_sub, cut_angle_deg, flow_dir, **eye_kwargs)
+    right_eye = generate_eye(-1, n_sub, cut_angle_deg, flow_dir, **eye_kwargs)
 
     both_eyes = left_eye.merge(right_eye)
 
@@ -254,11 +294,6 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
     add_standard_setup(plotter, "Smoothing Consistency")
     plotter.add_mesh(both_eyes.copy(), scalars='SmoothnessComparison', cmap='inferno', clim=[0.9, 1])
 
-    # # Panel 8: Chirality map
-    # plotter.subplot(1, 3)
-    # add_standard_setup(plotter, "Chirality Map (A vs B)")
-    # plotter.add_mesh(both_eyes.copy(), scalars='Chirality', cmap='copper')
-
     plotter.link_views()
 
     plotter.camera_position = [(-3.5, 0.0, 1.0), (0, 0, 0), (0, 0, 1)]
@@ -267,4 +302,11 @@ def alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=0.0):
 
 
 if __name__ == "__main__":
-    alignment_study(strength=1.0, sparsity=0.01, tilt_deg=0.0, pitch_deg=HEAD_PITCH)
+
+    alignment_study(
+        comb_amount=1.0,
+        comb_radius=1.0 / 0.7,
+        comb_angle_deg=45.0,
+        sparsity=0.01,
+        tilt_deg=0.0, pitch_deg=HEAD_PITCH
+    )

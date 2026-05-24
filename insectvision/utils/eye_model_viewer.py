@@ -1,13 +1,13 @@
 import numpy as np
 import pyvista as pv
-import vtk
+from scipy.spatial import Delaunay
 
 from insectvision.compound_eyes.receptor_array import ReceptorArray
 from insectvision.compound_eyes.kernel import drosophila_kernel
 from insectvision.compound_eyes.orientation import BundlesAligner
 from insectvision.compound_eyes.datatypes import get_metadata_field
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
-
+from insectvision.utils.math import project_to_stereo
 
 RECEPTOR_PALETTE = [
     '#ff4034',  # R1
@@ -19,16 +19,35 @@ RECEPTOR_PALETTE = [
     '#FFD700',  # R7/8
 ]
 
-LENS_DOME_COLORS = ['#E6B7B1', '#B8BEE6']   # left, right
+CHIRALITY_NEG_COLOR = '#B95D21'
+CHIRALITY_POS_COLOR = '#FF9800'
 
+SURFACE_COLOR  = 'white'
+SURFACE_OPAC   = 0.18
+EQUATOR_COLOR  = '#3b6dff'
+SAGITTAL_COLOR = '#888888'
+PLANE_OPAC     = 0.06
+FLOW_COLOR     = '#9b3ddc'
+
+
+# Templates for glyph rendering (built once, shared across panels)
+
+_ARROW_TEMPLATE = None
+_PHASOR_TEMPLATE = None
+_DISC_TEMPLATE = None
+
+
+##
+
+# Helper functions
 
 def cartridge_map_dense(ra) -> np.ndarray:
     """
     Build the (N, R) cartridge map: result[L, r] is the lens index that
     donates its R-r receptor to cartridge L.
 
-    ReceptorArray stores wiring as forward links (each receptor knows
-    which cartridge it feeds via rcpt_static_data['cartridge_src']), this
+    ReceptorArray stores wiring as forward links (each receptor knows which
+    cartridge it feeds via rcpt_static_data['cartridge_src']), this
     reconstructs the inverse view used by the cartridge-map visualisation.
 
     If two source receptors of the same type feed the same cartridge
@@ -84,34 +103,9 @@ def compute_cartridge_conflicts(ra) -> dict:
         'total': int(per_rhab.sum()),
     }
 
-
-def lens_radii_from_lattice(ra) -> np.ndarray:
-    """Per-lens display radius = mean distance to the lens's immediate lattice neighbours."""
-    radii = np.zeros(ra.lens_count, dtype=np.float32)
-    for eye in ra.eyes:
-        if len(eye) == 0:
-            continue
-        result = eye.neighbours(
-            lens_indices=eye.lens_indices,
-            k=6,
-            immediate_only=True,
-        )
-        if result.distances.size == 0:
-            continue
-        radii[eye.lens_indices] = result.distances.mean(axis=1)
-    radii[radii < 1e-9] = 0.001
-    return radii
-
+# TODO: some of these helpers can be replaced by the actual eye model query methods and/or the math utils
 
 def receptor_tip_offsets(ra) -> np.ndarray:
-    """
-    (N, R, 3) world-space tangent offsets of each rhabdomere tip from its
-    parent lens centre.
-
-    Reconstructed from receptor directions: each direction points from the
-    rhabdomere tip through the nodal point, so subtracting the axial
-    component and negating gives the tip offset in the tangent plane.
-    """
     N, R = ra.lens_count, ra.receptors_per_lens
     d = ra.lenses.directions
     rec_dirs = ra.rcpt_dynamic_data['direction'].reshape(N, R, 3)
@@ -119,431 +113,565 @@ def receptor_tip_offsets(ra) -> np.ndarray:
     return -(rec_dirs - axial * d[:, None, :])
 
 
-_LENS_TEMPLATE = None
+def radii_from_lattice(ra) -> np.ndarray:
+    """Per-lens display radius = mean distance to the lens's immediate lattice neighbours."""
+
+    radii = np.zeros(ra.lens_count, dtype=np.float32)
+    for eye in ra.eyes:
+        if len(eye) == 0:
+            continue
+        result = eye.neighbours(lens_indices=eye.lens_indices, k=6, immediate_only=True)
+        if result.distances.size == 0:
+            continue
+        radii[eye.lens_indices] = result.distances.mean(axis=1)
+    radii[radii < 1e-9] = 0.001
+    return radii
 
 
-def _lens_template() -> pv.PolyData:
-    """Squished hemisphere used as the per-lens glyph."""
-    global _LENS_TEMPLATE
-    if _LENS_TEMPLATE is None:
-        t = pv.Sphere(radius=1.0, phi_resolution=20, theta_resolution=20, end_phi=90)
-        t.scale([1.0, 1.0, 0.5], inplace=True)  # flatten the dome
-        t.rotate_y(90, inplace=True)            # top points along +X
-        t.translate([-0.1, 0, 0], inplace=True) # recess into head
-        _LENS_TEMPLATE = t
-    return _LENS_TEMPLATE
+def make_eye_mesh(ra) -> pv.PolyData:
+    """
+    Lens-indexed mesh: vertex i = lens i.
+    """
+    positions = ra.lenses.positions
+    if positions.shape[0] == 0:
+        return pv.PolyData()
+
+    all_faces = []
+    for eye in ra.eyes:
+        if len(eye) < 3:
+            continue
+
+        global_idx = np.asarray(eye.lens_indices, dtype=np.int_)
+        eye_pos = positions[global_idx]
+
+        eye_dirs = eye_pos / np.linalg.norm(eye_pos, axis=1, keepdims=True)
+        try:
+            pts_2d, _, _, _ = project_to_stereo(eye_dirs)
+            tri = Delaunay(pts_2d)
+            simplices = tri.simplices
+        except Exception:
+            continue
+
+        # Filter out spiky gap-filling triangles
+        p0 = eye_pos[simplices[:, 0]]
+        p1 = eye_pos[simplices[:, 1]]
+        p2 = eye_pos[simplices[:, 2]]
+
+        # Get 3D lengths of all triangle edges
+        l01 = np.linalg.norm(p0 - p1, axis=1)
+        l12 = np.linalg.norm(p1 - p2, axis=1)
+        l20 = np.linalg.norm(p2 - p0, axis=1)
+
+        # Find maximum edge length for each triangle and estimate median edge length
+        max_len = np.max(np.column_stack([l01, l12, l20]), axis=1)
+        typical_edge = np.median(np.min(np.column_stack([l01, l12, l20]), axis=1))
+
+        # Drop triangles whose longest edge is significantly large
+        valid_mask = max_len < (typical_edge * 2.0)
+        valid_simplices = simplices[valid_mask]
+
+        if len(valid_simplices) > 0:
+            all_faces.append(global_idx[valid_simplices])
+
+    if not all_faces:
+        return pv.PolyData(positions.astype(np.float32))
+
+    faces = np.vstack(all_faces)
+    flat = np.empty((faces.shape[0], 4), dtype=np.int_)
+    flat[:, 0] = 3
+    flat[:, 1:] = faces
+    return pv.PolyData(positions.astype(np.float32), faces=flat.flatten())
 
 
-def build_lens_glyphs(ra, scalars=None) -> pv.PolyData:
-    """Position and orient the lens dome at every lens, with optional scalar field."""
-    p = ra.lenses.positions
-    d = ra.lenses.directions
-    radii = lens_radii_from_lattice(ra)
+def eye_boundary_line(lens_data_mesh: pv.PolyData) -> pv.PolyData:
+    """
+    Extracts the exact outer boundary of the valid triangulated eye mesh and smoothes for a more organic edge.
+    """
+    if lens_data_mesh.n_cells == 0 or lens_data_mesh.n_points == 0:
+        return pv.PolyData()
 
-    pd = pv.PolyData(p)
-    pd.point_data['radius'] = radii
-    pd.point_data['vectors'] = d
+    edges = lens_data_mesh.extract_feature_edges(
+        boundary_edges=True,
+        non_manifold_edges=False,
+        manifold_edges=False,
+        feature_edges=False
+    )
 
-    if scalars is None:
-        scalars = (p @ np.asarray(WORLD_RIGHT, dtype=np.float32) < 0).astype(float)
-    pd.point_data['active_scalars'] = scalars
+    # relaxation smoothing to the extracted polyline vertices
+    if edges.n_points > 0:
+        edges = edges.smooth(n_iter=100, relaxation_factor=0.05)
 
-    return pd.glyph(geom=_lens_template(), scale='radius', orient='vectors', factor=1.0)
+    return edges
 
+def _tangent_coords(eye_pos: np.ndarray):
+    """
+    Tangent-plane (u, v) coordinates of 'eye_pos' around its centroid.
+    Returns (u, v, (centroid, e1, e2)) or (None, None, None) if degenerate.
+    """
+    centroid = eye_pos.mean(axis=0)
+    n = float(np.linalg.norm(centroid))
+    if n < 1e-10:
+        return None, None, None
+    centroid_dir = centroid / n
+
+    world_up = np.asarray(WORLD_UP, dtype=eye_pos.dtype)
+    if abs(centroid_dir @ world_up) > 0.95:
+        e1 = np.asarray(WORLD_FORWARD, dtype=eye_pos.dtype)
+        e1 = e1 - centroid_dir * (e1 @ centroid_dir)
+    else:
+        e1 = np.cross(world_up, centroid_dir)
+    e1 = e1 / np.linalg.norm(e1)
+    e2 = np.cross(centroid_dir, e1)
+
+    norms = np.linalg.norm(eye_pos, axis=1)
+    safe_norms = norms.copy()
+    safe_norms[norms < 1e-10] = 1.0
+
+    dirs = eye_pos / safe_norms[:, None]
+
+    x = dirs @ e1
+    y = dirs @ e2
+    z = np.clip(dirs @ centroid_dir, -1.0, 1.0)
+
+    theta = np.arccos(z)
+    r_ortho = np.sqrt(x ** 2 + y ** 2)
+
+    scale = np.ones_like(theta)
+    nz = r_ortho > 1e-8
+    scale[nz] = theta[nz] / r_ortho[nz]
+
+    u = x * scale * safe_norms
+    v = y * scale * safe_norms
+
+    return u, v, (centroid, e1, e2)
+
+
+##
+
+def _arrow_template() -> pv.PolyData:
+    global _ARROW_TEMPLATE
+    if _ARROW_TEMPLATE is None:
+        _ARROW_TEMPLATE = pv.Arrow(tip_radius=0.08, shaft_radius=0.03, tip_length=0.25)
+    return _ARROW_TEMPLATE
+
+
+def _phasor_template() -> pv.PolyData:
+    global _PHASOR_TEMPLATE
+    if _PHASOR_TEMPLATE is None:
+        _PHASOR_TEMPLATE = pv.Line(pointa=(-0.5, 0, 0), pointb=(0.5, 0, 0))
+    return _PHASOR_TEMPLATE
+
+
+def _disc_template() -> pv.PolyData:
+    """
+    Unit disc lying in YZ plane (normal = +X). Glyph filter aligns the
+    template's +X with the orient vector, so this places each disc with its
+    normal along the lens optical axis (tangent to the eye surface).
+    """
+    global _DISC_TEMPLATE
+    if _DISC_TEMPLATE is None:
+        _DISC_TEMPLATE = pv.Disc(inner=0, outer=1.0, c_res=18, normal=(1, 0, 0))
+    return _DISC_TEMPLATE
+
+
+##
 
 class EyeViewer:
     """
-    Interactive 3D viewer for a ReceptorArray.
+    Multi-panel 3D viewer for a ReceptorArray.
     """
 
     def __init__(
         self,
         ra: ReceptorArray,
+        aligner: BundlesAligner = None,
         optic_flow_world=None,
-        window_size=(1200, 900),
+        sparsity: float = 0.0,
     ):
 
         self.ra = ra
         self.kernel = ra.kernel
         self.N = ra.lens_count
         self.R = ra.receptors_per_lens
+        self.sparsity = float(sparsity)
 
         self.right = np.asarray(WORLD_RIGHT, dtype=np.float32)
-        self.up = np.asarray(WORLD_UP, dtype=np.float32)
-        self.fwd = np.asarray(WORLD_FORWARD, dtype=np.float32)
+        self.up    = np.asarray(WORLD_UP,    dtype=np.float32)
+        self.fwd   = np.asarray(WORLD_FORWARD, dtype=np.float32)
 
-        flow = optic_flow_world if optic_flow_world is not None else -self.fwd
-        self.optic_flow_world = np.asarray(flow, dtype=np.float32)
+        if aligner is None:
+            flow = optic_flow_world if optic_flow_world is not None else -self.fwd
+            aligner = BundlesAligner(flow_direction=flow)
+        self.aligner_smooth = aligner
+        self.aligner_raw = BundlesAligner(
+            flow_direction=aligner.flow_direction,
+            diagonal_strength=aligner.diagonal_strength,
+            diagonal_angle_deg=getattr(aligner, 'diagonal_angle_deg', 45.0),
+            alignment_smoothing_iterations=0,
+            saccade_smoothing_iterations=0,
+            falloff=aligner.falloff,
+            strength=aligner.strength,
+        )
+        self.optic_flow_world = aligner.flow_direction.astype(np.float32)
+
+        self.result_smooth = self.aligner_smooth.compute(self.ra)
+        self.result_raw    = self.aligner_raw.compute(self.ra)
 
         # Cache geometry
         self.p = ra.lenses.positions
         self.d = ra.lenses.directions
-        self.is_left_eye = (self.p @ self.right) < 0
-
         self.r_sphere = float(np.mean(np.linalg.norm(self.p, axis=1)))
-        self.arrow_len = self.r_sphere * 0.15
+        self.arrow_len = self.r_sphere * 0.08
 
-        # plot setup
-        self.plotter = pv.Plotter(window_size=list(window_size))
+        # Per-eye Delaunay mesh (vertex i = lens i)
+        self.lens_data_mesh = make_eye_mesh(self.ra)
+        self.eye_boundary_lines = eye_boundary_line(self.lens_data_mesh)
+
+        # Per-lens chirality
+        self.chirality = self.ra.lenses.chiralities.astype(np.float32)
+
+        # Per-lens lattice spacing
+        self.disc_radii = radii_from_lattice(self.ra) * 0.4
+
+        # Heatmap scalars
+        self.collinearity = self._compute_collinearity()
+        self.smoothness = self._compute_smoothness()
+        self.conflicts_field = (
+            compute_cartridge_conflicts(self.ra)['incoming'].astype(np.float32)
+            if self.R > 1 and self.ra._cartridges_wired else None
+        )
+
+        # Plot bookkeeping
+        self.plotter = None
+        self.actors_alignment_smooth = []
+        self.actors_alignment_raw = []
+        self.actors_saccade_smooth = []
+        self.actors_saccade_raw = []
+        self.actors_bundles = []
+        self.actors_conflicts = []
+        self.actors_debugger = []
+
+        self.state_alignment_smoothed = True
+        self.state_saccade_smoothed = True
+
+        # Big panel state: 0 = bundles, 1 = debugger, 2 = conflicts heatmap
+        self.state_bigpanel = 1
+        self._BIGPANEL_LABELS = ['Bundles', 'Wiring debugger', 'Conflicts']
+
+        self._debugger_subplot = None          # filled in show()
+
+    ##
+
+    def show(self):
+        self.plotter = pv.Plotter(
+            shape=(2, 4),
+            groups=[(1, slice(2, 4))],
+            window_size=list((2400, 1100)),
+            border=True,
+        )
         self.plotter.set_background('white')
 
-        # Actor groups for visibility toggling
-        self.actors = {
-            'lenses':          [],
-            'local_flow':      [],
-            'saccades':        [],
-            'flow_axis':       [],
-            'main_axis':       [],
-            'cartridge_field': [],
-            'conflicts':       [],
-            'bundles':         [],
-        }
-        self._clip_actors = []                # everything clipped by the slicer plane
-        self._cart_neighbourhood_actors = []  # cleared between [N] presses
-        self._slicer_callback = None
+        self._debugger_subplot = (1, 2)
 
-    # main entry point
+        # Panel layout
+        panel_setups = [
+            ((0, 0), "Optic Flow",                self._add_optic_flow_panel),
+            ((0, 1), "Alignment Axes  [A]",       self._add_alignment_panel),
+            ((0, 2), "Major Axes",                self._add_major_axis_panel),
+            ((0, 3), "Saccade Axes  [S]",         self._add_saccade_panel),
+            ((1, 0), "Flow / Alignment collinearity",
+                                                  self._add_collinearity_panel),
+            ((1, 1), "Saccade smoothing consistency",
+                                                  self._add_smoothness_panel),
+            ((1, 2), "Bundles / Wiring / Conflicts  [B]  [N]",
+                                                  self._add_bigpanel),
+        ]
 
-    def show(self) -> None:
-        self._add_equator_plane()
-        self._add_lenses_glyphs()
-        if self.R > 1 and self.ra._cartridges_wired:
-            self._add_cartridge_conflicts()
-        self._add_local_flow()
-        self._add_saccades()
-        if self.R > 1:
-            self._add_main_axis()
-            self._add_flow_axis()
-            self._add_bundles()
-            if self.ra._cartridges_wired:
-                self._add_cartridge_field()
-        self._add_world_references()
-        self._setup_slicer()
+        for (row, col), title, builder in panel_setups:
+            self.plotter.subplot(row, col)
+            self._common_scene(title)
+            builder()
+
+        # visibility states + linking
+        self._apply_alignment_visibility()
+        self._apply_saccade_visibility()
+        self._apply_bigpanel_visibility()
+
+        self.plotter.link_views()
         self._setup_keybindings()
         self._setup_camera()
         self.plotter.show()
 
-    # Scene layers
+    ##
 
-    def _add_equator_plane(self) -> None:
-        eq_rad = self.r_sphere * 1.3
-        plane = pv.Plane(
-            center=(0, 0, 0), direction=self.up,
-            i_size=eq_rad * 2, j_size=eq_rad * 2,
+    # Per-panel fluff (planes, flow indicator, title, axes)
+
+    def _common_scene(self, title: str) -> None:
+        self.plotter.add_text(title, font_size=9, color='black')
+
+        # Equatorial and sagittal ref planes (head frame)
+        plane_size = self.r_sphere * 2.6
+        eq = pv.Plane(center=(0, 0, 0), direction=self.up,
+                      i_size=plane_size, j_size=plane_size)
+        sag = pv.Plane(center=(0, 0, 0), direction=self.right,
+                       i_size=plane_size, j_size=plane_size)
+        self.plotter.add_mesh(eq,  color=EQUATOR_COLOR,  opacity=PLANE_OPAC)
+        self.plotter.add_mesh(sag, color=SAGITTAL_COLOR, opacity=PLANE_OPAC)
+
+        # Optic flow direction (big arrow at the head front)
+        flow_arrow = pv.Arrow(
+            start=(-1.8 * self.r_sphere * self.optic_flow_world).tolist(),
+            direction=self.optic_flow_world.tolist(),
+            scale=self.r_sphere * 0.6,
         )
-        self.plotter.add_mesh(plane, color='black', opacity=0.05, show_edges=True)
+        self.plotter.add_mesh(flow_arrow, color=FLOW_COLOR, lighting=False, opacity=0.85)
 
-    def _add_lenses_glyphs(self) -> None:
-        mesh = build_lens_glyphs(self.ra)
-        actor = self.plotter.add_mesh(
-            mesh,
-            scalars='active_scalars',
-            cmap=LENS_DOME_COLORS,
-            show_scalar_bar=False,
-            opacity=1.0,
-            smooth_shading=True,
-            ambient=0.3,
-            show_edges=False,
-            backface_culling=True,
-        )
-        actor.SetVisibility(False)
-        self._clip_actors.append(actor)
-        self.actors['lenses'].append(actor)
+        self.plotter.add_axes(interactive=False)
 
-    def _add_cartridge_conflicts(self) -> None:
-        conflicts = compute_cartridge_conflicts(self.ra)
-        incoming = conflicts['incoming'].astype(float)
+    def _add_eye_surface(
+        self,
+        scalars: np.ndarray = None,
+        cmap: str = None,
+        clim=None,
+        sbar_title: str = None,
+        faint: bool = False,
+    ) -> None:
+        """
+        Render the eye as a surface mesh, optionally coloured by a scalar field
 
-        mesh = build_lens_glyphs(self.ra, scalars=incoming)
-        actor = self.plotter.add_mesh(
-            mesh,
-            scalars='active_scalars',
-            cmap='RdYlGn_r',
-            clim=[0, max(1, float(incoming.max()))],
-            show_scalar_bar=True,
-            scalar_bar_args={'title': 'Incoming conflicts', 'position_x': 0.85},
-            smooth_shading=True,
-            ambient=0.3,
-            show_edges=False,
-            backface_culling=True,
-        )
-        actor.SetVisibility(False)
-        self._clip_actors.append(actor)
-        self.actors['conflicts'].append(actor)
-
-    def _add_local_flow(self) -> None:
-        dots = np.sum(self.optic_flow_world * self.d, axis=1)
-        v_proj = self.optic_flow_world - dots[:, None] * self.d
-        norms = np.linalg.norm(v_proj, axis=1)
-        valid = norms > 1e-6
-        v_proj[valid] /= norms[valid, None]
-
-        if not np.any(valid):
+        - scalars not None: continuous heatmap (smooth_shading + Gouraud)
+        - scalars is None, faint=True: faint white background surface
+        - scalars is None, faint=False: opaque white surface
+        """
+        if self.lens_data_mesh.n_cells == 0:
             return
 
-        pd = pv.PolyData(self.p[valid])
-        pd['vectors'] = v_proj[valid] * self.arrow_len
-        arrows = pd.glyph(orient='vectors', scale='vectors', factor=1.0)
-
-        actor = self.plotter.add_mesh(
-            arrows, color='#da70d6', opacity=0.9,
-            ambient=0.5, diffuse=0.8, smooth_shading=True,
-        )
-        actor.SetVisibility(False)
-        self._clip_actors.append(actor)
-        self.actors['local_flow'].append(actor)
-
-    def _add_saccades(self) -> None:
-        s_world = self.ra.saccade_field()
-        for mask, color in [(self.is_left_eye, 'red'), (~self.is_left_eye, 'blue')]:
-            if not np.any(mask):
-                continue
-            pd = pv.PolyData(self.p[mask])
-            pd['vectors'] = s_world[mask] * self.arrow_len
-            arrows = pd.glyph(orient='vectors', scale='vectors', factor=1.0)
-            actor = self.plotter.add_mesh(
-                arrows, color=color, ambient=0.5, diffuse=0.8, smooth_shading=True,
+        m = self.lens_data_mesh.copy()
+        if scalars is not None:
+            m.point_data['_scalar'] = scalars.astype(np.float32)
+            kwargs = dict(
+                scalars='_scalar', cmap=cmap,
+                show_scalar_bar=(sbar_title is not None),
+                smooth_shading=True, ambient=0.3, diffuse=0.7,
             )
-            actor.SetVisibility(False)
-            self._clip_actors.append(actor)
-            self.actors['saccades'].append(actor)
+            if clim is not None:
+                kwargs['clim'] = list(clim)
+            if sbar_title is not None:
+                kwargs['scalar_bar_args'] = {
+                    'title': sbar_title, 'n_labels': 3,
+                    'position_x': 0.78, 'position_y': 0.05,
+                    'width': 0.18, 'height': 0.06, 'color': 'black',
+                }
+            self.plotter.add_mesh(m, **kwargs)
+        else:
+            self.plotter.add_mesh(
+                m, color=SURFACE_COLOR,
+                opacity=(SURFACE_OPAC if faint else 1.0),
+                show_edges=False, smooth_shading=True, lighting=True,
+            )
 
-    def _add_main_axis(self) -> None:
-        """Bundle main axis (R3 -> centre) reconstructed from receptor geometry."""
-        offsets = receptor_tip_offsets(self.ra)
-        center = self.kernel.center_index
-        i1, _ = self.kernel.main_axis_indices
-        if i1 == center:
-            return
+        # Boundary polyline overlay
+        if self.eye_boundary_lines.n_cells > 0:
+            self.plotter.add_mesh(
+                self.eye_boundary_lines,
+                color='black', line_width=1.5, opacity=0.55,
+                lighting=False,
+            )
 
-        main_world = offsets[:, i1, :] - offsets[:, center, :]
-        norms = np.linalg.norm(main_world, axis=1, keepdims=True)
-        np.divide(main_world, norms, out=main_world, where=norms > 1e-11)
+    ##
 
-        v_offset = main_world * self.arrow_len * 0.4
-        pd = pv.PolyData(self.p - v_offset)
-        pd['vectors'] = main_world * self.arrow_len * 0.8
-        arrows = pd.glyph(orient='vectors', scale='vectors', factor=1.0)
+    # Individual panel content
 
-        actor = self.plotter.add_mesh(
-            arrows, color='#F6C735', opacity=0.9,
-            ambient=0.5, diffuse=0.8, smooth_shading=True,
+    def _glyph_arrows(self, mesh: pv.PolyData, orient_name: str) -> pv.PolyData:
+        return mesh.glyph(
+            geom=_arrow_template(), orient=orient_name,
+            factor=self.arrow_len, scale=False,
+            tolerance=self.sparsity if self.sparsity > 0 else None,
         )
-        actor.SetVisibility(False)
-        self._clip_actors.append(actor)
-        self.actors['main_axis'].append(actor)
 
-    def _add_flow_axis(self) -> None:
-        """Bundle alignment / flow axis as an undirected line through each lens."""
-        axis_world = self._kernel_axis_to_world(self.kernel.flow_axis_rad)
-        v_half = axis_world * self.arrow_len * 0.4
+    def _glyph_phasors(self, mesh: pv.PolyData, orient_name: str) -> pv.PolyData:
+        return mesh.glyph(
+            geom=_phasor_template(), orient=orient_name,
+            factor=self.arrow_len, scale=False,
+            tolerance=self.sparsity if self.sparsity > 0 else None,
+        )
 
-        pts = np.empty((self.N * 2, 3), dtype=np.float32)
-        pts[0::2] = self.p - v_half
-        pts[1::2] = self.p + v_half
-
-        lines = np.empty((self.N, 3), dtype=np.int_)
-        lines[:, 0] = 2
-        lines[:, 1] = np.arange(0, self.N * 2, 2)
-        lines[:, 2] = np.arange(1, self.N * 2, 2)
-
-        pd = pv.PolyData(pts, lines=lines)
-        actor = self.plotter.add_mesh(pd, color='green', line_width=3.0, opacity=0.9)
-        actor.SetVisibility(False)
-        self._clip_actors.append(actor)
-        self.actors['flow_axis'].append(actor)
-
-    def _add_cartridge_field(self) -> None:
-        """Per-cartridge line from R3-source to R6-source, coloured by conflict status."""
-        i1, i2 = self.kernel.main_axis_indices
-        if i1 == i2:
+    def _add_optic_flow_panel(self) -> None:
+        if self.lens_data_mesh.n_cells == 0:
             return
-
-        cart_map = cartridge_map_dense(self.ra)
-        v_cart = self.p[cart_map[:, i2]] - self.p[cart_map[:, i1]]
-        dots = np.sum(v_cart * self.d, axis=1)
-        v_proj = v_cart - dots[:, None] * self.d
+        dots = self.d @ self.optic_flow_world
+        v_proj = self.optic_flow_world[None, :] - dots[:, None] * self.d
         norms = np.linalg.norm(v_proj, axis=1, keepdims=True)
-        np.divide(v_proj, norms, out=v_proj, where=norms > 1e-8)
+        v_proj = np.divide(v_proj, norms.clip(min=1e-8))
 
-        # Orient consistently against the saccade field
-        s_world = self.ra.saccade_field()
-        v_proj *= np.sign(np.sum(v_proj * s_world, axis=1))[:, None]
+        m = self.lens_data_mesh.copy()
+        m.point_data['OpticFlow'] = v_proj.astype(np.float32)
+        arrows = self._glyph_arrows(m, 'OpticFlow')
+        self.plotter.add_mesh(arrows, color='#da70d6',
+                              ambient=0.4, diffuse=0.7, smooth_shading=True)
 
-        # Highlight cartridges with any peripheral self-reference (= missing
-        # contributor for that receptor type). Receiving conflicts have their
-        # own dedicated heatmap on the [V] toggle.
-        center = self.kernel.center_index
-        periph_cols = np.array([r for r in range(self.R) if r != center])
-        self_ref = cart_map[:, periph_cols] == np.arange(self.N)[:, None]
-        is_incomplete = np.any(self_ref, axis=1)
+    def _add_alignment_panel(self) -> None:
+        if self.lens_data_mesh.n_cells == 0 or self.R <= 1:
+            return
 
-        for mask, color in [(~is_incomplete, '#00FF00'), (is_incomplete, '#FF4500')]:
+        m_smooth = self.lens_data_mesh.copy()
+        m_smooth.point_data['AlignmentSmooth'] = self.result_smooth.alignment_phasor.astype(np.float32)
+        g_smooth = self._glyph_phasors(m_smooth, 'AlignmentSmooth')
+        a_smooth = self.plotter.add_mesh(g_smooth, color='green', line_width=2)
+        self.actors_alignment_smooth.append(a_smooth)
+
+        m_raw = self.lens_data_mesh.copy()
+        m_raw.point_data['AlignmentRaw'] = self.result_raw.alignment_phasor.astype(np.float32)
+        g_raw = self._glyph_phasors(m_raw, 'AlignmentRaw')
+        a_raw = self.plotter.add_mesh(g_raw, color='#8c8c00', line_width=2)
+        self.actors_alignment_raw.append(a_raw)
+
+    def _add_major_axis_panel(self) -> None:
+        if self.lens_data_mesh.n_cells == 0 or self.R <= 1:
+            return
+
+        major = self.result_smooth.major_axis.astype(np.float32)
+
+        pos_mask = self.chirality > 0
+        neg_mask = self.chirality < 0
+
+        for mask, color in [(neg_mask, CHIRALITY_NEG_COLOR),
+                            (pos_mask, CHIRALITY_POS_COLOR)]:
             if not np.any(mask):
                 continue
-            pd = pv.PolyData(self.p[mask])
-            pd['vectors'] = v_proj[mask] * self.arrow_len * 0.9
-            arrows = pd.glyph(orient='vectors', scale='vectors')
-            actor = self.plotter.add_mesh(
-                arrows, color=color, opacity=0.9,
-                ambient=0.5, diffuse=0.8, smooth_shading=True,
-            )
-            actor.SetVisibility(False)
-            self._clip_actors.append(actor)
-            self.actors['cartridge_field'].append(actor)
+            pd = pv.PolyData(self.p[mask].astype(np.float32))
+            pd.point_data['MajorAxis'] = major[mask]
+            arrows = pd.glyph(geom=_arrow_template(), orient='MajorAxis',
+                              factor=self.arrow_len, scale=False)
+            self.plotter.add_mesh(arrows, color=color,
+                                  ambient=0.4, diffuse=0.7, smooth_shading=True)
 
-    def _add_bundles(self) -> None:
-        """Coloured rhabdomere tips."""
+    def _add_saccade_panel(self) -> None:
+        if self.lens_data_mesh.n_cells == 0:
+            return
 
-        offsets = receptor_tip_offsets(self.ra)
-        max_offset = float(np.max(np.linalg.norm(offsets, axis=2)))
-        tip_scale = (self.r_sphere * 0.01) / max(max_offset, 1e-8)
-        tip_positions = self.p[:, None, :] + offsets * tip_scale
+        m_smooth = self.lens_data_mesh.copy()
+        m_smooth.point_data['SaccadeSmooth'] = self.result_smooth.saccade_phasor.astype(np.float32)
+        g_smooth = self._glyph_arrows(m_smooth, 'SaccadeSmooth')
+        a_smooth = self.plotter.add_mesh(g_smooth, color='red',
+                                         ambient=0.4, diffuse=0.7, smooth_shading=True)
+        self.actors_saccade_smooth.append(a_smooth)
 
-        is_mirrored = self.ra.lenses.chiralities < 0
-        i1, i2 = self.kernel.main_axis_indices
+        m_raw = self.lens_data_mesh.copy()
+        m_raw.point_data['SaccadeRaw'] = self.result_raw.saccade_phasor.astype(np.float32)
+        g_raw = self._glyph_phasors(m_raw, 'SaccadeRaw')
+        a_raw = self.plotter.add_mesh(g_raw, color='#FF94BD', line_width=2)
+        self.actors_saccade_raw.append(a_raw)
 
-        groups = {'gold': [], 'white': [], 'red': [], 'teal': [], 'royalblue': []}
-        for r in range(self.R):
-            pts_r = tip_positions[:, r, :]
-            if r == self.kernel.center_index:
-                groups['gold'].append(pts_r)
-            elif r == i1:
-                groups['red'].append(pts_r)
-            elif r == i2:
-                groups['white'].append(pts_r)
-            else:
-                groups['teal'].append(pts_r[~is_mirrored])
-                groups['royalblue'].append(pts_r[is_mirrored])
-
-        for color, pts_list in groups.items():
-            arrays = [a for a in pts_list if len(a) > 0]
-            if not arrays:
-                continue
-            stacked = np.vstack(arrays)
-            actor = self.plotter.add_points(
-                stacked, color=color, point_size=12,
-                render_points_as_spheres=True,
-            )
-            # actor.SetVisibility(False)
-            self._clip_actors.append(actor)
-            self.actors['bundles'].append(actor)
-
-    def _add_world_references(self) -> None:
-        g_vec = self.optic_flow_world / np.linalg.norm(self.optic_flow_world)
-        start = self.fwd * (self.r_sphere * 1.5)
-        pd = pv.PolyData(np.array([start]))
-        pd['vectors'] = np.array([g_vec]) * (self.r_sphere * 0.8)
-        self.plotter.add_mesh(
-            pd.glyph(orient='vectors', scale='vectors'), color='#da70d6',
+    def _add_collinearity_panel(self) -> None:
+        """Per-lens |raw flow . combed alignment phasor|, as a coloured surface."""
+        if self.collinearity is None or self.R <= 1:
+            self.plotter.add_text("(needs R > 1)", position='lower_left',
+                                  font_size=8, color='gray')
+            return
+        self._add_eye_surface(
+            scalars=self.collinearity, cmap='inferno', clim=[0.0, 1.0],
+            sbar_title='Collinearity',
         )
 
-        label_dist = self.r_sphere * 1.6
-        anchors = [
-            ( self.fwd * label_dist, "Front",   'gray'),
-            (-self.fwd * label_dist, "Back",    'gray'),
-            ( self.up  * label_dist, "Dorsal",  'gray'),
-            (-self.up  * label_dist, "Ventral", 'gray'),
-            ( self.right * label_dist, "Right", 'blue'),
-            (-self.right * label_dist, "Left",  'red'),
-        ]
-        for pt, txt, col in anchors:
-            self.plotter.add_point_labels(
-                np.array([pt]), [txt], text_color=col, point_size=0,
-                font_size=20, shape_opacity=0.0,
+    def _add_smoothness_panel(self) -> None:
+        """Per-lens |raw saccade . smoothed saccade|, as a coloured surface."""
+        if self.smoothness is None:
+            self.plotter.add_text("(needs R > 1)", position='lower_left',
+                                  font_size=8, color='gray')
+            return
+        self._add_eye_surface(
+            scalars=self.smoothness, cmap='inferno', clim=[0.9, 1.0],
+            sbar_title='Smoothness',
+        )
+
+    def _add_bigpanel(self) -> None:
+        """Bottom-right panel (wide)."""
+
+        self._add_eye_surface(faint=True)
+
+        # Mode 1: rhabdomere-tip bundles overview
+        if self.R > 1:
+            offsets = receptor_tip_offsets(self.ra)
+            max_off = float(np.max(np.linalg.norm(offsets, axis=2)))
+            if max_off > 1e-8:
+                tip_scale = (self.r_sphere * 0.012) / max_off
+                tip_positions = self.p[:, None, :] + offsets * tip_scale
+                is_mirrored = self.ra.lenses.chiralities < 0
+                i1, i2 = self.kernel.main_axis_indices
+
+                groups = {
+                    'gold': [], 'red': [], 'white': [],
+                    'teal': [], 'royalblue': [],
+                }
+                for r in range(self.R):
+                    pts_r = tip_positions[:, r, :]
+                    if r == self.kernel.center_index:
+                        groups['gold'].append(pts_r)
+                    elif r == i1:
+                        groups['red'].append(pts_r)
+                    elif r == i2:
+                        groups['white'].append(pts_r)
+                    else:
+                        groups['teal'].append(pts_r[~is_mirrored])
+                        groups['royalblue'].append(pts_r[is_mirrored])
+
+                for color, pts_list in groups.items():
+                    arrays = [a for a in pts_list if len(a) > 0]
+                    if not arrays:
+                        continue
+                    stacked = np.vstack(arrays)
+                    act = self.plotter.add_points(
+                        stacked, color=color, point_size=8,
+                        render_points_as_spheres=True,
+                    )
+                    self.actors_bundles.append(act)
+
+        # Mode 2: conflicts heatmap
+        if self.conflicts_field is not None:
+            eps = float(np.median(self.disc_radii)) * 0.05
+            positions = self.p + eps * self.d
+            pd = pv.PolyData(positions.astype(np.float32))
+            pd.point_data['vectors'] = self.d.astype(np.float32)
+            pd.point_data['radius'] = self.disc_radii.astype(np.float32)
+            pd.point_data['conflicts'] = self.conflicts_field
+            discs = pd.glyph(geom=_disc_template(), orient='vectors',
+                             scale='radius', factor=1.1)
+            clim_top = max(1.0, float(self.conflicts_field.max()))
+            act = self.plotter.add_mesh(
+                discs, scalars='conflicts',
+                cmap='RdYlGn_r', clim=[0, clim_top],
+                show_scalar_bar=True,
+                scalar_bar_args={'title': 'Incoming conflicts', 'n_labels': 3,
+                                 'position_x': 0.78, 'position_y': 0.05,
+                                 'width': 0.18, 'height': 0.06,
+                                 'color': 'black'},
+                ambient=0.4, diffuse=0.7,
             )
+            self.actors_conflicts.append(act)
 
-    # Camera-tracking slicer
+        # Mode 3: wiring debugger
+        if self.ra._cartridges_wired and self.R > 1:
+            self._redraw_debugger()
 
-    def _setup_slicer(self) -> None:
-        clip_plane = vtk.vtkPlane()
-        clip_plane.SetNormal(0, 0, -1)
-        clip_plane.SetOrigin(0, 0, 0)
-        for act in self._clip_actors:
-            act.GetMapper().AddClippingPlane(clip_plane)
+    ##
 
-        origin = np.mean(self.p, axis=0).tolist()
+    # Wiring debugger
 
-        def callback(caller=None, event=None):
-            cam = np.array(self.plotter.camera.position)
-            normal = cam - np.array(origin)
-            normal /= np.linalg.norm(normal)
-            clip_plane.SetNormal(normal.tolist())
+    def _redraw_debugger(self, target_idx: int = None) -> None:
+        """Clear previous debugger actors and draw a new (random) cartridge."""
+        # TODO: These annoying dots still show up :(
 
-        self._slicer_callback = callback
-        self.plotter.iren.interactor.AddObserver('InteractionEvent', callback)
+        if self._debugger_subplot is not None:
+            self.plotter.subplot(*self._debugger_subplot)
 
-    # Key bindings
-
-    def _setup_keybindings(self) -> None:
-        def toggle(group_name: str):
-            for a in self.actors[group_name]:
-                a.SetVisibility(not a.GetVisibility())
-            self._slicer_callback()
-            self.plotter.render()
-
-        bindings = {
-            'l': 'lenses',
-            'o': 'local_flow',
-            'm': 'saccades',
-            'r': 'bundles',
-            'a': 'main_axis',
-            'b': 'flow_axis',
-            'c': 'cartridge_field',
-            'v': 'conflicts',
-        }
-        for key, group in bindings.items():
-            self.plotter.add_key_event(key, lambda g=group: toggle(g))
-        self.plotter.add_key_event('n', lambda: self.show_neighbourhood())
-
-        info_text = (
-            '[ L ] Lens lattice (surface)\n\n'
-            '[ R ] Rhabdomeres\n\n'
-            '[ O ] Optic flow vector field\n\n'
-            '[ M ] Microsaccade vector field\n\n'
-            '[ A ] Bundle main axis\n\n'
-            '[ B ] Bundle alignment axis\n\n'
-            '[ C ] Cartridge map\n\n'
-            '[ V ] Cartridge conflicts heatmap\n\n'
-            '[ N ] Random cartridge inspector'
-        )
-        self.plotter.add_text(
-            info_text, position='lower_edge', font_size=6,
-            color='black', font='courier', name='toggle_info',
-        )
-
-    # internal helpers
-
-    def _setup_camera(self) -> None:
-        self.plotter.add_axes()
-        cam_dir = self.fwd + self.right + self.up
-        cam_pos = cam_dir / np.linalg.norm(cam_dir) * (self.r_sphere * 10)
-        self.plotter.camera_position = [cam_pos.tolist(), (0, 0, 0), self.up.tolist()]
-        self._slicer_callback()
-
-    def _kernel_axis_to_world(self, axis_rad: float) -> np.ndarray:
-        chi = self.ra.lenses.bundle_orientations.astype(np.float32)
-        chirality = self.ra.lenses.chiralities.astype(np.float32)
-        lr = self.ra.lenses.right_axes
-        lu = self.ra.lenses.up_axes
-
-        ax = np.cos(axis_rad) * chirality
-        ay = np.full(self.N, np.sin(axis_rad), dtype=np.float32)
-        cos_y, sin_y = np.cos(chi), np.sin(chi)
-        bx = ax * cos_y - ay * sin_y
-        by = ax * sin_y + ay * cos_y
-
-        v = bx[:, None] * lr + by[:, None] * lu
-        norms = np.linalg.norm(v, axis=1, keepdims=True)
-        return np.divide(v, norms, out=v, where=norms > 1e-8)
-
-    # Cartridge neighbourhood inspector
-
-    def show_neighbourhood(self, target_idx: int = None) -> None:
-        # Clear previous neighbourhood actors
-        for act in self._cart_neighbourhood_actors:
+        # Clear previous
+        for act in self.actors_debugger:
             self.plotter.remove_actor(act)
-        self._cart_neighbourhood_actors.clear()
+        self.actors_debugger.clear()
+
+        if not self.ra._cartridges_wired or self.R <= 1:
+            return
 
         if target_idx is None:
             target_idx = int(np.random.randint(0, self.N))
@@ -594,10 +722,8 @@ class EyeViewer:
         for idx_list, default_color, default_alpha in ring_groups:
             for idx in idx_list:
                 idx = int(idx)
-                disc = pv.Disc(
-                    center=self.p[idx], normal=self.d[idx],
-                    inner=0, outer=disc_rad, c_res=20,
-                )
+                disc = pv.Disc(center=self.p[idx], normal=self.d[idx],
+                               inner=0, outer=disc_rad, c_res=20)
                 if idx in partner_to_type:
                     color = RECEPTOR_PALETTE[partner_to_type[idx] % len(RECEPTOR_PALETTE)]
                     alpha = 0.75
@@ -611,67 +737,188 @@ class EyeViewer:
                     disc, color=color, opacity=alpha,
                     line_width=width, edge_color='black',
                 )
-                self._cart_neighbourhood_actors.append(act)
+                self.actors_debugger.append(act)
 
-        # 'R1', ..., 'R7/8' labels
         labels_pos, labels = [], []
         for r, lens_idx in enumerate(partners):
             if int(lens_idx) != target_idx:
                 labels.append(f"R{r + 1}")
                 labels_pos.append(self.p[int(lens_idx)])
-
         if labels:
             act = self.plotter.add_point_labels(
-                labels_pos, labels, font_size=18, text_color='black',
+                labels_pos, labels, font_size=14, text_color='black',
                 shape_color='white', shape_opacity=0.6,
             )
-            self._cart_neighbourhood_actors.append(act)
+            self.actors_debugger.append(act)
 
         # Coloured receptor dots on the home ommatidium
-        if self.R > 1:
-            offsets = receptor_tip_offsets(self.ra)[target_idx]
-            max_off = float(np.max(np.linalg.norm(offsets, axis=1)))
-            dot_scale = disc_rad * 0.7 / max(max_off, 1e-6)
+        offsets = receptor_tip_offsets(self.ra)[target_idx]
+        max_off = float(np.max(np.linalg.norm(offsets, axis=1)))
+        if max_off > 1e-8:
+            dot_scale = disc_rad * 0.7 / max_off
             for r in range(self.R):
                 color = RECEPTOR_PALETTE[r % len(RECEPTOR_PALETTE)]
                 if np.linalg.norm(offsets[r]) > 1e-10:
                     dot_pos = target_pos + offsets[r] * dot_scale
                 else:
-                    dot_pos = target_pos  # central receptor at the lens centre
+                    dot_pos = target_pos
                 act = self.plotter.add_points(
-                    np.array([dot_pos]), color=color, point_size=14,
+                    np.array([dot_pos]), color=color, point_size=12,
                     render_points_as_spheres=True, opacity=0.95,
                     smooth_shading=True,
                 )
-                self._cart_neighbourhood_actors.append(act)
+                self.actors_debugger.append(act)
 
-        print(f"\nCartridge {target_idx}  partners: {partners.tolist()}")
+        for a in self.actors_debugger:
+            a.SetVisibility(self.state_bigpanel == 1)
+
+    ##
+
+    # Visibility helpers
+
+    def _apply_alignment_visibility(self) -> None:
+        for a in self.actors_alignment_smooth:
+            a.SetVisibility(self.state_alignment_smoothed)
+        for a in self.actors_alignment_raw:
+            a.SetVisibility(not self.state_alignment_smoothed)
+
+    def _apply_saccade_visibility(self) -> None:
+        for a in self.actors_saccade_smooth:
+            a.SetVisibility(self.state_saccade_smoothed)
+        for a in self.actors_saccade_raw:
+            a.SetVisibility(not self.state_saccade_smoothed)
+
+    def _apply_bigpanel_visibility(self) -> None:
+        s = self.state_bigpanel
+        for a in self.actors_bundles:   a.SetVisibility(s == 0)
+        for a in self.actors_debugger:  a.SetVisibility(s == 1)
+        for a in self.actors_conflicts: a.SetVisibility(s == 2)
+
+    # Heatmap scalars (cached at init)
+
+    def _compute_collinearity(self) -> np.ndarray | None:
+        """|raw flow projected to lens tangent . combed alignment phasor|."""
+        if self.R <= 1:
+            return None
+        dots = self.d @ self.optic_flow_world
+        raw_flow = self.optic_flow_world[None, :] - dots[:, None] * self.d
+        norms = np.linalg.norm(raw_flow, axis=1, keepdims=True).clip(min=1e-8)
+        raw_unit = raw_flow / norms
+        return np.abs(np.einsum('ij,ij->i',
+                                raw_unit,
+                                self.result_smooth.alignment_phasor)).astype(np.float32)
+
+    def _compute_smoothness(self) -> np.ndarray | None:
+        """|raw saccade phasor . smoothed saccade phasor| (1.0 = unchanged)."""
+        if self.R <= 1:
+            return None
+        return np.abs(np.einsum('ij,ij->i',
+                                self.result_raw.saccade_phasor,
+                                self.result_smooth.saccade_phasor)).astype(np.float32)
+
+    ##
+
+    # Key binds
+
+    def _setup_keybindings(self) -> None:
+        def toggle_alignment():
+            self.state_alignment_smoothed = not self.state_alignment_smoothed
+            self._apply_alignment_visibility()
+            self._update_alignment_hint()
+            self.plotter.render()
+
+        def toggle_saccade():
+            self.state_saccade_smoothed = not self.state_saccade_smoothed
+            self._apply_saccade_visibility()
+            self._update_saccade_hint()
+            self.plotter.render()
+
+        def cycle_bigpanel():
+            self.state_bigpanel = (self.state_bigpanel + 1) % 3
+            label = self._BIGPANEL_LABELS[self.state_bigpanel]
+            print(f"[B] showing: {label}")
+            self._apply_bigpanel_visibility()
+            self._update_bigpanel_hint()
+            self.plotter.render()
+
+        def cycle_debugger():
+            if self.state_bigpanel != 1:
+                self.state_bigpanel = 1
+                self._apply_bigpanel_visibility()
+                self._update_bigpanel_hint()
+            self._redraw_debugger()
+            self.plotter.render()
+
+        self.plotter.add_key_event('a', toggle_alignment)
+        self.plotter.add_key_event('s', toggle_saccade)
+        self.plotter.add_key_event('b', cycle_bigpanel)
+        self.plotter.add_key_event('n', cycle_debugger)
+
+        self._update_alignment_hint()
+        self._update_saccade_hint()
+        self._update_bigpanel_hint()
+
+    # Hint helpers
+
+    def _set_hint(self, subplot, name: str, text: str) -> None:
+        self.plotter.subplot(*subplot)
+        self.plotter.add_text(
+            text, position='lower_left', font_size=8,
+            color='black', font='courier', name=name,
+        )
+
+    def _update_alignment_hint(self) -> None:
+        state = 'smoothed' if self.state_alignment_smoothed else 'raw'
+        self._set_hint((0, 1), 'hint_a', f'[A] alignment: {state}')
+
+    def _update_saccade_hint(self) -> None:
+        state = 'smoothed' if self.state_saccade_smoothed else 'raw'
+        self._set_hint((0, 3), 'hint_s', f'[S] saccade: {state}')
+
+    def _update_bigpanel_hint(self) -> None:
+        label = self._BIGPANEL_LABELS[self.state_bigpanel]
+        self._set_hint(
+            (1, 2), 'hint_bn',
+            f'[B] showing: {label}\n[N] next random cartridge',
+        )
+
+    ##
+
+    # Camera
+
+    def _setup_camera(self) -> None:
+        cam_dir = self.fwd + self.right + self.up
+        cam_pos = cam_dir / np.linalg.norm(cam_dir) * (self.r_sphere * 6.5)
+        for (row, col) in [(0, 0), (0, 1), (0, 2), (0, 3),
+                           (1, 0), (1, 1), (1, 2)]:
+            self.plotter.subplot(row, col)
+            self.plotter.camera_position = [cam_pos.tolist(), (0, 0, 0), self.up.tolist()]
 
 
 ##
 
 if __name__ == "__main__":
 
-    pitch_rad = np.deg2rad(10.1)
-    optic_flow = np.array([0.0, np.sin(pitch_rad), np.cos(pitch_rad)])
+    head_ptich = np.deg2rad(10.1)
+    optic_flow = np.array([0.0, np.sin(head_ptich), np.cos(head_ptich)])
 
     kernel = drosophila_kernel()
 
-    orientation = BundlesAligner(
+    aligner = BundlesAligner(
         flow_direction=optic_flow,
         diagonal_strength=1.0,
-        alignment_smoothing_iterations=2,
-        saccade_smoothing_iterations=10,
+        diagonal_angle_deg=45.0,
+        alignment_smoothing_iterations=4,
+        saccade_smoothing_iterations=15,
     )
 
     ra = ReceptorArray.from_file(
         'species_models/drosophila_custom.npz',
-        kernel=kernel, orientation=orientation,
+        kernel=kernel, orientation=aligner,
     )
 
     # ra = ReceptorArray.from_sphere(
-    #     n=1600,
-    #     kernel=kernel, orientation=orientation,
+    #     n=1600, kernel=kernel, orientation=aligner,
     # )
 
-    EyeViewer(ra, optic_flow_world=optic_flow).show()
+    EyeViewer(ra, aligner=aligner).show()
