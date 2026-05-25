@@ -21,6 +21,7 @@ class HassensteinReichardtEMD:
             coordinate='cartesian'
         ):
         self.eye = eye
+        self.self_indices = eye.lens_indices
 
         # Convert Hz to time constants
         self.tau_delay = 1.0 / (2.0 * np.pi * delay_hz)
@@ -31,16 +32,19 @@ class HassensteinReichardtEMD:
             direction=direction, k=1, coordinate=coordinate, return_weights=True
         )
 
-        self._mean_lum = None   # High-pass state (L1/L2 adaptation)
-        self._delayed_A = None  # Delay line A (correlator)
-        self._delayed_B = None  # Delay line B (correlator)
+        self._mean_lum = None   # High-pass state (L1/L2 adaptation), kept global for simplicity
+        self._delayed_A = None  # Delay line A (correlator), local to this eye
+        self._delayed_B = None  # Delay line B (correlator), local to this eye
 
     def process(self, view, dt: float) -> np.ndarray:
         """
         Process one frame.
+
+        Args:
+            - global_view: The full (non sliced) per-lens buffer (N_total, R, channels)
         """
 
-        # Cartridge luminance: neural superposition pools R receptors per column
+        # Luminance (for the whole animal)
         luminance = view[:, :, :3].mean(axis=(1, 2))
 
         # Lamina L1/L2 high-pass equivalent (luminance adaptation / contrast)
@@ -50,15 +54,15 @@ class HassensteinReichardtEMD:
             return np.zeros(len(self.eye), dtype=np.float32)
 
         self._mean_lum += alpha_hp * (luminance - self._mean_lum)
+        global_contrast = (luminance - self._mean_lum) / (self._mean_lum + 1e-6)
 
-        # Convert to contrast (removes DC, normalises by local mean)
-        contrast = (luminance - self._mean_lum) / (self._mean_lum + 1e-6)
+        # signal_A: contrast at the lenses of this eye (direct channel)
+        # signal_B: contrast at the neighbours
+        signal_A = global_contrast[self.self_indices]
+        signal_B = global_contrast[self.targets]
 
-        # Medulla delay lines
+        # Medulla delay lines (this eye)
         alpha_delay = dt / (self.tau_delay + dt)
-
-        signal_A = contrast                    # direct channel
-        signal_B = contrast[self.targets]      # neighbour channel (eye-local indexing)
 
         if self._delayed_A is None:
             self._delayed_A = signal_A.copy()
