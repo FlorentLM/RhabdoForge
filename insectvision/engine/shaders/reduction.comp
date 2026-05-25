@@ -40,23 +40,23 @@ void main() {
     // radiance before adaptation
     float raw_radiance = (total_color.r + total_color.g + total_color.b) / 3.0;
 
-     vec4 ema_val;
-    if (tau_membrane > 0.0 && dt > 0.0) {
-        // Exponential moving average (first-order low-pass)
-        float alpha = clamp(dt / (tau_membrane + dt), 0.0, 1.0);
-        vec4 prev = ema_state[rcpt_idx];
+    vec4 ema_val = ema_state[rcpt_idx];
 
-        // If prev is 0 (first frame) pop it instantly
-        if (length(prev) < 1e-6) {
+    if (tau_membrane > 0.0 && dt > 0.0) {
+        float alpha = clamp(dt / (tau_membrane + dt), 0.0, 1.0);
+
+        // If the state is uninitialised, snap immediately to new value
+        if (dot(ema_val, ema_val) < 1e-8) {
             ema_val = vec4(total_color, raw_radiance);
         } else {
-            vec3 filtered_rgb = mix(prev.rgb, total_color, alpha);
-            float filtered_rad = mix(prev.w, raw_radiance, alpha);
-            ema_val = vec4(filtered_rgb, filtered_rad);
+            ema_val = vec4(mix(ema_val.rgb, total_color, alpha),
+                           mix(ema_val.w, raw_radiance, alpha));
         }
         ema_state[rcpt_idx] = ema_val;
-    } else {
+    } else if (dt > 0.0 || dot(ema_val, ema_val) < 1e-8) {
+        // Non-temporal mode (or first frame)
         ema_val = vec4(total_color, raw_radiance);
+        ema_state[rcpt_idx] = ema_val;
     }
 
     float adapt = rcpt_dynamic[rcpt_idx].adaptation_state;

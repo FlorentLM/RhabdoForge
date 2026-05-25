@@ -8,7 +8,8 @@ from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD, WORLD_RIGHT
 from insectvision.utils.math import normalise_vectors
 
 if TYPE_CHECKING:
-    from insectvision.compound_eyes.receptor_array import ReceptorArray
+    from insectvision.compound_eyes import CompoundEyeModel
+
 
 
 @dataclass
@@ -260,26 +261,26 @@ class BundlesAligner:
         self.strength = float(strength)
 
     def compute(self,
-        ra: 'ReceptorArray',
-        override_chi: Optional[ArrayLike] = None,
-        override_chirality: Optional[ArrayLike] = None,
-        ) -> OrientationResult:
+                model: 'CompoundEyeModel',
+                override_chi: Optional[ArrayLike] = None,
+                override_chirality: Optional[ArrayLike] = None,
+                ) -> OrientationResult:
         """
-        Compute the orientation field for the receptor array's lens geometry.
+        Compute the orientation field for the CompoundEyeModel's lens geometry.
         'override_chi' or 'override_chirality' can be supplied to bypass the corresponding pipeline step.
         The bypassed quantity is passed through to derive whatever depends on it.
         """
 
-        lens_directions = ra._lens_directions
-        lens_positions = ra._lens_positions
-        kernel = ra._kernel
+        lens_directions = model._lens_directions
+        lens_positions = model._lens_positions
+        kernel = model._kernel
         N = lens_directions.shape[0]
 
         e_x, e_y, e_z = _flow_aligned_frame(self.flow_direction)
 
         # Eye / hemisphere signs (geometric)
-        right_axis = np.asarray(WORLD_RIGHT, dtype=np.float32)
-        eye_sign = -np.sign(lens_positions @ right_axis).astype(np.float32)
+        side_map = {e.eye_index: e.side_sign for e in model.eyes}
+        eye_sign = np.array([side_map[eid] for eid in model._lens_eye_index], dtype=np.float32)
         eye_sign[eye_sign == 0] = 1.0   # midline -> left
 
         hemisphere_sign = np.sign(lens_positions @ e_z).astype(np.float32)
@@ -328,8 +329,8 @@ class BundlesAligner:
             chi = _prepare_per_lens(override_chi, N, 'chi').astype(np.float32)
         else:
             major_angle = np.arctan2(
-                np.sum(major * ra._local_up, axis=1),
-                np.sum(major * ra._local_right, axis=1),
+                np.sum(major * model._local_up, axis=1),
+                np.sum(major * model._local_right, axis=1),
             )
             effective_main = np.where(
                 chirality > 0,
@@ -351,7 +352,7 @@ class BundlesAligner:
             # Per-eye smoothing: partition by eye_id
             sacc = _smooth_phasor_field(
                 field=sacc,
-                partition=ra._lens_eye_ids,
+                partition=model._lens_eye_index,
                 positions=lens_positions,
                 n_neighbours=8,
                 iterations=self.saccade_smoothing_iterations,
@@ -371,15 +372,15 @@ class BundlesAligner:
         )
 
     def apply(self,
-        ra: 'ReceptorArray',
-        override_chi: Optional[ArrayLike] = None,
-        override_chirality: Optional[ArrayLike] = None,
-        ) -> OrientationResult:
+              model: 'CompoundEyeModel',
+              override_chi: Optional[ArrayLike] = None,
+              override_chirality: Optional[ArrayLike] = None,
+              ) -> OrientationResult:
         """
-        Compute and write the result into the receptor array (also return it).
+        Compute and write the result into the CompoundEyeModel (also return it).
         """
-        result = self.compute(ra, override_chi=override_chi, override_chirality=override_chirality)
-        ra._apply_orientation(result)
+        result = self.compute(model, override_chi=override_chi, override_chirality=override_chirality)
+        model._apply_orientation(result)
         return result
 
 
@@ -411,7 +412,7 @@ def _prepare_per_lens(value: ArrayLike, N: int, name: str) -> np.ndarray:
 
 
 def apply_chirality(
-    ra: 'ReceptorArray',
+    model: 'CompoundEyeModel',
     chi: ArrayLike,
     chirality: ArrayLike,
 ) -> OrientationResult:
@@ -425,22 +426,22 @@ def apply_chirality(
     No smoothing (it is presumed the user knows what they want).
     """
 
-    N = ra._lens_directions.shape[0]
+    N = model._lens_directions.shape[0]
     chi = _prepare_per_lens(chi, N, 'chi').astype(np.float32)
     chirality = _prepare_per_lens(chirality, N, 'chirality').astype(np.float32)
 
-    main_rad = float(ra._kernel.main_axis_rad)
+    main_rad = float(model._kernel.main_axis_rad)
     effective_main = np.where(chirality > 0, main_rad, np.pi - main_rad).astype(np.float32)
     major_angle = chi + effective_main
     cos_m = np.cos(major_angle)[:, None]
     sin_m = np.sin(major_angle)[:, None]
-    major = cos_m * ra._local_right + sin_m * ra._local_up
+    major = cos_m * model._local_right + sin_m * model._local_up
 
-    base_sacc_rot = -float(np.radians(ra._kernel.saccade_offset_deg))
+    base_sacc_rot = -float(np.radians(model._kernel.saccade_offset_deg))
     angles = (base_sacc_rot * chirality).astype(np.float32)
     cos_a = np.cos(angles)[:, None]
     sin_a = np.sin(angles)[:, None]
-    n_cross_major = np.cross(ra._lens_directions, major)
+    n_cross_major = np.cross(model._lens_directions, major)
     sacc = major * cos_a + n_cross_major * sin_a
     sacc = normalise_vectors(sacc).astype(np.float32)
 

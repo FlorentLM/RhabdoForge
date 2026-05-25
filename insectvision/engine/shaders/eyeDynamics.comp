@@ -12,15 +12,10 @@ layout(std430, binding = BINDING_LENS_DYNAMIC) buffer          LensDynamicBlock 
 uniform int   nb_lenses;
 uniform int   receptors_per_lens;
 uniform float dt;                 // simulation timestep (s)
-uniform float wavelength_um;      // single global (e.g. 0.55 for green) // TODO: This has to be per-receptor
-uniform float tau_rise;           // saccade rise time (s) (~5-10 ms)
-uniform float tau_relax;          // mechanical relaxation tau when drive falls (~80-120 ms)
-uniform float tau_fast;           // fast EMA tau for saccade trigger (~5 ms)
-uniform float tau_adapt;          // slow EMA tau for brightness adaptation (~50 ms)
-uniform float gain_lat;           // lateral displacement per unit drive (um)
-uniform float gain_ax;            // axial contraction per unit drive (um)
+uniform bool  enable_actuation;   // toggle for photomechanical saccades
 uniform float lum_ref;            // operating-point luminance for biochemical gain
 uniform float saccade_sign;       // global flag for mirror symmetric L/R
+
 
 void main() {
     uint lens_idx = gl_GlobalInvocationID.x;
@@ -44,13 +39,16 @@ void main() {
     // [[ Luminance EMAs ]]
     //   adapted_lum: baseline / gain control reference
     //   fast_lum: transient detector for saccade trigger
-    float alpha_fast  = (tau_fast  > 0.0001) ? exp(-dt / tau_fast)  : 0.0;
-    float alpha_adapt = (tau_adapt > 0.0001) ? exp(-dt / tau_adapt) : 0.0;
+    float alpha_fast  = (ls.tau_fast  > 0.0001) ? exp(-dt / ls.tau_fast)  : 0.0;
+    float alpha_adapt = (ls.tau_adapt > 0.0001) ? exp(-dt / ls.tau_adapt) : 0.0;
 
-    // Just for the first frame
+    // Check if uninitialised
     if (ld.adapted_lum < 1e-6) {
-        ld.adapted_lum = lum;
+        ld.adapted_lum = max(lum, 0.01); // avoid div by 0 later
         ld.fast_lum    = lum;
+    } else {
+        ld.fast_lum    = mix(lum, ld.fast_lum,    alpha_fast);
+        ld.adapted_lum = mix(lum, ld.adapted_lum, alpha_adapt);
     }
 
     // alpha = 1 -> keep old state
@@ -63,12 +61,12 @@ void main() {
     float bright_drive = max(0.0, ld.fast_lum - ld.adapted_lum) / max(ld.adapted_lum, 0.01);
     bright_drive = min(bright_drive, 1.0);
 
-    float target_lat = bright_drive * gain_lat;
-    float target_ax  = bright_drive * gain_ax;
+    float target_lat = enable_actuation ? (bright_drive * ls.gain_lat_um) : 0.0;
+    float target_ax  = enable_actuation ? (bright_drive * ls.gain_ax_um)  : 0.0;
 
     // Rate-limited update: rise on tau_rise, decay on tau_relax
-    float rate_lat = (target_lat > ld.lateral_um) ? tau_rise : tau_relax;
-    float rate_ax  = (target_ax  > ld.axial_um)   ? tau_rise : tau_relax;
+    float rate_lat = (target_lat > ld.lateral_um) ? ls.tau_rise : ls.tau_relax;
+    float rate_ax  = (target_ax  > ld.axial_um)   ? ls.tau_rise : ls.tau_relax;
     float alpha_lat = (rate_lat > 0.0001) ? exp(-dt / rate_lat) : 0.0;
     float alpha_ax  = (rate_ax  > 0.0001) ? exp(-dt / rate_ax)  : 0.0;
 

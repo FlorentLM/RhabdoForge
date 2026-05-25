@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.compound_eyes import ReceptorArray
+from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.renderers import Raytracer
 from insectvision.utils import Colormap
 from insectvision.interactive.debug import AxesGizmo, DebugGrid, DebugBox
@@ -107,17 +107,17 @@ scene.add_instance(top_wall)
 
 ## Setup eye model and agent
 
-receptor_array = ReceptorArray.from_file('species_models/drosophila_custom.npz')
-receptor_array.scale(1e-6)
-receptor_array.receptors.tau_membrane = 0.012
+model = CompoundEyeModel.from_file('species_models/drosophila_custom.npz')
+model.scale(1e-6)
+model.receptors.tau_membrane = 0.012
 
-left_eye = receptor_array.eye(0)
-right_eye = receptor_array.eye(1)
+left_eye = model.eye(0)
+right_eye = model.eye(1)
 
 agent = Agent()
 
 renderer = Raytracer(
-    receptor_array=receptor_array, scene=scene, agent=agent,
+    model=model, scene=scene, agent=agent,
     context=context,
     nb_samples=512,
     time_dithering=True,
@@ -176,8 +176,14 @@ for mode in modes:
 
         visual_output = renderer.step()
 
-        left_motion = left_emd.process(visual_output[left_eye].cartridges, dt)
-        right_motion = right_emd.process(visual_output[right_eye].cartridges, dt)
+        left_data = visual_output.data[left_eye.receptors.global_indices]
+        right_data = visual_output.data[right_eye.receptors.global_indices]
+
+        left_cartridges = visual_output.per_cartridge[left_eye.lens_indices]
+        right_cartridges = visual_output.per_cartridge[right_eye.lens_indices]
+
+        left_motion = left_emd.process(left_cartridges, dt)
+        right_motion = right_emd.process(right_cartridges, dt)
 
         mean_left = float(np.mean(left_motion))
         mean_right = float(np.mean(right_motion))

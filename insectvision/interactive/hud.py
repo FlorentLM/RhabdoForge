@@ -315,7 +315,7 @@ class HUD:
         proj_mode_str = self.ctx.renderer.projection_mode.name
 
         # Stats
-        nb_om = self.ctx.renderer._ra.lens_count
+        nb_om = self.ctx.renderer._model.lens_count
         nb_om_samples = getattr(self.ctx.renderer, 'nb_samples', 1)
         nb_px_samples = getattr(self.ctx.renderer, 'samples_per_pixel', 1)
         has_pixels = self.ctx.display_mode.name in ('Panoramic', 'Third_person')

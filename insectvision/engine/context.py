@@ -349,10 +349,10 @@ class Context:
         if self.display_mode not in (DisplayMode.Compound, DisplayMode.Third_person):
             return None
 
-        ra = self.renderer._ra
-        c_idx = ra.kernel.center_index
-        rcpt_idx = np.arange(ra.lens_count) * ra.receptors_per_lens + c_idx
-        p_local = ra.rcpt_static_data['position'][rcpt_idx]
+        model = self.renderer._model
+        c_idx = model.kernel.center_index
+        rcpt_idx = np.arange(model.lens_count) * model.receptors_per_lens + c_idx
+        p_local = model.rcpt_static_data['position'][rcpt_idx]
 
         if self.display_mode == DisplayMode.Compound:
             aspect_ratio = self.window_size[0] / self.window_size[1]
@@ -374,7 +374,7 @@ class Context:
 
         elif self.display_mode == DisplayMode.Third_person:
             eye_to_world = np.array(glm.inverse(self.agent.view))
-            p_local_h = np.column_stack((p_local, np.ones(ra.lens_count)))
+            p_local_h = np.column_stack((p_local, np.ones(model.lens_count)))
             p_world_h = p_local_h @ eye_to_world
 
             view_mat = np.array(self.observer.view)
@@ -425,6 +425,10 @@ class Context:
             self.hud = HUD(self)
 
             if use_dashboard:
+                # Dashboard needs writes to be enabled
+                self.renderer._model.allow_lens_writes = True
+                self.renderer._model.allow_receptor_writes = True
+
                 self.dashboard = Dashboard(self)
                 self.hud.show = False  # default HUD to false dashboard is active
 

@@ -2,8 +2,9 @@ import math
 import numpy as np
 import matplotlib.pyplot as plt
 
+from insectvision.compound_eyes.kernel import drosophila_kernel
 from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.compound_eyes import ReceptorArray, RhabdomereKernel
+from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.renderers import Raytracer
 from insectvision.geometry import plane_geom
 
@@ -23,14 +24,14 @@ DISTANCE= 2.0           # metres
 # Two bars:
 # BAR_SEPARATION = 0.14      # 4.01° centre-to-centre → 2.86° gap
 # BAR_SEPARATION = 0.15      # 4.30° centre-to-centre → 3.15° gap
-BAR_SEPARATION = 0.16      # 4.58° centre-to-centre → 3.43° gap
+# BAR_SEPARATION = 0.16      # 4.58° centre-to-centre → 3.43° gap
 # BAR_SEPARATION = 0.18      # 5.15° centre-to-centre → 4.00° gap
 # BAR_SEPARATION = 0.19      # 5.44° centre-to-centre → 4.29° gap
 # BAR_SEPARATION = 0.21      # 6.01° centre-to-centre → 4.86° gap
 # BAR_SEPARATION = 0.25      # 7.16° centre-to-centre → 6.00° gap
 
 # One bar:
-# BAR_SEPARATION = 0.0       # single bar at origin
+BAR_SEPARATION = 0.0       # single bar at origin
 
 
 # Motion
@@ -70,11 +71,10 @@ def create_bar(name, cx, cy, width_x, width_y, distance, texture):
     )
 
 
-def pick_ommatidia(eye_model, az_halfwidth_deg=BAND_AZ_HALFWIDTH, el_halfwidth_deg=BAND_EL_HALFWIDTH, cone_deg=BAND_CONE_DEG):
+def pick_ommatidia(model, agent, az_halfwidth_deg=BAND_AZ_HALFWIDTH, el_halfwidth_deg=BAND_EL_HALFWIDTH, cone_deg=BAND_CONE_DEG):
 
-    forward = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-    cone_idx = eye_model.query_cone(forward, angle=cone_deg)
-    dirs = eye_model.lenses[cone_idx].directions
+    cone_idx = model.query_cone(agent.forward, angle=cone_deg)
+    dirs = model.lenses[cone_idx].direction
 
     azim = np.degrees(np.arctan2(dirs[:, 0], -dirs[:, 2]))
     elev = np.degrees(np.arcsin(np.clip(dirs[:, 1], -1.0, 1.0)))
@@ -82,7 +82,7 @@ def pick_ommatidia(eye_model, az_halfwidth_deg=BAND_AZ_HALFWIDTH, el_halfwidth_d
     strip = (np.abs(azim) < az_halfwidth_deg) & (np.abs(elev) < el_halfwidth_deg)
     band = cone_idx[strip]
 
-    chir = eye_model.chirality[band]
+    chir = model.lenses.chirality[band]
     n_pos = int(np.sum(chir > 0))
     n_neg = int(np.sum(chir < 0))
     print(f"Forward band: {len(band)} lenses "
@@ -127,32 +127,15 @@ bar_high = create_bar('bar_high', 0.0, high_y, BAR_LENGTH, BAR_THICKNESS, DISTAN
 scene.add_instance(bar_low)
 scene.add_instance(bar_high)
 
-droso = RhabdomereKernel(
-    name='Drosophila',
-    offsets_um=np.array([
-        [-1.6881, 1.0273],
-        [-1.8046, -0.9934],
-        [-1.7111, -2.9717],
-        [-0.0025, -1.9261],
-        [1.6690, -0.9493],
-        [1.6567, 0.9762],
-        [0.0045, -0.0113],
-    ]),
-    diameters_um=np.array([1.8627, 1.8627, 1.8627, 1.8627, 1.8627, 1.8627, 1.5743]),
-    nodal_distance_um=21.0,
-    center_index=6,
-    main_axis_indices=(2, 5),
-    saccade_offset_deg=28.6,
-)
 
-eye_model = ReceptorArray.from_file(EYE_MODEL_PATH, kernel=droso)
-eye_model.scale(1e-6)
-eye_model.receptors.tau = 0.012
+model = CompoundEyeModel.from_file(EYE_MODEL_PATH, kernel=drosophila_kernel())
+model.scale(1e-6)
+model.receptors.tau_membrane = 0.012
 
 agent = Agent(position=(0.0, 0.0, 0.0))
 
 renderer = Raytracer(
-    receptor_array=eye_model,
+    model=model,
     scene=scene,
     agent=agent,
     context=context,
@@ -165,20 +148,21 @@ renderer = Raytracer(
     enable_shadows=False,
 )
 renderer.ambient_intensity = 1.5
-renderer.gain_lat = 2.0
-renderer.gain_ax = 8.0
-renderer.tau_relax = 0.080
+
+model.lenses.gain_lat_um = 2.0
+model.lenses.gain_ax_um = 8.0
+model.lenses.tau_relax = 0.080
 
 # --------------------------------------------------------------------------
 
 print_stim_geometry()
-band_lenses = pick_ommatidia(eye_model)
+band_lenses = pick_ommatidia(model, agent)
 
 if len(band_lenses) == 0:
     raise RuntimeError("Forward band is empty. Widen the cone / strip.")
 renderer.selected_lenses = band_lenses[:min(10, len(band_lenses))].tolist()
 
-print(f"R7/8 acceptance: {np.degrees(eye_model.rcpt_dynamic_data['acc_axes'][band_lenses[0]*7 + 6])}°")
+print(f"R7/8 acceptance: {np.degrees(model.rcpt_dynamic_data['acc_axes'][band_lenses[0] * 7 + 6])}°")
 
 results = {
     'time':       [],

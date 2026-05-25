@@ -13,16 +13,16 @@ LENS_STATIC_DTYPE = np.dtype([
     ('ioa_axes',          np.float32, 2),   #  8 bytes: (minor, major) interommatidial angles (rad)
     ('nodal_distance_um', np.float32),      #  4 bytes: lens-to-rhabdomere lever arm (μm)
     ('lens_diameter_um',  np.float32),      #  4 bytes: aperture (μm) (used for diffraction)
-
-    # Per-lens photomechanical biophysics
     ('tau_rise',          np.float32),      #  4 bytes: mechanical rise time (s)
     ('tau_relax',         np.float32),      #  4 bytes: mechanical relaxation time (s)
     ('tau_fast',          np.float32),      #  4 bytes: fast adaptation EMA (s, ~PIP2)
     ('tau_adapt',         np.float32),      #  4 bytes: slow adaptation EMA (s, ~Ca²+)
     ('gain_lat_um',       np.float32),      #  4 bytes: max lateral displacement at full drive (μm)
     ('gain_ax_um',        np.float32),      #  4 bytes: max axial contraction at full drive (μm)
-    ('_pad',              np.float32, 2),   #  8 bytes: pad to 96 bytes
+    ('retina_x',          np.float32),      #  4 bytes: muscle-driven retinal shift local dx
+    ('retina_y',          np.float32),      #  4 bytes: muscle-driven retinal shift local dy
 ])  # 96 bytes
+# TODO: This struct would benefit from a reorganisation
 
 
 LENS_DYNAMIC_DTYPE = np.dtype([
@@ -103,21 +103,21 @@ def set_metadata_field(metadata: np.ndarray, field: str, value) -> np.ndarray:
     return (metadata & clear) | v
 
 
-def pack_metadata(eye_id, receptor_types, neighbour_counts, lens_id, chirality_neg) -> np.ndarray:
+def pack_metadata(eye_indices, receptor_types, neighbour_counts, lens_indices, chirality_neg) -> np.ndarray:
     """
     Packs the five fields into a uint32 metadata array, broadcasting as needed.
     """
 
-    eid = np.asarray(eye_id, dtype=np.uint32)
+    ei = np.asarray(eye_indices, dtype=np.uint32)
     rt  = np.asarray(receptor_types, dtype=np.uint32)
     nc  = np.asarray(neighbour_counts, dtype=np.uint32)
-    li  = np.asarray(lens_id, dtype=np.uint32)
+    li  = np.asarray(lens_indices, dtype=np.uint32)
     ch  = np.asarray(chirality_neg, dtype=np.uint32)
 
-    eid, rt, nc, li, ch = np.broadcast_arrays(eid, rt, nc, li, ch)
+    ei, rt, nc, li, ch = np.broadcast_arrays(ei, rt, nc, li, ch)
 
-    out = np.zeros(eid.shape, dtype=np.uint32)
-    out = set_metadata_field(out, 'eye_id',          eid)
+    out = np.zeros(ei.shape, dtype=np.uint32)
+    out = set_metadata_field(out, 'eye_id',          ei)
     out = set_metadata_field(out, 'rcpt_type',       rt)
     out = set_metadata_field(out, 'neighbour_count', nc)
     out = set_metadata_field(out, 'lens_id',         li)

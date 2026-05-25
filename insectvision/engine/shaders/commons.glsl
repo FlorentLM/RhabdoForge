@@ -25,7 +25,15 @@ struct LensStatic {
     vec2  ioa_axes;
     float nodal_distance_um;
     float lens_diameter_um;
-}; // 64 bytes
+    float tau_rise;
+    float tau_relax;
+    float tau_fast;
+    float tau_adapt;
+    float gain_lat_um;
+    float gain_ax_um;
+    float retina_x;
+    float retina_y;
+}; // 96 bytes
 
 // Lens dynamic
 struct LensDynamic {

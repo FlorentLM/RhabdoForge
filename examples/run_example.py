@@ -2,7 +2,7 @@ import numpy as np
 
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.geometry.meshes import CUBE_VERTICES, CUBE_INDICES
-from insectvision.compound_eyes import ReceptorArray
+from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.renderers import Rasterizer, Raytracer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
 
@@ -61,14 +61,18 @@ def main():
 
     # Setup eye model
 
-    # eye_model = ReceptorArray(num_ommatidia=1962, force_isotropic=True)
-    eye_model = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
-    # eye_model = ReceptorArray.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
-    # eye_model = ReceptorArray.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
-    eye_model.scale(1e-6)
+    # model = CompoundEyeModel.from_sphere(n=1962, force_isotropic=True)
+    model = CompoundEyeModel.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+    # model = CompoundEyeModel.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
+    # model = CompoundEyeModel.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
+    model.scale(1e-6)
 
     # Example setting time adaptation
-    eye_model.receptors.tau_membrane = 0.012   # 12 ms is good for Drosophila
+    with model.unlock(receptors=True):      # temporarily allow writing from the CPU
+        model.receptors.tau_membrane = 0.012   # 12 ms is good for Drosophila
+
+    # It is also possible to unlock CPU writes persistently
+    # model.allow_receptor_writes = True
 
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))
@@ -77,7 +81,7 @@ def main():
     batch_size = BATCH_SIZE if (HEADLESS and USE_ASYNC_BATCHING) else 1
 
     if USE_RAYTRACER:
-        eye_renderer = Raytracer(receptor_array=eye_model, scene=scene, agent=agent, context=context,
+        renderer = Raytracer(model=model, scene=scene, agent=agent, context=context,
                                  nb_samples=SAMPLES_PER_RECEPTOR,
                                  time_dithering=True,
                                  quasi_random=True,
@@ -88,11 +92,11 @@ def main():
 
         # The BVH can also be displayed in debug
         if SHOW_DEBUG_OBJECTS:
-            for blas in eye_renderer.BLASes:
+            for blas in renderer.BLASes:
                 context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
 
     else:
-        eye_renderer = Rasterizer(receptor_array=eye_model, scene=scene, agent=agent, context=context,
+        renderer = Rasterizer(model=model, scene=scene, agent=agent, context=context,
                                   nb_samples=SAMPLES_PER_RECEPTOR,
                                   time_dithering=False,
                                   batch_size=batch_size,
@@ -103,7 +107,7 @@ def main():
 
     # Example custom key binding:
     def toggle_halton():
-        eye_renderer.quasi_random = not eye_renderer.quasi_random
+        renderer.quasi_random = not renderer.quasi_random
 
     context.bind_key('m', toggle_halton)
 
@@ -122,7 +126,7 @@ def main():
 
     if not HEADLESS:
 
-        while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer, use_dashboard=True):
+        while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=True):
 
             context.input()  # Processes mouse and keyboard, optional
             dt = context.tick() # Advance clocks, must be called once per loop (all timings depend on this)
@@ -131,9 +135,9 @@ def main():
             dynamic_crate.rotate_axis(45 * dt, 'up')
 
             # Render one biological step
-            eyes_output = eye_renderer.step()
+            visual_output = renderer.step()
 
-            context.draw(eyes_output)  # draws to the viewport, also optional
+            context.draw(visual_output)  # draws to the viewport, also optional
 
             nb_frames += 1
 
@@ -153,17 +157,17 @@ def main():
             agent.translate(agent.forward * 0.5 * dt).rotate(yaw=25.0 * dt, degrees=True)
 
             # Render one biological step
-            eyes_output = eye_renderer.step()
+            visual_output = renderer.step()
 
             # If the return value is not None, it's a valid chunk of data (either a single frame or a full batch)
-            if eyes_output is not None:
-                all_ommatidia_data.append(eyes_output.cartridges)
+            if visual_output is not None:
+                all_ommatidia_data.append(visual_output.per_cartridge)
 
             nb_frames += 1
 
         # After the loop, flush() gets the last partial batch from async mode
         # (this is harmless in sync mode, it will just return an empty array)
-        final_chunk = eye_renderer.flush()  # TODO: This might actually be done automatically
+        final_chunk = renderer.flush()  # TODO: This might actually be done automatically
 
         if final_chunk.size > 0:
             all_ommatidia_data.append(final_chunk)
@@ -180,7 +184,7 @@ def main():
         print(f"Final concatenated dataset shape: {full_dataset.shape}")
 
     # Cleanup
-    eye_renderer.free()
+    renderer.free()
     scene.free()
     context.free()
 

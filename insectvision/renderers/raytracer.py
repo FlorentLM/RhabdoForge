@@ -456,7 +456,7 @@ class Raytracer(BaseRenderer):
 
     def __init__(
             self,
-            receptor_array: 'ReceptorArray',
+            model: 'ReceptorArray',
             scene: 'Scene',
             agent: 'Agent',
             time_dithering: bool = True,
@@ -477,7 +477,7 @@ class Raytracer(BaseRenderer):
         self._baker = RaytraceBaker(scene, self.resource_manager)
 
         super().__init__(
-            receptor_array=receptor_array,
+            model=model,
             agent=agent,
             time_dithering=time_dithering,
             nb_samples=nb_samples,
@@ -684,7 +684,7 @@ class Raytracer(BaseRenderer):
                     self._scene_uniforms.apply(shader)
                     self._lights_uniforms.apply(shader)
 
-                    N = len(self._ra)
+                    N = self._model.total_receptors
                     total_work = N * self._samples_per_rcpt
                     work_groups = (total_work + 63) // 64
 
@@ -754,26 +754,26 @@ class Pathtracer(Raytracer):
     """
 
     def __init__(self,
-            receptor_array: 'ReceptorArray',
-            scene: 'Scene',
-            agent: 'Agent',
-            time_dithering: bool = True,
-            nb_samples: int = 256,
-            quasi_random: bool = False,
-            pano_res: Tuple[int, int] = (1024, 512),
-            batch_size: int = 1,
-            enable_actuation: bool = False,
-            enable_shadows: bool = True,
-            enable_ambient: bool = True,
-            enable_direct: bool = True,
-            max_bounces: int = 3,
-            context: Optional['Context'] = None
-        ):
+                 model: 'ReceptorArray',
+                 scene: 'Scene',
+                 agent: 'Agent',
+                 time_dithering: bool = True,
+                 nb_samples: int = 256,
+                 quasi_random: bool = False,
+                 pano_res: Tuple[int, int] = (1024, 512),
+                 batch_size: int = 1,
+                 enable_actuation: bool = False,
+                 enable_shadows: bool = True,
+                 enable_ambient: bool = True,
+                 enable_direct: bool = True,
+                 max_bounces: int = 3,
+                 context: Optional['Context'] = None
+                 ):
 
         self.max_bounces = max_bounces
 
         super().__init__(
-            receptor_array=receptor_array,
+            model=model,
             scene=scene,
             agent=agent,
             context=context,

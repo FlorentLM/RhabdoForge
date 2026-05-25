@@ -31,7 +31,7 @@ uniform int frame_offset;
 uniform float aspect_ratio;
 uniform int projection_mode;
 uniform bool tiled_mode;
-uniform float visualisation_receptivefield_scale;
+uniform float visualisation_rf_scale;
 uniform int output_mode;
 uniform int receptors_per_lens;
 uniform int kernel_centre_idx;
@@ -100,9 +100,10 @@ void main() {
     // Fetch axes from Dynamic (Binding 4) for contraction, or Static for layout
     vec2 axes = tiled_mode ? lens_static[l_id].ioa_axes : rcpt_dynamic[output_mode == 0 ? inst_idx : l_id * receptors_per_lens + kernel_centre_idx].acc_axes;
 
+    // Highlight lenses
     float is_selected = 0.0;
     for (int j = 0; j < 10; j++) {
-        if (selected_lenses[j] == inst_idx) {
+        if (selected_lenses[j] != -1 && uint(selected_lenses[j]) == uint(inst_idx)) {
             is_selected = 1.0;
             break;
         }
@@ -111,7 +112,7 @@ void main() {
     vec2 rot = mat2(c, -s, s, c) * (cone_vertex.xy * axes) * (1.0 + is_selected * 0.1);
 
     float longi = atan(p_vec.x, -p_vec.z), lati = asin(p_vec.y);
-    vec3 pos = vec3(rot * visualisation_receptivefield_scale * (tiled_mode ? 2.5 : 1.0), cone_vertex.z) + vec3(longi/PI, lati/HPI, 0.0);
+    vec3 pos = vec3(rot * visualisation_rf_scale * (tiled_mode ? 2.5 : 1.0), cone_vertex.z) + vec3(longi/PI, lati/HPI, 0.0);
 
     pos.z -= (is_selected * 0.8);
     pos.x /= aspect_ratio;

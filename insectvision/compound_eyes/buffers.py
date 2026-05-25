@@ -7,6 +7,9 @@ that are passed to the GPU, plus the cartridge mapping.
 It only knows how to allocate itself, serialize to / from disk, and bitpack the
 receptor metadata field.
 """
+from contextlib import contextmanager
+from typing import Optional
+
 import numpy as np
 
 from insectvision.compound_eyes.datatypes import (
@@ -43,6 +46,7 @@ class EyesBuffer:
 
         self._n_lenses = int(n_lenses)
         self._receptors_per_lens = int(receptors_per_lens)
+        total_rcpt = n_lenses * receptors_per_lens
 
         self.lens_static_data = np.zeros(n_lenses, dtype=LENS_STATIC_DTYPE)
         self.lens_dynamic_data = np.zeros(n_lenses, dtype=LENS_DYNAMIC_DTYPE)
@@ -61,6 +65,40 @@ class EyesBuffer:
         # GPU upload tracking: whenever lens-level data is mutated it needs to be reuploaded.
         # The renderer is expected to read and clear the flag
         self.lens_dirty = True
+        self.rcpt_dirty = True
+        self.lens_dirty_mask = np.ones(self._n_lenses, dtype=bool)
+        self.rcpt_dirty_mask = np.ones(total_rcpt, dtype=bool)
+
+        self._allow_lens_writes = False
+        self._allow_rcpt_writes = False
+
+    @contextmanager
+    def unlock(self, lenses: Optional[bool] = None, receptors: Optional[bool] = None):
+        """
+        Context manager to temporarily allow CPU-side modifications to the buffers.
+
+        If neither is specified, both are unlocked.
+        If one is specified, the other remains locked.
+        """
+
+        if lenses is None and receptors is None:
+            lenses = True
+            receptors = True
+        else:
+            lenses = lenses or False
+            receptors = receptors or False
+
+        prev_lens = self._allow_lens_writes
+        prev_rcpt = self._allow_rcpt_writes
+
+        self._allow_lens_writes = prev_lens or lenses
+        self._allow_rcpt_writes = prev_rcpt or receptors
+
+        try:
+            yield
+        finally:
+            self._allow_lens_writes = prev_lens
+            self._allow_rcpt_writes = prev_rcpt
 
     # Sizes
 
@@ -97,27 +135,37 @@ class EyesBuffer:
         """
         In-place update of one bitfield in rcpt_static_data['metadata'].
         """
+        if not self._allow_rcpt_writes:
+            raise RuntimeError("CPU-side receptor writes are locked.")
+
         self.rcpt_static_data['metadata'] = set_metadata_field(
             self.rcpt_static_data['metadata'], field, value
         )
+        self.rcpt_dirty = True
+        self.rcpt_dirty_mask.fill(True)
 
     def pack_metadata(self,
-        eye_id,
-        receptor_types,
-        neighbour_counts,
-        lens_id,
-        chirality_neg,
-        ) -> None:
+                      eye_indices,
+                      receptor_types,
+                      neighbour_counts,
+                      lens_indices,
+                      chirality_neg,
+                      ) -> None:
         """
         Replace the entire rcpt_static_data['metadata'] with packed fields.
         """
+        if not self._allow_rcpt_writes:
+            raise RuntimeError("CPU-side receptor writes are locked.")
+
         self.rcpt_static_data['metadata'] = pack_metadata(
-            eye_id=eye_id,
+            eye_indices=eye_indices,
             receptor_types=receptor_types,
             neighbour_counts=neighbour_counts,
-            lens_id=lens_id,
+            lens_indices=lens_indices,
             chirality_neg=chirality_neg,
         )
+        self.rcpt_dirty = True
+        self.rcpt_dirty_mask.fill(True)
 
     # Cartridge-index view
 
@@ -173,7 +221,7 @@ class EyesBuffer:
             ld = data['lens_dynamic_data']
             rs = data['rcpt_static_data']
             rd = data['rcpt_dynamic_data']
-            cmap = data['cartridge_map']
+            cm = data['cartridge_map']
 
             if ls.dtype != LENS_STATIC_DTYPE:
                 raise ValueError(f"{path}: lens_static_data dtype mismatch")
@@ -197,7 +245,7 @@ class EyesBuffer:
             buf.lens_dynamic_data[:] = ld
             buf.rcpt_static_data[:] = rs
             buf.rcpt_dynamic_data[:] = rd
-            buf.cartridge_map = np.asarray(cmap, dtype=np.intp).reshape(n_lenses, R)
+            buf.cartridge_map = np.asarray(cm, dtype=np.intp).reshape(n_lenses, R)
             buf.cartridges_wired = bool(data['cartridges_wired']) if 'cartridges_wired' in files else False
             buf.lens_dirty = True
 

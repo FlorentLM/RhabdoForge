@@ -42,7 +42,7 @@ uniform mat4 eye_to_world;
 uniform int projection_mode;
 uniform float visualisation_lens_length;
 uniform float visualisation_eyes_scale;
-uniform float visualisation_saccade_gain;
+uniform float visualisation_saccade_scale;
 uniform int selected_lenses[10];
 uniform int frame_offset;
 
@@ -124,7 +124,7 @@ void main() {
     if (projection_mode == 0) {
         LensStatic ls_nudge = ls;
         vec3 tangent_shift = rd.direction - ls_nudge.forward * dot(rd.direction, ls_nudge.forward);
-        pos_local += tangent_shift * visualisation_saccade_gain;
+        pos_local += tangent_shift * visualisation_saccade_scale;
     }
 
     vec3 P_world = (eye_to_world * vec4(pos_local, 1.0)).xyz;

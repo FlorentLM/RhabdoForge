@@ -433,24 +433,24 @@ class Rasterizer(BaseRenderer):
     SHADOW_TEX_UNIT = 1
 
     def __init__(self,
-            receptor_array: 'ReceptorArray',
-            scene: 'Scene',
-            agent: Agent,
-            context: Optional['Context'] = None,
-            time_dithering: bool = False,
-            nb_samples: int = 256,
-            quasi_random: bool = False,
-            cubemap_res: int = 512,
-            batch_size: int = 1,
-            enable_actuation: bool = False,
-            enable_shadows: bool = True,
-            enable_ambient: bool = True,
-            enable_direct: bool = True,
-            shadow_res: int = 2048,
-            shadow_radius: float = 50.0
-        ):
+                 model: 'ReceptorArray',
+                 scene: 'Scene',
+                 agent: Agent,
+                 context: Optional['Context'] = None,
+                 time_dithering: bool = False,
+                 nb_samples: int = 256,
+                 quasi_random: bool = False,
+                 cubemap_res: int = 512,
+                 batch_size: int = 1,
+                 enable_actuation: bool = False,
+                 enable_shadows: bool = True,
+                 enable_ambient: bool = True,
+                 enable_direct: bool = True,
+                 shadow_res: int = 2048,
+                 shadow_radius: float = 50.0
+                 ):
 
-        self._ra = receptor_array
+        self._ra = model
         self.scene = scene
 
         self.resource_manager = GPUResourceManager()
@@ -476,7 +476,7 @@ class Rasterizer(BaseRenderer):
         self._light_mat = glm.mat4(1.0)
 
         super().__init__(
-            receptor_array=receptor_array,
+            model=model,
             agent=agent,
             context=context,
             time_dithering=time_dithering,

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from insectvision.engine import Context, Agent, Scene
 from insectvision.engine.movement import Curve, Trajectory, extract_obj_curves
-from insectvision.compound_eyes import ReceptorArray
+from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.renderers import Raytracer
 
 
@@ -16,17 +16,17 @@ def main():
 
     scene.add_skybox('assets/textures/bright_day_nosun')
 
-    # eye_model = ReceptorArray(num_ommatidia=1962, force_isotropic=True)
-    # eye_model = ReceptorArray.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
-    # eye_model = ReceptorArray.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
-    eye_model = ReceptorArray.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
+    # eye_model = CompoundEyeModel(n=1962, force_isotropic=True)
+    # eye_model = CompoundEyeModel.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+    # eye_model = CompoundEyeModel.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
+    eye_model = CompoundEyeModel.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
 
     eye_model.scale(1e-6)
 
     agent = Agent(position=(0.0, 0.0, 4.0))
 
-    eye_renderer = Raytracer(
-        receptor_array=eye_model, scene=scene, agent=agent,
+    renderer = Raytracer(
+        model=eye_model, scene=scene, agent=agent,
         context=context,
         nb_samples=16,
         time_dithering=False,
@@ -41,7 +41,7 @@ def main():
     curve = Curve(curve_coords)
     agent_path = Trajectory(curve, speed=2.5, loop=True)
 
-    while context.run_interactive(agent=agent, scene=scene, renderer=eye_renderer):
+    while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
         context.input()
 
         # Advance clocks
@@ -50,13 +50,13 @@ def main():
         # Make the agent follow the trajectory
         agent.follow(agent_path, dt=dt, align=True)
 
-        output = eye_renderer.step()
+        visual_output = renderer.step()
 
         context.draw()
         # context.draw(output)  # eye output must be passed when using the dashboard so it can plot
 
 
-    eye_renderer.free()
+    renderer.free()
     scene.free()
     context.free()
 

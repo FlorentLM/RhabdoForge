@@ -41,7 +41,7 @@ _DISC_TEMPLATE = None
 
 def receptor_tip_offsets(ra) -> np.ndarray:
     N, R = ra.lens_count, ra.receptors_per_lens
-    d = ra.lenses.directions
+    d = ra.lenses.direction
     rec_dirs = ra.rcpt_dynamic_data['direction'].reshape(N, R, 3)
     axial = np.sum(rec_dirs * d[:, None, :], axis=2, keepdims=True)
     return -(rec_dirs - axial * d[:, None, :])
@@ -66,7 +66,7 @@ def make_eye_mesh(ra) -> pv.PolyData:
     """
     Lens-indexed mesh: vertex i = lens i.
     """
-    positions = ra.lenses.positions
+    positions = ra.lenses.position
     if positions.shape[0] == 0:
         return pv.PolyData()
 
@@ -253,8 +253,8 @@ class EyeViewer:
         self.result_raw = self.aligner_raw.compute(self.model)
 
         # Cache geometry
-        self.p = model.lenses.positions
-        self.d = model.lenses.directions
+        self.p = model.lenses.position
+        self.d = model.lenses.direction
         self.r_sphere = float(np.mean(np.linalg.norm(self.p, axis=1)))
         self.arrow_len = self.r_sphere * 0.08
 
@@ -263,7 +263,7 @@ class EyeViewer:
         self.eye_boundary_lines = eye_boundary_line(self.lens_data_mesh)
 
         # Per-lens chirality
-        self.chirality = self.model.lenses.chiralities.astype(np.float32)
+        self.chirality = self.model.lenses.chirality.astype(np.float32)
 
         # Per-lens lattice spacing
         self.disc_radii = radii_from_lattice(self.model) * 0.4
@@ -536,7 +536,7 @@ class EyeViewer:
             if max_off > 1e-8:
                 tip_scale = (self.r_sphere * 0.012) / max_off
                 tip_positions = self.p[:, None, :] + offsets * tip_scale
-                is_mirrored = self.model.lenses.chiralities < 0
+                is_mirrored = self.model.lenses.chirality < 0
                 i1, i2 = self.kernel.main_axis_indices
 
                 groups = {
