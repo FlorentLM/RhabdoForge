@@ -344,7 +344,7 @@ class Context:
 
     def pick_ommatidium(self, ndc_x: float, ndc_y: float) -> Optional[int]:
         """Calculates closest ommatidium based on active display projection."""
-        if not self.renderer or not getattr(self.renderer, '_ra', None):
+        if not self.renderer or not getattr(self.renderer, '_model', None):
             return None
         if self.display_mode not in (DisplayMode.Compound, DisplayMode.Third_person):
             return None

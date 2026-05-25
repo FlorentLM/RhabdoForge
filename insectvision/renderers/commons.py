@@ -945,19 +945,23 @@ class BaseRenderer(ABC):
 
     @selected_lenses.setter
     def selected_lenses(self, values: Optional[Union[int, Sequence[int], np.ndarray]]):
-        if isinstance(values, np.ndarray):
-            np.copyto(self._selected_lens_ids, values.astype(np.int32))
-            return
-
         self._selected_lens_ids.fill(-1)
+
         if values is None:
             return
 
+        if isinstance(values, np.ndarray):
+            vals = values.ravel()
+            count = min(len(vals), 10)
+            self._selected_lens_ids[:count] = vals[:count].astype(np.int32)
+            return
+
         if isinstance(values, int):
-            values = [values]
+            self._selected_lens_ids[0] = values
+            return
 
         for i, val in enumerate(list(values)[:10]):
-            self._selected_lens_ids[i] = val
+            self._selected_lens_ids[i] = int(val)
 
     @property
     def actuation(self):
