@@ -62,9 +62,9 @@ def main():
     # Setup eye model
 
     # model = CompoundEyeModel.from_sphere(n=1962, force_isotropic=True)
-    model = CompoundEyeModel.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
+    # model = CompoundEyeModel.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
     # model = CompoundEyeModel.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
-    # model = CompoundEyeModel.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
+    model = CompoundEyeModel.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
     model.scale(1e-6)
 
     # Example setting time adaptation
@@ -114,7 +114,7 @@ def main():
 
 
     # Example fixed timing: simulation steps by exactly 10 ms regardless of render speed
-    context.fixed_sim_dt = 0.010
+    context.fixed_sim_dt = 1/1000.0
 
 
 
@@ -126,7 +126,7 @@ def main():
 
     if not HEADLESS:
 
-        while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=True):
+        while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=False):
 
             context.input()  # Processes mouse and keyboard, optional
             dt = context.tick() # Advance clocks, must be called once per loop (all timings depend on this)

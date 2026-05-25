@@ -299,7 +299,7 @@ class BaseRenderer(ABC):
             visualisation_rf_scale=1.0 / (2.0 * np.pi),
             visualisation_lens_length=max(0.01, avg_lens_radius) * 0.3,
             visualisation_eyes_scale=1.0,
-            visualisation_saccade_scale=0.025,
+            visualisation_saccade_scale=1.0,
 
             # Mofidiable during runtime
             output_mode=self.output_mode,
