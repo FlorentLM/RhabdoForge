@@ -542,93 +542,93 @@ class Dashboard:
         dpg.set_value('ui_mouse_lock', self.ctx.mouse_captured)
 
     def _update_plot_data(self, visual_output, model, mode):
+        """Processes histories and updates all plot slots."""  # TODO: More than 10?
 
         self.frame_data.append(self.current_frame)
         x = list(self.frame_data)
 
         dynamic_states = self.ctx.renderer.eye_buffers['lens_dynamic'].read()
 
-        for i, lid in enumerate(self.selected_lenses[:self.max_selected]):
-            if lid >= model.lens_count: continue
+        for i, pool in enumerate(self.series_pool):
+            # Check a lens is selected for this slot
+            if i < len(self.selected_lenses):
+                lid = self.selected_lenses[i]
 
-            # Determine data group based on output mode
-            if mode == EyeOutput.Raw:
-                start = lid * model.receptors_per_lens
-                group = visual_output.data[start: start + model.receptors_per_lens]
-            elif mode == EyeOutput.Ommatidium:
-                group = visual_output.per_lens[lid]
+                # Update history data
+                if mode == EyeOutput.Raw:
+                    start = lid * model.receptors_per_lens
+                    group = visual_output.data[start: start + model.receptors_per_lens]
+                elif mode == EyeOutput.Ommatidium:
+                    group = visual_output.per_lens[lid]
+                else:
+                    group = visual_output.per_cartridge[lid]
+
+                hist = self.lens_histories[lid]
+                avg_pixel = np.mean(group, axis=0)
+
+                hist['mean'].append(np.mean(avg_pixel[:3]))
+                hist['r'].append(avg_pixel[0])
+                hist['g'].append(avg_pixel[1])
+                hist['b'].append(avg_pixel[2])
+                hist['instant'].append(avg_pixel[3])
+                hist['lat'].append(float(dynamic_states[lid]['lateral_um']))
+                hist['ax'].append(float(dynamic_states[lid]['axial_um']))
+
+                for r_idx in range(model.receptors_per_lens):
+                    hist['receptors'][r_idx].append(np.mean(group[r_idx, :3]))
+
+                # Refresh lines for this active slot
+                self._refresh_series(pool, lid, hist, x, visible=True)
             else:
-                group = visual_output.per_cartridge[lid]
-
-            hist = self.lens_histories[lid]
-            avg_pixel = np.mean(group, axis=0)
-
-            # Append to histories
-            hist['mean'].append(np.mean(avg_pixel[:3]))
-            hist['r'].append(avg_pixel[0])
-            hist['g'].append(avg_pixel[1])
-            hist['b'].append(avg_pixel[2])
-            hist['instant'].append(avg_pixel[3])
-            hist['lat'].append(float(dynamic_states[lid]['lateral_um']))
-            hist['ax'].append(float(dynamic_states[lid]['axial_um']))
-
-            for r_idx in range(model.receptors_per_lens):
-                hist['receptors'][r_idx].append(np.mean(group[r_idx, :3]))
-
-            # Update DPG Series
-            pool = self.series_pool[i]
-            self._refresh_series(pool, lid, hist, x)
+                # This slot is unused: hide all lines
+                self._refresh_series(pool, None, None, None, visible=False)
 
         self._update_plot_backgrounds()
         self.current_frame += 1
 
-    def _refresh_series(self, pool, lid, hist, x):
-        """
-        Updates the visibility and data values for a single selection slot
-        (one ommatidium's worth of lines).
-        """
+    def _refresh_series(self, pool, lid, hist, x, visible):
 
+        if not visible:
+            # Hide everything and return
+            for key, tag in pool.items():
+                if key == 'receptors':
+                    for r_tag in tag: dpg.configure_item(r_tag, show=False)
+                else:
+                    dpg.configure_item(tag, show=False)
+            return
+
+        # Fetch UI Toggle States
         show_all_rec = dpg.get_value(self.show_all_rec_toggle)
         show_rgb = dpg.get_value(self.rgb_toggle)
         show_instant = dpg.get_value(self.instant_toggle)
 
-        # Main intensity line
-        # Only shown if we aren't breaking the data down into RGB or individual Receptors
-        dpg.configure_item(pool['mean'],
-                           label=f'Mean L{lid}',
-                           show=not (show_all_rec or show_rgb))
+        # Mean is only shown if individual Receptors and RGB are both off
+        show_mean = not show_all_rec and not show_rgb
+        dpg.configure_item(pool['mean'], label=f'Mean L{lid}', show=show_mean)
         dpg.set_value(pool['mean'], [x, list(hist['mean'])])
 
-        # Instantaneous (Alpha) line
-        dpg.configure_item(pool['instant'],
-                           label=f'Inst L{lid}',
-                           show=show_instant)
+        # Instantaneous is an independent overlay
+        dpg.configure_item(pool['instant'], label=f'Inst L{lid}', show=show_instant)
         dpg.set_value(pool['instant'], [x, list(hist['instant'])])
 
-        # RGB channel lines
+        # RGB lines shown if RGB is on and individual Receptors is off
         for key in ['r', 'g', 'b']:
-            dpg.configure_item(pool[key],
-                               label=f'{key.upper()} L{lid}',
+            dpg.configure_item(pool[key], label=f'{key.upper()} L{lid}',
                                show=show_rgb and not show_all_rec)
             dpg.set_value(pool[key], [x, list(hist[key])])
 
-        # Actuation lines
+        # Individual Receptor lines
+        for r_idx, r_tag in enumerate(pool['receptors']):
+            dpg.configure_item(r_tag, label=f'R{r_idx + 1} L{lid}', show=show_all_rec)
+            if show_all_rec:
+                dpg.set_value(r_tag, [x, list(hist['receptors'][r_idx])])
+
+        # Actuation plot (always show if lens selected)
         dpg.configure_item(pool['lat'], label=f'Lat L{lid}', show=True)
         dpg.set_value(pool['lat'], [x, list(hist['lat'])])
 
         dpg.configure_item(pool['ax'], label=f'Ax L{lid}', show=True)
         dpg.set_value(pool['ax'], [x, list(hist['ax'])])
-
-        # Individual Receptor lines (R1-R8)
-        for r_idx, rec_series in enumerate(pool['receptors']):
-            # Some lenses might have fewer receptors than the pool max
-            if r_idx < len(hist['receptors']):
-                dpg.configure_item(rec_series,
-                                   label=f'R{r_idx + 1} L{lid}',
-                                   show=show_all_rec)
-                dpg.set_value(rec_series, [x, list(hist['receptors'][r_idx])])
-            else:
-                dpg.configure_item(rec_series, show=False)
 
     def _update_plot_backgrounds(self):
 
