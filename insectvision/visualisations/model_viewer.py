@@ -9,13 +9,13 @@ from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
 from insectvision.utils.math import project_to_stereo
 
 RECEPTOR_PALETTE = [
-    '#ff4034',  # R1
-    '#44e453',  # R2
-    '#4581ff',  # R3
-    '#ffad13',  # R4
-    '#c61ee9',  # R5
-    '#42d4f4',  # R6
-    '#FFD700',  # R7/8
+    '#ffad13',  # R1
+    '#FF1C25',  # R2
+    '#880015',  # R3
+    '#8000ff',  # R4
+    '#008000',  # R5
+    '#0000ff',  # R6
+    '#aaa712',  # R7/8
 ]
 
 CHIRALITY_NEG_COLOR = '#B95D21'
