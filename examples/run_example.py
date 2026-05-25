@@ -121,6 +121,12 @@ def main():
 
     context.fixed_sim_dt = 1 / 1000.0
 
+
+    # Tune / disable luminance boost on RF narrowing
+    renderer.photon_concentration = 0.0
+    # renderer.photon_concentration = 0.2
+
+
     # Run
 
     start_time = context.current_wall_time

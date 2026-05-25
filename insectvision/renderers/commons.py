@@ -331,7 +331,7 @@ class BaseRenderer(ABC):
 
             # Receptors dynamics
             enable_actuation=self._gpu_actuation,
-            photon_concentration_factor=0.5,        # TODO: document this better
+            photon_concentration_factor=0.2,        # TODO: document this better
             lum_ref=self.lum_ref,
             saccade_sign=1.0        # TODO: Remove this one
         )
