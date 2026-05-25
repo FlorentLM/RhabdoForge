@@ -51,11 +51,6 @@ void main() {
         ld.adapted_lum = mix(lum, ld.adapted_lum, alpha_adapt);
     }
 
-    // alpha = 1 -> keep old state
-    // alpha = 0 -> snap to new value
-    ld.fast_lum    = mix(lum, ld.fast_lum,    alpha_fast);
-    ld.adapted_lum = mix(lum, ld.adapted_lum, alpha_adapt);
-
     // [[ Photomechanical drive ]]
     // Rectified fast-positive contrast, normalised by baseline
     float bright_drive = max(0.0, ld.fast_lum - ld.adapted_lum) / max(ld.adapted_lum, 0.01);
