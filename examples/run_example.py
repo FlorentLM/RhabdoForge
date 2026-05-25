@@ -114,12 +114,12 @@ def main():
 
 
     # Example fixed timing: simulation steps by exactly 10 ms regardless of render speed
-    # context.fixed_sim_dt = 1/100.0
+    # context.time_step = 1/100.0
     # Note: with 1/100.0, nb_samples needs to be high enough (32 or 64 or more),
     # or tau_fast should be at least 2x the dt (set tau_fast to 0.02s)
     # Biological 5 ms responses are difficult to simulate cleanly with Monte Carlo noise at 100 Hz
 
-    context.fixed_sim_dt = 1 / 1000.0
+    context.time_step = 1 / 1000.0
 
 
     # Tune / disable luminance boost on RF narrowing
@@ -138,10 +138,9 @@ def main():
         while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=False):
 
             context.input()  # Processes mouse and keyboard, optional
-            dt = context.tick() # Advance clocks, must be called once per loop (all timings depend on this)
 
             # Rotate dynamic test crate at 45 deg/s (framerate-independent)
-            dynamic_crate.rotate_axis(45 * dt, 'up')
+            dynamic_crate.rotate_axis(45 * context.dt, 'up')
 
             # Render one biological step
             visual_output = renderer.step()
@@ -160,10 +159,11 @@ def main():
 
         for i in range(max_steps):
 
-            dt = context.tick()  # Advance clocks
+            # Important: clock must be advanced manually in headless mode
+            context.tick()
 
             # Move the agent at 0.5 m/s and yaw at 25 deg/s (framerate-independent)
-            agent.translate(agent.forward * 0.5 * dt).rotate(yaw=25.0 * dt, degrees=True)
+            agent.translate(agent.forward * 0.5 * context.dt).rotate(yaw=25.0 * context.dt, degrees=True)
 
             # Render one biological step
             visual_output = renderer.step()

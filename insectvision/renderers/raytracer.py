@@ -622,7 +622,7 @@ class Raytracer(BaseRenderer):
             self._invalidate_shaders()
             self._active_defines = new_defines
 
-    def _update_uniforms(self, sim_dt: float):
+    def _update_uniforms(self):
 
         self._lights_uniforms.update(
             sky_intensity=self.sky_intensity,
@@ -635,7 +635,7 @@ class Raytracer(BaseRenderer):
         # if 'materials' in self._baker.scene_textures:
         #     self._scene_uniforms.update(scene_textures=self._baker.scene_textures['materials'].unit)
 
-        super()._update_uniforms(sim_dt=sim_dt)
+        super()._update_uniforms()
 
     # Internal rendering logic and draw calls
 

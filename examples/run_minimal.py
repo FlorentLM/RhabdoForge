@@ -44,11 +44,8 @@ def main():
     while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
         context.input()
 
-        # Advance clocks
-        dt = context.tick()
-
         # Make the agent follow the trajectory
-        agent.follow(agent_path, dt=dt, align=True)
+        agent.follow(agent_path, dt=context.dt, align=True)
 
         visual_output = renderer.step()
 

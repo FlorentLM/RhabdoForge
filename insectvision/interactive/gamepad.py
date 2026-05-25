@@ -117,7 +117,7 @@ class Gamepad(Controls):
     def _poll_axes(self, ctx, state):
 
         agent = ctx.agent
-        dt = ctx.wall_dt
+        wall_dt = ctx.wall_dt
 
         # Normalised stick inputs
         lx = self._set_deadzone(state.axes[glfw.GAMEPAD_AXIS_LEFT_X])
@@ -139,7 +139,7 @@ class Gamepad(Controls):
             move_direction += agent.forward * (-ly)
 
         if ctx.display_mode == DisplayMode.Third_person:
-            left_stick_yaw_delta = -lx * self.look_sensitivity * dt
+            left_stick_yaw_delta = -lx * self.look_sensitivity * wall_dt
         else:
             if abs(lx) > 0:
                 move_direction += agent.right * lx
@@ -152,10 +152,10 @@ class Gamepad(Controls):
 
         if glm.length(move_direction) > 0:
             speed = ctx.move_speed * self.move_sensitivity
-            agent.dt(dt).translate(glm.normalize(move_direction) * speed)
+            agent.dt(wall_dt).translate(glm.normalize(move_direction) * speed)
 
         # Zoom / Sun intensity
-        scroll_delta = (rt - lt) * dt * 10.0
+        scroll_delta = (rt - lt) * wall_dt * 10.0
 
         if abs(scroll_delta) > 0:
             if ctx.sun_control_mode and ctx.scene and ctx.scene.sun:
@@ -172,8 +172,8 @@ class Gamepad(Controls):
 
             if ctx.sun_control_mode and ctx.scene and ctx.scene.sun:
                 sun = ctx.scene.sun
-                new_azimuth = sun.azimuth - (rx * self._sun_orbit_speed * dt)
-                new_elevation = sun.elevation - (ry * self._sun_orbit_speed * dt)
+                new_azimuth = sun.azimuth - (rx * self._sun_orbit_speed * wall_dt)
+                new_elevation = sun.elevation - (ry * self._sun_orbit_speed * wall_dt)
                 new_elevation = max(1.0, min(89.0, new_elevation))
                 sun.from_angles(new_azimuth, new_elevation, sun.distance)
 
@@ -182,8 +182,8 @@ class Gamepad(Controls):
 
             elif ctx.display_mode == DisplayMode.Third_person:
                 ctx.observer.pan(
-                    azimuth_delta=-rx * self._look_x_dir * self.look_sensitivity * dt,
-                    elevation_delta=ry * self._look_y_dir * self.look_sensitivity * dt,
+                    azimuth_delta=-rx * self._look_x_dir * self.look_sensitivity * wall_dt,
+                    elevation_delta=ry * self._look_y_dir * self.look_sensitivity * wall_dt,
                     degrees=True
                 )
                 if abs(left_stick_yaw_delta) > 0:
@@ -191,8 +191,8 @@ class Gamepad(Controls):
 
             else:
                 agent.rotate(
-                    yaw_delta=-rx * self._look_x_dir * self.look_sensitivity * dt,
-                    pitch_delta=ry * self._look_y_dir * self.look_sensitivity * dt,
+                    yaw_delta=-rx * self._look_x_dir * self.look_sensitivity * wall_dt,
+                    pitch_delta=ry * self._look_y_dir * self.look_sensitivity * wall_dt,
                     degrees=True
                 )
 
@@ -204,4 +204,4 @@ class Gamepad(Controls):
             roll -= 1.0
 
         if roll != 0.0:
-            agent.rotate(roll_delta=roll * self.look_sensitivity * dt, degrees=True)
+            agent.rotate(roll_delta=roll * self.look_sensitivity * wall_dt, degrees=True)

@@ -1,14 +1,13 @@
 import OpenGL
-
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 from pathlib import Path
-from collections import deque
 import numpy as np
 import json
 from PIL import Image
 from pyglm import glm
+import glfw
 
 from insectvision.engine.resources import ShaderProgram
 
@@ -293,7 +292,7 @@ class HUD:
 
         from insectvision.renderers import Raytracer, Pathtracer
 
-        current_time = self.ctx.current_wall_time
+        current_time = glfw.get_time()
         if current_time - self._last_update_time < self.update_interval:
             return
         self._last_update_time = current_time
@@ -332,16 +331,16 @@ class HUD:
         wall_fps = self.ctx.fps
         wall_dt_ms = self.ctx.wall_dt * 1000.0
 
-        if self.ctx.fixed_sim_dt is not None:
-            sim_hz = 1.0 / self.ctx.fixed_sim_dt
-            sim_str = f'Sim: {sim_hz:5.1f} Hz (fixed {self.ctx.fixed_sim_dt * 1000:.1f} ms)'
+        if self.ctx.time_step is not None:
+            sim_hz = 1.0 / self.ctx.time_step
+            sim_str = f'Sim: {sim_hz:5.1f} Hz (fixed {self.ctx.time_step * 1000:.1f} ms)'
         else:
             sim_str = 'Sim: real-time (variable)'
 
         timing_text = (
             f'Wall: {wall_fps:5.1f} FPS ({wall_dt_ms:5.1f} ms) | '
             f'{sim_str} | '
-            f'Total sim time: {self.ctx.total_sim_time:7.3f} s'
+            f'Total sim time: {self.ctx.total_time:7.3f} s'
         )
 
         line_height = self.font_renderer.font_size * 1.1

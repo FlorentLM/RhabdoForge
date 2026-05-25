@@ -109,7 +109,7 @@ def print_stim_geometry():
 context = Context()
 
 context.mouse_captured = False
-context.fixed_sim_dt = 1 / 1000.0   # 1 ms of biological simulation resolution
+context.time_step = 1 / 1000.0   # 1 ms of biological simulation resolution
 
 scene = Scene(background_color=(0.0, 0.0, 0.0))
 
@@ -195,8 +195,8 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_d
     if not context.hud.show:
         context.hud.show = True
 
-    dt = context.tick()
-    sim_time = context.total_sim_time
+    dt = context.dt
+    sim_time = context.total_time
 
     cycle_count = int(sim_time // CYCLE_DURATION)
     intra_cycle_time = sim_time % CYCLE_DURATION

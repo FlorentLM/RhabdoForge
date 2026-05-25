@@ -502,11 +502,11 @@ class BaseRenderer(ABC):
         self._pbo_index = next_pbo_index
         return out_array
 
-    def _update_uniforms(self, sim_dt: float):
+    def _update_uniforms(self):
 
         # Ticks
         self._eye_uniforms.update(
-            dt=sim_dt,
+            dt=self._context.dt,
             frame_offset=self._frame_index % self._batch_size,
             dither_counter=self._dither_counter
         )
@@ -542,10 +542,10 @@ class BaseRenderer(ABC):
             retina_pulls_um=self._model._retina_pulls
         )
 
-    def _main_render(self, sim_dt: float):
+    def _main_render(self):
         """Shared pipeline: tick -> upload updated uniforms -> scene-specific sampling -> reduce -> actuate."""
 
-        self._update_uniforms(sim_dt=sim_dt)
+        self._update_uniforms()
 
         self._sample_scene()  # subclasses override: fill sampling_results_ssbo
         self._reduction()
@@ -628,28 +628,6 @@ class BaseRenderer(ABC):
 
     # TODO: The following public methods should probably be all under the hood
 
-    def reset_dynamic_state(self, n_flush_frames: int = 3) -> None:
-        """
-        Zero the GPU-side photomechanical/adaptation state and flush the PBO readback ring.
-        """
-        self.eye_buffers['lens_dynamic'].reset()
-        self.eye_buffers['ema_state'].reset()
-        self._needs_warmup = True
-
-        # Invalidate PBO ring
-        for i in range(len(self._fences)):
-            if self._fences[i]:
-                glDeleteSync(self._fences[i])
-                self._fences[i] = 0
-        self._pbo_index = 0
-        self._colours_cpu_buffer[:] = 0
-
-        # Run throwaway frames if requested
-        # sim_dt=0.0 so biology does not advance during the PBO ring flush
-        if n_flush_frames > 0:
-            for _ in range(n_flush_frames):
-                self._render_one(sim_dt=0.0, readback=False)
-
     def flush(self) -> np.ndarray:
         """
         Blocks until all queued frames on the GPU are rendered, downloads the data, and resets the counter.
@@ -720,45 +698,10 @@ class BaseRenderer(ABC):
         # Each subclass implements its own rendering logic
         raise NotImplementedError
 
-    def _render_one(self, sim_dt: float, readback: bool) -> Optional[np.ndarray]:
-        """
-        Internal: render one frame at a given biological dt and (optionally) read
-        the colours back. Returns the raw colour array, or None if there's nothing
-        to hand back (readback disabled, or mid-batch in async mode).
-        """
-        self.sync_cpu()
-
-        if self._time_dithering:
-            self._dither_counter += 1
-
-        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-        self._main_render(sim_dt=sim_dt)
-        glFinish()
-
-        self._frame_index += 1
-
-        if not readback:
-            # no cpu readback, we're done here
-            return None
-
-        if self.runs_interactive or self._batch_size == 1:
-            # Frame by frame path: ping-pong PBO read
-            return self._colors_read_async()
-
-        # Batched path
-        if self._frame_index < self._batch_size:
-            # batch is not full yet, we're done for this frame
-            return None
-
-        print(f"  > GPU batch is full. Flushing {self._batch_size} frames...")
-        return self.flush()
-
     def step(self, readback: bool = True) -> Optional['VisualOutput']:
         """
         Advance biological dynamics by one time step and update the eyes.
-
-        The time step is taken from the attached Context (context.sim_dt), and is
-        advanced by context.tick().
+        The time step is taken from the attached Context (context.dt).
 
         Behaviour by batch size:
             - batch_size == 1: blocks (via ping-pong PBO) and returns this frame's VisualOutput.
@@ -772,16 +715,40 @@ class BaseRenderer(ABC):
         from insectvision.compound_eyes import VisualOutput
 
         if self._context is None:
-            raise RuntimeError(
-                "renderer.step() requires an attached Context. Pass context=... "
-                "to the renderer's constructor (or call renderer.attach_context(ctx))."
-            )
+            raise RuntimeError("renderer.step() requires an attached Context.")
 
-        sim_dt = self._context.sim_dt
+        # Sync any CPU-side changes to the eye model
+        self.sync_cpu()
 
-        out_array = self._render_one(sim_dt=sim_dt, readback=readback)
-        if out_array is None:
+        # Advance dithering for Monte-Carlo noise decorrelation
+        if self._time_dithering:
+            self._dither_counter += 1
+
+        # GPU dispatch
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+        self._main_render()
+        glFinish()
+
+        self._frame_index += 1
+
+        # No readback, work here is done, return
+        if not readback:
             return None
+
+        out_array: Optional[np.ndarray] = None
+
+        if self.runs_interactive or self._batch_size == 1:
+            # Interactive path: return previous frame via ping-pong PBO
+            out_array = self._colors_read_async()
+        else:
+            # Batched path: return full block (only when batch is full)
+            if self._frame_index >= self._batch_size:
+                print(f"  > GPU batch is full. Flushing {self._batch_size} frames...")
+                out_array = self.flush()
+
+        if out_array is None or out_array.size == 0:
+            return None
+
         return VisualOutput(out_array, self._model)
 
     def set_overlay(self,

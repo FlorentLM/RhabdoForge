@@ -82,12 +82,11 @@ In closed-loop simulations, the rendering loop updates both the physical positio
 
 ```python
 # Use a fixed biological time step
-context.fixed_sim_dt = 1/1000.0  # 1 ms resolution
+context.time_step = 1/1000.0  # 1 ms resolution
 
 while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
     # Update agent state
-    dt = context.tick()
-    agent.translate(agent.forward * 1.0 * dt)
+    agent.translate(agent.forward * 1.0 * context.dt)
     
     # Compute one biological step
     # This processes optics, rhabdomere dynamics, and adaptation

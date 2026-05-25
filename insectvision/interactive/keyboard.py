@@ -119,7 +119,7 @@ class KeyboardMouse(Controls):
 
         window = self.ctx.window
         agent = self.ctx.agent
-        dt = self.ctx.wall_dt
+        wall_dt = self.ctx.wall_dt
 
         # Continuous movement (WASD + vertical)
         move_direction = glm.vec3(0.0)
@@ -140,7 +140,7 @@ class KeyboardMouse(Controls):
             if glfw.get_key(window, glfw.KEY_D) == glfw.PRESS: move_direction += agent.right
 
         if glm.length(move_direction) > 0:
-            agent.translate(glm.normalize(move_direction) * self.ctx.move_speed * dt)
+            agent.translate(glm.normalize(move_direction) * self.ctx.move_speed * wall_dt)
 
         # Roll
         roll_input = 0.0

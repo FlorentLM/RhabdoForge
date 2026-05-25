@@ -476,14 +476,14 @@ class Dashboard:
         # Timing: wall vs sim clock
         dpg.set_value('ui_wall_dt_text', f'Wall dt: {self.ctx.wall_dt * 1000.0:6.2f} ms')
 
-        if self.ctx.fixed_sim_dt is not None:
-            sim_hz = 1.0 / self.ctx.fixed_sim_dt
-            sim_mode = f'Sim: {sim_hz:5.1f} Hz (fixed {self.ctx.fixed_sim_dt * 1000:.1f} ms)'
+        if self.ctx.time_step is not None:
+            sim_hz = 1.0 / self.ctx.time_step
+            sim_mode = f'Sim: {sim_hz:5.1f} Hz (fixed {self.ctx.time_step * 1000:.1f} ms)'
         else:
             sim_mode = 'Sim: real-time (variable)'
         dpg.set_value('ui_sim_mode_text', f'| {sim_mode}')
 
-        dpg.set_value('ui_sim_total_text', f'Total sim time: {self.ctx.total_sim_time:7.3f} s')
+        dpg.set_value('ui_sim_total_text', f'Total sim time: {self.ctx.total_time:7.3f} s')
 
         model = self.ctx.renderer._model
         dpg.configure_item(self.rec_slider, max_value=max(0, model.receptors_per_lens - 1))

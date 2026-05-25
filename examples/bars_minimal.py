@@ -39,7 +39,7 @@ def main():
     context = Context()
     context.mouse_captured = False
 
-    context.fixed_sim_dt = 1/200.0
+    context.time_step = 1/200.0
 
     # empty pure black world
     # scene = Scene(background_color=(0.0, 0.0, 0.0))
@@ -96,8 +96,6 @@ def main():
     while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=True):
 
         context.input()
-
-        dt = context.tick()
 
         visual_output = renderer.step()
 

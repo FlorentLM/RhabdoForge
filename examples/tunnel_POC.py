@@ -139,7 +139,7 @@ for blas in renderer.BLASes:
 ## Run
 
 # Simulation runs at a fixed 200 Hz biological clock
-context.fixed_sim_dt = 1.0 / 200.0
+context.time_step = 1.0 / 200.0
 
 saved_runs: Dict[str, RunLog] = {}
 modes = ["Non-holonomic (yaw steering)", "Holonomic (lateral shift)"]
@@ -176,9 +176,9 @@ for mode in modes:
 
         context.input()
 
-        dt = context.tick()
-
         visual_output = renderer.step()
+
+        dt = context.dt
 
         left_motion = left_emd.process(visual_output.per_lens, dt)
         right_motion = right_emd.process(visual_output.per_lens, dt)
@@ -223,7 +223,7 @@ for mode in modes:
         context.draw()
 
         # Log
-        log.time.append(context.total_sim_time)
+        log.time.append(context.total_time)
         log.x.append(float(agent.position.x))
         log.y.append(float(agent.position.y))
         log.z.append(float(agent.position.z))
@@ -236,7 +236,7 @@ for mode in modes:
             print(f"Finished {mode} (end of tunnel)")
             break
 
-        if context.total_sim_time >= 180.0:
+        if context.total_time >= 180.0:
             print(f"Finished {mode} (time limit)")
             break
 
