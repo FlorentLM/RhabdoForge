@@ -138,49 +138,6 @@ def eye_boundary_line(lens_data_mesh: pv.PolyData) -> pv.PolyData:
     return edges
 
 
-def _tangent_coords(eye_pos: np.ndarray):
-    """
-    Tangent-plane (u, v) coordinates of 'eye_pos' around its centroid.
-    Returns (u, v, (centroid, e1, e2)) or (None, None, None) if degenerate.
-    """
-    centroid = eye_pos.mean(axis=0)
-    n = float(np.linalg.norm(centroid))
-    if n < 1e-10:
-        return None, None, None
-    centroid_dir = centroid / n
-
-    world_up = np.asarray(WORLD_UP, dtype=eye_pos.dtype)
-    if abs(centroid_dir @ world_up) > 0.95:
-        e1 = np.asarray(WORLD_FORWARD, dtype=eye_pos.dtype)
-        e1 = e1 - centroid_dir * (e1 @ centroid_dir)
-    else:
-        e1 = np.cross(world_up, centroid_dir)
-    e1 = e1 / np.linalg.norm(e1)
-    e2 = np.cross(centroid_dir, e1)
-
-    norms = np.linalg.norm(eye_pos, axis=1)
-    safe_norms = norms.copy()
-    safe_norms[norms < 1e-10] = 1.0
-
-    dirs = eye_pos / safe_norms[:, None]
-
-    x = dirs @ e1
-    y = dirs @ e2
-    z = np.clip(dirs @ centroid_dir, -1.0, 1.0)
-
-    theta = np.arccos(z)
-    r_ortho = np.sqrt(x ** 2 + y ** 2)
-
-    scale = np.ones_like(theta)
-    nz = r_ortho > 1e-8
-    scale[nz] = theta[nz] / r_ortho[nz]
-
-    u = x * scale * safe_norms
-    v = y * scale * safe_norms
-
-    return u, v, (centroid, e1, e2)
-
-
 ##
 
 def _arrow_template() -> pv.PolyData:
