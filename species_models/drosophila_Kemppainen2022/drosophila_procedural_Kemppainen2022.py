@@ -208,8 +208,6 @@ def generate_eyes():
     positions = np.vstack([right_eye, left_eye])
     eye_id = np.concatenate([np.ones(len(right_eye)), np.zeros(len(left_eye))])
 
-    positions *= 0.001
-
     return directions, positions, eye_id
 
 

@@ -19,10 +19,10 @@ IOA_V_MAX = 4.5
 # TODO: Lookup more accurate values
 # Honeybee head ~4.5 mm, compound eye diameter ~2.5-3 mm?
 # Eye radius ~ 1.25 mm?
-BEE_EYE_RADIUS = 1.25
+BEE_EYE_RADIUS = 1250.0  # micrometres
 
 # Eye separation (center-to-center distance)
-BEE_EYE_SEPARATION = 3.0  # mm
+BEE_EYE_SEPARATION = 3000.0  # micrometres
 
 
 ##
