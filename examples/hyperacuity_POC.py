@@ -34,13 +34,16 @@ BAR_SEPARATION = 0.14      # 4.01° centre-to-centre → 2.86° gap
 # BAR_SEPARATION = 0.0       # single bar at origin
 
 
-# Motion
-# Vertical sinusoidal sweep
-# At f=0.5, A=0.5, DISTANCE=2.0 -> ~45 deg/s peak vertical sweep
-OSC_FREQ = 0.5
-OSC_AMPLITUDE = 0.5
-SWITCH_PERIOD = 4.0
-MAX_TIME = 2 * SWITCH_PERIOD
+# Motion - Linear Sweeps
+SWEEP_SPEED = 1.0        # m/s
+SWEEP_AMPLITUDE = 0.5    # m
+NUM_CYCLES_PER_PHASE = 3 # Complete 3 Up/Down sweeps OFF, then 3 Up/Down sweeps ON
+
+# One-way sweep time
+SWEEP_DURATION = (2 * SWEEP_AMPLITUDE) / SWEEP_SPEED
+# Full cycle (Up + Down)
+CYCLE_DURATION = 2 * SWEEP_DURATION
+MAX_TIME = CYCLE_DURATION * NUM_CYCLES_PER_PHASE * 2
 
 # Readout ommatidium (or band of ommatidia)
 # Horizontal strip: broad in azimuth, narrow in elevation
@@ -95,12 +98,10 @@ def print_stim_geometry():
 
     bar_t_deg = math.degrees(BAR_THICKNESS  / DISTANCE)
     bar_s_deg = math.degrees(BAR_SEPARATION / DISTANCE)
-    peak_v = 2 * math.pi * OSC_FREQ * OSC_AMPLITUDE
-    peak_w = math.degrees(peak_v / DISTANCE)
+    sweep_w = math.degrees(SWEEP_SPEED / DISTANCE)
 
-    print(f"Horizontal bars: {bar_t_deg:.2f}° thick (elevation), "
-          f"{bar_s_deg:.2f}° apart (Drosophila IOA ~4.5°, R7/8 acceptance ~4.6°)")
-    print(f"Peak angular vertical sweep speed: {peak_w:.1f}°/s")
+    print(f"Horizontal bars: {bar_t_deg:.2f}° thick (elevation), {bar_s_deg:.2f}° apart")
+    print(f"Linear vertical sweep speed: {sweep_w:.1f}°/s")
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +161,6 @@ with model.unlock(lenses=True):
     model.lenses.gain_lat_um = 1.5
 
     # Axial gain: RF narrowing
-    # 5.0 to 10.0 um is a significant pull away from the lens
     model.lenses.gain_ax_um = 8.0
 
     # Kemppainen says 5 fast and 80 slow (check this) ?
@@ -185,9 +185,10 @@ results = {
     'L2_cart':    [],
     'R78_cart':   [],
     'L2_lens':    [],
+    'motion_dir': [],
 }
 
-print(f"\nRunning for {MAX_TIME:.1f}s: first {SWITCH_PERIOD:.1f}s OFF, then ON ...")
+print(f"\nRunning for {MAX_TIME:.1f}s: {NUM_CYCLES_PER_PHASE} cycles OFF, then {NUM_CYCLES_PER_PHASE} cycles ON ...")
 
 while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=True):
     context.input()
@@ -197,12 +198,21 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_d
     dt = context.tick()
     sim_time = context.total_sim_time
 
-    # Vertical sinusoidal oscillation, aparent bar motion is opposite sign
-    ay = math.sin(sim_time * 2 * math.pi * OSC_FREQ) * OSC_AMPLITUDE
+    cycle_count = int(sim_time // CYCLE_DURATION)
+    intra_cycle_time = sim_time % CYCLE_DURATION
+
+    renderer.actuation = cycle_count >= NUM_CYCLES_PER_PHASE
+
+    if intra_cycle_time < SWEEP_DURATION:
+        # Agent moving up (+y) -> apparent bar motion down
+        ay = -SWEEP_AMPLITUDE + (intra_cycle_time / SWEEP_DURATION) * (2 * SWEEP_AMPLITUDE)
+        motion_dir = -1
+    else:
+        # Agent moving down (-y) -> apparent bar motion up
+        ay = SWEEP_AMPLITUDE - ((intra_cycle_time - SWEEP_DURATION) / SWEEP_DURATION) * (2 * SWEEP_AMPLITUDE)
+        motion_dir = 1
+
     agent.position = (0.0, ay, 0.0)
-
-    renderer.actuation = (int(sim_time / SWITCH_PERIOD) % 2) == 1
-
     visual_output = renderer.step()
 
     band_cart = visual_output.per_cartridge[band_lenses]
@@ -218,6 +228,7 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_d
     results['L2_cart'].append(L2_cart)
     results['R78_cart'].append(R78_cart)
     results['L2_lens'].append(L2_lens)
+    results['motion_dir'].append(motion_dir)
 
     context.draw(visual_output)
 
@@ -232,64 +243,32 @@ act = np.array(results['actuation'])
 L2_cart = np.array(results['L2_cart'])
 R78_cart = np.array(results['R78_cart'])
 L2_lens = np.array(results['L2_lens'])
+mdir = np.array(results['motion_dir'])
 
+fig, axs = plt.subplots(2, 2, figsize=(13, 9), sharex=True)
 
-def phase_fold(t, sig, mask, freq):
-    period = 1.0 / freq
-    phase = (t[mask] % period) / period
-    order = np.argsort(phase)
-    return phase[order], sig[mask][order]
+def plot_sweep(ax, data, direction, title):
+    mask = (mdir == direction)
+    ax.scatter(agent_y[mask & ~act], data[mask & ~act], c='blue', s=1, alpha=0.5, label='OFF')
+    ax.scatter(agent_y[mask &  act], data[mask &  act], c='red',  s=1, alpha=0.5, label='ON')
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
 
+# Column 0: Bar moving up (agent moving down)
+plot_sweep(axs[0, 0], R78_cart, 1, "R7/8: Bar moving UP")
+plot_sweep(axs[1, 0], L2_cart,  1, "L2 Proxy: Bar moving UP")
+axs[0, 0].set_ylabel("Signal intensity")
+axs[1, 0].set_ylabel("Signal intensity")
+axs[1, 0].set_xlabel("Agent Y position (m)")
 
-fig, axs = plt.subplots(3, 2, figsize=(13, 9),
-                        gridspec_kw={'width_ratios': [2, 1]})
-
-axs[0, 0].plot(times, agent_y, 'k', lw=1)
-axs[0, 0].axvspan(SWITCH_PERIOD, MAX_TIME, color='red', alpha=0.07, label='Actuation ON')
-axs[0, 0].set_ylabel('agent.y (m)')
-axs[0, 0].set_title("Stimulus position (vertical)")
-axs[0, 0].legend(loc='upper right')
-
-axs[1, 0].plot(times[~act], R78_cart[~act], 'b.', ms=2, label='OFF')
-axs[1, 0].plot(times[ act], R78_cart[ act], 'r.', ms=2, label='ON')
-axs[1, 0].axvspan(SWITCH_PERIOD, MAX_TIME, color='red', alpha=0.07)
-axs[1, 0].set_ylabel('central R7/8\n(finest RF, band-avg)')
-axs[1, 0].legend(loc='upper right')
-axs[1, 0].grid(True, alpha=0.3)
-
-axs[2, 0].plot(times[~act], L2_cart[~act], 'b.', ms=2, label='L2 proxy OFF')
-axs[2, 0].plot(times[ act], L2_cart[ act], 'r.', ms=2, label='L2 proxy ON')
-axs[2, 0].plot(times, L2_lens, 'g-', alpha=0.5, lw=0.8,
-                label='lens-level R1-R6 (no superposition)')
-axs[2, 0].axvspan(SWITCH_PERIOD, MAX_TIME, color='red', alpha=0.07)
-axs[2, 0].set_ylabel('L2 proxy\n(cartridge R1-R6 sum)')
-axs[2, 0].set_xlabel('time (s)')
-axs[2, 0].legend(loc='upper right', fontsize=8)
-axs[2, 0].grid(True, alpha=0.3)
-
-period = 1.0 / OSC_FREQ
-off_window = (times >= SWITCH_PERIOD - period) & (times < SWITCH_PERIOD) & (~act)
-on_window  = (times >= MAX_TIME      - period) & (times < MAX_TIME)        & ( act)
-
-for ax_p, sig, name in [
-    (axs[0, 1], agent_y,  'agent.y'),
-    (axs[1, 1], R78_cart, 'R7/8'),
-    (axs[2, 1], L2_cart,  'L2 proxy'),
-]:
-    p_off, s_off = phase_fold(times, sig, off_window, OSC_FREQ)
-    p_on,  s_on  = phase_fold(times, sig, on_window,  OSC_FREQ)
-    ax_p.plot(p_off, s_off, 'b-', lw=1.2, label='OFF')
-    ax_p.plot(p_on,  s_on,  'r-', lw=1.2, label='ON')
-    ax_p.set_ylabel(name)
-    ax_p.grid(True, alpha=0.3)
-    ax_p.legend(loc='upper right', fontsize=8)
-
-axs[0, 1].set_title("Phase-folded\n(last period of each phase)")
-axs[2, 1].set_xlabel('phase (0-1)')
+# Column 1: Bar moving down (agent moving up)
+plot_sweep(axs[0, 1], R78_cart, -1, "R7/8: Bar moving DOWN")
+plot_sweep(axs[1, 1], L2_cart,  -1, "L2 Proxy: Bar moving DOWN")
+axs[1, 1].set_xlabel("Agent Y position (m)")
+axs[0, 1].legend(loc='upper right', markerscale=5)
 
 plt.tight_layout()
 plt.show()
-
 
 renderer.free()
 scene.free()
