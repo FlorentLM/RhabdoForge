@@ -90,9 +90,7 @@ class Dashboard:
                     self.omm_selection_text = dpg.add_text("Selected Lenses: [0]")
                     self.omm_slider = dpg.add_slider_int(label="Primary Lens ID (or type)", default_value=0,
                                                          max_value=ra.lens_count - 1, callback=self._on_slider_change)
-                    dpg.add_button(label="Clear Selection",
-                                   callback=lambda: self.toggle_lens_selection(dpg.get_value(self.omm_slider),
-                                                                               multi=False))
+                    dpg.add_button(label="Clear Selection", callback=lambda: self.toggle_lens_selection(None))
 
                     dpg.add_separator()
                     self.show_all_rec_toggle = dpg.add_checkbox(
@@ -347,6 +345,9 @@ class Dashboard:
         """Toggle selection. If lens_id is None, clears all."""
         if lens_id is None:
             self.selected_lenses = []
+            # reset the slider to 0 if cleared
+            if dpg.does_item_exist(self.omm_slider):
+                dpg.set_value(self.omm_slider, 0)
         elif not multi:
             self.selected_lenses = [lens_id]
         else:
@@ -484,6 +485,9 @@ class Dashboard:
 
         dpg.set_value('ui_sim_total_text', f'Total sim time: {self.ctx.total_sim_time:7.3f} s')
 
+        model = self.ctx.renderer._model
+        dpg.configure_item(self.rec_slider, max_value=max(0, model.receptors_per_lens - 1))
+
         # Modes
         view_str = self.ctx.display_mode.name.replace('_', ' ')
         proj_str = self.ctx.renderer.projection_mode.name
@@ -537,141 +541,161 @@ class Dashboard:
 
         dpg.set_value('ui_mouse_lock', self.ctx.mouse_captured)
 
-    # Main render
-    def render(self, visual_output):
+    def _update_plot_data(self, visual_output, model, mode):
 
+        self.frame_data.append(self.current_frame)
+        x = list(self.frame_data)
+
+        dynamic_states = self.ctx.renderer.eye_buffers['lens_dynamic'].read()
+
+        for i, lid in enumerate(self.selected_lenses[:self.max_selected]):
+            if lid >= model.lens_count: continue
+
+            # Determine data group based on output mode
+            if mode == EyeOutput.Raw:
+                start = lid * model.receptors_per_lens
+                group = visual_output.data[start: start + model.receptors_per_lens]
+            elif mode == EyeOutput.Ommatidium:
+                group = visual_output.per_lens[lid]
+            else:
+                group = visual_output.per_cartridge[lid]
+
+            hist = self.lens_histories[lid]
+            avg_pixel = np.mean(group, axis=0)
+
+            # Append to histories
+            hist['mean'].append(np.mean(avg_pixel[:3]))
+            hist['r'].append(avg_pixel[0])
+            hist['g'].append(avg_pixel[1])
+            hist['b'].append(avg_pixel[2])
+            hist['instant'].append(avg_pixel[3])
+            hist['lat'].append(float(dynamic_states[lid]['lateral_um']))
+            hist['ax'].append(float(dynamic_states[lid]['axial_um']))
+
+            for r_idx in range(model.receptors_per_lens):
+                hist['receptors'][r_idx].append(np.mean(group[r_idx, :3]))
+
+            # Update DPG Series
+            pool = self.series_pool[i]
+            self._refresh_series(pool, lid, hist, x)
+
+        self._update_plot_backgrounds()
+        self.current_frame += 1
+
+    def _refresh_series(self, pool, lid, hist, x):
+        """
+        Updates the visibility and data values for a single selection slot
+        (one ommatidium's worth of lines).
+        """
+
+        show_all_rec = dpg.get_value(self.show_all_rec_toggle)
+        show_rgb = dpg.get_value(self.rgb_toggle)
+        show_instant = dpg.get_value(self.instant_toggle)
+
+        # Main intensity line
+        # Only shown if we aren't breaking the data down into RGB or individual Receptors
+        dpg.configure_item(pool['mean'],
+                           label=f'Mean L{lid}',
+                           show=not (show_all_rec or show_rgb))
+        dpg.set_value(pool['mean'], [x, list(hist['mean'])])
+
+        # Instantaneous (Alpha) line
+        dpg.configure_item(pool['instant'],
+                           label=f'Inst L{lid}',
+                           show=show_instant)
+        dpg.set_value(pool['instant'], [x, list(hist['instant'])])
+
+        # RGB channel lines
+        for key in ['r', 'g', 'b']:
+            dpg.configure_item(pool[key],
+                               label=f'{key.upper()} L{lid}',
+                               show=show_rgb and not show_all_rec)
+            dpg.set_value(pool[key], [x, list(hist[key])])
+
+        # Actuation lines
+        dpg.configure_item(pool['lat'], label=f'Lat L{lid}', show=True)
+        dpg.set_value(pool['lat'], [x, list(hist['lat'])])
+
+        dpg.configure_item(pool['ax'], label=f'Ax L{lid}', show=True)
+        dpg.set_value(pool['ax'], [x, list(hist['ax'])])
+
+        # Individual Receptor lines (R1-R8)
+        for r_idx, rec_series in enumerate(pool['receptors']):
+            # Some lenses might have fewer receptors than the pool max
+            if r_idx < len(hist['receptors']):
+                dpg.configure_item(rec_series,
+                                   label=f'R{r_idx + 1} L{lid}',
+                                   show=show_all_rec)
+                dpg.set_value(rec_series, [x, list(hist['receptors'][r_idx])])
+            else:
+                dpg.configure_item(rec_series, show=False)
+
+    def _update_plot_backgrounds(self):
+
+        window_start = self.frame_data[0] if self.frame_data else 0
+
+        for layer, y_max in [(self.bg_layer_1, 1.1), (self.bg_layer_2, 5.0)]:
+            dpg.delete_item(layer, children_only=True)
+
+            for start_frame, end_frame, mode_name in self.history_intervals:
+                effective_end = end_frame if end_frame is not None else self.current_frame
+
+                # Only draw if interval is within the current visible history window
+                if effective_end >= window_start:
+                    dpg.draw_rectangle(
+                        pmin=[start_frame, -2.0],
+                        pmax=[effective_end, y_max],
+                        fill=self.MODE_COLORS[mode_name],
+                        color=(0, 0, 0, 0),
+                        parent=layer
+                    )
+
+        # Auto-scroll X axis
+        if len(self.frame_data) > 1:
+            x_min, x_max = self.frame_data[0], self.frame_data[-1]
+            dpg.set_axis_limits('x_axis_1', x_min, x_max)
+            dpg.set_axis_limits('x_axis_2', x_min, x_max)
+
+    # Main render
+    def render(self, visual_output: 'VisualOutput'):
         if not self._initialised:
             self._setup_dpg()
-
+            # Initial sync of selection from renderer to dashboard
             initial = self.ctx.renderer.selected_lenses
             if initial:
-                for lid in initial:
-                    self.toggle_lens_selection(lid, multi=True)
-            else:
-                self.toggle_lens_selection(0, multi=False)
+                for lid in initial: self.toggle_lens_selection(lid, multi=True)
 
         if not dpg.is_dearpygui_running():
             return False
 
-        # Process queued GL tasks on the main thread
+        # Main thread tasks (GL calls)
         while self._main_thread_queue:
-            task = self._main_thread_queue.pop(0)
-            task()
+            self._main_thread_queue.pop(0)()
 
-        # Sync with stuff driven by keyboard
+        # Sync UI state (renderer -> dashboard)
         self._sync_ui_state()
-
-        is_plotting = dpg.is_item_visible('tab_plots')
 
         model = self.ctx.renderer._model
         mode = self.ctx.renderer.output_mode
 
+        # maintain a mapping of what the shader needs to highlight
         shader_selection = np.full(10, -1, dtype=np.int32)
-
         if self.selected_lenses:
             for idx, l_id in enumerate(self.selected_lenses[:10]):
+                if l_id >= model.lens_count: continue
+
                 if mode == EyeOutput.Raw:
                     rec_id = dpg.get_value(self.rec_slider)
-                    shader_selection[idx] = (l_id * ra.receptors_per_lens) + rec_id
+                    shader_selection[idx] = (l_id * model.receptors_per_lens) + rec_id
                 else:
                     shader_selection[idx] = l_id
 
+        # Push updated selection to renderer
         self.ctx.renderer.selected_lenses = shader_selection
 
-        if is_plotting and visual_output is not None:
-            self.frame_data.append(self.current_frame)
-
-            for lid in self.selected_lenses:
-                if lid >= model.lens_count:
-                    continue
-
-                if mode == EyeOutput.Raw:
-                    start, end = lid * model.receptors_per_lens, (lid + 1) * model.receptors_per_lens
-                    group = visual_output.data[start:end]
-                elif mode == EyeOutput.Ommatidium:
-                    group = visual_output.per_lens[lid]
-                else:
-                    group = visual_output.per_cartridge[lid]
-
-                hist = self.lens_histories[lid]
-
-                avg_pixel = np.mean(group, axis=0)
-                hist['mean'].append(np.mean(avg_pixel[:3]))
-                hist['r'].append(avg_pixel[0])
-                hist['g'].append(avg_pixel[1])
-                hist['b'].append(avg_pixel[2])
-                hist['instant'].append(avg_pixel[3])
-
-                for r_idx in range(model.receptors_per_lens):
-                    hist['receptors'][r_idx].append(np.mean(group[r_idx, :3]))
-
-                # Actuation buffer readback
-                state_data = self.ctx.renderer.eye_buffers['lens_dynamic'].read(start=lid, count=1)
-                hist['lat'].append(float(state_data['lateral_um'][0]))
-                hist['ax'].append(float(state_data['axial_um'][0]))
-
-            # Prune out data for previously de-selected lenses
-            for lid in list(self.lens_histories.keys()):
-                if lid not in self.selected_lenses:
-                    del self.lens_histories[lid]
-
-            self.current_frame += 1
-
-            # Update plot data
-            x = list(self.frame_data)
-            show_all_rec = dpg.get_value(self.show_all_rec_toggle)
-            show_rgb = dpg.get_value(self.rgb_toggle)
-            show_instant = dpg.get_value(self.instant_toggle)
-
-            for i, pool_item in enumerate(self.series_pool):
-                if i < len(self.selected_lenses):
-                    lid = self.selected_lenses[i]
-                    hist = self.lens_histories[lid]
-
-                    dpg.configure_item(pool_item['mean'], label=f'Mean L{lid}', show=not (show_all_rec or show_rgb))
-                    dpg.configure_item(pool_item['instant'], label=f'Inst L{lid}', show=show_instant)
-
-                    for key in ['r', 'g', 'b']:
-                        dpg.configure_item(pool_item[key], label=f'{key.upper()} L{lid}',
-                                           show=show_rgb and not show_all_rec)
-
-                    dpg.configure_item(pool_item['lat'], label=f'Lat L{lid}', show=True)
-                    dpg.configure_item(pool_item['ax'], label=f'Ax L{lid}', show=True)
-
-                    dpg.set_value(pool_item['mean'], [x, list(hist['mean'])])
-                    dpg.set_value(pool_item['instant'], [x, list(hist['instant'])])
-                    dpg.set_value(pool_item['r'], [x, list(hist['r'])])
-                    dpg.set_value(pool_item['g'], [x, list(hist['g'])])
-                    dpg.set_value(pool_item['b'], [x, list(hist['b'])])
-                    dpg.set_value(pool_item['lat'], [x, list(hist['lat'])])
-                    dpg.set_value(pool_item['ax'], [x, list(hist['ax'])])
-
-                    for r_idx in range(model.receptors_per_lens):
-                        dpg.configure_item(pool_item['receptors'][r_idx], label=f'R{r_idx + 1} L{lid}',
-                                           show=show_all_rec)
-                        dpg.set_value(pool_item['receptors'][r_idx], [x, list(hist['receptors'][r_idx])])
-                else:
-                    for key in pool_item:
-                        if key == 'receptors':
-                            for rec in pool_item[key]:
-                                dpg.configure_item(rec, show=False)
-                        else:
-                            dpg.configure_item(pool_item[key], show=False)
-
-            # Background overlays
-            window_start = self.frame_data[0] if self.frame_data else 0
-
-            for layer, y_max in [(self.bg_layer_1, 1.1), (self.bg_layer_2, 5.0)]:
-                dpg.delete_item(layer, children_only=True)
-                for start, end, m_name in self.history_intervals:
-                    ae = end if end is not None else self.current_frame
-                    if ae >= window_start:
-                        dpg.draw_rectangle(pmin=[start, -2.0], pmax=[ae, y_max],
-                                           fill=self.MODE_COLORS[m_name], color=(0, 0, 0, 0), parent=layer)
-
-            if len(x) > 1:
-                dpg.set_axis_limits('x_axis_1', x[0], x[-1])
-                dpg.set_axis_limits('x_axis_2', x[0], x[-1])
+        # Update plots (if tab is visible)
+        if dpg.is_item_visible('tab_plots') and visual_output is not None:
+            self._update_plot_data(visual_output, model, mode)
 
         dpg.render_dearpygui_frame()
         return True
