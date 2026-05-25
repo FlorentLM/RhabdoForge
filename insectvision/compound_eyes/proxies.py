@@ -1471,6 +1471,14 @@ class Eye:
             return indices, w.astype(np.float32)
         return indices
 
+    def pull_retina(self, amount_um: float = 0.0):
+        """
+        Commands a muscular pull of the retina for this eye.
+        The sign is handled automatically: positive values always move the
+        retina symmetrically relative to the body midline.
+        """
+        self._model._retina_pulls[self._eye_index] = float(amount_um) * self.side_sign
+
 
 class VisualOutput:
     """
@@ -1669,6 +1677,9 @@ class CompoundEyeModel:
             self._local_right = self._local_right.astype(np.float32)
             self._local_up = self._local_up.astype(np.float32)
 
+            # Buffer for full retinal movement (per eye)
+            self._retina_pulls = np.zeros(8, dtype=np.float32)
+
             # Eye membership (island detection if eye_indices is None)
             self._lens_eye_index = self._resolve_eye_indices(self._lens_positions, eye_indices, N)
 
@@ -1799,7 +1810,7 @@ class CompoundEyeModel:
             else:
                 self._buffer.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
 
-            self.set_retinal_movement(muscle_direction=retina_muscle_direction or WORLD_UP)
+            self.set_retinal_direction(muscle_direction=retina_muscle_direction or WORLD_UP)
 
     def unlock(self, lenses: Optional[bool] = None, receptors: Optional[bool] = None):
         """
@@ -2614,7 +2625,7 @@ class CompoundEyeModel:
         self.have_conflicts = recv_conf | don_conf
         self._invalidate_spatial()  # ensure conflict-free trees are updated
 
-    def set_retinal_movement(self, muscle_direction: ArrayLike = WORLD_UP):
+    def set_retinal_direction(self, muscle_direction: ArrayLike = WORLD_UP):
         """
         Bakes the global muscle pull direction into each lens's local coordinate system.
 
@@ -2632,6 +2643,15 @@ class CompoundEyeModel:
         self._buffer.lens_static_data['retina_x'] = rx
         self._buffer.lens_static_data['retina_y'] = ry
         self._buffer.lens_dirty = True
+
+    def pull_retina(self, amount_um: float = 0.0):
+        """
+        Sets the retina pull for all eyes.
+        If amount_um is positive, eyes move according to their side_sign.
+        Calling without arguments resets the entire retina sheet to base state.
+        """
+        for eye in self._eyes:
+            eye.pull_retina(amount_um)
 
     # Private helpers
 

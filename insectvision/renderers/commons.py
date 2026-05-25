@@ -322,6 +322,9 @@ class BaseRenderer(ABC):
             frame_offset=self._frame_index % self._batch_size,
             dither_counter=self._dither_counter,
 
+            # Retina movement
+            retina_pulls_um=self._model._retina_pulls,
+
             # Receptors dynamics
             enable_actuation=self._gpu_actuation,
             lum_ref=self.lum_ref,
@@ -503,7 +506,7 @@ class BaseRenderer(ABC):
             dither_counter=self._dither_counter
         )
 
-        # If output is 'Raw', the shader needs Receptor IDs. Otherwise, it needs Lens IDs.
+        # If output is 'Raw', the shader needs Receptor IDs. Otherwise, it needs Lens IDs
         shader_highlight_ids = self._selected_lens_ids.copy()
 
         if self.output_mode == EyeOutput.Raw:
@@ -526,6 +529,11 @@ class BaseRenderer(ABC):
         # Process eventual luminosity ref change
         self._eye_uniforms.update(
             lum_ref=self.lum_ref
+        )
+
+        # Process CPU-side commands
+        self._eye_uniforms.update(
+            retina_pulls_um=self._model._retina_pulls
         )
 
     def _main_render(self, sim_dt: float):
