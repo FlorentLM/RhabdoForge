@@ -12,7 +12,7 @@ def main():
     USE_RAYTRACER = True
     USE_POINT_CLOUD = True
 
-    SAMPLES_PER_RECEPTOR = 16
+    SAMPLES_PER_RECEPTOR = 64
     HEADLESS = False
 
     USE_ASYNC_BATCHING = True
@@ -98,7 +98,7 @@ def main():
     else:
         renderer = Rasterizer(model=model, scene=scene, agent=agent, context=context,
                                   nb_samples=SAMPLES_PER_RECEPTOR,
-                                  time_dithering=False,
+                                  time_dithering=True,
                                   batch_size=batch_size,
                                   enable_actuation=False,
                                   enable_direct=True,
@@ -114,9 +114,12 @@ def main():
 
 
     # Example fixed timing: simulation steps by exactly 10 ms regardless of render speed
-    context.fixed_sim_dt = 1/1000.0
+    # context.fixed_sim_dt = 1/100.0
+    # Note: with 1/100.0, nb_samples needs to be high enough (32 or 64 or more),
+    # or tau_fast should be at least 2x the dt (set tau_fast to 0.02s)
+    # Biological 5 ms responses are difficult to simulate cleanly with Monte Carlo noise at 100 Hz
 
-
+    context.fixed_sim_dt = 1 / 1000.0
 
     # Run
 

@@ -16,37 +16,28 @@ uniform bool  enable_actuation;   // toggle for photomechanical saccades
 uniform float lum_ref;            // operating-point luminance for biochemical gain
 uniform float saccade_sign;       // global flag for mirror symmetric L/R
 uniform float retina_drive_um[8]; // retina muscle pull strength (one per eye ID (0-7))
+uniform float noise_threshold;
 
 void main() {
     uint lens_idx = gl_GlobalInvocationID.x;
-
-    if (lens_idx >= nb_lenses) {
-        return;
-    }
+    if (lens_idx >= nb_lenses) return;      // stop if out of bounds
 
     uint start_idx = lens_idx * receptors_per_lens;
+    LensDynamic ld = lens_dynamic[lens_idx];
+    LensStatic  ls = lens_static[lens_idx];
 
-    // Per-ommatidium average filtered radiance (from the EMA history)
+    // Signal Detection EMAs
+    // lum contains the concentrated radiance (from reduction.comp)
+    // -> adaptation responds to the light the waveguide actually receives
     float lum = 0.0;
     for (int r = 0; r < receptors_per_lens; r++) {
         lum += ema_state[start_idx + r].w;
     }
     lum /= float(receptors_per_lens);
 
-    LensDynamic ld = lens_dynamic[lens_idx];
-    LensStatic  ls = lens_static[lens_idx];
+    float alpha_fast  = exp(-dt / max(ls.tau_fast, 0.001));
+    float alpha_adapt = exp(-dt / max(ls.tau_adapt, 0.001));
 
-    // Get eye_id for this lens from the first receptor's metadata
-    uint eye_id = unpack_eye_id(rcpt_static[start_idx].metadata);
-    float muscle_tug = retina_drive_um[eye_id];
-
-    // [[ Luminance EMAs ]]
-    //   adapted_lum: baseline / gain control reference
-    //   fast_lum: transient detector for saccade trigger
-    float alpha_fast  = (ls.tau_fast  > 0.0001) ? exp(-dt / ls.tau_fast)  : 0.0;
-    float alpha_adapt = (ls.tau_adapt > 0.0001) ? exp(-dt / ls.tau_adapt) : 0.0;
-
-    // Check if uninitialised
     if (ld.adapted_lum < 1e-6) {
         ld.adapted_lum = max(lum, 0.01); // avoid div by 0 later
         ld.fast_lum    = lum;
@@ -55,63 +46,59 @@ void main() {
         ld.adapted_lum = mix(lum, ld.adapted_lum, alpha_adapt);
     }
 
-    // [[ Photomechanical drive ]]
-    // Rectified fast-positive contrast, normalised by baseline
-    float bright_drive = max(0.0, ld.fast_lum - ld.adapted_lum) / max(ld.adapted_lum, 0.01);
-    bright_drive = min(bright_drive, 1.0);
+    // Photomechanical saccade controller
+    float contrast = (ld.fast_lum - ld.adapted_lum) / (ld.adapted_lum + 0.05);
+
+    // Stiction for saccade trigger to avoid jitter and self-generated excitation loop
+    float bright_drive = smoothstep(noise_threshold * 2.0, noise_threshold * 3.0, contrast);
 
     float target_lat = enable_actuation ? (bright_drive * ls.gain_lat_um) : 0.0;
     float target_ax  = enable_actuation ? (bright_drive * ls.gain_ax_um)  : 0.0;
 
-    // Rate-limited update: rise on tau_rise, decay on tau_relax
-    float rate_lat = (target_lat > ld.lateral_um) ? ls.tau_rise : ls.tau_relax;
-    float rate_ax  = (target_ax  > ld.axial_um)   ? ls.tau_rise : ls.tau_relax;
-    float alpha_lat = (rate_lat > 0.0001) ? exp(-dt / rate_lat) : 0.0;
-    float alpha_ax  = (rate_ax  > 0.0001) ? exp(-dt / rate_ax)  : 0.0;
+    // Safety mechanical floor: mix between biological speed and render-noise stability
+    float safety_floor = mix(0.001, 0.010, clamp(noise_threshold * 5.0, 0.0, 1.0));
+    float rate_lat = (target_lat > ld.lateral_um) ? max(ls.tau_rise, safety_floor) : max(ls.tau_relax, safety_floor);
+    float rate_ax  = (target_ax  > ld.axial_um)   ? max(ls.tau_rise, safety_floor) : max(ls.tau_relax, safety_floor);
 
-    ld.lateral_um = mix(target_lat, ld.lateral_um, alpha_lat);
-    ld.axial_um   = mix(target_ax,  ld.axial_um,   alpha_ax);
+    ld.lateral_um = mix(target_lat, ld.lateral_um, exp(-dt / rate_lat));
+    ld.axial_um   = mix(target_ax,  ld.axial_um,   exp(-dt / rate_ax));
 
     lens_dynamic[lens_idx] = ld;
 
-    // [[ Optics ]]
-    // Acceptance angle scaling: when the rhabdomere is pulled away from the lens (d_eff > rest), the RF narrows
-    float d_rest = ls.nodal_distance_um;
-    float d_eff  = max(d_rest + ld.axial_um, 1.0);
-
-    // [[ Gain ]]
-    // lum_gain: Naka-Rushton baseline brightness adaptation (Matic & Laughlin 1981 style)
+    // Biochemical adaptation (Naka-Rushton)
+    // -> neural gain based on the adapted light level
     float lum_gain = lum_ref / (lum_ref + max(ld.adapted_lum, 0.0));
 
-    // [[ Per-receptor update ]]
+    // Optics & movement geometry
+    float d_rest = ls.nodal_distance_um;
+    float d_eff  = max(d_rest + ld.axial_um, 1.0);
+    
+    uint eye_id = unpack_eye_id(rcpt_static[start_idx].metadata);
+    float muscle_tug = retina_drive_um[eye_id];
+
     for (int r = 0; r < receptors_per_lens; r++) {
         uint rcpt_idx = start_idx + r;
         ReceptorStatic rs = rcpt_static[rcpt_idx];
 
-        // Per-receptor narrowing from this receptor's own rhabdomere diameter
+        // RF narrowing (Snyder)
         float diff = rs.wavelength_um / ls.lens_diameter_um;
-        float diff_sq = diff * diff;
         float g_rest = rs.rhab_diameter_um / d_rest;
         float g_new  = rs.rhab_diameter_um / d_eff;
-        float acc_scale = sqrt(diff_sq + g_new  * g_new) / sqrt(diff_sq + g_rest * g_rest);
+        float acc_scale = sqrt(diff*diff + g_new*g_new) / sqrt(diff*diff + g_rest*g_rest);
 
-        // concentration_gain: When the RF narrows by factor s, the same input radiance goes into a smaller angle,
-        // so per-photon excitation grows by ~ 1/s^2
-        float concentration_gain = min(1.0 / max(acc_scale * acc_scale, 0.25), 3.0);
-        float target_gain        = lum_gain * concentration_gain;
+        // Compose movements (microsaccade + retinal movement)
+        vec2 sacc_off = saccade_sign * ld.lateral_um * vec2(ls.sacc_local_x, ls.sacc_local_y);
+        vec2 musc_off = muscle_tug * vec2(ls.retina_x, ls.retina_y);
+        vec2 total_xy = rs.rot_offset + sacc_off + musc_off;
 
-        // Calculate combined focal-plane offset
-        // Microsaccade (local)
-        vec2 sacc_offset = saccade_sign * ld.lateral_um * vec2(ls.sacc_local_x, ls.sacc_local_y);
-        // Retinal movement (global)
-        vec2 musc_offset = muscle_tug * vec2(ls.retina_x, ls.retina_y);
+        vec3 tip = (total_xy.x * ls.right) + (total_xy.y * ls.up) + (-d_eff * ls.forward);
 
-        // Reproject tip
-        vec2 n_xy = rs.rot_offset + sacc_offset + musc_offset;
-        vec3 tip = (n_xy.x * ls.right) + (n_xy.y * ls.up) + (-d_eff * ls.forward);
-
+        // Update buffers
         rcpt_dynamic[rcpt_idx].direction        = normalize(-tip);
         rcpt_dynamic[rcpt_idx].acc_axes         = rs.rest_acc * acc_scale;
-        rcpt_dynamic[rcpt_idx].adaptation_state = target_gain;
+        
+        // This is purely the biochemical/neural gain
+        // (the optical concentration is handled physically in reduction.comp)
+        rcpt_dynamic[rcpt_idx].adaptation_state = lum_gain;
     }
 }

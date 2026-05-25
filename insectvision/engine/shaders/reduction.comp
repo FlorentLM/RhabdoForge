@@ -15,55 +15,67 @@ uniform int nb_samples;
 uniform int nb_receptors;
 uniform int frame_offset;
 uniform float dt;   // seconds since last frame
+uniform float photon_concentration_factor;
 
 void main() {
     uint rcpt_idx = gl_GlobalInvocationID.x;
+    if (rcpt_idx >= nb_receptors) return;   // stop if out of bounds
 
-    // Stop if out of bounds
-    if (rcpt_idx >= nb_receptors) {
-        return;
-    }
-
+    // Summation
     vec3 total_color = vec3(0.0);
     uint start_idx = rcpt_idx * nb_samples;
 
     for (int i = 0; i < nb_samples; ++i) {
         total_color += ray_results[start_idx + i].rgb;
     }
-
-    vec3 spec_sens     = rcpt_static[rcpt_idx].sensitivity;
-    float tau_membrane = rcpt_static[rcpt_idx].tau_membrane;
-
     total_color = (nb_samples > 0) ? (total_color / float(nb_samples)) : total_color;
-    total_color *= spec_sens;
 
-    // radiance before adaptation
-    float raw_radiance = (total_color.r + total_color.g + total_color.b) / 3.0;
+    // Spectral sensitivity
+    total_color *= rcpt_static[rcpt_idx].sensitivity;
+
+    // Photon concentration
+    // When the RF narrows, more light from a point source enters the waveguide.
+    // -> concentration factor based on the current RF axes
+    vec2 cur_acc = rcpt_dynamic[rcpt_idx].acc_axes;
+    vec2 res_acc = rcpt_static[rcpt_idx].rest_acc;
+    float s = cur_acc.x / max(res_acc.x, 1e-6);
+
+    float physical_gain = clamp(1.0 / (s * s), 1.0, 3.0);
+    // mix between 1.0 (no boost) and physical gain
+    float concentration_gain = mix(1.0, physical_gain, photon_concentration_factor);
+
+    // this is the physical radiance hitting the phototransduction machinery
+    float concentrated_radiance = ((total_color.r + total_color.g + total_color.b) / 3.0) * concentration_gain;
 
     vec4 ema_val = ema_state[rcpt_idx];
 
-    if (tau_membrane > 0.0 && dt > 0.0) {
-        float alpha = clamp(dt / (tau_membrane + dt), 0.0, 1.0);
+    // Neural membrane integration
+    float tau_membrane = rcpt_static[rcpt_idx].tau_membrane;
+    if (tau_membrane > 0.0001 && dt > 0.0) {
+        float alpha = exp(-dt / tau_membrane);
 
-        // If the state is uninitialised, snap immediately to new value
-        if (dot(ema_val, ema_val) < 1e-8) {
-            ema_val = vec4(total_color, raw_radiance);
+        // Integrate the concentrated signal
+        vec3 target_rgb = total_color * concentration_gain;
+        if (dot(ema_val.rgb, ema_val.rgb) < 1e-8) {
+            ema_val.rgb = target_rgb;
         } else {
-            ema_val = vec4(mix(ema_val.rgb, total_color, alpha),
-                           mix(ema_val.w, raw_radiance, alpha));
+            ema_val.rgb = mix(target_rgb, ema_val.rgb, alpha);
         }
-        ema_state[rcpt_idx] = ema_val;
-    } else if (dt > 0.0 || dot(ema_val, ema_val) < 1e-8) {
-        // Non-temporal mode (or first frame)
-        ema_val = vec4(total_color, raw_radiance);
-        ema_state[rcpt_idx] = ema_val;
+    } else {
+        ema_val.rgb = total_color * concentration_gain;
     }
 
-    float adapt = rcpt_dynamic[rcpt_idx].adaptation_state;
-    if (adapt < 1e-6) adapt = 1.0;
-    vec4 out_val = vec4(ema_val.rgb * adapt, ema_val.w * adapt);
+    // Pass concentrated radiance to eyeDynamics so adaptation filters see the boost
+    ema_val.w = concentrated_radiance;
+    ema_state[rcpt_idx] = ema_val;
 
-    // frame offset logic for batched rendering
+    // Biochemical gain control
+    // -> adaptation_state (calculated in eyeDynamics) represents the Naka-Rushton gain
+    float neural_gain = rcpt_dynamic[rcpt_idx].adaptation_state;
+    if (neural_gain < 1e-6) neural_gain = 1.0;
+
+    vec4 out_val = vec4(ema_val.rgb * neural_gain, ema_val.w * neural_gain);
+
     uint out_idx = (frame_offset * nb_receptors) + rcpt_idx;
     history_data[out_idx] = out_val;
 }

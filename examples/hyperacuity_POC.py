@@ -22,7 +22,7 @@ BAR_LENGTH = 10.0       # metres
 DISTANCE= 2.0           # metres
 
 # Two bars:
-# BAR_SEPARATION = 0.14      # 4.01° centre-to-centre → 2.86° gap
+BAR_SEPARATION = 0.14      # 4.01° centre-to-centre → 2.86° gap
 # BAR_SEPARATION = 0.15      # 4.30° centre-to-centre → 3.15° gap
 # BAR_SEPARATION = 0.16      # 4.58° centre-to-centre → 3.43° gap
 # BAR_SEPARATION = 0.18      # 5.15° centre-to-centre → 4.00° gap
@@ -31,7 +31,7 @@ DISTANCE= 2.0           # metres
 # BAR_SEPARATION = 0.25      # 7.16° centre-to-centre → 6.00° gap
 
 # One bar:
-BAR_SEPARATION = 0.0       # single bar at origin
+# BAR_SEPARATION = 0.0       # single bar at origin
 
 
 # Motion
@@ -130,7 +130,8 @@ scene.add_instance(bar_high)
 
 model = CompoundEyeModel.from_file(EYE_MODEL_PATH, kernel=drosophila_kernel())
 model.scale(1e-6)
-model.receptors.tau_membrane = 0.012
+with model.unlock(receptors=True):
+    model.receptors.tau_membrane = 0.012
 
 agent = Agent(position=(0.0, 0.0, 0.0))
 
@@ -149,9 +150,22 @@ renderer = Raytracer(
 )
 renderer.ambient_intensity = 1.5
 
-model.lenses.gain_lat_um = 2.0
-model.lenses.gain_ax_um = 8.0
-model.lenses.tau_relax = 0.080
+# Tune / disable luminance boost on RF narrowing
+renderer.photon_concentration = 0.2
+# renderer.photon_concentration = 0.0
+
+
+with model.unlock(lenses=True):
+    # Lateral gain: 1.5 um is roughly 1-2 degrees of angular shift?
+    model.lenses.gain_lat_um = 1.5
+
+    # Axial gain: RF narrowing
+    # 5.0 to 10.0 um is a significant pull away from the lens
+    model.lenses.gain_ax_um = 8.0
+
+    # Kemppainen says 5 fast and 80 slow (check this) ?
+    model.lenses.tau_rise = 0.005
+    model.lenses.tau_relax = 0.080
 
 # --------------------------------------------------------------------------
 
@@ -191,8 +205,8 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_d
 
     visual_output = renderer.step()
 
-    band_cart = visual_output.cartridges[band_lenses]
-    band_lens = visual_output.lenses[band_lenses]
+    band_cart = visual_output.per_cartridge[band_lenses]
+    band_lens = visual_output.per_lens[band_lenses]
 
     L2_cart  = band_cart[:, :6, 3].sum(axis=1).mean()
     R78_cart = band_cart[:,  6, 3].mean()

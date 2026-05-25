@@ -138,7 +138,8 @@ class BaseRenderer(ABC):
         N = self._model.total_receptors
         nb_lenses = self._model.lens_count
 
-        self._samples_per_rcpt = nb_samples
+        self._samples_per_rcpt = 1
+        self._noise_threshold = 0.05
         self._samples_per_px = 1
 
         # Estimate needed sizes and available memory
@@ -233,7 +234,7 @@ class BaseRenderer(ABC):
         self.ambient_intensity = getattr(self, 'ambient_intensity', 1.0)
         self.sky_intensity = getattr(self, 'sky_intensity', 1.0)
 
-        self.lum_ref = 1.0  # target operating-point luminance
+        self.lum_ref = 1.0  # target operating-point luminance (should be scene-dependant)
 
         # Visualisation shaders (lazy-loaded)
         self.__fp_colour_shader: Optional[ShaderProgram] = None    # 1st person colour mode
@@ -283,12 +284,15 @@ class BaseRenderer(ABC):
         # Initialise uniforms registries
         avg_lens_radius = np.mean(np.linalg.norm(self._model.rcpt_static_data['position'][:, :3], axis=1))
 
+        self.nb_samples = nb_samples    # via property to apply
+
         self._eye_uniforms = UniformRegistry(
             aspect_ratio=1.0,
 
             # Receptors and lenses (constants during runtime)
             nb_lenses=self._model.lens_count,
             nb_receptors=self._model.total_receptors,
+            noise_threshold=self._noise_threshold,
             receptors_per_lens=self._model.receptors_per_lens,
 
             # Rhabdomere kernel params (constants during runtime)
@@ -327,6 +331,7 @@ class BaseRenderer(ABC):
 
             # Receptors dynamics
             enable_actuation=self._gpu_actuation,
+            photon_concentration_factor=0.5,        # TODO: document this better
             lum_ref=self.lum_ref,
             saccade_sign=1.0        # TODO: Remove this one
         )
@@ -519,6 +524,7 @@ class BaseRenderer(ABC):
         # Process UI commands
         self._eye_uniforms.update(
             nb_samples=self.nb_samples,
+            noise_threshold=self._noise_threshold,
             projection_mode=self.projection_mode,
             tiled_mode=self.tiled_mode,
             use_quasi_random=self._quasi_random,
@@ -909,6 +915,9 @@ class BaseRenderer(ABC):
 
         self.eye_buffers['rays_intermediate'].resize(N * self._samples_per_rcpt)
 
+        mc_noise = 0.65 / np.sqrt(max(1, self._samples_per_rcpt))
+        self._noise_threshold = max(0.05, mc_noise)
+
     @property
     def time_dithering(self):
         return self._time_dithering
@@ -926,6 +935,14 @@ class BaseRenderer(ABC):
     def quasi_random(self, value: bool):
         self._quasi_random = bool(value)
         print(f"Quasi-random {'ENABLED' if self._quasi_random else 'DISABLED'}.")
+
+    @property
+    def photon_concentration(self):
+        return self._eye_uniforms['photon_concentration_factor']
+
+    @photon_concentration.setter
+    def photon_concentration(self, value: float):
+        self._eye_uniforms.update(photon_concentration_factor=float(value))
 
     @property
     def overlay_enabled(self) -> bool:
