@@ -502,7 +502,7 @@ class EyeViewer:
         act = self.plotter.add_mesh(
             discs, scalars='zones',
             cmap=zone_colors, clim=[-0.5, 3.5],
-            show_scalar_bar=True,
+            show_scalar_bar=False,
             scalar_bar_args={
                 'title': 'Zones (Red:L, Blue:R, Purple:Binoc)', 'n_labels': 5,
                 'position_x': 0.70, 'position_y': 0.05,
@@ -574,7 +574,7 @@ class EyeViewer:
                 cmap=cmap_colors, clim=[-0.5, 3.5],
                 show_scalar_bar=True,
                 scalar_bar_args={
-                    'title': 'Conflicts (0:OK 1:Don 2:Rcv 3:Both)', 'n_labels': 5,
+                    'title': 'Conflicts (Gray:OK Yellow:Don Cyan:Rcv Red:Both)', 'n_labels': 0,
                     'position_x': 0.70, 'position_y': 0.05,
                     'width': 0.28, 'height': 0.06, 'color': 'black',
                 },
