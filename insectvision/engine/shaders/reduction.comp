@@ -74,7 +74,9 @@ void main() {
     float neural_gain = rcpt_dynamic[rcpt_idx].adaptation_state;
     if (neural_gain < 1e-6) neural_gain = 1.0;
 
-    vec4 out_val = vec4(ema_val.rgb * neural_gain, ema_val.w * neural_gain);
+    // RGB channels: Integrated and scaled by gain
+    // Alpha channel: The adaptation/gain factor itself
+    vec4 out_val = vec4(ema_val.rgb * neural_gain, neural_gain);
 
     uint out_idx = (frame_offset * nb_receptors) + rcpt_idx;
     history_data[out_idx] = out_val;

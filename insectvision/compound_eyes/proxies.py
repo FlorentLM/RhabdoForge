@@ -1482,17 +1482,27 @@ class Eye:
 
 class VisualOutput:
     """
-    Per-receptor output array with reshaping via the (N, R) cartridge map.
+    Per-receptor output array with various biological pathway mappings conveniences.
 
     The renderers return a (N, 4) float array where N is the total
     receptor count and the last axis is (R/UV, G, B, radiance), with radiance the
     mean of the colour channels.
 
-    Layouts:
-        .per_lens       -> (n_lenses, R, ...)      regular grid (physical grouping)
-        .per_cartridge  -> (n_cartridges, R, ...)  regular grid (neural grouping)
-        .colours        -> data[..., :3]           on any layout via the channel helpers
-        .radiance       -> data[..., 3]            on any layout via the channel helpers
+    Layouts / pathways:
+        .per_lens          -> (N, R, 4)  Physical ommatidia grouping.
+        .per_cartridge     -> (N, R, 4)  Neural superposition grouping.
+        .per_receptor(i)   -> (N, 4)     Specific receptor type across all cartridges.
+        .peripheral_signal -> (N, 4)     Pooled R1-R6 (LMC pathway for motion).
+        .central_signal    -> (N, 4)     Central R7/R8 (Medulla colour pathway).
+        .lmc_input         -> (N, 4)     Alias for peripheral_signal.
+        .pale_input        -> (N, 4)     Alias for central_signal.
+
+    Signal analysis:
+        .colours      -> (..., 3) The adapted spectral response.
+        .adaptation   -> (..., )  The gain factor (state of the biological system).
+        .radiance     -> (..., )  Adapted intensity (mean of adapted RGB).
+        .raw_radiance -> (..., )  Physical light intensity recovered by 'un-baking'
+                                  the adaptation factor.
     """
     __slots__ = ('_data', '_model', '_R', '_N')
 
@@ -1526,48 +1536,85 @@ class VisualOutput:
 
     @property
     def colours(self) -> np.ndarray:
-        if self._data.ndim < 2 or self._data.shape[-1] < 3:
-            raise ValueError(f"Colours requires last axis >= 3, got shape {self._data.shape}")
+        """The adapted spectral response (Photoreceptor output)."""
         return self._data[..., :3]
 
     @property
-    def radiance(self) -> np.ndarray:
-        if self._data.ndim < 2 or self._data.shape[-1] < 4:
-            raise ValueError(f"Radiance requires last axis >= 4, got shape {self._data.shape}")
+    def adaptation(self) -> np.ndarray:
+        """
+        The adaptation state (gain factor) of the receptors.
+        This is the value calculated by the Naka-Rushton equations (0.0 to 1.0+).
+        """
         return self._data[..., 3]
 
-    # Group layouts
+    @property
+    def gain(self) -> np.ndarray:
+        """Alias to adaptation"""
+        return self.adaptation
 
     @property
+    def raw_radiance(self) -> np.ndarray:
+        """
+        The physical light intensity hitting the eye before adaptation.
+        Recovered by 'un-baking' the adaptation factor.
+        """
+        return np.mean(self.colours, axis=-1) / (self.adaptation + 1e-6)
+
+    @property
+    def radiance(self) -> np.ndarray:
+        """
+        The mean intensity of the adapted signal.
+        Calculated as the mean of the RGB channels.
+        """
+        return np.mean(self.colours, axis=-1)
+
+    # Level 1: raw grids
+    @property
     def per_lens(self) -> np.ndarray:
-        """Reshape to (N, R, ...). One block of R rows per physical lens."""
-        return self._data.reshape(self._N, self._R, *self._data.shape[1:])
+        """Returns (N, R, 4) array of all receptor outputs, per lens."""
+        return self._data.reshape(self._N, self._R, 4)
 
     @property
     def per_cartridge(self) -> np.ndarray:
-        """
-        (N, R, ...) gather of receptor outputs by cartridge.
-        """
+        """Returns (N, R, 4) array of all receptor outputs, per cartridge."""
         if not self._model._cartridges_wired:
-            # return self.per_lens # fallback to physical grouping if not wired
-            raise ValueError("VisualOutput has no cartridge wiring.")
+            return self.per_lens  # fallback for R=1 models
         return self._data[self._model.cartridge_indices]
 
+    # Level 2: type-based access
+    def per_receptor(self, index: int) -> np.ndarray:
+        """Returns (N, 4) array for a specific receptor index (e.g. 0 for R1)."""
+        return self.per_cartridge[:, index, :]
+
+    # Level 3: biological pathways
     @property
-    def cartridge_central_indices(self) -> np.ndarray:
-        """(N,) global receptor index of each cartridge's central (R7/8)."""
-        c = self._model._kernel.center_index
-        return np.arange(self._N, dtype=np.intp) * self._R + c
+    def peripheral_signal(self) -> np.ndarray:
+        """
+        The pooled response of all peripheral rhabdomeres (LMC-pathway).
+        Biologically: R1-R6 input to the motion system.
+        """
+        indices = self._model.kernel.peripheral_indices
+        if indices.size == 0:
+            return self.per_cartridge[:, 0, :]
+        return np.mean(self.per_cartridge[:, indices, :], axis=1)
 
     @property
-    def central_per_cartridge(self) -> np.ndarray:
-        """(N, ...) output of just the central receptor of each cartridge."""
-        c = self._model._kernel.center_index
-        return self.per_cartridge[:, c, ...]
+    def central_signal(self) -> np.ndarray:
+        """
+        The response of the central rhabdomere (Medulla color-pathway).
+        Biologically: R7/R8.
+        """
+        return self.per_cartridge[:, self._model.kernel.center_index, :]
 
-    def central(self, kernel: 'RhabdomereKernel') -> np.ndarray:
-        """Just the central rhabdomere output per lens. Shape (N, ...)."""
-        return self.per_lens[:, kernel.center_index]
+    @property
+    def lmc_input(self):
+        """Alias to peripheral_signal"""
+        return self.peripheral_signal
+
+    @property
+    def pale_input(self):
+        """Alias to central_signal"""
+        return self.central_signal
 
     def __getitem__(self, idx):
         return self._data[idx]
