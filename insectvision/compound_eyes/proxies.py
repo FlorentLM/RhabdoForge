@@ -1594,22 +1594,24 @@ class VisualOutput:
     # Level 3: biological pathways
     @property
     def peripheral_signal(self) -> np.ndarray:
-        """
-        The pooled response of all peripheral rhabdomeres (LMC-pathway).
-        Biologically: R1-R6 input to the motion system.
-        """
-        indices = self._model.kernel.peripheral_indices
-        if indices.size == 0:
+        """The pooled response of all peripheral rhabdomeres (LMC-pathway)."""
+        if self._R == 1:
+            return self.per_lens[:, 0, :]
+
+        indices = getattr(self._model.kernel, 'peripheral_indices', None)
+        if indices is None or len(indices) == 0:
             return self.per_cartridge[:, 0, :]
+
         return np.mean(self.per_cartridge[:, indices, :], axis=1)
 
     @property
     def central_signal(self) -> np.ndarray:
-        """
-        The response of the central rhabdomere (Medulla color-pathway).
-        Biologically: R7/R8.
-        """
-        return self.per_cartridge[:, self._model.kernel.center_index, :]
+        """The response of the central rhabdomere (Medulla color pathway)."""
+        if self._R == 1:
+            return self.per_lens[:, 0, :]
+
+        center_idx = getattr(self._model.kernel, 'center_index', 0)
+        return self.per_cartridge[:, center_idx, :]
 
     @property
     def lmc_input(self):

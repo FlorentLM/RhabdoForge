@@ -5,20 +5,12 @@ from insectvision.compound_eyes import Eye
 
 
 class HassensteinReichardtEMD:
-    """
-    Elementary Motion Detector based on Hassenstein-Reichardt correlator.
-
-    - GPU temporal accumulation: Photoreceptors (R1-R6) - low-pass integration
-    - Python high-pass: Lamina monopolar cells (L1/L2) - Luminance adaptation
-    - Python delay/correlator: Medulla (e.g., Mi1/Tm3 to T4/T5) - Delay and multiplication
-    """
-
     def __init__(self,
-            eye: Eye,
-            direction: ArrayLike,
-            delay_hz: float = 8.0,
-            highpass_hz: float = 2.0,
-            coordinate='cartesian'
+        eye: Eye,
+        direction: ArrayLike,
+        delay_hz: float = 8.0,
+        highpass_hz: float = 2.0,
+        coordinate='cartesian'
         ):
         self.eye = eye
         self.self_indices = eye.lens_indices
@@ -32,22 +24,22 @@ class HassensteinReichardtEMD:
             direction=direction, k=1, coordinate=coordinate, return_weights=True
         )
 
-        self._mean_lum = None   # High-pass state (L1/L2 adaptation), kept global for simplicity
-        self._delayed_A = None  # Delay line A (correlator), local to this eye
-        self._delayed_B = None  # Delay line B (correlator), local to this eye
+        self._mean_lum = None
 
-    def process(self, view, dt: float) -> np.ndarray:
-        """
-        Process one frame.
+        # Split ON/OFF delay lines
+        self._delayed_ON_A = None
+        self._delayed_ON_B = None
+        self._delayed_OFF_A = None
+        self._delayed_OFF_B = None
 
-        Args:
-            - global_view: The full (non sliced) per-lens buffer (N_total, R, channels)
-        """
+    def process(self, visual_output: 'VisualOutput', dt: float) -> np.ndarray:
 
-        # Luminance (for the whole animal)
-        luminance = view[:, :, :3].mean(axis=(1, 2))
+        lmc_signal = visual_output.lmc_input
 
-        # Lamina L1/L2 high-pass equivalent (luminance adaptation / contrast)
+        # Radiance/Luminance
+        luminance = lmc_signal[:, :3].mean(axis=-1)
+
+        # Lamina L1/L2 high-pass (luminance adaptation / contrast)
         alpha_hp = dt / (self.tau_hp + dt)
         if self._mean_lum is None:
             self._mean_lum = luminance.copy()
@@ -56,24 +48,35 @@ class HassensteinReichardtEMD:
         self._mean_lum += alpha_hp * (luminance - self._mean_lum)
         global_contrast = (luminance - self._mean_lum) / (self._mean_lum + 1e-6)
 
-        # signal_A: contrast at the lenses of this eye (direct channel)
-        # signal_B: contrast at the neighbours
-        signal_A = global_contrast[self.self_indices]
-        signal_B = global_contrast[self.targets]
+        # Split into ON (L1->T4) and OFF (L2->T5) pathways
+        signal_ON = np.maximum(global_contrast, 0.0)
+        signal_OFF = np.maximum(-global_contrast, 0.0)
 
-        # Medulla delay lines (this eye)
+        sig_ON_A = signal_ON[self.self_indices]
+        sig_ON_B = signal_ON[self.targets]
+        sig_OFF_A = signal_OFF[self.self_indices]
+        sig_OFF_B = signal_OFF[self.targets]
+
+        # Medulla delay lines
         alpha_delay = dt / (self.tau_delay + dt)
 
-        if self._delayed_A is None:
-            self._delayed_A = signal_A.copy()
-            self._delayed_B = signal_B.copy()
+        if self._delayed_ON_A is None:
+            self._delayed_ON_A = sig_ON_A.copy()
+            self._delayed_ON_B = sig_ON_B.copy()
+            self._delayed_OFF_A = sig_OFF_A.copy()
+            self._delayed_OFF_B = sig_OFF_B.copy()
             return np.zeros(len(self.eye), dtype=np.float32)
 
-        # Update delay lines
-        self._delayed_A += alpha_delay * (signal_A - self._delayed_A)
-        self._delayed_B += alpha_delay * (signal_B - self._delayed_B)
+        self._delayed_ON_A += alpha_delay * (sig_ON_A - self._delayed_ON_A)
+        self._delayed_ON_B += alpha_delay * (sig_ON_B - self._delayed_ON_B)
+        self._delayed_OFF_A += alpha_delay * (sig_OFF_A - self._delayed_OFF_A)
+        self._delayed_OFF_B += alpha_delay * (sig_OFF_B - self._delayed_OFF_B)
 
-        # Correlator: preferred arm - anti-preferred arm
-        motion = signal_B * self._delayed_A - signal_A * self._delayed_B
+        # Correlate ON with ON, OFF with OFF
+        motion_ON = sig_ON_B * self._delayed_ON_A - sig_ON_A * self._delayed_ON_B
+        motion_OFF = sig_OFF_B * self._delayed_OFF_A - sig_OFF_A * self._delayed_OFF_B
 
-        return motion * self.weights
+        # Recombine T4 and T5
+        total_motion = motion_ON + motion_OFF
+
+        return total_motion * self.weights
