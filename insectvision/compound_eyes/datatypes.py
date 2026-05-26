@@ -74,6 +74,7 @@ _BIT_LAYOUT = {
     'neighbour_count': (7,  4),
     'lens_id':         (11, 16),
     'chirality_neg':   (27, 1),
+    'binocular_area':  (28, 1),
 }
 
 
@@ -103,18 +104,19 @@ def set_metadata_field(metadata: np.ndarray, field: str, value) -> np.ndarray:
     return (metadata & clear) | v
 
 
-def pack_metadata(eye_indices, receptor_types, neighbour_counts, lens_indices, chirality_neg) -> np.ndarray:
+def pack_metadata(eye_indices, receptor_types, neighbour_counts, lens_indices, chirality_neg, binocular_area) -> np.ndarray:
     """
-    Packs the five fields into a uint32 metadata array, broadcasting as needed.
+    Packs the six fields into a uint32 metadata array, broadcasting as needed.
     """
 
     ei = np.asarray(eye_indices, dtype=np.uint32)
-    rt  = np.asarray(receptor_types, dtype=np.uint32)
-    nc  = np.asarray(neighbour_counts, dtype=np.uint32)
-    li  = np.asarray(lens_indices, dtype=np.uint32)
-    ch  = np.asarray(chirality_neg, dtype=np.uint32)
+    rt = np.asarray(receptor_types, dtype=np.uint32)
+    nc = np.asarray(neighbour_counts, dtype=np.uint32)
+    li = np.asarray(lens_indices, dtype=np.uint32)
+    ch = np.asarray(chirality_neg, dtype=np.uint32)
+    bi = np.asarray(binocular_area, dtype=np.uint32)
 
-    ei, rt, nc, li, ch = np.broadcast_arrays(ei, rt, nc, li, ch)
+    ei, rt, nc, li, ch, bi = np.broadcast_arrays(ei, rt, nc, li, ch, bi)
 
     out = np.zeros(ei.shape, dtype=np.uint32)
     out = set_metadata_field(out, 'eye_id',          ei)
@@ -122,6 +124,7 @@ def pack_metadata(eye_indices, receptor_types, neighbour_counts, lens_indices, c
     out = set_metadata_field(out, 'neighbour_count', nc)
     out = set_metadata_field(out, 'lens_id',         li)
     out = set_metadata_field(out, 'chirality_neg',   ch)
+    out = set_metadata_field(out, 'binocular_area',  bi)
     return out
 
 

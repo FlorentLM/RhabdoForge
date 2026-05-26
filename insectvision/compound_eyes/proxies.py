@@ -264,8 +264,8 @@ class LensView:
 
     @tau_rise.setter
     def tau_rise(self, value: ArrayLike):
-        self._validate_write();
-        self._model.lens_static_data['tau_rise'][self._gi] = value;
+        self._validate_write()
+        self._model.lens_static_data['tau_rise'][self._gi] = value
         self._mark_dirty()
 
     @property
@@ -274,8 +274,8 @@ class LensView:
 
     @tau_relax.setter
     def tau_relax(self, value: ArrayLike):
-        self._validate_write();
-        self._model.lens_static_data['tau_relax'][self._gi] = value;
+        self._validate_write()
+        self._model.lens_static_data['tau_relax'][self._gi] = value
         self._mark_dirty()
 
     @property
@@ -284,8 +284,8 @@ class LensView:
 
     @tau_fast.setter
     def tau_fast(self, value: ArrayLike):
-        self._validate_write();
-        self._model.lens_static_data['tau_fast'][self._gi] = value;
+        self._validate_write()
+        self._model.lens_static_data['tau_fast'][self._gi] = value
         self._mark_dirty()
 
     @property
@@ -294,8 +294,8 @@ class LensView:
 
     @tau_adapt.setter
     def tau_adapt(self, value: ArrayLike):
-        self._validate_write();
-        self._model.lens_static_data['tau_adapt'][self._gi] = value;
+        self._validate_write()
+        self._model.lens_static_data['tau_adapt'][self._gi] = value
         self._mark_dirty()
 
     @property
@@ -304,8 +304,8 @@ class LensView:
 
     @gain_lat_um.setter
     def gain_lat_um(self, value: ArrayLike):
-        self._validate_write();
-        self._model.lens_static_data['gain_lat_um'][self._gi] = value;
+        self._validate_write()
+        self._model.lens_static_data['gain_lat_um'][self._gi] = value
         self._mark_dirty()
 
     @property
@@ -314,8 +314,8 @@ class LensView:
 
     @gain_ax_um.setter
     def gain_ax_um(self, value: ArrayLike):
-        self._validate_write();
-        self._model.lens_static_data['gain_ax_um'][self._gi] = value;
+        self._validate_write()
+        self._model.lens_static_data['gain_ax_um'][self._gi] = value
         self._mark_dirty()
 
     # Dynamic state
@@ -376,6 +376,23 @@ class LensView:
     def have_conflicts(self) -> np.ndarray:
         """(M,) True if the lens has a donation or receiving conflict."""
         return self._model.have_conflicts[self._gi].copy()
+
+    @property
+    def is_binocular(self) -> np.ndarray:
+        """(M,) bool mask identifying which lenses in this view are binocular."""
+        if self._gi.size == 0:
+            return np.empty(0, dtype=bool)
+
+        # look up metadata for the 1st receptor of each lens in the view
+        R = self._model.receptors_per_lens
+        meta = self._model.rcpt_static_data['metadata'][self._gi * R]
+        return get_metadata_field(meta, 'binocular_area').astype(bool)
+
+    @property
+    def binocular_fraction(self) -> float:
+        """Fraction of lenses in this specific view that are binocular (0.0 to 1.0)."""
+        mask = self.is_binocular
+        return float(np.mean(mask)) if mask.size > 0 else 0.0
 
     # Linking to receptors / eye
 
@@ -835,6 +852,15 @@ class Eye:
         """Alias for '.lenses': iterate to yield Ommatidia."""
         return self.lenses
 
+    # TODO: Rename this one?
+    @property
+    def binocular_mask(self) -> np.ndarray:
+        return self.lenses.is_binocular
+
+    @property
+    def binocular_fraction(self) -> float:
+        return self.lenses.binocular_fraction
+
     # Cache management
 
     def _invalidate(self) -> None:
@@ -875,7 +901,7 @@ class Eye:
                 self._neighbour_graph = np.empty((n, 0), dtype=np.intp)
             else:
                 _, nidx_local = tree.query(positions, k=actual_k + 1)
-                # nidx_local has shape (n, k+1); drop the self column (the first)
+                # nidx_local has shape (n, k+1), drop the self column (the first)
                 if nidx_local.ndim == 1:
                     nidx_local = nidx_local.reshape(-1, 1)
                 self._neighbour_graph = nidx_local[:, 1:].astype(np.intp)
@@ -1801,6 +1827,7 @@ class CompoundEyeModel:
             rcpt_types = np.tile(np.arange(R, dtype=np.uint32), N)
             eye_indices_per_rcpt = np.repeat(self._lens_eye_index, R)
             neighbour_counts = np.zeros(N * R, dtype=np.uint32)
+            binoc_area = np.repeat(self._compute_binocular_mask(), R)
 
             self._buffer.pack_metadata(
                 eye_indices=eye_indices_per_rcpt,
@@ -1808,6 +1835,7 @@ class CompoundEyeModel:
                 neighbour_counts=neighbour_counts,
                 lens_indices=lens_indices,
                 chirality_neg=0,
+                binocular_area=binoc_area,
             )
 
             # Fill neighbours count from neighbour graph
@@ -2123,6 +2151,14 @@ class CompoundEyeModel:
         if not self._buffer.cartridges_wired:
             return []
         return [Cartridge(self, i) for i in range(self.lens_count)]
+
+    @property
+    def binocular_mask(self) -> np.ndarray:
+        return self.lenses.is_binocular
+
+    @property
+    def binocular_fraction(self) -> float:
+        return self.lenses.binocular_fraction
 
     # Buffer passthroughs
 
@@ -2454,6 +2490,41 @@ class CompoundEyeModel:
         rec_pos = np.repeat(self._lens_positions, R, axis=0)
         rec_dirs = normalise_vectors(-world_tip).astype(np.float32)
         return rec_dirs, rec_pos.astype(np.float32)
+
+    def _compute_binocular_mask(self, angle_threshold_deg: float = None) -> np.ndarray:
+        """
+        Identifies lenses that have overlapping visual fields with contralateral eyes.
+        """
+        N = self.lens_count
+        is_binocular = np.zeros(N, dtype=bool)
+
+        for eye in self._eyes:
+            # Get all lenses *not* in this eye
+            other_lenses_idx = np.setdiff1d(np.arange(N), eye.lens_indices)
+            if other_lenses_idx.size == 0:
+                continue
+
+            # Build a temporary tree for the other eyes
+            other_dirs = self._lens_directions[other_lenses_idx]
+            other_tree = cKDTree(other_dirs)
+
+            my_dirs = self._lens_directions[eye.lens_indices]
+
+            # If threshold not provided use 1.1 local IOA
+            if angle_threshold_deg is None:
+                threshold_rad = np.mean(self._buffer.lens_static_data['ioa_axes'][eye.lens_indices, 1]) * 1.1
+            else:
+                threshold_rad = np.radians(angle_threshold_deg)
+
+            chord_threshold = 2.0 * np.sin(threshold_rad / 2.0)
+
+            # Find if any other eye has a lens within threshold
+            indices = other_tree.query_ball_point(my_dirs, r=chord_threshold)
+
+            eye_binoc_mask = np.array([len(hits) > 0 for hits in indices])
+            is_binocular[eye.lens_indices] = eye_binoc_mask
+
+        return is_binocular
 
     # Cartridges (neural-superposition wiring)
 
@@ -3083,7 +3154,7 @@ class CompoundEyeModel:
 
             logger.debug(
                 f"Eye {eye.eye_index} lattice |Ψ6|: {float(np.mean(e_psi6_mag)):.3f} "
-                f"(1.0 = perfect hex, 0.0 = isotropic disorder); "
+                f"(1.0 = perfect hex, 0.0 = isotropic disorder), "
                 f"median lens_spacing: {float(np.median(e_lens_spacing)):.3f}"
             )
 

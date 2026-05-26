@@ -236,13 +236,14 @@ class EyeViewer:
         self.actors_bundles = []
         self.actors_conflicts = []
         self.actors_debugger = []
+        self.actors_binocular = []
 
         self.state_alignment_smoothed = True
         self.state_saccade_smoothed = True
 
         # Big panel state: 0 = bundles, 1 = debugger, 2 = conflicts heatmap
         self.state_bigpanel = 1
-        self._BIGPANEL_LABELS = ['Bundles', 'Wiring debugger', 'Conflicts']
+        self._BIGPANEL_LABELS = ['Bundles', 'Wiring debugger', 'Conflicts', 'Binocularity']
 
         self._debugger_subplot = None  # filled in show()
 
@@ -471,6 +472,46 @@ class EyeViewer:
             sbar_title='Smoothness',
         )
 
+    def _add_binocular_view(self) -> None:
+        """Render Left (Red), Right (Blue), and Binocular (Purple) zones."""
+
+        # 0: Other, 1: Left, 2: Right, 3: Binocular
+        side_field = np.zeros(self.N, dtype=np.float32)
+
+        for eye in self.model.eyes:
+            val = 1.0 if eye.side == 'left' else 2.0 if eye.side == 'right' else 0.0
+            side_field[eye.lens_indices] = val
+        try:
+            binoc_mask = self.model.lenses.is_binocular
+            side_field[binoc_mask] = 3.0
+        except:
+            pass
+
+        eps = float(np.median(self.disc_radii)) * 0.1
+        positions = self.p + eps * self.d
+        pd = pv.PolyData(positions.astype(np.float32))
+        pd.point_data['vectors'] = self.d.astype(np.float32)
+        pd.point_data['radius'] = self.disc_radii.astype(np.float32)
+        pd.point_data['zones'] = side_field
+
+        discs = pd.glyph(geom=_disc_template(), orient='vectors', scale='radius', factor=1.2)
+
+        # 0: Gray, 1: Red (Left), 2: Blue (Right), 3: Purple (Binoc)
+        zone_colors = ['#e0e0e0', '#ff4b4b', '#4b70ff', '#9b3ddc']
+
+        act = self.plotter.add_mesh(
+            discs, scalars='zones',
+            cmap=zone_colors, clim=[-0.5, 3.5],
+            show_scalar_bar=True,
+            scalar_bar_args={
+                'title': 'Zones (Red:L, Blue:R, Purple:Binoc)', 'n_labels': 5,
+                'position_x': 0.70, 'position_y': 0.05,
+                'width': 0.28, 'height': 0.06, 'color': 'black',
+            },
+            ambient=0.4, diffuse=0.7,
+        )
+        self.actors_binocular.append(act)
+
     def _add_bigpanel(self) -> None:
         """Bottom-right panel (wide)."""
 
@@ -544,6 +585,9 @@ class EyeViewer:
         # Mode 3: wiring debugger
         if getattr(self.model, '_cartridges_wired', False) and self.R > 1:
             self._redraw_debugger()
+
+        # Mode 4: Binocular zone
+        self._add_binocular_view()
 
     ##
 
@@ -684,6 +728,7 @@ class EyeViewer:
         for a in self.actors_bundles:   a.SetVisibility(s == 0)
         for a in self.actors_debugger:  a.SetVisibility(s == 1)
         for a in self.actors_conflicts: a.SetVisibility(s == 2)
+        for a in self.actors_binocular: a.SetVisibility(s == 3)
 
     # Heatmap scalars (cached at init)
 
@@ -725,7 +770,7 @@ class EyeViewer:
             self.plotter.render()
 
         def cycle_bigpanel():
-            self.state_bigpanel = (self.state_bigpanel + 1) % 3
+            self.state_bigpanel = (self.state_bigpanel + 1) % 4
             label = self._BIGPANEL_LABELS[self.state_bigpanel]
             print(f"[B] showing: {label}")
             self._apply_bigpanel_visibility()
@@ -802,13 +847,13 @@ if __name__ == "__main__":
         saccade_smoothing_iterations=15,
     )
 
-    ra = CompoundEyeModel.from_file(
+    model = CompoundEyeModel.from_file(
         'species_models/drosophila_custom.npz',
         kernel=kernel, orientation=aligner,
     )
 
-    # ra = CompoundEyeModel.from_sphere(
+    # model = CompoundEyeModel.from_sphere(
     #     n=1600, kernel=kernel, orientation=aligner,
     # )
 
-    EyeViewer(ra, aligner=aligner).show()
+    EyeViewer(model, aligner=aligner).show()

@@ -150,6 +150,7 @@ class EyesBuffer:
                       neighbour_counts,
                       lens_indices,
                       chirality_neg,
+                      binocular_area
                       ) -> None:
         """
         Replace the entire rcpt_static_data['metadata'] with packed fields.
@@ -163,6 +164,7 @@ class EyesBuffer:
             neighbour_counts=neighbour_counts,
             lens_indices=lens_indices,
             chirality_neg=chirality_neg,
+            binocular_area=binocular_area,
         )
         self.rcpt_dirty = True
         self.rcpt_dirty_mask.fill(True)
