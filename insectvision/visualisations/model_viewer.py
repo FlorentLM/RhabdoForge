@@ -3,20 +3,10 @@ import pyvista as pv
 from scipy.spatial import Delaunay
 
 from insectvision.compound_eyes import CompoundEyeModel
-from insectvision.compound_eyes.kernel import drosophila_kernel
+from insectvision.compound_eyes.kernel import drosophila_kernel, RECEPTOR_PALETTE
 from insectvision.compound_eyes.orientation import BundlesAligner
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
 from insectvision.utils.math import project_to_stereo
-
-RECEPTOR_PALETTE = [
-    '#ffad13',  # R1
-    '#FF1C25',  # R2
-    '#880015',  # R3
-    '#8000ff',  # R4
-    '#008000',  # R5
-    '#0000ff',  # R6
-    '#aaa712',  # R7/8
-]
 
 CHIRALITY_NEG_COLOR = '#B95D21'
 CHIRALITY_POS_COLOR = '#FF9800'
