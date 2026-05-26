@@ -128,9 +128,6 @@ def main():
 
 
     # Run
-
-    start_time = context.current_wall_time
-    nb_frames = 0
     all_ommatidia_data = []
 
     if not HEADLESS:
@@ -146,8 +143,6 @@ def main():
             visual_output = renderer.step()
 
             context.draw(visual_output)  # draws to the viewport, also optional
-
-            nb_frames += 1
 
     else:
         # Headless and batched mode
@@ -172,8 +167,6 @@ def main():
             if visual_output is not None:
                 all_ommatidia_data.append(visual_output.per_cartridge)
 
-            nb_frames += 1
-
         # After the loop, flush() gets the last partial batch from async mode
         # (this is harmless in sync mode, it will just return an empty array)
         final_chunk = renderer.flush()  # TODO: This might actually be done automatically
@@ -181,9 +174,7 @@ def main():
         if final_chunk.size > 0:
             all_ommatidia_data.append(final_chunk)
 
-    total_time = context.current_wall_time - start_time
-
-    print(f"Ran for {nb_frames} frames in {total_time:.2f}s (avg. {nb_frames / total_time:.2f} fps).")
+    print(f"Ran for {context.frame_count} frames in {context.wall_time:.2f}s (avg. {context.frame_count / context.wall_time:.2f} fps).")
 
     if all_ommatidia_data:
         # In sync mode, this combines 10,000 arrays of shape (19362, 4)

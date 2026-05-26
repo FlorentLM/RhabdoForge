@@ -36,7 +36,6 @@ class Context:
         self._fps_limit = fps_limit if fps_limit is not None else 0
         self._interactive_initialised = False
         self._vsync = vsync
-        self._frame_times = deque(maxlen=60)    # for FPS tracking
 
         if not glfw.init():
             raise Exception("GLFW can't be initialized")
@@ -70,8 +69,11 @@ class Context:
         # Timing states
         self._last_wall_time: float = glfw.get_time()
         self._wall_dt: float = 0.0
+        self._total_wall_time: float = 0.0
         self._dt: float = 1e-12  # effective delta for biology/physics
         self._total_time: float = 0.0  # accumulated simulation time
+        self._frame_count: int = 0
+        self._frame_times = deque(maxlen=60)  # for FPS tracking
 
         self.time_step: Optional[float] = None  # None = variable (wall-clock), Float = fixed time resolution
 
@@ -138,6 +140,16 @@ class Context:
         """Total biological/simulated time elapsed."""
         return self._total_time
 
+    @property
+    def wall_time(self) -> float:
+        """Total real-world time elapsed since the context started ticking."""
+        return self._total_wall_time
+
+    @property
+    def frame_count(self) -> int:
+        """Total number of ticks/frames processed."""
+        return self._frame_count
+
     def tick(self) -> float:
         """
         Advance both clocks by one step.
@@ -148,6 +160,10 @@ class Context:
         now = glfw.get_time()
         self._wall_dt = now - self._last_wall_time
         self._last_wall_time = now
+
+        # Accumulate real world time
+        self._total_wall_time += self._wall_dt
+        self._frame_count += 1
 
         self._dt = self.time_step if self.time_step is not None else self._wall_dt
 
