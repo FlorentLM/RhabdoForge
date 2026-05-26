@@ -5,6 +5,24 @@ from insectvision.compound_eyes import Eye
 
 
 class HassensteinReichardtEMD:
+    """
+    Elementary Motion Detector (based on Hassenstein-Reichardt correlator), with ON/OFF motion pathways.
+
+    - Photoreceptors: Uses pooled R1-R6 peripheral signals (neural superposition).
+    - Lamina L1/L2: High-pass filtering for luminance adaptation and contrast extraction.
+    - Rectification: Splits contrast into ON (brighter) and OFF (darker) parallel pathways.
+    - Medulla (T4/T5 cells): Delay lines and cross-multiplication.
+        T4 cells correlate ON signals, T5 cells correlate OFF signals.
+    - Output: Recombines T4 and T5 responses into a directionally selective motion vector.
+
+    Args:
+        eye (Eye): The single eye to process.
+        direction (ArrayLike): The motion direction to correlate against
+        delay_hz (float): Cutoff frequency for the low-pass delay filter (Medulla delay line).
+        highpass_hz (float): Cutoff frequency for the LMC adaptation filter.
+        coordinate (str): 'spherical' or 'cartesian' for the direction parameter.
+    """
+
     def __init__(self,
         eye: Eye,
         direction: ArrayLike,
