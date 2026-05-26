@@ -6,7 +6,6 @@ from matplotlib.gridspec import GridSpec
 
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.compound_eyes import CompoundEyeModel
-from insectvision.engine.world_utils import WORLD_BACKWARD
 from insectvision.renderers import Raytracer
 from insectvision.utils import Colormap
 from insectvision.interactive.debug import AxesGizmo, DebugGrid, DebugBox
@@ -180,8 +179,8 @@ for mode in modes:
 
         dt = context.dt
 
-        left_motion = left_emd.process(visual_output.per_lens, dt)
-        right_motion = right_emd.process(visual_output.per_lens, dt)
+        left_motion = left_emd.process(visual_output, dt)
+        right_motion = right_emd.process(visual_output, dt)
 
         mean_left = float(np.mean(left_motion))
         mean_right = float(np.mean(right_motion))

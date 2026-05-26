@@ -2,7 +2,7 @@ import math
 import numpy as np
 import matplotlib.pyplot as plt
 
-from insectvision.compound_eyes.kernel import drosophila_kernel
+from insectvision.compound_eyes.kernel import drosophila_kernel, RECEPTOR_PALETTE
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.renderers import Raytracer
@@ -22,6 +22,7 @@ BAR_LENGTH = 10.0       # metres
 DISTANCE= 2.0           # metres
 
 # Two bars:
+# BAR_SEPARATION = 0.10
 BAR_SEPARATION = 0.14      # 4.01° centre-to-centre → 2.86° gap
 # BAR_SEPARATION = 0.15      # 4.30° centre-to-centre → 3.15° gap
 # BAR_SEPARATION = 0.16      # 4.58° centre-to-centre → 3.43° gap
@@ -132,7 +133,8 @@ scene.add_instance(bar_high)
 model = CompoundEyeModel.from_file(EYE_MODEL_PATH, kernel=drosophila_kernel())
 model.scale(1e-6)
 with model.unlock(receptors=True):
-    model.receptors.tau_membrane = 0.012
+    # model.receptors.tau_membrane = 0.012
+    model.receptors.tau_membrane = 0.0
 
 agent = Agent(position=(0.0, 0.0, 0.0))
 
@@ -170,32 +172,33 @@ with model.unlock(lenses=True):
 # --------------------------------------------------------------------------
 
 print_stim_geometry()
-band_lenses = pick_ommatidia(model, agent)
+selected_lenses = pick_ommatidia(model, agent)
 
-if len(band_lenses) == 0:
+if len(selected_lenses) == 0:
     raise RuntimeError("Forward band is empty. Widen the cone / strip.")
-renderer.selected_lenses = band_lenses[:min(10, len(band_lenses))].tolist()
+renderer.selected_lenses = selected_lenses[:min(10, len(selected_lenses))].tolist()
 
-print(f"R7/8 acceptance: {np.degrees(model.rcpt_dynamic_data['acc_axes'][band_lenses[0] * 7 + 6])}°")
+print(f"R7/8 acceptance: {np.degrees(model.rcpt_dynamic_data['acc_axes'][selected_lenses[0] * 7 + 6])}°")
 
 results = {
-    'time':       [],
-    'agent_y':    [],
-    'actuation':  [],
-    'L2_cart':    [],
-    'R78_cart':   [],
-    'L2_lens':    [],
-    'motion_dir': [],
+    'time':             [],
+    'agent_y':          [],
+    'actuation':        [],
+    'L2_cart':          [],
+    'R78_cart':         [],
+    'apposition_pool':  [],
+    'indiv_lens':       [],
+    'motion_dir':       [],
 }
 
 print(f"\nRunning for {MAX_TIME:.1f}s: {NUM_CYCLES_PER_PHASE} cycles OFF, then {NUM_CYCLES_PER_PHASE} cycles ON ...")
 
 while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=True):
+
     context.input()
     if not context.hud.show:
         context.hud.show = True
 
-    dt = context.dt
     sim_time = context.total_time
 
     cycle_count = int(sim_time // CYCLE_DURATION)
@@ -215,19 +218,24 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_d
     agent.position = (0.0, ay, 0.0)
     visual_output = renderer.step()
 
-    band_cart = visual_output.per_cartridge[band_lenses]
-    band_lens = visual_output.per_lens[band_lenses]
+    radiance_cart = visual_output.per_cartridge[selected_lenses, ..., :3].mean(axis=-1)
+    radiance_lens = visual_output.per_lens[selected_lenses, ..., :3].mean(axis=-1)
 
-    L2_cart  = band_cart[:, :6, 3].sum(axis=1).mean()
-    R78_cart = band_cart[:,  6, 3].mean()
-    L2_lens  = band_lens[:, :6, 3].sum(axis=1).mean()
+    # Calculate LMC (Cartridge Pool) and Central Cell
+    L2_cart = radiance_cart[:, :6].mean(axis=1).mean() * 6.0
+    R78_cart = radiance_cart[:, 6].mean()
+
+    # Calculate evolutionary controls
+    apposition_pool = radiance_lens[:, :6].mean(axis=1).mean() * 6.0
+    indiv_lens = radiance_lens.mean(axis=0)
 
     results['time'].append(sim_time)
     results['agent_y'].append(ay)
     results['actuation'].append(bool(renderer.actuation))
     results['L2_cart'].append(L2_cart)
     results['R78_cart'].append(R78_cart)
-    results['L2_lens'].append(L2_lens)
+    results['apposition_pool'].append(apposition_pool)
+    results['indiv_lens'].append(indiv_lens)
     results['motion_dir'].append(motion_dir)
 
     context.draw(visual_output)
@@ -242,30 +250,58 @@ agent_y = np.array(results['agent_y'])
 act = np.array(results['actuation'])
 L2_cart = np.array(results['L2_cart'])
 R78_cart = np.array(results['R78_cart'])
-L2_lens = np.array(results['L2_lens'])
+apposition_pool = np.array(results['apposition_pool'])
+indiv_lens = np.array(results['indiv_lens'])
 mdir = np.array(results['motion_dir'])
 
-fig, axs = plt.subplots(2, 2, figsize=(13, 9), sharex=True)
+fig, axs = plt.subplots(4, 2, figsize=(14, 16), sharex=True)
+
 
 def plot_sweep(ax, data, direction, title):
     mask = (mdir == direction)
     ax.scatter(agent_y[mask & ~act], data[mask & ~act], c='blue', s=1, alpha=0.5, label='OFF')
-    ax.scatter(agent_y[mask &  act], data[mask &  act], c='red',  s=1, alpha=0.5, label='ON')
+    ax.scatter(agent_y[mask & act], data[mask & act], c='red', s=1, alpha=0.5, label='ON')
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
 
+
+def plot_individual_receptors(ax, direction, title):
+    """Plots lines for individual receptors to show their spatial staggering."""
+    mask = (mdir == direction) & ~act  # Plotting OFF only to avoid clutter
+    y_vals = agent_y[mask]
+    sort_idx = np.argsort(y_vals)
+    y_sorted = y_vals[sort_idx]
+
+    for i in range(7):
+        label = f'R{i + 1}' if i < 6 else 'R7/8'
+        r_vals = indiv_lens[mask, i][sort_idx]
+        ax.plot(y_sorted, r_vals, color=RECEPTOR_PALETTE[i], label=label, alpha=0.8, lw=1.5)
+
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+
+
 # Column 0: Bar moving up (agent moving down)
-plot_sweep(axs[0, 0], R78_cart, 1, "R7/8: Bar moving UP")
-plot_sweep(axs[1, 0], L2_cart,  1, "L2 Proxy: Bar moving UP")
-axs[0, 0].set_ylabel("Signal intensity")
-axs[1, 0].set_ylabel("Signal intensity")
-axs[1, 0].set_xlabel("Agent Y position (m)")
+plot_sweep(axs[0, 0], R78_cart, 1, "Row 1 | R7/8 (Central Cell): Bar UP")
+plot_sweep(axs[1, 0], L2_cart, 1, "Row 2 | Neural Superposition (Cartridge Pool): Bar UP")
+plot_sweep(axs[2, 0], apposition_pool, 1, "Row 3 | Apposition Proxy (Ommatidium Pool): Bar UP")
+plot_individual_receptors(axs[3, 0], 1, "Row 4 | Individual Receptors (Physical Lens) OFF-only: Bar UP")
+
+axs[0, 0].set_ylabel("Signal Intensity")
+axs[1, 0].set_ylabel("Signal Intensity")
+axs[2, 0].set_ylabel("Signal Intensity")
+axs[3, 0].set_ylabel("Signal Intensity")
+axs[3, 0].set_xlabel("Agent Y position (m)")
 
 # Column 1: Bar moving down (agent moving up)
-plot_sweep(axs[0, 1], R78_cart, -1, "R7/8: Bar moving DOWN")
-plot_sweep(axs[1, 1], L2_cart,  -1, "L2 Proxy: Bar moving DOWN")
-axs[1, 1].set_xlabel("Agent Y position (m)")
+plot_sweep(axs[0, 1], R78_cart, -1, "Row 1 | R7/8 (Central Cell): Bar DOWN")
+plot_sweep(axs[1, 1], L2_cart, -1, "Row 2 | Neural Superposition (Cartridge Pool): Bar DOWN")
+plot_sweep(axs[2, 1], apposition_pool, -1, "Row 3 | Apposition Proxy (Ommatidium Pool): Bar DOWN")
+plot_individual_receptors(axs[3, 1], -1, "Row 4 | Individual Receptors (Physical Lens) OFF-only: Bar DOWN")
+
+axs[3, 1].set_xlabel("Agent Y position (m)")
 axs[0, 1].legend(loc='upper right', markerscale=5)
+axs[3, 1].legend(loc='upper right', fontsize=9)
 
 plt.tight_layout()
 plt.show()
