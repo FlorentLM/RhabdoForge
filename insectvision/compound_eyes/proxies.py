@@ -1575,6 +1575,11 @@ class VisualOutput:
         return self._data.reshape(self._N, self._R, 4)
 
     @property
+    def per_ommatidium(self) -> np.ndarray:
+        """Alias to per_lens."""
+        return self._data.reshape(self._N, self._R, 4)
+
+    @property
     def per_cartridge(self) -> np.ndarray:
         """Returns (N, R, 4) array of all receptor outputs, per cartridge."""
         if not self._model._cartridges_wired:
