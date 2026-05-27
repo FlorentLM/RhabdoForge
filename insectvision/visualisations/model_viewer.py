@@ -247,6 +247,10 @@ class EyeViewer:
         self.actors_conflicts = []
         self.actors_debugger = []
         self.actors_binocular = []
+        self.state_heatmap = 0  # 0: Collinearity, 1: Smoothness
+        self.actors_collinearity = []
+        self.actors_smoothness = []
+        self.actors_ioa = []
 
         self.state_alignment_smoothed = True
         self.state_saccade_smoothed = True
@@ -276,12 +280,9 @@ class EyeViewer:
             ((0, 1), "Alignment Axes  [A]", self._add_alignment_panel),
             ((0, 2), "Major Axes", self._add_major_axis_panel),
             ((0, 3), "Saccade Axes  [S]", self._add_saccade_panel),
-            ((1, 0), "Flow / Alignment collinearity",
-             self._add_collinearity_panel),
-            ((1, 1), "Saccade smoothing consistency",
-             self._add_smoothness_panel),
-            ((1, 2), "Bundles / Wiring / Conflicts  [B]  [N]",
-             self._add_bigpanel),
+            ((1, 0), "Alignment Heatmaps  [H]", self._add_heatmaps),
+            ((1, 1), "IOA", self._add_ioa_panel),
+            ((1, 2), "Bundles / Wiring / Conflicts  [B]  [N]", self._add_bigpanel),
         ]
 
         for (row, col), title, builder in panel_setups:
@@ -292,6 +293,7 @@ class EyeViewer:
         # visibility states + linking
         self._apply_alignment_visibility()
         self._apply_saccade_visibility()
+        self._apply_heatmap_visibility()
         self._apply_bigpanel_visibility()
 
         self.plotter.link_views()
@@ -471,15 +473,39 @@ class EyeViewer:
             sbar_title='Collinearity',
         )
 
-    def _add_smoothness_panel(self) -> None:
-        """Per-lens |raw saccade . smoothed saccade|, as a coloured surface."""
-        if self.smoothness is None:
-            self.plotter.add_text("(needs R > 1)", position='lower_left',
-                                  font_size=8, color='gray')
+    def _add_heatmaps(self) -> None:
+
+        if self.R <= 1:
             return
+
+        # Collinearity mesh
+        m_col = self.lens_data_mesh.copy()
+        m_col.point_data['val'] = self.collinearity
+        act_col = self.plotter.add_mesh(
+            m_col, scalars='val', cmap='inferno', clim=[0, 1],
+            show_scalar_bar=True, smooth_shading=True,
+            scalar_bar_args={'title': 'Optic flow', 'position_x': 0.78, 'width': 0.18}
+        )
+        self.actors_collinearity.append(act_col)
+
+        # Smoothness mesh
+        m_sm = self.lens_data_mesh.copy()
+        m_sm.point_data['val'] = self.smoothness
+        act_sm = self.plotter.add_mesh(
+            m_sm, scalars='val', cmap='viridis', clim=[0.9, 1.0],
+            show_scalar_bar=True, smooth_shading=True,
+            scalar_bar_args={'title': 'Saccades', 'position_x': 0.78, 'width': 0.18}
+        )
+        self.actors_smoothness.append(act_sm)
+
+    def _add_ioa_panel(self) -> None:
+        """Display the local Interommatidial Angle (sampling density)."""
+
+        ioa_deg = np.degrees(self.model.lenses.ioa_angles[:, 0]) # minor IOA only
+
         self._add_eye_surface(
-            scalars=self.smoothness, cmap='inferno', clim=[0.9, 1.0],
-            sbar_title='Smoothness',
+            scalars=ioa_deg, cmap='plasma_r',
+            sbar_title='IOA (deg)',
         )
 
     def _add_binocular_view(self) -> None:
@@ -718,6 +744,19 @@ class EyeViewer:
             elif 'Zones' in title:
                 bar.SetVisibility(s == 3)
 
+    def _apply_heatmap_visibility(self) -> None:
+        h = self.state_heatmap
+        for a in self.actors_collinearity:
+            a.SetVisibility(h == 0)
+        for a in self.actors_smoothness:
+            a.SetVisibility(h == 1)
+
+        for title, bar in self.plotter.scalar_bars.items():
+            if 'Collinearity' in title:
+                bar.SetVisibility(h == 0)
+            if 'Smoothness' in title:
+                bar.SetVisibility(h == 1)
+
     # Heatmap scalars (cached at init)
 
     def _compute_collinearity(self) -> np.ndarray | None:
@@ -757,6 +796,12 @@ class EyeViewer:
             self._update_saccade_hint()
             self.plotter.render()
 
+        def toggle_heatmap():
+            self.state_heatmap = (self.state_heatmap + 1) % 2
+            self._apply_heatmap_visibility()
+            self._update_heatmap_hint()
+            self.plotter.render()
+
         def cycle_bigpanel():
             self.state_bigpanel = (self.state_bigpanel + 1) % 4
             label = self._BIGPANEL_LABELS[self.state_bigpanel]
@@ -773,6 +818,7 @@ class EyeViewer:
             self._redraw_debugger()
             self.plotter.render()
 
+        self.plotter.add_key_event('h', toggle_heatmap)
         self.plotter.add_key_event('a', toggle_alignment)
         self.plotter.add_key_event('s', toggle_saccade)
         self.plotter.add_key_event('b', cycle_bigpanel)
@@ -780,6 +826,7 @@ class EyeViewer:
 
         self._update_alignment_hint()
         self._update_saccade_hint()
+        self._update_heatmap_hint()
         self._update_bigpanel_hint()
 
     # Hint helpers
@@ -798,6 +845,10 @@ class EyeViewer:
     def _update_saccade_hint(self) -> None:
         state = 'smoothed' if self.state_saccade_smoothed else 'raw'
         self._set_hint((0, 3), 'hint_s', f'[S] saccade: {state}')
+
+    def _update_heatmap_hint(self) -> None:
+        mode = 'Collinearity' if self.state_heatmap == 0 else 'Smoothness'
+        self._set_hint((1, 0), 'hint_h', f'[H] heatmap: {mode}')
 
     def _update_bigpanel_hint(self) -> None:
         label = self._BIGPANEL_LABELS[self.state_bigpanel]
