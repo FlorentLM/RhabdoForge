@@ -604,13 +604,10 @@ class EyeViewer:
     # Wiring debugger
 
     def _redraw_debugger(self, target_idx: int = None) -> None:
-        """Clear previous debugger actors and draw a new (random) cartridge."""
-        # TODO: These annoying dots still show up :(
 
         if self._debugger_subplot is not None:
             self.plotter.subplot(*self._debugger_subplot)
 
-        # Clear previous
         for act in self.actors_debugger:
             self.plotter.remove_actor(act)
         self.actors_debugger.clear()
@@ -618,104 +615,79 @@ class EyeViewer:
         if not getattr(self.model, '_cartridges_wired', False) or self.R <= 1:
             return
 
-        if target_idx is None:
-            target_idx = int(np.random.randint(0, self.N))
+        target_idx = int(target_idx if target_idx is not None else np.random.randint(0, self.N))
 
-        omm = self.model.lenses[target_idx]
-        eye = omm.eye
-        target_pos = omm.position
-
-        # Find spatial neighbours within this lens's eye
-        k_nb = min(20, len(eye))
-        result = eye.neighbours(points=target_pos[None, :], k=k_nb)
-        neighbours = result.indices[0]
-        dists = result.distances[0]
-
-        # Cartridge partners for this lens
+        k_nb = min(40, len(self.model.eye(self.model.lenses[target_idx].eye_index[0])))
+        result = self.model.eye(self.model.lenses[target_idx].eye_index[0]).neighbours(
+            points=self.p[target_idx][None, :], k=k_nb)
+        nb_indices = result.indices[0]
         partners = self.model.cartridges[target_idx].sources
-        partner_to_type = {
-            int(lens_idx): r
-            for r, lens_idx in enumerate(partners)
-            if int(lens_idx) != target_idx and int(lens_idx) >= 0
-        }
 
-        # Define rings by distance (skip target itself)
-        nb_dists = dists[1:]
-        nb_idx = neighbours[1:]
-        if len(nb_dists) > 0:
-            closest = nb_dists[0]
-            ring1_mask = nb_dists <= closest * 1.5
-            ring1 = nb_idx[ring1_mask]
-            rest = nb_idx[~ring1_mask]
-            ring2 = rest[:12]
-            outer = rest[12:]
-            ioa_estimate = float(np.mean(nb_dists[ring1_mask]))
-        else:
-            ring1 = ring2 = outer = np.array([], dtype=np.intp)
-            ioa_estimate = 0.01
+        ioa_estimate = float(np.mean(result.distances[0][1:7])) if k_nb > 1 else 0.01
+        d_rad = ioa_estimate * 0.45
 
-        disc_rad = ioa_estimate * 0.4
+        # Background lenses
+        bg_mask = ~np.isin(nb_indices, partners) & (nb_indices != target_idx)
+        if np.any(bg_mask):
+            pd_bg = pv.PolyData(self.p[nb_indices[bg_mask]])
+            pd_bg.point_data['vec'] = self.d[nb_indices[bg_mask]]
+            self.actors_debugger.append(self.plotter.add_mesh(
+                pd_bg.glyph(geom=_disc_template(), orient='vec', factor=d_rad),
+                color='black', opacity=0.1
+            ))
 
-        ring_groups = [
-            ([target_idx], '#FFD700', 0.7),    # home
-            (ring1.tolist(), '#000000', 0.5),  # ring 1
-            (ring2.tolist(), '#000000', 0.2),  # ring 2
-            (outer.tolist(), '#000000', 0.04), # outer
-        ]
+        # Cartridge members
+        member_lenses = []
+        member_scalars = []
+        label_pts, label_txt = [], []
 
-        # Coloured disc per neighbour, partners get a receptor-coloured disc
-        for idx_list, default_color, default_alpha in ring_groups:
-            for idx in idx_list:
-                idx = int(idx)
-                disc = pv.Disc(center=self.p[idx], normal=self.d[idx],
-                               inner=0, outer=disc_rad, c_res=20)
-                if idx in partner_to_type:
-                    color = RECEPTOR_PALETTE[partner_to_type[idx] % len(RECEPTOR_PALETTE)]
-                    alpha = 0.75
-                    width = 5.0
-                else:
-                    color = default_color
-                    alpha = default_alpha
-                    width = 1.0
+        for r_type, l_idx in enumerate(partners):
+            l_idx = int(l_idx)
+            if l_idx < 0:
+                continue
+            member_lenses.append(l_idx)
+            member_scalars.append(r_type)
+            if l_idx != target_idx:
+                label_pts.append(self.p[l_idx])
+                label_txt.append(f"R{r_type + 1}")
 
-                act = self.plotter.add_mesh(
-                    disc, color=color, opacity=alpha,
-                    line_width=width, edge_color='black',
-                )
-                self.actors_debugger.append(act)
+                # Wiring lines
+                line = pv.Line(self.p[target_idx], self.p[l_idx])
+                self.actors_debugger.append(
+                    self.plotter.add_mesh(line, color=RECEPTOR_PALETTE[r_type], line_width=2, opacity=0.4))
 
-        labels_pos, labels = [], []
-        for r, lens_idx in enumerate(partners):
-            if int(lens_idx) != target_idx and int(lens_idx) >= 0:
-                labels.append(f"R{r + 1}")
-                labels_pos.append(self.p[int(lens_idx)])
-        if labels:
-            act = self.plotter.add_point_labels(
-                labels_pos, labels, font_size=14, text_color='black',
-                shape_color='white', shape_opacity=0.6,
-            )
-            self.actors_debugger.append(act)
+        if member_lenses:
+            pd_mem = pv.PolyData(self.p[member_lenses])
+            pd_mem.point_data['vec'] = self.d[member_lenses]
+            pd_mem.point_data['r_type'] = np.array(member_scalars)
 
-        # Coloured receptor dots on the home ommatidium
+            glyph_mem = pd_mem.glyph(geom=_disc_template(), orient='vec', factor=d_rad)
+            self.actors_debugger.append(self.plotter.add_mesh(
+                glyph_mem, scalars='r_type', cmap=RECEPTOR_PALETTE,
+                clim=[0, len(RECEPTOR_PALETTE) - 1], show_scalar_bar=False,
+                ambient=0.3, diffuse=0.8, show_edges=False, opacity=0.8
+            ))
+
+        # Local rhabdomere bundle
         offsets = receptor_tip_offsets(self.model)[target_idx]
-        max_off = float(np.max(np.linalg.norm(offsets, axis=1)))
-        if max_off > 1e-8:
-            dot_scale = disc_rad * 0.7 / max_off
-            for r in range(self.R):
-                color = RECEPTOR_PALETTE[r % len(RECEPTOR_PALETTE)]
-                if np.linalg.norm(offsets[r]) > 1e-10:
-                    dot_pos = target_pos + offsets[r] * dot_scale
-                else:
-                    dot_pos = target_pos
-                act = self.plotter.add_points(
-                    np.array([dot_pos]), color=color, point_size=12,
-                    render_points_as_spheres=True, opacity=0.95,
-                    smooth_shading=True,
-                )
-                self.actors_debugger.append(act)
+        tip_scale = (self.r_sphere * 0.05) / np.max(np.linalg.norm(offsets, axis=1))
+        bundle_origin = self.p[target_idx] + (self.d[target_idx] * d_rad * 0.1)
 
-        for a in self.actors_debugger:
-            a.SetVisibility(self.state_bigpanel == 1)
+        for r_type in range(self.R):
+            tip_pos = bundle_origin + offsets[r_type] * tip_scale
+            self.actors_debugger.append(self.plotter.add_mesh(
+                pv.Sphere(radius=d_rad * 0.15, center=tip_pos),
+                color=RECEPTOR_PALETTE[r_type], lighting=True
+            ))
+
+        # Labels
+        if label_pts:
+            self.actors_debugger.append(self.plotter.add_point_labels(
+                label_pts, label_txt, font_size=15, show_points=False,
+                shape_color='white', shape_opacity=0.8
+            ))
+
+        self._apply_bigpanel_visibility()
 
     ##
 
@@ -847,10 +819,8 @@ if __name__ == "__main__":
     head_ptich = np.deg2rad(10.1)
     optic_flow = np.array([0.0, np.sin(head_ptich), np.cos(head_ptich)])
 
-    kernel = drosophila_kernel()
-
     aligner = BundlesAligner(
-        flow_direction=WORLD_BACKWARD,
+        flow_direction=optic_flow,
         diagonal_strength=1.0,
         diagonal_angle_deg=45.0,
         alignment_smoothing_iterations=4,
@@ -859,16 +829,13 @@ if __name__ == "__main__":
 
     model = CompoundEyeModel.from_file(
         'species_models/drosophila_custom.npz',
-        kernel=kernel, orientation=aligner,
+        kernel=drosophila_kernel(), orientation=aligner,
         alt_wiring_mode=False
     )
 
     # model = CompoundEyeModel.from_sphere(
-    #     n=1600, kernel=kernel, orientation=aligner,
+    #     n=1600, kernel=drosophila_kernel(), orientation=aligner,
     #     alt_wiring_mode=False
     # )
-
-
-    print(f'Unwired receptors: {model.unwired_count}')
 
     EyeViewer(model, aligner=aligner).show()
