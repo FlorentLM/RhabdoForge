@@ -512,7 +512,7 @@ class EyeViewer:
         act = self.plotter.add_mesh(
             discs, scalars='zones',
             cmap=zone_colors, clim=[-0.5, 3.5],
-            show_scalar_bar=False,
+            show_scalar_bar=True,
             scalar_bar_args={
                 'title': 'Zones (Red:L, Blue:R, Purple:Binoc)', 'n_labels': 5,
                 'position_x': 0.70, 'position_y': 0.05,
@@ -712,6 +712,12 @@ class EyeViewer:
         for a in self.actors_conflicts: a.SetVisibility(s == 2)
         for a in self.actors_binocular: a.SetVisibility(s == 3)
 
+        for title, bar in self.plotter.scalar_bars.items():
+            if 'Conflicts' in title:
+                bar.SetVisibility(s == 2)
+            elif 'Zones' in title:
+                bar.SetVisibility(s == 3)
+
     # Heatmap scalars (cached at init)
 
     def _compute_collinearity(self) -> np.ndarray | None:
@@ -754,7 +760,7 @@ class EyeViewer:
         def cycle_bigpanel():
             self.state_bigpanel = (self.state_bigpanel + 1) % 4
             label = self._BIGPANEL_LABELS[self.state_bigpanel]
-            print(f"[B] showing: {label}")
+
             self._apply_bigpanel_visibility()
             self._update_bigpanel_hint()
             self.plotter.render()
