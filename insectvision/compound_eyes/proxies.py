@@ -565,6 +565,12 @@ class ReceptorView:
         return get_metadata_field(meta, 'rcpt_type').astype(np.intp)
 
     @property
+    def is_wired(self) -> np.ndarray:
+        """(M,) bool mask: True if this receptor is part of a valid cartridge."""
+        meta = self._model.rcpt_static_data['metadata'][self._gi]
+        return get_metadata_field(meta, 'is_wired').astype(bool)
+
+    @property
     def eye_index(self) -> np.ndarray:
         meta = self._model.rcpt_static_data['metadata'][self._gi]
         return get_metadata_field(meta, 'eye_id').astype(np.intp)
@@ -3013,18 +3019,24 @@ class CompoundEyeModel:
         self._finalize_wiring(cartridge_map)
 
     def _finalize_wiring(self, cartridge_map: np.ndarray) -> None:
+
         N = self.lens_count
         R = self.receptors_per_lens
+
         center = self._kernel.center_index
         periph = np.array([i for i in range(R) if i != center], dtype=np.intp)
 
         self._buffer.cartridge_map = cartridge_map
 
-        # GPU buffer expects uint32. Reserve 0xFFFFFFFF for unwired   # TODO: The datatype and metadata pack/unpack function need to support this officially
-        UNWIRED_SRC = np.uint32(0xFFFFFFFF)
         cs_signed = cartridge_map * R + np.arange(R)
-        cs = np.where(cartridge_map < 0, UNWIRED_SRC, cs_signed).astype(np.uint32)
+        unwired_mask = (cartridge_map < 0)
+
+        UNWIRED_SRC = np.uint32(0xFFFFFFFF)
+        cs = np.where(unwired_mask, UNWIRED_SRC, cs_signed).astype(np.uint32)
         self._buffer.rcpt_static_data['cartridge_src'] = cs.flatten()
+
+        is_wired_bits = (~unwired_mask).astype(np.uint32).flatten()
+        self._buffer.set_metadata('is_wired', is_wired_bits)
 
         self._buffer.cartridges_wired = True
         self._buffer.lens_dirty = True

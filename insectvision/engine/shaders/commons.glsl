@@ -63,12 +63,17 @@ struct ReceptorDynamic {
     vec2  acc_axes;     vec2  pad;
 }; // 32 bytes
 
+const uint RECEPTOR_UNWIRED = 0xFFFFFFFFu;
 
 // Metadata Unpacking
-uint unpack_eye_id(uint m)        { return m & 7u; }
-uint unpack_receptor_type(uint m) { return (m >> 3u) & 15u; }
-uint unpack_lens_id(uint m)       { return (m >> 11u) & 65535u; }
-float unpack_chirality(uint m)    { return ((m >> 27u) & 1u) == 1u ? -1.0 : 1.0; }
+uint  unpack_eye_id(uint m)          { return m & 7u; }
+uint  unpack_receptor_type(uint m)   { return (m >> 3u) & 15u; }
+uint  unpack_lens_id(uint m)         { return (m >> 11u) & 65535u; }
+float unpack_chirality(uint m)       { return ((m >> 27u) & 1u) == 1u ? -1.0 : 1.0; }
+uint  unpack_neighbour_count(uint m) { return (m >> 7u) & 15u; }
+bool  unpack_binocularity(uint m)    { return ((m >> 28u) & 1u) == 1u; }
+bool  unpack_wiring_valid(uint m)    { return ((m >> 29u) & 1u) == 1u; }
+
 
 vec4 unpack_color(uint packed_color) {
     return vec4(float(packed_color & 255u) / 255.0,
