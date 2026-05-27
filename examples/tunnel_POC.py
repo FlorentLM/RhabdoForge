@@ -25,7 +25,7 @@ class RunLog:
     yaw: List[float] = field(default_factory=list)
 
 
-def random_tunnel_start(tunnel_width: float, tunnel_height: float, margin_pct: float = 0.25, randomise_height=False):
+def random_tunnel_start(tunnel_width: float, tunnel_height: float, margin_pct: float = 0.5, randomise_height=False):
     margin_pct = 1.0 - np.clip(margin_pct, 0.0, 1.0)
     start_x = (np.random.rand() - 0.5) * (tunnel_width * margin_pct)
     start_y = np.random.rand() * (tunnel_height * margin_pct) if randomise_height else (tunnel_height * margin_pct) / 2.0
@@ -34,7 +34,8 @@ def random_tunnel_start(tunnel_width: float, tunnel_height: float, margin_pct: f
 
 ## Setup test environment
 
-context = Context(window_size=(1280, 720), fps_limit=None, vsync=False)
+context = Context(window_size=(1280, 720))
+context.mouse_captured = False
 
 scene = Scene(background_color=(0.15, 0.15, 0.3))
 scene.add_skybox('assets/textures/bright_day_nosun')
@@ -64,7 +65,7 @@ scene.add_instance(left_wall)
 v_right, uv_right, idx_right = plane_geom(
     [w/2.0, 0.0, 0.0], [w/2.0,  h, 0.0], [w/2.0,  h, -l], [w/2.0, 0.0, -l]
 )
-right_pattern = checkerboard_texture(*texture_res, block_size=block_size, ratio=checkerboard_ratio)
+right_pattern = checkerboard_texture(*texture_res, block_size=block_size * 4, ratio=checkerboard_ratio)
 right_wall = Asset.from_arrays(
     name='right_wall',
     vertices=v_right,
@@ -112,8 +113,7 @@ model.scale(1e-6)
 with model.unlock(receptors=True):
     model.receptors.tau_membrane = 0.012
 
-left_eye = model.eye(0)
-right_eye = model.eye(1)
+left_eye, right_eye = model.eyes
 
 agent = Agent()
 
@@ -171,7 +171,6 @@ for mode in modes:
     flight_speed = 3.5 # m/s
 
     while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
-        context.hud.show = False
 
         context.input()
 
@@ -217,7 +216,7 @@ for mode in modes:
         # Set overlay to display optic flow
         renderer.set_overlay(
             {left_eye: left_motion, right_eye: right_motion},
-            colormap=Colormap.Diverging, compression=1.0
+            colormap=Colormap.Diverging, compression=2.0
         )
         context.draw()
 

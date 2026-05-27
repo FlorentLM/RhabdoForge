@@ -5,7 +5,7 @@ from scipy.spatial import Delaunay
 from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.compound_eyes.kernel import drosophila_kernel, RECEPTOR_PALETTE
 from insectvision.compound_eyes.orientation import BundlesAligner
-from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
+from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD
 from insectvision.utils.math import project_to_stereo
 
 CHIRALITY_NEG_COLOR = '#B95D21'
@@ -221,8 +221,18 @@ class EyeViewer:
 
         if self.R > 1 and getattr(self.model, '_cartridges_wired', False):
             c_field = np.zeros(self.N, dtype=np.float32)
-            c_field[self.model.donation_conflicts] += 1.0
-            c_field[self.model.receiving_conflicts] += 2.0
+
+            # Unwired (voluntary edge drop / slack)
+            unwired_mask = self.model.unwired_slots.any(axis=1)
+            c_field[unwired_mask] = 1.0
+
+            # True conflicts override unwired status (2, 3, 4)
+            don = self.model.donation_conflicts
+            rcv = self.model.receiving_conflicts
+            c_field[don] = 2.0
+            c_field[rcv] = 3.0
+            c_field[don & rcv] = 4.0
+
             self.conflicts_field = c_field
         else:
             self.conflicts_field = None
@@ -566,17 +576,17 @@ class EyeViewer:
                              scale='radius', factor=1.1)
 
             # Discrete colormap:
-            # 0: Light gray (OK), 1: Yellow (Donation), 2: Cyan (Receiving), 3: Red (Both)
-            cmap_colors = ['#e0e0e0', '#f1c40f', '#00bcd4', '#e74c3c']
+            # 0: Light gray (OK), 1: Blue (Unwired), 2: Yellow (Donation), 3: Cyan (Receiving), 4: Red (Both)
+            cmap_colors = ['#e0e0e0', '#4287f5', '#f1c40f', '#00bcd4', '#e74c3c']
 
             act = self.plotter.add_mesh(
                 discs, scalars='conflicts',
-                cmap=cmap_colors, clim=[-0.5, 3.5],
+                cmap=cmap_colors, clim=[-0.5, 4.5],
                 show_scalar_bar=True,
                 scalar_bar_args={
-                    'title': 'Conflicts (Gray:OK Yellow:Don Cyan:Rcv Red:Both)', 'n_labels': 0,
-                    'position_x': 0.70, 'position_y': 0.05,
-                    'width': 0.28, 'height': 0.06, 'color': 'black',
+                    'title': 'Conflicts (Gray:OK Blue:Drop Yel:Don Cy:Rcv Red:Both)', 'n_labels': 0,
+                    'position_x': 0.65, 'position_y': 0.05,
+                    'width': 0.33, 'height': 0.06, 'color': 'black',
                 },
                 ambient=0.4, diffuse=0.7,
             )
@@ -626,7 +636,7 @@ class EyeViewer:
         partner_to_type = {
             int(lens_idx): r
             for r, lens_idx in enumerate(partners)
-            if int(lens_idx) != target_idx
+            if int(lens_idx) != target_idx and int(lens_idx) >= 0
         }
 
         # Define rings by distance (skip target itself)
@@ -676,7 +686,7 @@ class EyeViewer:
 
         labels_pos, labels = [], []
         for r, lens_idx in enumerate(partners):
-            if int(lens_idx) != target_idx:
+            if int(lens_idx) != target_idx and int(lens_idx) >= 0:
                 labels.append(f"R{r + 1}")
                 labels_pos.append(self.p[int(lens_idx)])
         if labels:
@@ -840,7 +850,7 @@ if __name__ == "__main__":
     kernel = drosophila_kernel()
 
     aligner = BundlesAligner(
-        flow_direction=optic_flow,
+        flow_direction=WORLD_BACKWARD,
         diagonal_strength=1.0,
         diagonal_angle_deg=45.0,
         alignment_smoothing_iterations=4,
@@ -850,10 +860,15 @@ if __name__ == "__main__":
     model = CompoundEyeModel.from_file(
         'species_models/drosophila_custom.npz',
         kernel=kernel, orientation=aligner,
+        alt_wiring_mode=False
     )
 
     # model = CompoundEyeModel.from_sphere(
     #     n=1600, kernel=kernel, orientation=aligner,
+    #     alt_wiring_mode=False
     # )
+
+
+    print(f'Unwired receptors: {model.unwired_count}')
 
     EyeViewer(model, aligner=aligner).show()

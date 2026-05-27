@@ -32,8 +32,9 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, Union, TYPE_CHECKING, List
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
+from scipy.sparse import csr_matrix, coo_matrix
+from scipy.optimize import linear_sum_assignment, milp, LinearConstraint, Bounds
 
 from insectvision.compound_eyes import RhabdomereKernel
 from insectvision.compound_eyes.buffers import EyesBuffer
@@ -51,8 +52,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-
-@dataclass
 class NeighbourResult:
     """
     Result of an Eye.neighbours() query.
@@ -64,18 +63,17 @@ class NeighbourResult:
     distances: (M, k) float array, Distances to those neighbours.
     is_immediate: (M, k) bool array (optional), True where the neighbour is in the
         first lattice ring of the query lens (distance <= neighbour_dist_factor * closest).
-        Only populated when Eye.neighbours() is called with neighbour_dist_factor != None,
-        or when immediate_only=True (in which case all entries are True).
     same_chirality: (M, k) bool array (optional), True where the neighbour's chirality
-        matches the query lens's chirality. Only populated when Eye.neighbours() is
-        called with a chirality array AND in lens_indices mode (so the query has an
-        identifiable lens id).
+        matches the query lens's chirality.
     """
-    mask: np.ndarray
-    indices: np.ndarray
-    distances: np.ndarray
-    is_immediate: Optional[np.ndarray] = None
-    same_chirality: Optional[np.ndarray] = None
+
+    def __init__(self, eye, mask, indices, distances, is_immediate=None, same_chirality=None):
+        self.eye = eye
+        self.mask = mask
+        self.indices = indices
+        self.distances = distances
+        self.is_immediate = is_immediate
+        self.same_chirality = same_chirality
 
     def __bool__(self) -> bool:
         return bool(self.indices.size)
@@ -83,6 +81,15 @@ class NeighbourResult:
     def __len__(self) -> int:
         return int(self.indices.shape[0])
 
+    @property
+    def lenses(self) -> 'LensView':
+        """Flattened LensView of all neighbours in the result set."""
+        return LensView(self._model, self.indices.ravel())
+
+    @property
+    def receptors(self) -> 'ReceptorView':
+        """Flattened ReceptorView of all receptors in all neighbour lenses."""
+        return self.lenses.receptors
 
 class LensView:
     """
@@ -119,7 +126,12 @@ class LensView:
             yield LensView(self._model, np.array([i], dtype=np.intp))
 
     def __getitem__(self, idx) -> 'LensView':
-        return LensView(self._model, self._gi[idx])
+        sub_indices = self._gi[idx]
+        # Handle single integer access: numpy returns a scalar, but we want
+        # LensView to always contain an array for the constructor
+        if np.isscalar(sub_indices):
+            sub_indices = np.array([sub_indices], dtype=np.intp)
+        return LensView(self._model, sub_indices)
 
     # Helpers
 
@@ -478,9 +490,6 @@ class LensView:
 class ReceptorView:
     """
     A subset of M receptors in a CompoundEyeModel.
-
-    Read-only: positions (derived from parent lens), all metadata fields.
-    Settable: sensitivities, tau_membrane, rest acceptance, acceptance tilt, actuated direction.
     """
 
     __slots__ = ('_model', '_gi')
@@ -530,6 +539,11 @@ class ReceptorView:
         """Alias to global_indices."""
         return self.global_indices
 
+    @property
+    def lenses(self) -> 'LensView':
+        """Unique parent lenses of these receptors, sorted by index."""
+        return LensView(self._model, np.unique(self.lens_indices))
+
     # Read-only derived / structural
     # TODO: Add setters (with checks)
 
@@ -539,7 +553,7 @@ class ReceptorView:
         return self._model.rcpt_static_data['position'][self._gi].copy()
 
     @property
-    def lens_index(self) -> np.ndarray:
+    def lens_indices(self) -> np.ndarray:
         """(M,) parent lens global index for each receptor."""
         meta = self._model.rcpt_static_data['metadata'][self._gi]
         return get_metadata_field(meta, 'lens_id').astype(np.intp)
@@ -927,12 +941,11 @@ class Eye:
     # Queries
 
     def neighbours(self,
-            lens_indices: Optional[ArrayLike] = None,
-            points: Optional[ArrayLike] = None,
-            k: int = 6,
-            immediate_only: bool = False,
-            neighbour_dist_factor: float = 1.3,
-            chirality: Optional[ArrayLike] = None,
+        lens_indices: Optional[ArrayLike] = None,
+        points: Optional[ArrayLike] = None,
+        k: int = 6,
+        immediate_only: bool = False,
+        neighbour_dist_factor: float = 1.25,
         ) -> NeighbourResult:
         """
         k-nearest lens neighbours within this eye.
@@ -948,16 +961,12 @@ class Eye:
                 in the result: a neighbour at distance d is "immediate" if
                 d <= neighbour_dist_factor * closest_neighbour_dist. Set to None
                 to skip the tagging.
-            - chirality: optional (N_animal,) array of per-lens chirality (+/-1).
-                When provided and in 'lens_indices' mode, the result's
-                'same_chirality' field is populated. Ignored in 'points' mode
-                (queries have no lens identity to compare from).
 
         Returns a NeighbourResult.
         """
 
         if (lens_indices is None) == (points is None):
-            raise ValueError("Provide either 'lens_indices' or 'points', not both")
+            raise ValueError("Provide either 'lens_indices' or 'points' (but not both)")
 
         # Build per-eye local positions and a lookup global->local to allow mapping results back to global indices
         local_to_global = self._lens_indices
@@ -993,20 +1002,17 @@ class Eye:
                 distances = distances[:, 1:]
 
             global_nidx = local_to_global[local_nidx]
-            result = NeighbourResult(mask=in_this_eye, indices=global_nidx, distances=distances)
+            result = NeighbourResult(self, mask=in_this_eye, indices=global_nidx, distances=distances)
 
-            if immediate_only:
-                # all returned neighbours are by definition first ring
-                result.is_immediate = np.ones_like(global_nidx, dtype=bool)
-            elif neighbour_dist_factor is not None and distances.size > 0:
-                closest = distances[:, 0:1]
-                result.is_immediate = distances <= closest * float(neighbour_dist_factor)
+            # Populate chirality match if the model has initialised it
+            chir = getattr(self._model, '_chirality_arr', None)
+            if chir is not None:
+                result.same_chirality = chir[global_nidx] == chir[valid_global][:, None]
 
-            if chirality is not None and valid_global.size > 0:
-                chir = np.asarray(chirality)
-                query_chir = chir[valid_global]
-                neigh_chir = chir[global_nidx]
-                result.same_chirality = neigh_chir == query_chir[:, None]
+            # Populate immediacy
+            d_factor = float(neighbour_dist_factor if neighbour_dist_factor is not None else 1.25)
+            if distances.size > 0:
+                result.is_immediate = distances <= (distances[:, 0:1] * d_factor)
 
             return result
 
@@ -1022,6 +1028,7 @@ class Eye:
         global_nidx = local_to_global[local_nidx]
 
         result = NeighbourResult(
+            eye=self,
             mask=np.ones(pts.shape[0], dtype=bool),
             indices=global_nidx,
             distances=distances,
@@ -1038,13 +1045,12 @@ class Eye:
         directions: ArrayLike,
         k: int = 1,
         avoid_conflicts: bool = False
-        ) -> Tuple[np.ndarray, np.ndarray]:
+        ) -> Tuple['LensView', np.ndarray]:
         """
         Find the k lenses whose optical axes lie closest (Euclidean) to each
         of the given query directions.
 
-        Returns (indices, distances) where indices are global lens indices
-        and distances are chord distances on the unit sphere.
+        Returns (LensView, distances) where distances are chord distances on the unit sphere.
         """
 
         dirs = np.asarray(directions, dtype=np.float32).reshape(-1, 3)
@@ -1069,18 +1075,18 @@ class Eye:
                 local_idx = local_idx.reshape(-1, 1)
                 distances = distances.reshape(-1, 1)
 
-        return self._lens_indices[local_idx], distances
+        view = LensView(self._model, self._lens_indices[local_idx].ravel())
+        return view, distances
 
     def query_positions(self,
         positions: ArrayLike,
         k: int = 1,
         avoid_conflicts: bool = False
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple['LensView', np.ndarray]:
         """
         Find the k lenses closest in world-space position to each query point.
 
-        Returns (indices, distances) of shape (Q, k) with global lens indices
-        and Euclidean distances in world units.
+        Returns (LensView, distances) where distances are Euclidean distances in world units.
         """
         pts = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
         Q = pts.shape[0]
@@ -1104,13 +1110,14 @@ class Eye:
                 local_idx = local_idx.reshape(-1, 1)
                 distances = distances.reshape(-1, 1)
 
-        return self._lens_indices[local_idx], distances
+        view = LensView(self._model, self._lens_indices[local_idx].ravel())
+        return view, distances
 
     def query_lookat(self,
          targets: ArrayLike,
          k: int = 1,
          avoid_conflicts: bool = False
-         ) -> np.ndarray:
+         ) -> 'LensView':
         """
         Find the k lenses best looking at world-space target points.
 
@@ -1119,14 +1126,14 @@ class Eye:
         each lens's optical axis with the unit vector from that lens to the
         target.
 
-        Returns global lens indices of shape (Q, k), best-first.
+        Returns a LensView (best first).
         """
         if k < 1:
             raise ValueError("k must be >= 1")
         q = np.asarray(targets, dtype=np.float32).reshape(-1, 3)
         Q = q.shape[0]
         if len(self._lens_indices) == 0:
-            return np.empty((Q, k), dtype=np.intp)
+            return LensView(self._model, np.empty(0, dtype=np.intp))
 
         pos = self._model._lens_positions[self._lens_indices]
         dirs = self._model._lens_directions[self._lens_indices]
@@ -1145,18 +1152,18 @@ class Eye:
         top = np.take_along_axis(dots, part, axis=1)
         order = np.argsort(top, axis=1)[:, ::-1]
         best = np.take_along_axis(part, order, axis=1)
-        return self._lens_indices[best]
+        return LensView(self._model, self._lens_indices[best].ravel())
 
     def query_cone(self,
         center_direction: ArrayLike,
         angle: float,
         degrees: bool = True,
         avoid_conflicts: bool = False
-        ) -> np.ndarray:
+        ) -> 'LensView':
         """
         All lenses whose optical axis lies within 'angle' of 'center_direction'.
 
-        Returns global lens indices (in arbitrary order).
+        Returns a LensView.
         """
         c = np.asarray(center_direction, dtype=np.float32)
         n = float(np.linalg.norm(c))
@@ -1178,18 +1185,18 @@ class Eye:
             hits = tree.query_ball_point(c, r=radius)
             local = np.atleast_1d(np.asarray(hits, dtype=np.intp))
 
-        return self._lens_indices[local]
+        return LensView(self._model, self._lens_indices[local])
 
     def query_ball(self,
         center_position: ArrayLike,
         radius: float,
         avoid_conflicts: bool = False
-        ) -> np.ndarray:
+        ) -> 'LensView':
         """
         All lenses whose world-space position is within 'radius' of
         'center_position'.
 
-        Returns global lens indices (arbitrary order).
+        Returns a LensView.
         """
         c = np.asarray(center_position, dtype=np.float32)
 
@@ -1205,7 +1212,7 @@ class Eye:
             hits = tree.query_ball_point(c, r=float(radius))
             local = np.atleast_1d(np.asarray(hits, dtype=np.intp))
 
-        return self._lens_indices[local]
+        return LensView(self._model, self._lens_indices[local])
 
     def max_gap(self) -> float:
         """
@@ -1270,6 +1277,7 @@ class Eye:
                      if result.same_chirality is not None else None)
 
         return NeighbourResult(
+            eye=self,
             mask=result.mask,
             indices=sorted_idx,
             distances=sorted_dist,
@@ -1723,6 +1731,7 @@ class CompoundEyeModel:
                  orientation: Optional[BundlesAligner] = None,
                  flow_direction: Optional[ArrayLike] = None,
                  retina_muscle_direction: Optional[ArrayLike] = None,
+                 alt_wiring_mode: bool = False      # TODO: GGet rid of the worse one
                  ):
 
         # Validate geometry
@@ -1887,8 +1896,9 @@ class CompoundEyeModel:
             self._buffer.lens_dirty = True
             self._buffer.receptors_dirty = True
 
+            wire_cartridges = self.wire_cartridges_rigid if alt_wiring_mode else self.wire_cartridges_adaptive
             if R > 1:
-                self.wire_cartridges()
+                wire_cartridges()
             else:
                 self._buffer.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
 
@@ -2215,12 +2225,12 @@ class CompoundEyeModel:
          directions: ArrayLike,
          k: int = 1,
          avoid_conflicts: bool = False
-         ) -> Tuple[np.ndarray, np.ndarray]:
+         ) -> Tuple['LensView', np.ndarray]:
         """
         Find the k lenses (across all eyes) whose optical axes lie closest to
         each query direction.
 
-        Returns (indices, distances) of shape (Q, k).
+        Returns (LensView, distances).
         """
         dirs = np.asarray(directions, dtype=np.float32).reshape(-1, 3)
         Q = dirs.shape[0]
@@ -2228,29 +2238,30 @@ class CompoundEyeModel:
         best_dist = np.full((Q, k), np.inf, dtype=np.float32)
 
         for eye in self._eyes:
-            idx, dist = eye.query_directions(dirs, k=k, avoid_conflicts=avoid_conflicts)
-            if idx.size == 0:
+            view, dist = eye.query_directions(dirs, k=k, avoid_conflicts=avoid_conflicts)
+            if len(view) == 0:
                 continue
 
-            combined_idx = np.concatenate([best_idx, idx], axis=1)
+            combined_idx = np.concatenate([best_idx, view.indices.reshape(Q, -1)], axis=1)
             combined_dist = np.concatenate([best_dist, dist], axis=1)
+
             order = np.argsort(combined_dist, axis=1)[:, :k]
             rows = np.arange(Q)[:, None]
             best_idx = combined_idx[rows, order]
             best_dist = combined_dist[rows, order]
 
-        return best_idx, best_dist
+        return LensView(self, best_idx.ravel()), best_dist
 
     def query_positions(self,
         positions: ArrayLike,
         k: int = 1,
         avoid_conflicts: bool = False
-        ) -> Tuple[np.ndarray, np.ndarray]:
+        ) -> Tuple['LensView', np.ndarray]:
         """
         Find the k lenses (across all eyes) closest in world-space position
         to each query point.
 
-        Returns (indices, distances) of shape (Q, k).
+        Returns (LensView, distances).
         """
         pts = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
         Q = pts.shape[0]
@@ -2258,37 +2269,37 @@ class CompoundEyeModel:
         best_dist = np.full((Q, k), np.inf, dtype=np.float32)
 
         for eye in self._eyes:
-            idx, dist = eye.query_positions(pts, k=k, avoid_conflicts=avoid_conflicts)
-            if idx.size == 0:
+            view, dist = eye.query_positions(pts, k=k, avoid_conflicts=avoid_conflicts)
+            if len(view) == 0:
                 continue
 
-            combined_idx = np.concatenate([best_idx, idx], axis=1)
+            combined_idx = np.concatenate([best_idx, view.indices.reshape(Q, -1)], axis=1)
             combined_dist = np.concatenate([best_dist, dist], axis=1)
+
             order = np.argsort(combined_dist, axis=1)[:, :k]
             rows = np.arange(Q)[:, None]
             best_idx = combined_idx[rows, order]
             best_dist = combined_dist[rows, order]
 
-        return best_idx, best_dist
+        return LensView(self, best_idx.ravel()), best_dist
 
     def query_lookat(self,
-         targets: ArrayLike,
-         k: int = 1,
-         avoid_conflicts: bool = False
-         ) -> np.ndarray:
+        targets: ArrayLike,
+        k: int = 1,
+        avoid_conflicts: bool = False
+        ) -> 'LensView':
         """
         Find the k lenses (across all eyes) best looking at each world-space
         target point. See Eye.query_lookat for the scoring.
 
-        Returns global lens indices of shape (Q, k), best-first.
+        Returns a LensView (best first).
         """
         if k < 1:
             raise ValueError("k must be >= 1")
 
         q = np.asarray(targets, dtype=np.float32).reshape(-1, 3)
-        Q = q.shape[0]
         if self.lens_count == 0:
-            return np.empty((Q, k), dtype=np.intp)
+            return LensView(self, np.empty(0, dtype=np.intp))
 
         # Score against all lenses (across all eyes)
         pos = self._lens_positions
@@ -2307,38 +2318,38 @@ class CompoundEyeModel:
         order = np.argsort(top, axis=1)[:, ::-1]
         best = np.take_along_axis(part, order, axis=1)
 
-        return best.astype(np.intp)
+        return LensView(self, best.ravel().astype(np.intp))
 
     def query_cone(self,
         center_direction: ArrayLike,
         angle: float,
         degrees: bool = True,
         avoid_conflicts: bool = False
-        ) -> np.ndarray:
+        ) -> 'LensView':
         """
         All lenses (across all eyes) whose optical axis lies within 'angle'
         of 'center_direction'.
 
-        Returns global lens indices (union across eyes, arbitrary order).
+        Returns a LensView.
         """
         hits = [eye.query_cone(center_direction, angle, degrees, avoid_conflicts) for eye in self._eyes]
-        hits = [h for h in hits if h.size > 0]
-        return np.concatenate(hits) if hits else np.empty(0, dtype=np.intp)
+        indices = np.concatenate([h._gi for h in hits]) if hits else np.empty(0, dtype=np.intp)
+        return LensView(self, indices)
 
     def query_ball(self,
         center_position: ArrayLike,
         radius: float,
         avoid_conflicts: bool = False
-        ) -> np.ndarray:
+        ) -> 'LensView':
         """
         All lenses (across all eyes) whose world position lies within 'radius'
         of 'center_position'.
 
-        Returns global lens indices (union across eyes, arbitrary order).
+        Returns a LensView.
         """
         hits = [eye.query_ball(center_position, radius, avoid_conflicts) for eye in self._eyes]
-        hits = [h for h in hits if h.size > 0]
-        return np.concatenate(hits) if hits else np.empty(0, dtype=np.intp)
+        indices = np.concatenate([h._gi for h in hits]) if hits else np.empty(0, dtype=np.intp)
+        return LensView(self, indices)
 
     @property
     def max_gap(self) -> float:
@@ -2528,227 +2539,517 @@ class CompoundEyeModel:
 
     # Cartridges (neural-superposition wiring)
 
-    def wire_cartridges(self,
-            snap_radius: float = 0.2,
-            assign_radius: float = 1.0,
-            angular_dev: float = 25.0,
-            scale_dev: float = 0.3,
-            pre_cull: bool = False,
-            first_ring_only: bool = False,
-            neighbour_dist_factor: float = 1.3,
-            min_snap_matches: int = 2,
-            k_search: int = 30,
-            snap_priority_bonus: Optional[float] = None,
+    def wire_cartridges_rigid(self,
+        assign_radius: float = 0.5,
+        angular_dev: float = 35.0,
+        scale_dev: float = 0.7,
+        min_snap_matches: int = 2,
+        neighbour_dist_factor: float = 1.25,
+        k_search: int = 20,
+        top_k: int = 8,
+        identity_bias: float = 0.05,
+        slack_cost: float = 1000.0,
+        time_limit_s: float = 60.0,
         ) -> None:
         """
-        Lattice-aware neural-superposition wiring via template snapping.
+        Neural superposition wiring using rigid bundle templates and joint optimization.
 
-        For each home lens i (= its central R7/8 hosts the cartridge),
-        the kernel's rhabdomere offsets and orientation act as a template in i's tangent plane,
-        scaled to local lattice units.
-        Search for the best similarity transform that snaps the template onto the
-        positions of i's nearest neighbours, and use Hungarian assignment to
-        match one-to-one between peripheral rhabdomere positions and neighbour lenses.
-
-        Matches outside 'assign_radius' or with mismatched chirality are ignored.
+        This method assumes the rhabdomere bundle maintains a consistent geometric
+        structure. It uses similarity transforms (rotation + scale) to "snap" the
+        idealised rhabdomere bundle template onto the ommatidial lattice.
 
         Args:
-            - snap_radius: Max lattice-unit distance for template-to-neighbour
-                pair to count as a successful snap.
-            - assign_radius: Max lattice-unit distance allowed in the final
-                Hungarian assignment. Matches beyond this radius are dropped.
-            - angular_dev: Max angular deviation (degrees) of candidate rotations from identity.
-            - scale_dev: Max scale deviation of candidate from 1.0.
-            - pre_cull: If True, only consider template anchors with at least
-                one immediate neighbour within 'assign_radius' before
-                generating candidates.
-            - first_ring_only: If True, restrict snap targets to first-ring neighbours.
-            - neighbour_dist_factor: A neighbour is first-ring if its distance
-                is <= 'neighbour_dist_factor * closest_neighbour_dist'.
-            - min_snap_matches: Minimum successful snaps for a candidate to survive scoring.
-            - k_search: Number of nearest neighbours to query per lens (up to a few rings).
-            - snap_priority_bonus: Penalty added to non-snap cells in the
-                Hungarian cost matrix. Forces Hungarian to prefer assignments
-                that preserve snap-quality matches over assignments that
-                spread the cost uniformly across larger distances.
-                If None, defaults to '100 * assign_radius'.
+            - assign_radius: Max distance (μm) to consider a rhabdomere "hitting" a lens.
+            - angular_dev: Max angular deviation (deg) allowed for bundle rotation.
+            - scale_dev: Max scaling allowed (fraction) relative to the kernel size.
+            - min_snap_matches: Minimum number of rhabdomeres that must align for a valid candidate.
+            - neighbour_dist_factor: Multiplier to define "immediate" lattice neighbors.
+            - k_search: Number of nearest neighbors to search for candidates.
+            - top_k: Number of best-scoring candidates per lens to pass to the MILP solver.
+            - slack_cost: Penalty for leaving a lens completely unwired.
+            - identity_bias: Preference for the "default" orientation (0 rotation, 1 scale).
+            - time_limit_s: Hard timeout for the Mixed-Integer Linear Programming solver.
         """
-        N = self.lens_count
-        R = self.receptors_per_lens
-
+        N, R = self.lens_count, self.receptors_per_lens
         if R == 1:
-            self._buffer.cartridges_wired = False
             return
 
         center = self._kernel.center_index
-        periph_rhab = np.array([i for i in range(R) if i != center], dtype=np.intp)
-        P = periph_rhab.size
+        periph = np.array([i for i in range(R) if i != center], dtype=np.intp)
+        P = periph.size
 
-        cartridge_map = np.tile(np.arange(N)[:, None], (1, R))
+        cartridge_map = np.full((N, R), -1, dtype=np.intp)
+        cartridge_map[:, center] = np.arange(N)
 
-        if P == 0:
-            self._buffer.cartridge_map = cartridge_map
-            self._buffer.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
-            self._buffer.cartridges_wired = True
-            self._buffer.lens_dirty = True
-            return
-
-        kernel_periph = self._kernel.offsets_um[periph_rhab] - self._kernel.offsets_um[center]
-        kernel_scale = float(np.mean(np.linalg.norm(kernel_periph, axis=1)))
-
-        if kernel_scale < 1e-12:
-            # Degenerate kernel: peripherals = centre
-            self._buffer.cartridge_map = cartridge_map
-            self._buffer.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
-            self._buffer.cartridges_wired = True
-            self._buffer.lens_dirty = True
-            return
-
-        # Apply per-lens chi + chirality
-        rot_dx_all, rot_dy_all = self._kernel.rotated_offsets(self._bundle_orientation, self._chirality_arr)
-
-        # Centre on central rhab, normalise to lattice units
-        template_dx_all = (rot_dx_all - rot_dx_all[:, center:center + 1]) / kernel_scale
-        template_dy_all = (rot_dy_all - rot_dy_all[:, center:center + 1]) / kernel_scale
-
-        min_required = max(1, min(min_snap_matches, P))
-        angular_dev_rad = float(np.radians(angular_dev))
-
-        # Snap priority penalty
-        if snap_priority_bonus is None:
-            snap_priority_bonus = 100.0 * float(assign_radius)
-        snap_priority_bonus = float(snap_priority_bonus)
+        rot_dx, rot_dy = self._kernel.rotated_offsets(
+            self._bundle_orientation, self._chirality_arr)
+        kp = self._kernel.offsets_um[periph] - self._kernel.offsets_um[center]
+        k_scale = float(np.mean(np.linalg.norm(kp, axis=1))) or 1.0
+        tpl_dx = (rot_dx - rot_dx[:, center:center + 1]) / k_scale
+        tpl_dy = (rot_dy - rot_dy[:, center:center + 1]) / k_scale
+        ang_gate = np.radians(angular_dev)
 
         for eye in self._eyes:
-            n_in_eye = len(eye)
-            if n_in_eye < 2:
+            n_e = len(eye)
+            if n_e < 2:
                 continue
 
             neighb = eye.neighbours(
                 lens_indices=eye._lens_indices,
-                k=min(k_search, n_in_eye - 1),
-                immediate_only=False,
+                k=min(k_search, n_e - 1),
                 neighbour_dist_factor=neighbour_dist_factor,
-                chirality=self._chirality_arr
             )
             if not neighb:
                 continue
 
-            for i_loc in range(n_in_eye):
-                i_glob = int(eye._lens_indices[i_loc])
-                row_immediate = neighb.is_immediate[i_loc]
+            gi = eye._lens_indices
+            immed = neighb.is_immediate
+            same_chi = neighb.same_chirality
+            no_self = neighb.indices != gi[:, None]
 
-                if not np.any(row_immediate):
+            with np.errstate(all='ignore'):
+                spacing = np.nanmedian(np.where(immed, neighb.distances, np.nan), axis=1)
+            spacing = np.where(np.isfinite(spacing) & (spacing > 1e-9), spacing, 1.0)
+
+            pos = self._lens_positions[gi]
+            nbr_pos = self._lens_positions[neighb.indices]
+            delta = nbr_pos - pos[:, None, :]
+            du = np.einsum('ijk,ik->ij', delta, self._local_right[gi]) / spacing[:, None]
+            dv = np.einsum('ijk,ik->ij', delta, self._local_up[gi]) / spacing[:, None]
+            z_nb = du + 1j * dv
+
+            z_tpl = (tpl_dx[gi][:, periph] + 1j * tpl_dy[gi][:, periph])
+
+            # Stage 1: enumerate candidates per lens
+            # candidates[i_loc] = list of (cost, donors_global, slots_global)
+            candidates = [[] for _ in range(n_e)]
+
+            for i_loc in range(n_e):
+                if not immed[i_loc].any():
+                    continue
+                tpl_i = z_tpl[i_loc]
+                nb_i = z_nb[i_loc]
+                valid_nb = no_self[i_loc] & same_chi[i_loc]
+                if not valid_nb.any():
                     continue
 
-                neighb_global = neighb.indices[i_loc].astype(np.intp)
-                neighb_dists = neighb.distances[i_loc]
-
-                local_spacing = float(np.median(neighb_dists[row_immediate]))
-                if local_spacing < 1e-12:
+                mag_ok = np.abs(tpl_i) > 1e-8
+                if not mag_ok.any():
                     continue
 
-                # Project neighbours into i's tangent frame (in lattice units)
-                central_pos = self._lens_positions[i_glob]
-                neighb_vectors = self._lens_positions[neighb_global] - central_pos
-                neighb_u = neighb_vectors @ self._local_right[i_glob]
-                neighb_v = neighb_vectors @ self._local_up[i_glob]
-                neighb_uv = np.column_stack([neighb_u, neighb_v]) / local_spacing
+                # Build similarity-transform candidate set
+                ws_set = [1.0 + 0j]
+                nb_valid_idx = np.flatnonzero(valid_nb)
+                for i_a in np.flatnonzero(mag_ok):
+                    ws = nb_i[nb_valid_idx] / tpl_i[i_a]
+                    ok = (np.abs(np.angle(ws)) <= ang_gate) & (np.abs(np.abs(ws) - 1.0) <= scale_dev)
+                    if ok.any():
+                        ws_set.extend(ws[ok].tolist())
 
-                # Template (peripheral rhabs only) for this lens
-                template_uv = np.column_stack([
-                    template_dx_all[i_glob, periph_rhab],
-                    template_dy_all[i_glob, periph_rhab],
-                ])
+                # For each w, run a local Hungarian, build a candidate assignment
+                seen = set()
+                lens_cands = []
+                d_inf = np.full_like(np.abs(nb_i[None, :]), np.inf, dtype=float)
 
-                z_template = template_uv[:, 0] + 1j * template_uv[:, 1]
-                z_neighb = neighb_uv[:, 0] + 1j * neighb_uv[:, 1]
-                z_snap = z_neighb[row_immediate] if first_ring_only else z_neighb
-
-                # Candidate similarity transforms w = scale * exp(i*theta)
-                if pre_cull:
-                    z_immediate = z_neighb[row_immediate]
-                    diffs = np.abs(z_template[:, None] - z_immediate[None, :])
-                    anchors = np.flatnonzero(np.min(diffs, axis=1) < assign_radius)
-                else:
-                    anchors = np.arange(P)
-
-                valid_anchors = anchors[np.abs(z_template[anchors]) >= 1e-8]
-                candidates_w = [1.0 + 0j]
-
-                if valid_anchors.size > 0:
-                    w_all = z_snap[None, :] / z_template[valid_anchors, None]
-                    angle_ok = np.abs(np.angle(w_all)) <= angular_dev_rad
-                    scale_ok = np.abs(np.abs(w_all) - 1.0) <= scale_dev
-                    valid = angle_ok & scale_ok
-                    if np.any(valid):
-                        candidates_w.extend(w_all[valid].tolist())
-
-                # Score candidates with snap priority Hungarian
-                # Score = (-n_snaps, |angle(w)|, sum_of_matched_dists)
-                # -> prefer more snaps, then near-identity rotations, then total snap quality
-                best_score = (0, np.inf, np.inf)
-                best_w = None
-
-                for w in candidates_w:
-                    z_placed = w * z_template
-                    placed_uv = np.column_stack([z_placed.real, z_placed.imag])
-                    cost = np.linalg.norm(placed_uv[:, None, :] - neighb_uv[None, :, :], axis=2)
-
-                    # Penalise non-snap cells
-                    cost_with_penalty = cost + np.where(
-                        cost >= snap_radius, snap_priority_bonus, 0.0
-                    )
-                    row_idx, col_idx = linear_sum_assignment(cost_with_penalty)
-                    matched_dists = cost[row_idx, col_idx]  # real distances for scoring
-                    n_snaps = int(np.sum(matched_dists < snap_radius))
-                    if n_snaps < min_required:
+                for w in ws_set:
+                    z_placed = w * tpl_i
+                    d = np.abs(z_placed[:, None] - nb_i[None, :])
+                    d = np.where(valid_nb[None, :], d, np.inf)
+                    # Pad to square so linear_sum_assignment can run if k > P
+                    r_idx, c_idx = linear_sum_assignment(d)
+                    md = d[r_idx, c_idx]
+                    keep = (md < assign_radius) & np.isfinite(md)
+                    if int(keep.sum()) < min_snap_matches:
                         continue
-                    score = (
-                        -n_snaps,
-                        float(np.abs(np.angle(w))),
-                        float(np.sum(matched_dists)),
-                    )
-                    if score < best_score:
-                        best_score = score
-                        best_w = w
+                    donors_g = neighb.indices[i_loc][c_idx[keep]]
+                    slots_g = periph[r_idx[keep]]
+                    # Dedupe key: assignment as sorted (slot, donor) tuples
+                    key = tuple(sorted(zip(slots_g.tolist(), donors_g.tolist())))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    cost = float(md[keep].sum()) + identity_bias * float(np.abs(w - 1.0))
+                    lens_cands.append((cost, donors_g, slots_g))
 
-                if best_w is None:
+                lens_cands.sort(key=lambda t: t[0])
+                candidates[i_loc] = lens_cands[:top_k]
+
+            # Stage 2: MILP selection
+            # One null candidate per lens at slack cost so unwireable rims fall through
+            slack_cost = slack_cost * assign_radius * P
+
+            # Variable layout: x[lens_var_start[i_loc] + ci]
+            n_vars = sum(len(c) + 1 for c in candidates)  # +1 for null candidate per lens
+            if n_vars == 0:
+                self._finalize_wiring(cartridge_map)
+                return
+
+            costs = np.zeros(n_vars, dtype=float)
+            # var -> (i_loc, c_idx, donors, slots), null candidate has empty arrays
+            var_meta = []
+            lens_var_start = np.zeros(n_e + 1, dtype=np.intp)
+            v = 0
+            for i_loc in range(n_e):
+                lens_var_start[i_loc] = v
+                for cost, donors_g, slots_g in candidates[i_loc]:
+                    costs[v] = cost
+                    var_meta.append((i_loc, donors_g, slots_g))
+                    v += 1
+                # null candidate
+                costs[v] = slack_cost
+                var_meta.append((i_loc, np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp)))
+                v += 1
+            lens_var_start[n_e] = v
+
+            # C1: one candidate per lens (equality)
+            rows1 = np.repeat(np.arange(n_e), np.diff(lens_var_start))
+            cols1 = np.arange(n_vars)
+            data1 = np.ones(n_vars, dtype=float)
+            A1 = coo_matrix((data1, (rows1, cols1)), shape=(n_e, n_vars)).tocsr()
+
+            # C2: each (donor j, slot r) used at most once
+            ds_to_row = {}
+            rows2, cols2 = [], []
+            for vid, (_, donors_g, slots_g) in enumerate(var_meta):
+                for jg, sg in zip(donors_g.tolist(), slots_g.tolist()):
+                    key = (jg, sg)
+                    if key not in ds_to_row:
+                        ds_to_row[key] = len(ds_to_row)
+                    rows2.append(ds_to_row[key])
+                    cols2.append(vid)
+            n_c2 = len(ds_to_row)
+            if n_c2 > 0:
+                data2 = np.ones(len(rows2), dtype=float)
+                A2 = coo_matrix((data2, (rows2, cols2)), shape=(n_c2, n_vars)).tocsr()
+                cons = [
+                    LinearConstraint(A1, lb=1.0, ub=1.0),
+                    LinearConstraint(A2, lb=0.0, ub=1.0),
+                ]
+            else:
+                cons = [LinearConstraint(A1, lb=1.0, ub=1.0)]
+
+            result = milp(
+                c=costs,
+                constraints=cons,
+                bounds=Bounds(0, 1),
+                integrality=np.ones(n_vars, dtype=int),
+                options={'time_limit': time_limit_s, 'disp': False},
+            )
+
+            if not result.success:
+                logger.warning(f"Eye {eye.eye_index}: MILP failed ({result.message}); leaving unwired.")
+                continue
+
+            chosen = np.flatnonzero(result.x > 0.5)
+            for vid in chosen:
+                _, donors_g, slots_g = var_meta[vid]
+                if donors_g.size == 0:
                     continue
+                # var_meta stores the host lens implicitly via lens_var_start; recover it:
+                i_loc = int(np.searchsorted(lens_var_start, vid, side='right') - 1)
+                cartridge_map[gi[i_loc], slots_g] = donors_g
 
-                # Final Hungarian assignment with the chosen candidate
-                z_best = best_w * z_template
-                corrected_uv = np.column_stack([z_best.real, z_best.imag])
-                cost_final = np.linalg.norm(
-                    corrected_uv[:, None, :] - neighb_uv[None, :, :], axis=2
+        self._finalize_wiring(cartridge_map)
+
+    def wire_cartridges_adaptive(self,
+        assign_radius: float = 0.5,
+        angular_dev: float = 40.0,
+        scale_dev: float = 0.75,
+        min_snap_matches: int = 2,
+        neighbour_dist_factor: float = 1.25,
+        k_search: int = 20,
+        top_k: int = 6,
+        identity_bias: float = 0.05,
+        unassigned_penalty: float = 10.0,
+        allow_plasticity: bool = True,
+        plasticity_radius: float = 2.0,
+        time_limit_s: float = 60.0,
+        ) -> None:
+        """
+        Neural superposition wiring allowing for local distortions and missing connections.
+
+        This method is more robust than `wire_rigid`. It allows individual rhabdomere
+        slots within a cartridge to be left unwired (with a penalty) and can use
+        "plastic" connections in highly distorted lattice regions where a rigid
+        transformation would fail.
+
+        Args:
+            - assign_radius: Max distance (μm) for standard rhabdomere-to-lens assignment.
+            - angular_dev: Max angular deviation (deg) allowed for bundle rotation.
+            - scale_dev: Max scaling allowed (fraction) relative to the kernel size.
+            - min_snap_matches: Minimum number of rhabdomeres that must align for a valid candidate.
+            - neighbour_dist_factor: Multiplier to define "immediate" lattice neighbors.
+            - k_search: Number of nearest neighbors to search for candidates.
+            - top_k: Number of best-scoring candidates per lens to pass to the MILP solver.
+            - identity_bias: Preference for the "default" orientation (0 rotation, 1 scale).
+            - unassigned_penalty: Cost incurred for every receptor slot left unwired.
+            - allow_plasticity: If True, allows 'best-effort' wiring in distorted regions.
+            - plasticity_radius: Increased search radius (μm) used when in plastic mode.
+            - time_limit_s: Hard timeout for the MILP solver.
+        """
+        N, R = self.lens_count, self.receptors_per_lens
+        if R == 1:
+            return
+
+        center = self._kernel.center_index
+        periph = np.array([i for i in range(R) if i != center], dtype=np.intp)
+
+        cartridge_map = np.full((N, R), -1, dtype=np.intp)
+        cartridge_map[:, center] = np.arange(N)
+
+        rot_dx, rot_dy = self._kernel.rotated_offsets(self._bundle_orientation, self._chirality_arr)
+        kp = self._kernel.offsets_um[periph] - self._kernel.offsets_um[center]
+        k_scale = float(np.mean(np.linalg.norm(kp, axis=1))) or 1.0
+        tpl_dx = (rot_dx - rot_dx[:, center:center + 1]) / k_scale
+        tpl_dy = (rot_dy - rot_dy[:, center:center + 1]) / k_scale
+        ang_gate = np.radians(angular_dev)
+
+        for eye in self._eyes:
+            n_e = len(eye)
+            if n_e < 2:
+                continue
+
+            neighb = eye.neighbours(lens_indices=eye._lens_indices, k=min(k_search, n_e - 1),
+                                    neighbour_dist_factor=neighbour_dist_factor)
+            gi = eye._lens_indices
+            with np.errstate(all='ignore'):
+                spacing = np.nanmedian(np.where(neighb.is_immediate, neighb.distances, np.nan), axis=1)
+            spacing = np.where(np.isfinite(spacing) & (spacing > 1e-9), spacing, 1.0)
+
+            # Stage 1: Enumerate candidates
+            candidates = [[] for _ in range(n_e)]
+            for i_loc in range(n_e):
+                i_glob = gi[i_loc]
+                tpl_i = (tpl_dx[i_glob] + 1j * tpl_dy[i_glob])
+
+                # Setup neighbor coordinates in tangent plane
+                nb_vecs = self._lens_positions[neighb.indices[i_loc]] - self._lens_positions[i_glob]
+                nb_uv = (nb_vecs @ np.stack([self._local_right[i_glob], self._local_up[i_glob]], axis=1)) / spacing[
+                    i_loc]
+                nb_i = nb_uv[:, 0] + 1j * nb_uv[:, 1]
+                valid_nb = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
+
+                # Standard candidate generation
+                ws_set = [1.0 + 0j]
+                mag_ok = np.abs(tpl_i) > 1e-8
+                if mag_ok.any():
+                    nb_valid_idx = np.flatnonzero(valid_nb)
+                    for i_a in np.flatnonzero(mag_ok):
+                        ws = nb_i[nb_valid_idx] / tpl_i[i_a]
+                        ok = (np.abs(np.angle(ws)) <= ang_gate) & (np.abs(np.abs(ws) - 1.0) <= scale_dev)
+                        ws_set.extend(ws[ok].tolist())
+
+                lens_cands, seen = [], set()
+                for w in ws_set:
+                    d = np.abs((w * tpl_i)[:, None] - nb_i[None, :])
+                    d = np.where(valid_nb[None, :], d, np.inf)
+                    r_idx, c_idx = linear_sum_assignment(d)
+                    md = d[r_idx, c_idx]
+
+                    keep = (md < assign_radius) & np.isfinite(md)
+                    if int(keep.sum()) >= min_snap_matches:
+                        donors_g, slots_g = neighb.indices[i_loc][c_idx[keep]], periph[r_idx[keep]]
+                        key = tuple(sorted(zip(slots_g, donors_g)))
+                        if key not in seen:
+                            seen.add(key)
+                            lens_cands.append((identity_bias * float(np.abs(w - 1.0)), slots_g, donors_g, md[keep]))
+
+                # Fallback: if no candidates found, generate one 'plastic' candidate
+                if not lens_cands and allow_plasticity:
+                    tpl_p = tpl_i[periph]
+                    d = np.abs(tpl_p[:, None] - nb_i[None, :])
+                    d = np.where(valid_nb[None, :], d, np.inf)
+
+                    r_idx, c_idx = linear_sum_assignment(d)
+                    md = d[r_idx, c_idx]
+
+                    keep = (md < plasticity_radius) & np.isfinite(md)
+                    if keep.any():
+                        lens_cands.append((
+                            unassigned_penalty * 0.5,
+                            periph[r_idx[keep]],
+                            neighb.indices[i_loc][c_idx[keep]],
+                            md[keep]
+                        ))
+
+                lens_cands.sort(key=lambda t: t[0])
+                candidates[i_loc] = lens_cands[:top_k]
+
+            # Stage 2: MILP selection (with graceful drops)
+            costs = []
+            z_vars, x_vars, d_vars = [], [], []
+            var_count = 0
+
+            for i_loc in range(n_e):
+                cands = candidates[i_loc]
+                if not cands:
+                    # Isolated lens fallback
+                    cands = [(0.0, np.array([]), np.array([]), np.array([]))]
+
+                i_z, i_x = [], []
+                for w_cost, slots_g, donors_g, dists in cands:
+                    # Template selection variable (z)
+                    i_z.append(var_count)
+                    costs.append(w_cost)
+                    var_count += 1
+
+                    # Individual slot connection variables (x)
+                    c_x = {}
+                    for r, j, dist in zip(slots_g, donors_g, dists):
+                        c_x[r] = (var_count, j)
+                        costs.append(dist)
+                        var_count += 1
+                    i_x.append(c_x)
+
+                z_vars.append(i_z)
+                x_vars.append(i_x)
+
+                # Drop variables (d)
+                i_d = {}
+                for r in periph:
+                    i_d[r] = var_count
+                    costs.append(unassigned_penalty)
+                    var_count += 1
+                d_vars.append(i_d)
+
+            if var_count == 0:
+                continue
+
+            rows_eq, cols_eq, data_eq, b_eq = [], [], [], []
+            rows_ub, cols_ub, data_ub, b_ub = [], [], [], []
+            eq_row, ub_row = 0, 0
+
+            # Constraint 1: Pick exactly one candidate rotation per lens
+            for i_loc in range(n_e):
+                for z_idx in z_vars[i_loc]:
+                    rows_eq.append(eq_row)
+                    cols_eq.append(z_idx)
+                    data_eq.append(1.0)
+                b_eq.append(1.0)
+                eq_row += 1
+
+            # Constraint 2: Every slot is either wired (via chosen x) or dropped (d)
+            for i_loc in range(n_e):
+                for r in periph:
+                    for c_x in x_vars[i_loc]:
+                        if r in c_x:
+                            x_idx, _ = c_x[r]
+                            rows_eq.append(eq_row)
+                            cols_eq.append(x_idx)
+                            data_eq.append(1.0)
+                    rows_eq.append(eq_row)
+                    cols_eq.append(d_vars[i_loc][r])
+                    data_eq.append(1.0)
+                    b_eq.append(1.0)
+                    eq_row += 1
+
+            # Constraint 3: Can only wire a slot if its parent template candidate is chosen
+            for i_loc in range(n_e):
+                for c_idx, c_x in enumerate(x_vars[i_loc]):
+                    z_idx = z_vars[i_loc][c_idx]
+                    for r, (x_idx, _) in c_x.items():
+                        rows_ub.append(ub_row)
+                        cols_ub.append(x_idx)
+                        data_ub.append(1.0)
+
+                        rows_ub.append(ub_row)
+                        cols_ub.append(z_idx)
+                        data_ub.append(-1.0)
+
+                        b_ub.append(0.0)
+                        ub_row += 1
+
+            # Constraint 4: Global donor limit (no donation conflicts)
+            jr_to_x = {}
+            for i_loc in range(n_e):
+                for c_x in x_vars[i_loc]:
+                    for r, (x_idx, j) in c_x.items():
+                        key = (j, r)
+                        if key not in jr_to_x:
+                            jr_to_x[key] = []
+                        jr_to_x[key].append(x_idx)
+
+            for x_list in jr_to_x.values():
+                for x_idx in x_list:
+                    rows_ub.append(ub_row)
+                    cols_ub.append(x_idx)
+                    data_ub.append(1.0)
+                b_ub.append(1.0)
+                ub_row += 1
+
+            # Build and solve MILP
+            constraints = []
+            if len(b_eq) > 0:
+                A_eq = coo_matrix((data_eq, (rows_eq, cols_eq)), shape=(len(b_eq), var_count))
+                constraints.append(LinearConstraint(A_eq, lb=b_eq, ub=b_eq))
+            if len(b_ub) > 0:
+                A_ub = coo_matrix((data_ub, (rows_ub, cols_ub)), shape=(len(b_ub), var_count))
+                constraints.append(LinearConstraint(A_ub, lb=-np.inf, ub=b_ub))
+
+            result = milp(
+                c=costs,
+                constraints=constraints,
+                bounds=Bounds(0, 1),
+                integrality=np.ones(var_count, dtype=int),
+                options={'time_limit': time_limit_s, 'mip_rel_gap': 0.01, 'disp': False},
+            )
+
+            if not result.success:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Eye {eye.eye_index}: MILP failed ({result.message}). Falling back to unassigned."
                 )
-                rhab_idx, om_idx = linear_sum_assignment(
-                    cost_final + np.where(cost_final >= snap_radius, snap_priority_bonus, 0.0))
+                continue
 
-                valid_mask = (cost_final[rhab_idx, om_idx] < assign_radius) & neighb.same_chirality[i_loc][om_idx]
+            # Map the MILP solution back to the cartridge map
+            chosen = set(np.flatnonzero(result.x > 0.5))
+            for i_loc in range(n_e):
+                i_glob = gi[i_loc]
+                for c_x in x_vars[i_loc]:
+                    for r, (x_idx, j) in c_x.items():
+                        if x_idx in chosen:
+                            cartridge_map[i_glob, r] = j
 
-                if np.any(valid_mask):
-                    cartridge_map[i_glob, periph_rhab[rhab_idx[valid_mask]]] = neighb_global[om_idx[valid_mask]]
+        self._finalize_wiring(cartridge_map)
+
+    def _finalize_wiring(self, cartridge_map: np.ndarray) -> None:
+        N = self.lens_count
+        R = self.receptors_per_lens
+        center = self._kernel.center_index
+        periph = np.array([i for i in range(R) if i != center], dtype=np.intp)
 
         self._buffer.cartridge_map = cartridge_map
-        self._buffer.rcpt_static_data['cartridge_src'] = (cartridge_map * R + np.arange(R)).flatten().astype(np.uint32)
+
+        # GPU buffer expects uint32. Reserve 0xFFFFFFFF for unwired   # TODO: The datatype and metadata pack/unpack function need to support this officially
+        UNWIRED_SRC = np.uint32(0xFFFFFFFF)
+        cs_signed = cartridge_map * R + np.arange(R)
+        cs = np.where(cartridge_map < 0, UNWIRED_SRC, cs_signed).astype(np.uint32)
+        self._buffer.rcpt_static_data['cartridge_src'] = cs.flatten()
+
         self._buffer.cartridges_wired = True
         self._buffer.lens_dirty = True
 
-        # Diagnostics
-        is_periph = np.ones(R, dtype=bool)
-        is_periph[center] = False
-        recv_conf, don_conf = np.zeros(N, dtype=bool), np.zeros(N, dtype=bool)
+        # Receiving conflicts: peripheral slot maps to its own host lens
+        recv_conf = np.zeros(N, dtype=bool)
+        own = np.arange(N)
+        for r in periph:
+            recv_conf |= (cartridge_map[:, r] == own)
 
-        for r in range(R):
-            if is_periph[r]:
-                recv_conf |= (cartridge_map[:, r] == np.arange(N))
-                don_conf |= (np.bincount(cartridge_map[:, r], minlength=N) != 1)
+        # Donation conflicts: a single lens's r-th rhabdomere is claimed by > 1 cartridge
+        don_conf = np.zeros(N, dtype=bool)
+        for r in periph:
+            col = cartridge_map[:, r]
+            valid = col >= 0
+            if valid.any():
+                counts = np.bincount(col[valid], minlength=N)
+                don_conf |= counts > 1
 
+        self.unwired_slots = (cartridge_map[:, periph] < 0)
+        self.unwired_count = int(self.unwired_slots.sum())
         self.receiving_conflicts = recv_conf
         self.donation_conflicts = don_conf
         self.have_conflicts = recv_conf | don_conf
-        self._invalidate_spatial()  # ensure conflict-free trees are updated
+        self._invalidate_spatial()
 
     def set_retinal_direction(self, muscle_direction: ArrayLike = WORLD_UP):
         """

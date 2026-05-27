@@ -32,7 +32,7 @@ BAR_SEPARATION = 0.14      # 4.01° centre-to-centre → 2.86° gap
 # BAR_SEPARATION = 0.25      # 7.16° centre-to-centre → 6.00° gap
 
 # One bar:
-# BAR_SEPARATION = 0.0       # single bar at origin
+BAR_SEPARATION = 0.0       # single bar at origin
 
 
 # Motion - Linear Sweeps
@@ -77,22 +77,17 @@ def create_bar(name, cx, cy, width_x, width_y, distance, texture):
 
 def pick_ommatidia(model, agent, az_halfwidth_deg=BAND_AZ_HALFWIDTH, el_halfwidth_deg=BAND_EL_HALFWIDTH, cone_deg=BAND_CONE_DEG):
 
-    cone_idx = model.query_cone(agent.forward, angle=cone_deg)
-    dirs = model.lenses[cone_idx].direction
+    cone = model.query_cone(agent.forward, angle=cone_deg)
+    mask = (np.abs(cone.azimuth_deg) < az_halfwidth_deg) & (np.abs(cone.elevation_deg) < el_halfwidth_deg)
+    band = cone[mask]
 
-    azim = np.degrees(np.arctan2(dirs[:, 0], -dirs[:, 2]))
-    elev = np.degrees(np.arcsin(np.clip(dirs[:, 1], -1.0, 1.0)))
-
-    strip = (np.abs(azim) < az_halfwidth_deg) & (np.abs(elev) < el_halfwidth_deg)
-    band = cone_idx[strip]
-
-    chir = model.lenses.chirality[band]
+    chir = band.chirality
     n_pos = int(np.sum(chir > 0))
     n_neg = int(np.sum(chir < 0))
     print(f"Forward band: {len(band)} lenses "
           f"(chirality +1:{n_pos}, -1:{n_neg})  "
           f"az ±{az_halfwidth_deg}°, el ±{el_halfwidth_deg}°")
-    return band
+    return band.indices
 
 
 def print_stim_geometry():
@@ -306,6 +301,6 @@ axs[3, 1].legend(loc='upper right', fontsize=9)
 plt.tight_layout()
 plt.show()
 
-renderer.free()
-scene.free()
-context.free()
+# renderer.free()
+# scene.free()
+# context.free()

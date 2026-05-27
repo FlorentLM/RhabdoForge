@@ -34,7 +34,7 @@ def create_vertical_bar(name, x_pos, width, height, distance, texture):
     )
 
 
-def main():
+if __name__ == '__main__':
 
     context = Context()
     context.mouse_captured = False
@@ -90,8 +90,8 @@ def main():
     # boost ambient intensity so the white bars are very bright
     renderer.ambient_intensity = 1.5
 
-    forward_lenses, _ = model.query_directions(agent.forward, k=2)
-    renderer.selected_lenses = forward_lenses[0]
+    forward_view, _ = model.query_directions(agent.forward, k=2)
+    renderer.selected_lenses = forward_view[0].indices
 
     while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=True):
 
@@ -104,7 +104,3 @@ def main():
     renderer.free()
     scene.free()
     context.free()
-
-
-if __name__ == '__main__':
-    main()

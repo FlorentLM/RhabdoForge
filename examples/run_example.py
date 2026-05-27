@@ -119,7 +119,7 @@ def main():
     # or tau_fast should be at least 2x the dt (set tau_fast to 0.02s)
     # Biological 5 ms responses are difficult to simulate cleanly with Monte Carlo noise at 100 Hz
 
-    context.time_step = 1 / 1000.0
+    context.time_step = 1 / 100.0
 
 
     # Tune / disable luminance boost on RF narrowing
@@ -132,7 +132,7 @@ def main():
 
     if not HEADLESS:
 
-        while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=False):
+        while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=True):
 
             context.input()  # Processes mouse and keyboard, optional
 
