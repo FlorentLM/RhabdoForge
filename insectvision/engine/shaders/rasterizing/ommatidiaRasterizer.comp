@@ -5,6 +5,7 @@ layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(std430, binding = BINDING_RCPT_STATIC) readonly buffer RcptStaticBlock  { ReceptorStatic  rcpt_static[]; };
 layout(std430, binding = BINDING_RCPT_DYNAMIC) readonly buffer RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
+layout(std430, binding = BINDING_LENS_STATIC) readonly buffer LensStaticBlock  { LensStatic      lens_static[]; };
 layout(std430, binding = BINDING_RAYS_INTERMEDIATE) writeonly buffer RayResultBuffer { vec4 ray_results[]; };
 
 layout(binding = 0) uniform samplerCube scene_cubemap;
@@ -12,21 +13,25 @@ layout(binding = 0) uniform samplerCube scene_cubemap;
 uniform int nb_receptors;
 uniform int nb_samples;
 uniform float dither_counter;
-uniform bool use_quasi_random;
+uniform bool use_quasi_random;  // TODO: Add more randomness modes and make this an int
+uniform bool use_hybrid_sampling;
+uniform int  sampling_mode;
 
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
     uint total_count = rcpt_static.length();
 
-    if (global_id >= (nb_samples * total_count)) {
-        return;
-    }
+    if (global_id >= (nb_samples * total_count)) return;    // stop if out of bounds
 
     uint rcpt_idx = global_id / nb_samples;
     uint sample_idx = global_id % nb_samples;
 
     ReceptorStatic rs = rcpt_static[rcpt_idx];
     ReceptorDynamic rd = rcpt_dynamic[rcpt_idx];
+
+    // Lens data for this receptor
+    uint lens_idx = unpack_lens_id(rs.metadata);
+    LensStatic ls = lens_static[lens_idx];
 
     // Reconstruct tangent frame from actuated direction
     vec3 F = rd.direction;
@@ -51,8 +56,16 @@ void main() {
         r2 = random_float(rng_state);
     }
 
-    vec3 sample_dir = sampledir(rs, rd, T, B, F, max(r1, 1e-6), r2);
+    float ray_weight;
+    vec3 sample_dir;
+    if (use_hybrid_sampling) {
+        sample_dir = sampledir_hybrid(sampling_mode, rs, rd, ls, T, B, F, r1, r2, ray_weight);
+    } else {
+        sample_dir = sampledir_importance(rs, rd, T, B, F, r1, r2, ray_weight);
+    }
+
     vec3 color = texture(scene_cubemap, sample_dir).rgb;
 
-    ray_results[global_id] = vec4(color, 1.0);
+    // Alpha channel stores ray weight for reduction.comp
+    ray_results[global_id] = vec4(color, ray_weight);
 }

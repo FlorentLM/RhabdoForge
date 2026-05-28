@@ -718,7 +718,7 @@ class Rasterizer(BaseRenderer):
         with self._cubemap_sampler as shader:
 
             # Dynamic buffer for actuated directions and static (for positions)
-            with self.eye_buffers.grouped_bind(['rays_intermediate', 'rcpt_static', 'rcpt_dynamic']):
+            with self.eye_buffers.grouped_bind(['rays_intermediate', 'rcpt_static', 'lens_static', 'rcpt_dynamic']):
 
                 glActiveTexture(GL_TEXTURE0)
                 glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.tex_id)

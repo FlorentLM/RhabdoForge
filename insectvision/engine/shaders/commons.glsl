@@ -126,11 +126,81 @@ float random_float(inout uint rng_state) {
     return float(rng_state) / 4294967295.0;
 }
 
-vec3 sampledir(in ReceptorStatic rs, in ReceptorDynamic rd, in vec3 T, in vec3 B, in vec3 F, in float u1, in float u2) {
+float get_sensitivity(int mode, float angle_min, float angle_maj, ReceptorStatic rs, ReceptorDynamic rd, LensStatic ls) {
+
+    if (mode == 1) {    // Airy mode
+
+        // The first null of an Airy disk is at 1.22 * lambda / D
+        float D = ls.lens_diameter_um;
+        float lambda = rs.wavelength_um;
+
+        float x_min = (PI * D * angle_min) / max(lambda, 0.01);
+        float x_maj = (PI * D * angle_maj) / max(lambda, 0.01);
+
+        // 'stretch' Airy disk to match acc_axes ratio
+        float x = sqrt(x_min*x_min + x_maj*x_maj);
+
+        if (abs(x) < 0.001) return 1.0;
+
+        // Airy pattern formula: [2 * J1(x) / x]^2
+        // Note: Taylor expansion only works for the center.
+        // for the rings, trigonometric approximation is used to prevent explosion
+        float j1;
+        if (x < 3.75) {
+            j1 = (x * 0.5) - (pow(x, 3.0) / 16.0) + (pow(x, 5.0) / 384.0) - (pow(x, 7.0) / 18432.0);
+        } else {
+            // Asymptotic approx for the rings
+            j1 = sqrt(0.636619 / x) * cos(x - 0.785398);
+        }
+
+        float airy = pow(2.0 * j1 / x, 2.0);
+        return clamp(airy, 0.0, 1.0);
+    }
+    else { // Default: Gaussian
+        float g_min = angle_min / max(rd.acc_axes.x, 1e-6);
+        float g_maj = angle_maj / max(rd.acc_axes.y, 1e-6);
+        return exp(-GAUSS_CONSTANT_K * (g_min*g_min + g_maj*g_maj));
+    }
+}
+
+vec3 sampledir_importance(ReceptorStatic rs, ReceptorDynamic rd, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
     float phi = TWOPI * u2;
     float angle_min = rd.acc_axes.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);
     float angle_maj = rd.acc_axes.y * sqrt(-log(u1) / GAUSS_CONSTANT_K);
 
+    vec2 p = vec2(tan(angle_min) * cos(phi), tan(angle_maj) * sin(phi));
+    float s = sin(rs.acc_tilt), c = cos(rs.acc_tilt);
+    vec2 tp = mat2(c, -s, s, c) * p;
+
+    weight = 1.0; // pure importance sampling: weight is uniform
+    return normalize(mat3(T, B, F) * normalize(vec3(tp, 1.0)));
+}
+
+vec3 sampledir_hybrid(int mode, ReceptorStatic rs, ReceptorDynamic rd, LensStatic ls, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
+    float phi = TWOPI * u2;
+
+    // Sample a 'proposal' distribution that is wider than the actual acceptance
+    // -> ensures it samples the tails / Airy rings, wide-angle lights, etc
+    float spread_mult = 2.0;
+    float sample_sigma_min = rd.acc_axes.x * spread_mult;
+    float sample_sigma_maj = rd.acc_axes.y * spread_mult;
+
+    // These are the displacement angles to test
+    float angle_min = sample_sigma_min * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    float angle_maj = sample_sigma_maj * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+
+    // Receptor sensitivity (at this specific sampled angle) -> 'Physical truth'
+    float rcpt_sensitivity = get_sensitivity(mode, angle_min, angle_maj, rs, rd, ls);
+
+    // Sampling probability Density (PDF) of the proposal distribution -> likelihood that this ray was picked
+    float p_min = angle_min / sample_sigma_min;
+    float p_maj = angle_maj / sample_sigma_maj;
+    float pdf = exp(-GAUSS_CONSTANT_K * (p_min*p_min + p_maj*p_maj));
+
+    // weight is truth / sampling
+    weight = rcpt_sensitivity / max(pdf, 1e-4);  // avoid /0 in the extreme tails
+
+    // and convert angles to direction vector
     vec2 p = vec2(tan(angle_min) * cos(phi), tan(angle_maj) * sin(phi));
     float s = sin(rs.acc_tilt), c = cos(rs.acc_tilt);
     vec2 tp = mat2(c, -s, s, c) * p;

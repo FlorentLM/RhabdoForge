@@ -22,13 +22,19 @@ void main() {
     if (rcpt_idx >= nb_receptors) return;   // stop if out of bounds
 
     // Summation
-    vec3 total_color = vec3(0.0);
+    vec3 weighted_color_sum = vec3(0.0);
+    float total_weight = 0.0;
     uint start_idx = rcpt_idx * nb_samples;
 
     for (int i = 0; i < nb_samples; ++i) {
-        total_color += ray_results[start_idx + i].rgb;
+        vec4 sample_data = ray_results[start_idx + i];
+
+        // RGB is the ray colour, A is the ray weight
+        weighted_color_sum += sample_data.rgb * sample_data.a;
+        total_weight       += sample_data.a;
     }
-    total_color = (nb_samples > 0) ? (total_color / float(nb_samples)) : total_color;
+    // And divided by total weight to get Monte Carlo integration
+    vec3 total_color = (total_weight > 0.0) ? (weighted_color_sum / total_weight) : vec3(0.0);
 
     // Spectral sensitivity
     total_color *= rcpt_static[rcpt_idx].sensitivity;

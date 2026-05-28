@@ -284,7 +284,10 @@ class BaseRenderer(ABC):
         # Initialise uniforms registries
         avg_lens_radius = np.mean(np.linalg.norm(self._model.rcpt_static_data['position'][:, :3], axis=1))
 
+        # Sampling modes
         self.nb_samples = nb_samples    # via property to apply
+        self._use_hybrid_sampling = False
+        self._sampling_mode = 0     # 0 = Gaussian, 1 = Airy
 
         self._eye_uniforms = UniformRegistry(
             aspect_ratio=1.0,
@@ -311,7 +314,11 @@ class BaseRenderer(ABC):
             projection_mode=self.projection_mode,
             false_colors=self.simulate_insect_vision and not self.uv_encoded_textures,
             uv_encoding=self.uv_encoded_textures,
+
+            # Sampling modes
             nb_samples=self.nb_samples,
+            use_hybrid_sampling=self._use_hybrid_sampling,
+            sampling_mode=self._sampling_mode,  # 0 = Gaussian, 1 = Airy
 
             # Visualisation defaults
             selected_lenses=self._selected_lens_ids,
@@ -521,9 +528,15 @@ class BaseRenderer(ABC):
                     shader_highlight_ids[i] *= self._model.receptors_per_lens
                     shader_highlight_ids[i] += self._model.kernel.center_index
 
-        # Process UI commands
+        # Sampling changes
         self._eye_uniforms.update(
             nb_samples=self.nb_samples,
+            use_hybrid_sampling=self._use_hybrid_sampling,
+            sampling_mode=self._sampling_mode,
+        )
+
+        # Process UI commands
+        self._eye_uniforms.update(
             noise_threshold=self._noise_threshold,
             projection_mode=self.projection_mode,
             tiled_mode=self.tiled_mode,
@@ -884,6 +897,31 @@ class BaseRenderer(ABC):
 
         mc_noise = 0.65 / np.sqrt(max(1, self._samples_per_rcpt))
         self._noise_threshold = max(0.05, mc_noise)
+
+    @property
+    def hybrid_sampling(self) -> bool:
+        """Toggle between Importance Sampling (False) and Hybrid Weighted Sampling (True)."""
+        return self._use_hybrid_sampling
+
+    @hybrid_sampling.setter
+    def hybrid_sampling(self, value: bool):
+        self._use_hybrid_sampling = bool(value)
+        self._eye_uniforms.update(use_hybrid_sampling=self._use_hybrid_sampling)
+
+    @property
+    def sampling_mode(self) -> str:
+        """The sensitivity profile used for weighting: 'gaussian' or 'airy'."""
+        return "airy" if self._sampling_mode == 1 else 'gaussian'
+
+    @sampling_mode.setter
+    def sampling_mode(self, value: Union[int, str]):
+        if isinstance(value, str):
+            mapping = {'gaussian': 0, 'airy': 1}
+            self._sampling_mode = mapping.get(value.lower(), 0)
+        else:
+            self._sampling_mode = int(value)
+
+        self._eye_uniforms.update(sampling_mode=self._sampling_mode)
 
     @property
     def time_dithering(self):

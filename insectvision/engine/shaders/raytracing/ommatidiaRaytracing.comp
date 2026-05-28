@@ -8,30 +8,34 @@
 
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(std430, binding = BINDING_RCPT_STATIC) readonly buffer RcptStaticBlock  { ReceptorStatic  rcpt_static[]; };
+layout(std430, binding = BINDING_RCPT_STATIC) readonly buffer RcptStaticBlock { ReceptorStatic    rcpt_static[];  };
 layout(std430, binding = BINDING_RCPT_DYNAMIC) readonly buffer RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
-layout(std430, binding = BINDING_RAYS_INTERMEDIATE) writeonly buffer RayResultBuffer { vec4 ray_results[]; };
+layout(std430, binding = BINDING_LENS_STATIC) readonly buffer LensStaticBlock { LensStatic        lens_static[];  };
+layout(std430, binding = BINDING_RAYS_INTERMEDIATE) writeonly buffer RayResultBuffer { vec4       ray_results[];  };
 
 // Uniforms
 uniform uint dither_counter;
 uniform mat4 cam_to_world;
 uniform int nb_samples;
-uniform bool use_quasi_random;
+uniform bool use_quasi_random;  // TODO: Add more randomness modes and make this an int
+uniform bool use_hybrid_sampling;
+uniform int  sampling_mode;
 
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
     uint total_receptors = rcpt_static.length();
 
-    // Stop if out of bounds
-    if (global_id >= (nb_samples * total_receptors)) {
-        return;
-    }
+    if (global_id >= (nb_samples * total_receptors)) return;    // stop if out of bounds
 
     uint rcpt_idx = global_id / nb_samples;
     uint sample_idx = global_id % nb_samples;
 
     ReceptorStatic rs = rcpt_static[rcpt_idx];
     ReceptorDynamic rd = rcpt_dynamic[rcpt_idx];
+
+    // Lens data for this receptor
+    uint lens_idx = unpack_lens_id(rs.metadata);
+    LensStatic ls = lens_static[lens_idx];
 
     uint base_seed = rcpt_idx * 1973u + dither_counter * 26699u;
     uint rng_state = pcg_hash(base_seed + sample_idx * 749u);
@@ -59,7 +63,14 @@ void main() {
         r1 = random_float(rng_state);
         r2 = random_float(rng_state);
     }
-    vec3 direction = sampledir(rs, rd, T, B, F, r1, r2);
+
+    float ray_weight;
+    vec3 direction;
+    if (use_hybrid_sampling) {
+        direction = sampledir_hybrid(sampling_mode, rs, rd, ls, T, B, F, r1, r2, ray_weight);
+    } else {
+        direction = sampledir_importance(rs, rd, T, B, F, r1, r2, ray_weight);
+    }
 
     Ray ray;
     ray.origin = P;
@@ -67,5 +78,7 @@ void main() {
     ray.inv_direction = 1.0 / direction;
 
     vec3 final_color = trace(ray, rng_state);
-    ray_results[global_id] = vec4(final_color, 1.0);
+
+    // Alpha channel stores ray weight for reduction.comp
+    ray_results[global_id] = vec4(final_color, ray_weight);
 }
