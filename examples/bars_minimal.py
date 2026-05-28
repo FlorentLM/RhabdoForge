@@ -80,7 +80,7 @@ if __name__ == '__main__':
         context=context,
         nb_samples=16,
         time_dithering=True,
-        quasi_random=True,
+        randomness_mode='Halton',
         enable_actuation=True,  # starts with True, toggled manually from the dashboard
         enable_ambient=True,
         enable_direct=True,

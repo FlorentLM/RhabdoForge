@@ -122,7 +122,7 @@ renderer = Raytracer(
     context=context,
     nb_samples=512,
     time_dithering=True,
-    quasi_random=True,
+    randomness_mode='Halton',
     enable_shadows=False
 )
 renderer.overlay_enabled = True
