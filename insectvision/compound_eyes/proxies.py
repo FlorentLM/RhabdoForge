@@ -3374,8 +3374,7 @@ class CompoundEyeModel:
             ioa_tilts: (N,) lattice tilt in radians, in [-π/6, +π/6]
             lens_spacing: (N,) median first-ring distance, world units
 
-        Note: receptors get a separate per-receptor 'acc_tilt' written
-        by the orientation pipeline (chi).
+        Note: receptors get a separate per-receptor 'acc_tilt' written by the orientation pipeline (chi).
         The ioa_tilt here is the lattice's own rotation, the orientation pipeline does not overwrite this.
         """
         N = self.lens_count

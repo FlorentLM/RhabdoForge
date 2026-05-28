@@ -123,7 +123,7 @@ class BaseRenderer(ABC):
                  randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
                  sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
                  batch_size: int = 1,
-                 enable_actuation: bool = False,     #TODO: might rename this
+                 enable_actuation: bool = False,     # TODO: might rename this
                  resource_manager: Optional[GPUResourceManager] = None,
                  context: Optional['Context'] = None
                  ):
