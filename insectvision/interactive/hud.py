@@ -3,8 +3,9 @@ OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 from pathlib import Path
-import numpy as np
 import json
+import numpy as np
+from typing import Optional, Tuple
 from PIL import Image
 from pyglm import glm
 import glfw
@@ -12,7 +13,12 @@ import glfw
 from insectvision.engine.resources import ShaderProgram
 
 
-def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fonts', color=(255, 255, 255, 255)):
+def generate_font_atlas(
+        font_name: Optional[str] = None,
+        font_size: int = 20,
+        output_dir: str | Path ='interactive/fonts',
+        color: Tuple[int, int, int] = (255, 255, 255, 255)
+    ):
     """
     Generates a fonts atlas texture and its corresponding metadata file.
     """
@@ -98,7 +104,7 @@ def generate_font_atlas(font_name=None, font_size=22, output_dir='interactive/fo
 
 
 class FontRenderer:
-    """Renders text on the GPU using a fonts atlas."""
+    """Renders text on the GPU using a font atlas."""
 
     def __init__(self):
         self.char_data = {}
@@ -133,7 +139,7 @@ class FontRenderer:
 
         json_path = (atlas_dir / f'{font_name}.json')
         if not json_path.exists():
-            generate_font_atlas(font_name=font_name, font_size=22, output_dir=atlas_dir)
+            generate_font_atlas(font_name=font_name, font_size=20, output_dir=atlas_dir)
 
         with json_path.open(encoding="UTF-8") as f:
             data = json.load(f)
@@ -281,7 +287,12 @@ class HUD:
                 if a.keyboard_hint:
                     lines.append(f'    {a.keyboard_hint}: {a.name}')
 
-        lines.append('    ESC: Quit')
+        if self.ctx._key_bindings_desc:
+            lines.append('Custom Bindings:')
+            for key_code, (key_name, desc) in self.ctx._key_bindings_desc.items():
+                lines.append(f'    {key_name}: {desc}')
+
+        lines.append('  ESC: Quit')
 
         self._controls_text_lines = reversed(lines)
         self._controls_shadow_verts, self._controls_fg_verts = self._build_text_buffers(

@@ -2,7 +2,7 @@ import dearpygui.dearpygui as dpg
 import numpy as np
 import collections
 from pyglm import glm
-from insectvision.utils import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode
+from insectvision.utils import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode
 
 
 class Dashboard:
@@ -194,7 +194,7 @@ class Dashboard:
                     )
 
                     self.ui_tags['output_mode'] = dpg.add_radio_button(
-                        ['Raw', 'Ommatidium', 'Cartridge'],
+                        list(EyeOutput.__members__.keys()),
                         default_value=self.ctx.renderer.output_mode.name,
                         callback=self._change_output_mode,
                         horizontal=True
@@ -207,27 +207,13 @@ class Dashboard:
                         callback=lambda s, a: setattr(self.ctx.renderer, 'projection_mode', OmmatidiaProjection[a])
                     )
 
-                    dpg.add_separator()
-                    dpg.add_text('Render Settings', color=[100, 200, 255])
-
-                    self.ui_tags['samples'] = dpg.add_slider_int(
-                        label='Samples per Receptor',
-                        default_value=self.ctx.renderer.nb_samples,
-                        min_value=1, max_value=1024,
-                        callback=self._update_nb_samples
-                    )
-
                     self.ui_tags['tiled_mode'] = dpg.add_checkbox(
                         label='Tiled/Voronoi Mode (V)',
                         default_value=self.ctx.renderer.tiled_mode,
                         callback=lambda s, a: setattr(self.ctx.renderer, 'tiled_mode', a)
                     )
 
-                    self.ui_tags['time_dither'] = dpg.add_checkbox(
-                        label='Time Dithering (T)',
-                        default_value=self.ctx.renderer.time_dithering,
-                        callback=lambda s, a: setattr(self.ctx.renderer, 'time_dithering', a)
-                    )
+                    dpg.add_separator()
 
                     with dpg.group(horizontal=True):
                         self.ui_tags['heatmap'] = dpg.add_checkbox(
@@ -242,7 +228,7 @@ class Dashboard:
                             default_value=self.ctx.renderer._overlay_compression,
                             min_value=0.1, max_value=2.0,
                             callback=lambda s, a: setattr(self.ctx.renderer, '_overlay_compression', a)
-                            )
+                        )
 
                         dpg.add_combo(
                             list(Colormap.__members__.keys()),
@@ -258,6 +244,36 @@ class Dashboard:
                             tag='ui_mouse_lock',
                             callback=self._toggle_mouse_lock
                         )
+
+                    dpg.add_separator()
+                    dpg.add_text('Sampling & Noise', color=[100, 200, 255])
+
+                    self.ui_tags['samples'] = dpg.add_slider_int(
+                        label='Samples per Receptor',
+                        default_value=self.ctx.renderer.nb_samples,
+                        min_value=1, max_value=1024,
+                        callback=self._update_nb_samples
+                    )
+
+                    self.ui_tags['randomness_mode'] = dpg.add_combo(
+                        list(RandomnessMode.__members__.keys()),
+                        label='Randomness Mode',
+                        default_value=self.ctx.renderer.randomness_mode.name,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'randomness_mode', a)
+                    )
+
+                    self.ui_tags['sampling_mode'] = dpg.add_combo(
+                        list(SamplingMode.__members__.keys()),
+                        label='Sampling Mode',
+                        default_value=self.ctx.renderer.sampling_mode.name,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'sampling_mode', a)
+                    )
+
+                    self.ui_tags['time_dither'] = dpg.add_checkbox(
+                        label='Time Dithering (T)',
+                        default_value=self.ctx.renderer.time_dithering,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'time_dithering', a)
+                    )
 
                 # Tab 4: Environment
                 with dpg.tab(label='Environment'):
@@ -512,11 +528,13 @@ class Dashboard:
 
         # Interactive inputs sync
 
-        # Rendering sync
+        # Rendering and display modes sync
         dpg.set_value(self.ui_tags['view_mode'], self.ctx.display_mode.name)
         dpg.set_value(self.ui_tags['proj_mode'], self.ctx.renderer.projection_mode.name)
         dpg.set_value(self.ui_tags['tiled_mode'], self.ctx.renderer.tiled_mode)
         dpg.set_value(self.ui_tags['heatmap'], self.ctx.renderer.overlay_enabled)
+        dpg.set_value(self.ui_tags['randomness_mode'], self.ctx.renderer.randomness_mode.name)
+        dpg.set_value(self.ui_tags['sampling_mode'], self.ctx.renderer.sampling_mode.name)
 
         if hasattr(self.ctx.renderer, 'time_dithering'):
             dpg.set_value(self.ui_tags['time_dither'], self.ctx.renderer.time_dithering)

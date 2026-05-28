@@ -86,6 +86,7 @@ class Context:
 
         # Key bindings: (glfw_key, glfw_action) -> [callbacks]
         self._key_bindings: Dict[Tuple[int, int], List[Callable]] = {}
+        self._key_bindings_desc: Dict[int, str] = {}
 
         self.actions = ActionRegistry(self)
         self._controls: Optional[Controls] = controls
@@ -199,7 +200,7 @@ class Context:
             )
         return code
 
-    def bind_key(self, key: Union[int, str], callback: Callable, action: int = None):
+    def bind_key(self, key: Union[int, str], callback: Callable, action: int = None, description: str = None):
         """
         Register a callback for a key event.
 
@@ -207,16 +208,23 @@ class Context:
             key: The key to bind (string or GLFW key constant)
             callback: A (no-argument) callable invoked when the key event triggers
             action: The key event type to bind (`glfw.PRESS` (default), `glfw.RELEASE`, or `glfw.REPEAT`)
+            description: Optional, The name to display in the help HUD
 
         Example:
             context.bind_key('m', lambda: print("M pressed"))
-            context.bind_key('f1', on_help)
-            context.bind_key(glfw.KEY_SPACE, on_jump, action=glfw.RELEASE)
+            context.bind_key(glfw.KEY_SPACE, on_jump, action=glfw.RELEASE, description='Jump')
         """
-        key = self._resolve_key(key)
+        key_code = self._resolve_key(key)
+        key_str = key if isinstance(key, str) else None
 
         if action is None:
             action = glfw.PRESS
+
+        if description is None:
+            description = callback.__name__.replace('_', ' ').title()
+
+        display_name = key_str.upper() if key_str else f"Key {key_code}"
+        self._key_bindings_desc[key_code] = (display_name, description)
 
         binding = (key, action)
         if binding not in self._key_bindings:
@@ -234,12 +242,12 @@ class Context:
             callback: The callable to remove, or None to fully unbind the action on that key
             action: The key event type to unbind (`glfw.PRESS` (default), `glfw.RELEASE`, or `glfw.REPEAT`)
         """
-        key = self._resolve_key(key)
+        key_code = self._resolve_key(key)
 
         if action is None:
             action = glfw.PRESS
 
-        binding = (key, action)
+        binding = (key_code, action)
 
         if binding not in self._key_bindings:
             return
@@ -253,6 +261,16 @@ class Context:
                 pass
             if not self._key_bindings[binding]:
                 del self._key_bindings[binding]
+
+        # A key might be bound to multiple actions, only remove if unbound
+        key_still_bound = False
+        for (bound_key, bound_action) in self._key_bindings.keys():
+            if bound_key == key_code:
+                key_still_bound = True
+                break
+
+        if not key_still_bound and key_code in self._key_bindings_desc:
+            del self._key_bindings_desc[key_code]
 
     @property
     def bound_keys(self) -> dict:
