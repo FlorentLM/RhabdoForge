@@ -8,7 +8,7 @@ from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
-from insectvision.utils import DisplayMode
+from insectvision.utils import DisplayMode, RandomnessMode, SamplingMode
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType, Asset
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
@@ -461,7 +461,8 @@ class Raytracer(BaseRenderer):
             agent: 'Agent',
             time_dithering: bool = True,
             nb_samples: int = 256,
-            quasi_random: bool = False,
+            randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
+            sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
             pano_res: Optional[Tuple[int, int]] = (1024, 512),
             batch_size: int = 1,
             enable_actuation: bool = False,
@@ -481,7 +482,8 @@ class Raytracer(BaseRenderer):
             agent=agent,
             time_dithering=time_dithering,
             nb_samples=nb_samples,
-            quasi_random=quasi_random,
+            randomness_mode=randomness_mode,
+            sampling_mode=sampling_mode,
             batch_size=batch_size,
             enable_actuation=enable_actuation,
             resource_manager=self.resource_manager,
@@ -759,7 +761,8 @@ class Pathtracer(Raytracer):
                  agent: 'Agent',
                  time_dithering: bool = True,
                  nb_samples: int = 256,
-                 quasi_random: bool = False,
+                 randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
+                 sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
                  pano_res: Tuple[int, int] = (1024, 512),
                  batch_size: int = 1,
                  enable_actuation: bool = False,
@@ -779,7 +782,8 @@ class Pathtracer(Raytracer):
             context=context,
             time_dithering=time_dithering,
             nb_samples=nb_samples,
-            quasi_random=quasi_random,
+            randomness_mode=randomness_mode,
+            sampling_mode=sampling_mode,
             pano_res=pano_res,
             batch_size=batch_size,
             enable_actuation=enable_actuation,

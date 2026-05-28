@@ -8,7 +8,7 @@ from PIL import Image
 from pyglm import glm
 
 from insectvision.utils.math import tangent_frames
-from insectvision.utils import DisplayMode
+from insectvision.utils import DisplayMode, RandomnessMode, SamplingMode
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight
@@ -439,7 +439,8 @@ class Rasterizer(BaseRenderer):
                  context: Optional['Context'] = None,
                  time_dithering: bool = False,
                  nb_samples: int = 256,
-                 quasi_random: bool = False,
+                 randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
+                 sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
                  cubemap_res: int = 512,
                  batch_size: int = 1,
                  enable_actuation: bool = False,
@@ -481,7 +482,8 @@ class Rasterizer(BaseRenderer):
             context=context,
             time_dithering=time_dithering,
             nb_samples=nb_samples,
-            quasi_random=quasi_random,
+            randomness_mode=randomness_mode,
+            sampling_mode=sampling_mode,
             batch_size=batch_size,
             enable_actuation=enable_actuation
         )
@@ -723,7 +725,7 @@ class Rasterizer(BaseRenderer):
                 glActiveTexture(GL_TEXTURE0)
                 glBindTexture(GL_TEXTURE_CUBE_MAP, self._cubemap_fbo.tex_id)
                 glUniform1i(shader.get_loc('scene_cubemap'), 0)
-                glUniform1i(shader.get_loc('use_quasi_random '), self._quasi_random)
+                glUniform1i(shader.get_loc('randomness_mode '), self._randomness_mode)
 
                 glUniform1i(shader.get_loc('nb_samples'), self.nb_samples)
                 glUniform1f(shader.get_loc('dither_counter'), float(self._dither_counter))

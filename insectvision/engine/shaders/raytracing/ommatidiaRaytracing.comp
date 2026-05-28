@@ -17,7 +17,7 @@ layout(std430, binding = BINDING_RAYS_INTERMEDIATE) writeonly buffer RayResultBu
 uniform uint dither_counter;
 uniform mat4 cam_to_world;
 uniform int nb_samples;
-uniform bool use_quasi_random;  // TODO: Add more randomness modes and make this an int
+uniform int randomness_mode;
 uniform bool use_hybrid_sampling;
 uniform int  sampling_mode;
 
@@ -49,27 +49,14 @@ void main() {
     vec3 T = normalize(cross(up, F));
     vec3 B = cross(F, T);
 
-    float r1, r2;
-    if (use_quasi_random) {
-        // Halton sequence
-        uint halton_idx = dither_counter * uint(nb_samples) + sample_idx  + 1u;
-        uint hash = pcg_hash(rcpt_idx * 1973u);
-
-        r1 = clamp(fract(halton_sequence(halton_idx, 2u) + float(hash & 0xFFFFu)/65535.0), 1e-6, 1.0);
-        r2 = fract(halton_sequence(halton_idx, 3u) + float((hash >> 16u) & 0xFFFFu)/65535.0);
-
-    } else {
-        // Regular randomness
-        r1 = random_float(rng_state);
-        r2 = random_float(rng_state);
-    }
+    Sampler s = get_samples(randomness_mode, sample_idx, uint(nb_samples), rcpt_idx, uint(dither_counter));
 
     float ray_weight;
     vec3 direction;
     if (use_hybrid_sampling) {
-        direction = sampledir_hybrid(sampling_mode, rs, rd, ls, T, B, F, r1, r2, ray_weight);
+        direction = sampledir_hybrid(sampling_mode, rs, rd, ls, T, B, F, s.u1, s.u2, ray_weight);
     } else {
-        direction = sampledir_importance(rs, rd, T, B, F, r1, r2, ray_weight);
+        direction = sampledir_importance(rs, rd, T, B, F, s.u1, s.u2, ray_weight);
     }
 
     Ray ray;

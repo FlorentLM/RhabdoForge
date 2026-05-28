@@ -1,6 +1,13 @@
 #ifndef COMMONS_GLSL
 #define COMMONS_GLSL
 
+const int RNG_PSEUDO     = 0;
+const int RNG_HALTON     = 1;
+const int RNG_STRATIFIED = 2;
+
+const int MODE_GAUSSIAN  = 0;
+const int MODE_AIRY      = 1;
+
 const float PI = 3.14159265359;
 const float HPI = PI * 0.5;
 const float TWOPI = 2.0 * PI;
@@ -96,6 +103,8 @@ struct Point {
     float pad0, pad1;
 };
 
+// =====================================================================================================================
+
 // Simple RNG with temporal dithering
 float rand(vec2 co, float dither){
     return fract(sin(dot(co.xy, vec2(12.9898, 78.233)) + dither) * 43758.5453);
@@ -126,9 +135,43 @@ float random_float(inout uint rng_state) {
     return float(rng_state) / 4294967295.0;
 }
 
+struct Sampler {
+    float u1;
+    float u2;
+};
+
+Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rcpt_idx, uint dither_counter) {
+    Sampler s;
+    uint seed = pcg_hash(rcpt_idx * 1973u + dither_counter * 26699u + sample_idx * 749u);
+
+    if (mode == RNG_HALTON) {
+        uint halton_idx = dither_counter * nb_samples + sample_idx + 1u;
+        uint hash = pcg_hash(rcpt_idx * 1973u);
+        s.u1 = clamp(fract(halton_sequence(halton_idx, 2u) + float(hash & 0xFFFFu)/65535.0), 1e-6, 1.0);
+        s.u2 = fract(halton_sequence(halton_idx, 3u) + float((hash >> 16u) & 0xFFFFu)/65535.0);
+    }
+    else if (mode == RNG_STRATIFIED) {
+        float grid_size = ceil(sqrt(float(nb_samples)));
+        float cell_x = float(sample_idx % uint(grid_size));
+        float cell_y = float(sample_idx / uint(grid_size));
+
+        uint rng_state = seed;
+        s.u1 = (cell_x + random_float(rng_state)) / grid_size;
+        s.u2 = (cell_y + random_float(rng_state)) / grid_size;
+    }
+    else { // RNG_PSEUDO
+        uint rng_state = seed;
+        s.u1 = random_float(rng_state);
+        s.u2 = random_float(rng_state);
+    }
+    return s;
+}
+
+// =====================================================================================================================
+
 float get_sensitivity(int mode, float angle_min, float angle_maj, ReceptorStatic rs, ReceptorDynamic rd, LensStatic ls) {
 
-    if (mode == 1) {    // Airy mode
+    if (mode == MODE_AIRY) {    // Airy mode
 
         // The first null of an Airy disk is at 1.22 * lambda / D
         float D = ls.lens_diameter_um;
@@ -156,7 +199,7 @@ float get_sensitivity(int mode, float angle_min, float angle_maj, ReceptorStatic
         float airy = pow(2.0 * j1 / x, 2.0);
         return clamp(airy, 0.0, 1.0);
     }
-    else { // Default: Gaussian
+    else { // MODE_GAUSSIAN
         float g_min = angle_min / max(rd.acc_axes.x, 1e-6);
         float g_maj = angle_maj / max(rd.acc_axes.y, 1e-6);
         return exp(-GAUSS_CONSTANT_K * (g_min*g_min + g_maj*g_maj));

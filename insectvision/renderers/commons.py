@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple, Sequence
 import numpy as np
 from pyglm import glm
 
-from insectvision.utils import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode
+from insectvision.utils import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode
 from insectvision.geometry.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
@@ -120,7 +120,8 @@ class BaseRenderer(ABC):
                  agent: 'Agent',
                  time_dithering: bool = True,
                  nb_samples: int = 256,
-                 quasi_random: bool = False,
+                 randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
+                 sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
                  batch_size: int = 1,
                  enable_actuation: bool = False,     #TODO: might rename this
                  resource_manager: Optional[GPUResourceManager] = None,
@@ -141,6 +142,9 @@ class BaseRenderer(ABC):
         self._samples_per_rcpt = 1
         self._noise_threshold = 0.05
         self._samples_per_px = 1
+        self._use_hybrid_sampling = False
+        self._randomness_mode = self._to_enum(randomness_mode, RandomnessMode)
+        self._sampling_mode = self._to_enum(sampling_mode, SamplingMode)
 
         # Estimate needed sizes and available memory
         bytes_per_frame = N * 16  # 16 bytes per vec4 (RGBA float)
@@ -249,7 +253,7 @@ class BaseRenderer(ABC):
         self.__hemisph_vertices = 0
 
         # States flags and other things
-        self._quasi_random: bool = quasi_random  # Halton sampling for direction generation
+        self._randomness_mode: int = randomness_mode    # 0 = Pseudorandom, 1 = Halton sequence, 2 = Stratified sampling
         self._time_dithering: bool = time_dithering
         self._gpu_actuation: bool = enable_actuation
         self._overlay_enabled: bool = False
@@ -284,10 +288,7 @@ class BaseRenderer(ABC):
         # Initialise uniforms registries
         avg_lens_radius = np.mean(np.linalg.norm(self._model.rcpt_static_data['position'][:, :3], axis=1))
 
-        # Sampling modes
         self.nb_samples = nb_samples    # via property to apply
-        self._use_hybrid_sampling = False
-        self._sampling_mode = 0     # 0 = Gaussian, 1 = Airy
 
         self._eye_uniforms = UniformRegistry(
             aspect_ratio=1.0,
@@ -443,6 +444,19 @@ class BaseRenderer(ABC):
         # Each subclass implements its own estimation logic
         return 100.0
 
+    @staticmethod
+    def _to_enum(val, enum_class):
+        """Helper to convert string, int, or enum to the target Enum class."""
+        if isinstance(val, enum_class):
+            return val
+        if isinstance(val, str):
+            try:
+                return enum_class[val.capitalize()]
+            except KeyError:
+                print(f"Warning: Invalid mode '{val}' for {enum_class.__name__}. Defaulting to {list(enum_class)[0].name}")
+                return list(enum_class)[0]
+        return enum_class(val)
+
     # Internal rendering logic and draw calls
 
     def _reduction(self):
@@ -532,7 +546,8 @@ class BaseRenderer(ABC):
         self._eye_uniforms.update(
             nb_samples=self.nb_samples,
             use_hybrid_sampling=self._use_hybrid_sampling,
-            sampling_mode=self._sampling_mode,
+            randomness_mode=int(self._randomness_mode),
+            sampling_mode=int(self._sampling_mode),
         )
 
         # Process UI commands
@@ -540,7 +555,7 @@ class BaseRenderer(ABC):
             noise_threshold=self._noise_threshold,
             projection_mode=self.projection_mode,
             tiled_mode=self.tiled_mode,
-            use_quasi_random=self._quasi_random,
+            randomness_mode=self._randomness_mode,
             enable_actuation=self._gpu_actuation,
             selected_lenses=shader_highlight_ids,
         )
@@ -909,19 +924,15 @@ class BaseRenderer(ABC):
         self._eye_uniforms.update(use_hybrid_sampling=self._use_hybrid_sampling)
 
     @property
-    def sampling_mode(self) -> str:
+    def sampling_mode(self) -> SamplingMode:
         """The sensitivity profile used for weighting: 'gaussian' or 'airy'."""
-        return "airy" if self._sampling_mode == 1 else 'gaussian'
+        return self._sampling_mode
 
     @sampling_mode.setter
-    def sampling_mode(self, value: Union[int, str]):
-        if isinstance(value, str):
-            mapping = {'gaussian': 0, 'airy': 1}
-            self._sampling_mode = mapping.get(value.lower(), 0)
-        else:
-            self._sampling_mode = int(value)
-
-        self._eye_uniforms.update(sampling_mode=self._sampling_mode)
+    def sampling_mode(self, value: Union[int, str, SamplingMode]):
+        self._sampling_mode = self._to_enum(value, SamplingMode)
+        self._eye_uniforms.update(sampling_mode=int(self._sampling_mode))
+        print(f"Sampling Mode: {self._sampling_mode.name}")
 
     @property
     def time_dithering(self):
@@ -930,16 +941,18 @@ class BaseRenderer(ABC):
     @time_dithering.setter
     def time_dithering(self, value: bool):
         self._time_dithering = bool(value)
-        print(f"Time dithering {'ENABLED' if self._time_dithering else 'DISABLED'}.")
+        print(f"Time dithering: {'Enabled' if self._time_dithering else 'Disabled'}.")
 
     @property
-    def quasi_random(self):
-        return self._quasi_random
+    def randomness_mode(self) -> RandomnessMode:
+        """The randomness mode used for sampling: 'pseudorandom', 'halton' or 'stratified'."""
+        return self._randomness_mode
 
-    @quasi_random.setter
-    def quasi_random(self, value: bool):
-        self._quasi_random = bool(value)
-        print(f"Quasi-random {'ENABLED' if self._quasi_random else 'DISABLED'}.")
+    @randomness_mode.setter
+    def randomness_mode(self, value: Union[int, str, RandomnessMode]):
+        self._randomness_mode = self._to_enum(value, RandomnessMode)
+        self._eye_uniforms.update(randomness_mode=int(self._randomness_mode))
+        print(f"Randomness Mode: {self._randomness_mode.name}")
 
     @property
     def photon_concentration(self):
@@ -993,6 +1006,7 @@ class BaseRenderer(ABC):
         for i, val in enumerate(list(values)[:10]):
             self._selected_lens_ids[i] = int(val)
 
+    # TODO: These should be renamed
     @property
     def actuation(self):
         return self._gpu_actuation
@@ -1000,7 +1014,7 @@ class BaseRenderer(ABC):
     @actuation.setter
     def actuation(self, value: bool):
         self._gpu_actuation = bool(value)
-        # print(f"Rhabdomere actuation {'ENABLED' if self._gpu_actuation else 'DISABLED'}.")
+        # print(f"Rhabdomere actuation: {'Enabled' if self._gpu_actuation else 'Disabled'}.")
         self._eye_uniforms.update(enable_actuation=self._gpu_actuation)
 
     def dither(self):

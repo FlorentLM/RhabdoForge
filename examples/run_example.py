@@ -5,6 +5,7 @@ from insectvision.geometry.meshes import CUBE_VERTICES, CUBE_INDICES
 from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.renderers import Rasterizer, Raytracer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
+from insectvision.utils import RandomnessMode
 
 
 def main():
@@ -84,7 +85,7 @@ def main():
         renderer = Raytracer(model=model, scene=scene, agent=agent, context=context,
                                  nb_samples=SAMPLES_PER_RECEPTOR,
                                  time_dithering=True,
-                                 quasi_random=True,
+                                 randomness_mode=RandomnessMode.Halton,
                                  enable_actuation=True,
                                  enable_direct=True,
                                  enable_shadows=True,
@@ -105,11 +106,16 @@ def main():
                                   enable_shadows=True,
                                   enable_ambient=True)
 
-    # Example custom key binding:
-    def toggle_halton():
-        renderer.quasi_random = not renderer.quasi_random
 
-    context.bind_key('m', toggle_halton)
+
+    # Example custom key binding:
+    def cycle_randomness():
+        current = renderer.randomness_mode
+        modes = list(RandomnessMode)
+        next_mode = modes[(current.value + 1) % len(modes)]
+        renderer.randomness_mode = next_mode
+
+    context.bind_key('m', cycle_randomness)
 
 
 

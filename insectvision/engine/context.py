@@ -261,7 +261,7 @@ class Context:
     # Actions
 
     def cycle_display_mode(self):
-        next_mode = (self.display_mode.value + 1) % 3
+        next_mode = (self.display_mode.value + 1) % len(DisplayMode)
         self.display_mode = DisplayMode(next_mode)
 
     def toggle_voronoi(self):

@@ -3,7 +3,7 @@ from enum import IntEnum
 
 class EyeOutput(IntEnum):
     """
-    Eye colours output mode (neural superposition vs. lenses)
+    Eye colours output mode (for visualisation only)
     """
     Raw = 0          # Render receptors individually (scaled down)
     Ommatidium = 1   # One tile per lens (averaging R1-R8)
@@ -35,3 +35,14 @@ class DisplayMode(IntEnum):
     Panoramic = 1
     Third_person = 2
     Perspective = 3
+
+
+class RandomnessMode(IntEnum):
+    Pseudo = 0      # Standard PCG White Noise
+    Halton = 1      # Quasi-random low-discrepancy
+    Stratified = 2  # Grid-based jittered sampling
+
+
+class SamplingMode(IntEnum):
+    Gaussian = 0    # Default approximation
+    Airy = 1        # Physical diffraction pattern
