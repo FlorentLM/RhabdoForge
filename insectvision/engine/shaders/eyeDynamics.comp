@@ -81,12 +81,19 @@ void main() {
         ReceptorStatic rs = rcpt_static[rcpt_idx];
 
         // RF narrowing (Snyder)
-        float g_rest = rs.rhab_diameter_um / d_rest;
-        float diff = rs.wavelength_um / ls.lens_diameter_um;    // Diffraction (Lens)
-        float g_new  = rs.rhab_diameter_um / d_eff;     // Geometric (Rhabdomere)
 
-        // Total acceptance angle is the combination of diffraction and geometric
-        float acc_scale = sqrt(diff*diff + g_new*g_new) / sqrt(diff*diff + g_rest*g_rest);
+        float g_rest = rs.rhab_diameter_um / d_rest;
+
+        // Static diffraction limit (Lens)
+        float rho_diff = rs.wavelength_um / ls.lens_diameter_um;
+
+        // Geometric components (Rhabdomere)
+        float rho_geom_rest = rs.rhab_diameter_um / d_rest;
+        float rho_geom_now  = rs.rhab_diameter_um / d_eff;
+
+        float total_rest = sqrt(rho_diff*rho_diff + rho_geom_rest*rho_geom_rest);
+        float total_now  = sqrt(rho_diff*rho_diff + rho_geom_now*rho_geom_now);
+        float acc_scale  = total_now / total_rest;
 
         // Compose movements (microsaccade + retinal movement)
         vec2 sacc_off = saccade_sign * ld.lateral_um * vec2(ls.sacc_local_x, ls.sacc_local_y);

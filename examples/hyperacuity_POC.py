@@ -32,7 +32,7 @@ BAR_SEPARATION = 0.14      # 4.01° centre-to-centre → 2.86° gap
 # BAR_SEPARATION = 0.25      # 7.16° centre-to-centre → 6.00° gap
 
 # One bar:
-BAR_SEPARATION = 0.0       # single bar at origin
+# BAR_SEPARATION = 0.0       # single bar at origin
 
 
 # Motion - Linear Sweeps
@@ -140,7 +140,7 @@ renderer = Raytracer(
     context=context,
     nb_samples=256,
     time_dithering=True,
-    quasi_random=True,
+    randomness_mode='Halton',
     enable_actuation=True,
     enable_ambient=True,
     enable_direct=True,

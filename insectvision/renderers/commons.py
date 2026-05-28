@@ -253,7 +253,6 @@ class BaseRenderer(ABC):
         self.__hemisph_vertices = 0
 
         # States flags and other things
-        self._randomness_mode: int = randomness_mode    # 0 = Pseudorandom, 1 = Halton sequence, 2 = Stratified sampling
         self._time_dithering: bool = time_dithering
         self._gpu_actuation: bool = enable_actuation
         self._overlay_enabled: bool = False
