@@ -769,6 +769,8 @@ class Cartridge:
 
         R = model.receptors_per_lens
         sources = model._cartridge_map[self._central_lens_idx]
+
+        sources[sources == -1] = self._central_lens_idx
         self._member_indices = (sources * R + np.arange(R, dtype=np.intp))
 
     def __len__(self) -> int:
@@ -932,7 +934,9 @@ class Eye:
     def _ensure_trees_cf(self) -> Tuple[Optional[cKDTree], Optional[cKDTree], np.ndarray]:
         """Lazy-build conflict-free trees (used when avoid_conflicts=True)."""
         if self._direction_tree_cf is None:
-            valid_mask = ~self._model.have_conflicts[self._lens_indices]
+            conflict_free = ~self._model.have_conflicts[self._lens_indices]
+            fully_wired = ~self._model.has_selfwires[self._lens_indices]
+            valid_mask = conflict_free & fully_wired
             self._cf_local_indices = np.flatnonzero(valid_mask)
             if self._cf_local_indices.size > 0:
                 dirs = self._model._lens_directions[self._lens_indices[self._cf_local_indices]]
@@ -3056,8 +3060,11 @@ class CompoundEyeModel:
                 counts = np.bincount(col[valid], minlength=N)
                 don_conf |= counts > 1
 
+        # These should be internal and exposed through properties in model, eye and lensview levels
         self.unwired_slots = (cartridge_map[:, periph] < 0)
         self.unwired_count = int(self.unwired_slots.sum())
+        self.has_selfwires = np.any(self.unwired_slots, axis=1)
+
         self.receiving_conflicts = recv_conf
         self.donation_conflicts = don_conf
         self.have_conflicts = recv_conf | don_conf
