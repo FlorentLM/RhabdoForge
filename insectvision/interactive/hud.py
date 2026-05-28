@@ -33,8 +33,9 @@ def generate_font_atlas(
 
     pygame.init()
 
-    if font_name is None:
-        font_name = pygame.font.get_default_font()
+    font_name = str(font_name) if font_name is not None else pygame.font.get_default_font()
+    base_name = font_name.split('.')[0] if '.' in font_name else font_name
+    unique_name = f"{base_name}_{font_size}"
 
     print(f"Generating fonts atlas for '{font_name}' (size {font_size})...")
 
@@ -85,16 +86,15 @@ def generate_font_atlas(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    image_path = output_dir / f'{font_name}.png'
-    json_path = output_dir / f'{font_name}.json'
+    image_path = output_dir / f'{unique_name}.png'
+    json_path = output_dir / f'{unique_name}.json'
 
     pygame.image.save(atlas_surface, image_path)
-
     with open(json_path, 'w') as f:
         json.dump({
             'font_name': font_name,
             'font_size': font_size,
-            'atlas_image': f'{font_name}.png',
+            'atlas_image': f'{unique_name}.png',
             'char_data': char_data
         }, f, indent=4)
 
@@ -106,7 +106,7 @@ def generate_font_atlas(
 class FontRenderer:
     """Renders text on the GPU using a font atlas."""
 
-    def __init__(self):
+    def __init__(self, font_name='freesansbold.ttf', font_size=22):
         self.char_data = {}
         self.text_program = ShaderProgram(vert_path='text.vert', frag_path='text.frag')
 
@@ -114,7 +114,7 @@ class FontRenderer:
         self.color_loc = self.text_program.get_loc("textColor")
         self.atlas_loc = self.text_program.get_loc("fontAtlas")
 
-        self._load_atlas_data()
+        self._load_atlas_data(font_name, font_size)
 
         # VAO and VBO for text quads
         self.vao = glGenVertexArrays(1)
@@ -130,16 +130,19 @@ class FontRenderer:
         glBindBuffer(GL_ARRAY_BUFFER, 0)
         glBindVertexArray(0)
 
-    def _load_atlas_data(self, font_name='freesansbold.ttf'):
+    def _load_atlas_data(self, font_name: str, font_size: int):
         """
         Loads atlas metadata from JSON and the texture from the associated PNG file.
         """
-
         atlas_dir = Path('insectvision/interactive/fonts')
 
-        json_path = (atlas_dir / f'{font_name}.json')
+        base_name = font_name.split('.')[0] if '.' in font_name else font_name
+        unique_name = f"{base_name}_{font_size}"
+        json_path = atlas_dir / f'{unique_name}.json'
+
+        # Generate if this specific size doesn't exist
         if not json_path.exists():
-            generate_font_atlas(font_name=font_name, font_size=20, output_dir=atlas_dir)
+            generate_font_atlas(font_name=font_name, font_size=font_size, output_dir=atlas_dir)
 
         with json_path.open(encoding="UTF-8") as f:
             data = json.load(f)
@@ -205,6 +208,11 @@ class FontRenderer:
                 cursor_x += data['advance'] * scale
         return vertices
 
+    def change_size(self, new_size, font_name='freesansbold.ttf'):
+        if self.atlas_texture:
+            glDeleteTextures(1, [self.atlas_texture])
+        self._load_atlas_data(font_name, new_size)
+
     def free(self):
         self.text_program.free()
         glDeleteVertexArrays(1, [self.vao])
@@ -217,7 +225,7 @@ class HUD:
     Manages the rendering of all HUD elements.
     """
 
-    def __init__(self, context):
+    def __init__(self, context, font_size=18):
         self.ctx = context
 
         self.width = self.ctx.window_size[0]
@@ -226,7 +234,7 @@ class HUD:
 
         self.show = True
 
-        self.font_renderer = FontRenderer()
+        self.font_renderer = FontRenderer(font_size=font_size)
 
         self.projection_matrix = glm.ortho(0, self.width, 0, self.height, -1.0, 1.0)
 

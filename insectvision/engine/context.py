@@ -423,7 +423,7 @@ class Context:
 
             self.observer = OrbitCamera(target=agent, distance=1.5, ratio=self._window_size[0] / self._window_size[1])
             self.display_mode = DisplayMode.Compound
-            self.hud = HUD(self)
+            self.hud = HUD(self, font_size=18)
 
             if use_dashboard:
                 # Dashboard needs writes to be enabled
