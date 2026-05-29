@@ -135,7 +135,6 @@ void main() {
     float lati = asin(p_vec.y);
     vec3 pos = vec3(rotated_offset, z_voronoi) + vec3(longi/PI, lati/HPI, 0.0);
 
-    pos.xy *= 1.5;
     pos.x /= aspect_ratio;
 
     gl_Position = vec4(pos, 1.0);

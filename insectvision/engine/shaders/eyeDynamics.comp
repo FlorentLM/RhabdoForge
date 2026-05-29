@@ -14,7 +14,6 @@ uniform int   receptors_per_lens;
 uniform float dt;                 // simulation timestep (s)
 uniform bool  enable_actuation;   // toggle for photomechanical saccades
 uniform float lum_ref;            // operating-point luminance for biochemical gain
-uniform float saccade_sign;       // global flag for mirror symmetric L/R
 uniform float retina_drive_um[8]; // retina muscle pull strength (one per eye ID (0-7))
 uniform float noise_threshold;
 
@@ -46,11 +45,16 @@ void main() {
         ld.adapted_lum = mix(lum, ld.adapted_lum, alpha_adapt);
     }
 
-    // Photomechanical saccade controller
+    // Raw contrast
     float contrast = (ld.fast_lum - ld.adapted_lum) / (ld.adapted_lum + 0.05);
 
-    // Stiction for saccade trigger to avoid jitter and self-generated excitation loop
-    float bright_drive = smoothstep(noise_threshold * 2.0, noise_threshold * 3.0, contrast);
+    // Deadzone: subtract noise threshold
+    float clean_contrast = max(0.0, contrast - (noise_threshold * 1.0));
+//    float clean_contrast = contrast;                                          // DEBUG
+
+    // Apply gain curve
+    float sensitivity = 0.2;
+    float bright_drive = max(0.0, tanh(clean_contrast / sensitivity));
 
     float target_lat = enable_actuation ? (bright_drive * ls.gain_lat_um) : 0.0;
     float target_ax  = enable_actuation ? (bright_drive * ls.gain_ax_um)  : 0.0;
@@ -96,7 +100,9 @@ void main() {
         float acc_scale  = total_now / total_rest;
 
         // Compose movements (microsaccade + retinal movement)
-        vec2 sacc_off = saccade_sign * ld.lateral_um * vec2(ls.sacc_local_x, ls.sacc_local_y);
+        vec2 sacc_off = ld.lateral_um * vec2(ls.sacc_local_x, ls.sacc_local_y);
+//        vec2 sacc_off = -1.0 * ld.lateral_um * vec2(ls.sacc_local_x, ls.sacc_local_y);    // DEBUG
+
         vec2 musc_off = muscle_tug * vec2(ls.retina_x, ls.retina_y);
         vec2 total_xy = rs.rot_offset + sacc_off + musc_off;
 

@@ -1,7 +1,6 @@
 import math
 import numpy as np
 import matplotlib.pyplot as plt
-
 from insectvision.compound_eyes.kernel import drosophila_kernel, RECEPTOR_PALETTE
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.compound_eyes import CompoundEyeModel
@@ -14,30 +13,38 @@ from insectvision.geometry import plane_geom
 # So:
 #  - Stimulus: thin horizontal bars
 #  - Agent oscillates vertically
-#  - Readout is a single (or a horizontal band of) forward-pointing ommatidia
+#  - Readout is a single forward-pointing ommatidium
 
+# ---------------------------------------------------------------------------
 # Stimulus
-BAR_THICKNESS = 0.04    # metres
-BAR_LENGTH = 10.0       # metres
-DISTANCE= 2.0           # metres
+
+BAR_WIDTH_DEG  = 1.0      # degrees
 
 # Two bars:
-# BAR_SEPARATION = 0.10
-BAR_SEPARATION = 0.14      # 4.01° centre-to-centre → 2.86° gap
-# BAR_SEPARATION = 0.15      # 4.30° centre-to-centre → 3.15° gap
-# BAR_SEPARATION = 0.16      # 4.58° centre-to-centre → 3.43° gap
-# BAR_SEPARATION = 0.18      # 5.15° centre-to-centre → 4.00° gap
-# BAR_SEPARATION = 0.19      # 5.44° centre-to-centre → 4.29° gap
-# BAR_SEPARATION = 0.21      # 6.01° centre-to-centre → 4.86° gap
-# BAR_SEPARATION = 0.25      # 7.16° centre-to-centre → 6.00° gap
+
+# BAR_SEP_DEG    = 1.0
+# BAR_SEP_DEG    = 2.0
+# BAR_SEP_DEG    = 3.0
+BAR_SEP_DEG    = 4.0    # degrees centre-to-centre
+# BAR_SEP_DEG    = 5.0
+# BAR_SEP_DEG    = 6.0
+# BAR_SEP_DEG    = 7.0
 
 # One bar:
-# BAR_SEPARATION = 0.0       # single bar at origin
+# BAR_SEP_DEG    = 0.0
 
+DISTANCE       = 2.0      # m
+BAR_LENGTH     = 10.0     # m
 
-# Motion - Linear Sweeps
-SWEEP_SPEED = 1.0        # m/s
-SWEEP_AMPLITUDE = 0.5    # m
+BAR_THICKNESS  = 2.0 * DISTANCE * np.tan(np.radians(BAR_WIDTH_DEG) / 2.0)
+BAR_SEPARATION = 2.0 * DISTANCE * np.tan(np.radians(BAR_SEP_DEG) / 2.0)
+
+# Motion: Linear sweeps
+SWEEP_SPEED_DEG  = 30.0    # deg/s (angular speed at the centre of the field)
+SWEEP_AMPLITUDE  = 1.0     # m (total travel is +/- this value)
+
+SWEEP_SPEED = DISTANCE * np.radians(SWEEP_SPEED_DEG)
+
 NUM_CYCLES_PER_PHASE = 3 # Complete 3 Up/Down sweeps OFF, then 3 Up/Down sweeps ON
 
 # One-way sweep time
@@ -46,19 +53,22 @@ SWEEP_DURATION = (2 * SWEEP_AMPLITUDE) / SWEEP_SPEED
 CYCLE_DURATION = 2 * SWEEP_DURATION
 MAX_TIME = CYCLE_DURATION * NUM_CYCLES_PER_PHASE * 2
 
-# Readout ommatidium (or band of ommatidia)
-# Horizontal strip: broad in azimuth, narrow in elevation
-# BAND_AZ_HALFWIDTH = 20.0  # deg
-# BAND_EL_HALFWIDTH = 1.5  # deg
-# BAND_CONE_DEG = 15.0
+print(f"\nRunning for {MAX_TIME:.1f}s: {NUM_CYCLES_PER_PHASE} cycles OFF, then {NUM_CYCLES_PER_PHASE} cycles ON ...")
 
-# This should select just one ommatidium
-BAND_AZ_HALFWIDTH = 1.0  # deg
-BAND_EL_HALFWIDTH = 1.0  # deg
-BAND_CONE_DEG = 15.0
+# ---------------------------------------------------------------------------
 
-EYE_MODEL_PATH = 'species_models/drosophila_custom.npz'
+# This should select just one ommatidium in each eye
+CONE_DEG = 10.0
 
+GAIN_LAT = 1.5
+GAIN_AX = 8.0
+
+TAU_MEMBRANE = 0.012
+
+TAU_FAST     = 0.005
+TAU_ADAPT    = 0.050
+TAU_RISE     = 0.005
+TAU_RELAX    = 0.080
 
 # ---------------------------------------------------------------------------
 
@@ -74,20 +84,18 @@ def create_bar(name, cx, cy, width_x, width_y, distance, texture):
         uv_coords=uv_coords, texture=texture,
     )
 
+def pick_ommatidia(model, agent, cone_deg=CONE_DEG):
+    cone = model.query_cone(agent.forward, angle=cone_deg, degrees=True, avoid_conflicts=True)
+    if len(cone) == 0:
+        raise RuntimeError("Forward band is empty. Widen the cone.")
 
-def pick_ommatidia(model, agent, az_halfwidth_deg=BAND_AZ_HALFWIDTH, el_halfwidth_deg=BAND_EL_HALFWIDTH, cone_deg=BAND_CONE_DEG):
-
-    cone = model.query_cone(agent.forward, angle=cone_deg)
-    mask = (np.abs(cone.azimuth_deg) < az_halfwidth_deg) & (np.abs(cone.elevation_deg) < el_halfwidth_deg)
-    band = cone[mask]
-
-    chir = band.chirality
+    chir = cone.chirality
     n_pos = int(np.sum(chir > 0))
     n_neg = int(np.sum(chir < 0))
-    print(f"Forward band: {len(band)} lenses "
+    print(f"Forward cartridges: lenses {cone} "
           f"(chirality +1:{n_pos}, -1:{n_neg})  "
-          f"az ±{az_halfwidth_deg}°, el ±{el_halfwidth_deg}°")
-    return band.indices
+          f"(picked from {len(cone)} candidates within {cone_deg} deg of forward)")
+    return cone.indices
 
 
 def print_stim_geometry():
@@ -99,6 +107,7 @@ def print_stim_geometry():
     print(f"Horizontal bars: {bar_t_deg:.2f}° thick (elevation), {bar_s_deg:.2f}° apart")
     print(f"Linear vertical sweep speed: {sweep_w:.1f}°/s")
 
+print_stim_geometry()
 
 # ---------------------------------------------------------------------------
 
@@ -124,12 +133,19 @@ bar_high = create_bar('bar_high', 0.0, high_y, BAR_LENGTH, BAR_THICKNESS, DISTAN
 scene.add_instance(bar_low)
 scene.add_instance(bar_high)
 
-
-model = CompoundEyeModel.from_file(EYE_MODEL_PATH, kernel=drosophila_kernel())
+model = CompoundEyeModel.from_file('species_models/drosophila_custom.npz', kernel=drosophila_kernel())
 model.scale(1e-6)
+
 with model.unlock(receptors=True):
-    # model.receptors.tau_membrane = 0.012
-    model.receptors.tau_membrane = 0.0
+    model.receptors.tau_membrane = TAU_MEMBRANE
+
+with model.unlock(lenses=True):
+    model.lenses.tau_fast = TAU_FAST
+    model.lenses.tau_adapt = TAU_ADAPT
+    model.lenses.gain_lat_um = GAIN_LAT
+    model.lenses.gain_ax_um = GAIN_AX
+    model.lenses.tau_rise = TAU_RISE
+    model.lenses.tau_relax = TAU_RELAX
 
 agent = Agent(position=(0.0, 0.0, 0.0))
 
@@ -138,7 +154,7 @@ renderer = Raytracer(
     scene=scene,
     agent=agent,
     context=context,
-    nb_samples=256,
+    nb_samples=512,
     time_dithering=True,
     randomness_mode='Halton',
     enable_actuation=True,
@@ -146,34 +162,24 @@ renderer = Raytracer(
     enable_direct=True,
     enable_shadows=False,
 )
+
+# Make the bar very bright
 renderer.ambient_intensity = 1.5
 
 # Tune / disable luminance boost on RF narrowing
-renderer.photon_concentration = 0.2
-# renderer.photon_concentration = 0.0
-
-
-with model.unlock(lenses=True):
-    # Lateral gain: 1.5 um is roughly 1-2 degrees of angular shift?
-    model.lenses.gain_lat_um = 1.5
-
-    # Axial gain: RF narrowing
-    model.lenses.gain_ax_um = 8.0
-
-    # Kemppainen says 5 fast and 80 slow (check this) ?
-    model.lenses.tau_rise = 0.005
-    model.lenses.tau_relax = 0.080
+# renderer.photon_concentration = 0.2
+renderer.photon_concentration = 0.0
 
 # --------------------------------------------------------------------------
 
-print_stim_geometry()
 selected_lenses = pick_ommatidia(model, agent)
 
-if len(selected_lenses) == 0:
-    raise RuntimeError("Forward band is empty. Widen the cone / strip.")
-renderer.selected_lenses = selected_lenses[:min(10, len(selected_lenses))].tolist()
+# Only take one lens / cartridge
+selected_lens = selected_lenses[0]
 
-print(f"R7/8 acceptance: {np.degrees(model.rcpt_dynamic_data['acc_axes'][selected_lenses[0] * 7 + 6])}°")
+renderer.selected_lenses = [571]
+
+print(f"R7/8 acceptance: {np.degrees(model.rcpt_dynamic_data['acc_axes'][selected_lens * 7 + 6])}°")
 
 results = {
     'time':             [],
@@ -181,12 +187,9 @@ results = {
     'actuation':        [],
     'L2_cart':          [],
     'R78_cart':         [],
-    'apposition_pool':  [],
-    'indiv_lens':       [],
+    'cartridge':        [],
     'motion_dir':       [],
 }
-
-print(f"\nRunning for {MAX_TIME:.1f}s: {NUM_CYCLES_PER_PHASE} cycles OFF, then {NUM_CYCLES_PER_PHASE} cycles ON ...")
 
 while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=True):
 
@@ -213,24 +216,20 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_d
     agent.position = (0.0, ay, 0.0)
     visual_output = renderer.step()
 
-    radiance_cart = visual_output.per_cartridge[selected_lenses, ..., :3].mean(axis=-1)
-    radiance_lens = visual_output.per_lens[selected_lenses, ..., :3].mean(axis=-1)
+    # Radiance = mean of colours
+    radiance_cart = visual_output.per_cartridge[selected_lens, :, :3].mean(axis=-1)
+    radiance_lens = visual_output.per_lens[selected_lens, :, :3].mean(axis=-1)
 
-    # Calculate LMC (Cartridge Pool) and Central Cell
-    L2_cart = radiance_cart[:, :6].mean(axis=1).mean() * 6.0
-    R78_cart = radiance_cart[:, 6].mean()
-
-    # Calculate evolutionary controls
-    apposition_pool = radiance_lens[:, :6].mean(axis=1).mean() * 6.0
-    indiv_lens = radiance_lens.mean(axis=0)
+    # Calculate LMC (Cartridge pool) and Central Cell
+    L2_cart = radiance_cart[:6].sum()
+    R78_cart = radiance_cart[6]
 
     results['time'].append(sim_time)
     results['agent_y'].append(ay)
     results['actuation'].append(bool(renderer.actuation))
+    results['cartridge'].append(radiance_cart)
     results['L2_cart'].append(L2_cart)
     results['R78_cart'].append(R78_cart)
-    results['apposition_pool'].append(apposition_pool)
-    results['indiv_lens'].append(indiv_lens)
     results['motion_dir'].append(motion_dir)
 
     context.draw(visual_output)
@@ -243,13 +242,12 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_d
 times = np.array(results['time'])
 agent_y = np.array(results['agent_y'])
 act = np.array(results['actuation'])
+cartridge = np.array(results['cartridge'])
 L2_cart = np.array(results['L2_cart'])
 R78_cart = np.array(results['R78_cart'])
-apposition_pool = np.array(results['apposition_pool'])
-indiv_lens = np.array(results['indiv_lens'])
 mdir = np.array(results['motion_dir'])
 
-fig, axs = plt.subplots(4, 2, figsize=(14, 16), sharex=True)
+fig, axs = plt.subplots(3, 2, figsize=(10, 10), sharex=True)
 
 
 def plot_sweep(ax, data, direction, title):
@@ -261,15 +259,15 @@ def plot_sweep(ax, data, direction, title):
 
 
 def plot_individual_receptors(ax, direction, title):
-    """Plots lines for individual receptors to show their spatial staggering."""
-    mask = (mdir == direction) & ~act  # Plotting OFF only to avoid clutter
+    """Plots lines for individual receptors."""
+    mask = (mdir == direction) & act
     y_vals = agent_y[mask]
     sort_idx = np.argsort(y_vals)
     y_sorted = y_vals[sort_idx]
 
     for i in range(7):
         label = f'R{i + 1}' if i < 6 else 'R7/8'
-        r_vals = indiv_lens[mask, i][sort_idx]
+        r_vals = cartridge[mask, i][sort_idx]
         ax.plot(y_sorted, r_vals, color=RECEPTOR_PALETTE[i], label=label, alpha=0.8, lw=1.5)
 
     ax.set_title(title)
@@ -277,26 +275,23 @@ def plot_individual_receptors(ax, direction, title):
 
 
 # Column 0: Bar moving up (agent moving down)
-plot_sweep(axs[0, 0], R78_cart, 1, "Row 1 | R7/8 (Central Cell): Bar UP")
-plot_sweep(axs[1, 0], L2_cart, 1, "Row 2 | Neural Superposition (Cartridge Pool): Bar UP")
-plot_sweep(axs[2, 0], apposition_pool, 1, "Row 3 | Apposition Proxy (Ommatidium Pool): Bar UP")
-plot_individual_receptors(axs[3, 0], 1, "Row 4 | Individual Receptors (Physical Lens) OFF-only: Bar UP")
+plot_sweep(axs[0, 0], R78_cart, 1, "R7/8 (Central cell): Bar UP")
+plot_sweep(axs[1, 0], L2_cart, 1, "R1-R6 (Cartridge pool): Bar UP")
+plot_individual_receptors(axs[2, 0], 1, "Individual receptors (Cartridge) ON-only: Bar UP")
 
 axs[0, 0].set_ylabel("Signal Intensity")
 axs[1, 0].set_ylabel("Signal Intensity")
 axs[2, 0].set_ylabel("Signal Intensity")
-axs[3, 0].set_ylabel("Signal Intensity")
-axs[3, 0].set_xlabel("Agent Y position (m)")
+axs[2, 0].set_xlabel("Agent Y position (m)")
 
 # Column 1: Bar moving down (agent moving up)
-plot_sweep(axs[0, 1], R78_cart, -1, "Row 1 | R7/8 (Central Cell): Bar DOWN")
-plot_sweep(axs[1, 1], L2_cart, -1, "Row 2 | Neural Superposition (Cartridge Pool): Bar DOWN")
-plot_sweep(axs[2, 1], apposition_pool, -1, "Row 3 | Apposition Proxy (Ommatidium Pool): Bar DOWN")
-plot_individual_receptors(axs[3, 1], -1, "Row 4 | Individual Receptors (Physical Lens) OFF-only: Bar DOWN")
+plot_sweep(axs[0, 1], R78_cart, -1, "R7/8 (Central cell): Bar DOWN")
+plot_sweep(axs[1, 1], L2_cart, -1, "R1-R6 (Cartridge pool): Bar DOWN")
+plot_individual_receptors(axs[2, 1], -1, "Individual Receptors (Cartridge) ON-only: Bar DOWN")
 
-axs[3, 1].set_xlabel("Agent Y position (m)")
+axs[2, 1].set_xlabel("Agent Y position (m)")
 axs[0, 1].legend(loc='upper right', markerscale=5)
-axs[3, 1].legend(loc='upper right', fontsize=9)
+axs[2, 1].legend(loc='upper right', fontsize=9)
 
 plt.tight_layout()
 plt.show()
