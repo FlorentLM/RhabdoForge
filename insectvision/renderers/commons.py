@@ -140,7 +140,6 @@ class BaseRenderer(ABC):
         nb_lenses = self._model.lens_count
 
         self._samples_per_rcpt = 1
-        self._noise_threshold = 0.05
         self._samples_per_px = 1
         self._use_hybrid_sampling = False
         self._randomness_mode = self._to_enum(randomness_mode, RandomnessMode)
@@ -269,7 +268,7 @@ class BaseRenderer(ABC):
 
         # Visualisation stuff
         self.projection_mode = OmmatidiaProjection.Position
-        self.output_mode = EyeOutput.Ommatidium
+        self.output_mode = EyeOutput.Cartridge
         self._selected_lens_ids = np.full(10, -1, dtype=np.int32)
 
         # Overlay parameters
@@ -303,7 +302,7 @@ class BaseRenderer(ABC):
 
             # Various visualisation parameters (currently fixed and not modifiable)
             visualisation_eye_surface_albedo=1.0,
-            visualisation_rf_scale=1.0 / (2.0 * np.pi),
+            vis_rf_scale=0.5,
             visualisation_lens_length=max(0.01, avg_lens_radius) * 0.3,
             visualisation_eyes_scale=1.0,
             visualisation_saccade_scale=1.0,
@@ -338,9 +337,8 @@ class BaseRenderer(ABC):
 
             # Receptors dynamics
             enable_actuation=self._gpu_actuation,
-            photon_concentration_factor=0.2,        # TODO: document this better
-            lum_ref=self.lum_ref,
-            saccade_sign=1.0        # TODO: Remove this one
+            photon_concentration_factor=0.0,        # TODO: document this better
+            lum_ref=self.lum_ref
         )
 
     def __repr__(self):
@@ -594,6 +592,8 @@ class BaseRenderer(ABC):
 
         with shader:
             glEnable(GL_DEPTH_TEST)
+            glDisable(GL_CULL_FACE)
+            glDepthFunc(GL_LEQUAL)
 
             # Need the first person projection to conform to viewport aspect
             viewport = glGetIntegerv(GL_VIEWPORT)
@@ -903,7 +903,8 @@ class BaseRenderer(ABC):
         if value_clamped == self._samples_per_rcpt:
             return
 
-        print(f"Warning: Clamped samples per receptor to {value_clamped} (HW limit is {max_per_r}).")
+        if value_clamped != value:
+            print(f"Warning: Clamped samples per receptor to {value_clamped} (HW limit is {max_per_r}).")
 
         self._samples_per_rcpt = value_clamped
 

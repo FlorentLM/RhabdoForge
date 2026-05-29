@@ -26,12 +26,13 @@ layout (location = 0) out vec3 v_color;
 
 layout (location = 1) out vec2 v_local_pos;
 layout (location = 2) flat out int v_instance_id;
+layout (location = 3) flat out float v_select_f;
 
 uniform int frame_offset;
 uniform float aspect_ratio;
 uniform int projection_mode;
 uniform bool tiled_mode;
-uniform float visualisation_rf_scale;
+uniform float vis_rf_scale;
 uniform int output_mode;
 uniform int receptors_per_lens;
 uniform int kernel_centre_idx;
@@ -96,26 +97,47 @@ void main() {
     }
 
     float tilt = tiled_mode ? lens_static[l_id].ioa_tilt : rcpt_static[output_mode == 0 ? inst_idx : l_id * receptors_per_lens + kernel_centre_idx].acc_tilt;
-
-    // Fetch axes from Dynamic (Binding 4) for contraction, or Static for layout
     vec2 axes = tiled_mode ? lens_static[l_id].ioa_axes : rcpt_dynamic[output_mode == 0 ? inst_idx : l_id * receptors_per_lens + kernel_centre_idx].acc_axes;
 
-    // Highlight lenses
-    float is_selected = 0.0;
+    uint rcpt_idx = (output_mode == 0 ? inst_idx : l_id * receptors_per_lens + kernel_centre_idx);
+    vec2 dynamic_axes = rcpt_dynamic[rcpt_idx].acc_axes;
+    vec2 rest_axes = rcpt_static[rcpt_idx].rest_acc;
+
+    // axial contraction (narrowing)
+    vec2 acc_scale_factor = dynamic_axes / max(rest_axes, 1e-6);
+
+    vec2 base_axes = tiled_mode ? lens_static[l_id].ioa_axes : dynamic_axes;
+    vec2 final_axes = base_axes * (tiled_mode ? acc_scale_factor : vec2(1.0));
+
+    // Highlight selected lenses
+    float select_f = 0.0;
     for (int j = 0; j < 10; j++) {
         if (selected_lenses[j] != -1 && uint(selected_lenses[j]) == uint(inst_idx)) {
-            is_selected = 1.0;
+            select_f = 1.0;
             break;
         }
     }
+    v_select_f = select_f;
+
     float s = sin(tilt), c = cos(tilt);
-    vec2 rot = mat2(c, -s, s, c) * (cone_vertex.xy * axes) * (1.0 + is_selected * 0.1);
+    vec2 rot = cone_vertex.xy * final_axes * vis_rf_scale;
 
-    float longi = atan(p_vec.x, -p_vec.z), lati = asin(p_vec.y);
-    vec3 pos = vec3(rot * visualisation_rf_scale * (tiled_mode ? 2.5 : 1.0), cone_vertex.z) + vec3(longi/PI, lati/HPI, 0.0);
+    vec2 rotated_offset = mat2(c, -s, s, c) * rot * (1.0 + select_f * 0.1);
 
-    pos.z -= (is_selected * 0.8);
+    // Z-Voronoi logic
+    // flatten slightly so they don't clip the far plane
+    float z_voronoi = cone_vertex.z * 0.5;
+
+    // If selected, subtract from Z, if not, add an offset to stay behind
+    z_voronoi += (select_f > 0.5) ? -0.8 : 0.2;
+
+    float longi = atan(p_vec.x, -p_vec.z);
+    float lati = asin(p_vec.y);
+    vec3 pos = vec3(rotated_offset, z_voronoi) + vec3(longi/PI, lati/HPI, 0.0);
+
+    pos.xy *= 1.5;
     pos.x /= aspect_ratio;
+
     gl_Position = vec4(pos, 1.0);
 
     #ifdef OVERLAY_MODE
