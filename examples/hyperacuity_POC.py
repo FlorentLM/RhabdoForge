@@ -1,4 +1,3 @@
-import math
 import numpy as np
 import matplotlib.pyplot as plt
 from insectvision.compound_eyes.kernel import drosophila_kernel, RECEPTOR_PALETTE
@@ -11,12 +10,12 @@ from insectvision.geometry import plane_geom
 #
 # Drosophila microsaccades are roughly vertically in visual space (aligned with optic flow during forward flight)
 # So:
-#  - Stimulus: thin horizontal bars
-#  - Agent oscillates vertically
-#  - Readout is a single forward-pointing ommatidium
-
+#   - Stimulus: thin horizontal bars
+#   - Agent oscillates vertically
+#   - Readout is a single forward-pointing ommatidium
+#
 # ---------------------------------------------------------------------------
-# Stimulus
+# Stimulus: thin horizontal bars
 
 BAR_WIDTH_DEG  = 1.0      # degrees
 
@@ -39,26 +38,34 @@ BAR_LENGTH     = 10.0     # m
 BAR_THICKNESS  = 2.0 * DISTANCE * np.tan(np.radians(BAR_WIDTH_DEG) / 2.0)
 BAR_SEPARATION = 2.0 * DISTANCE * np.tan(np.radians(BAR_SEP_DEG) / 2.0)
 
-# Motion: Linear sweeps
-SWEEP_SPEED_DEG  = 30.0    # deg/s (angular speed at the centre of the field)
-SWEEP_AMPLITUDE  = 1.0     # m (total travel is +/- this value)
+# ---------------------------------------------------------------------------
+#
+# Motion: Agent oscillates vertically
+
+SWEEP_SPEED_DEG = 57.0    # deg/s (angular speed at the centre of the field)
+SWEEP_AMPLITUDE = 1.0     # m (total travel is +/- this value)
 
 SWEEP_SPEED = DISTANCE * np.radians(SWEEP_SPEED_DEG)
 
-NUM_CYCLES_PER_PHASE = 3 # Complete 3 Up/Down sweeps OFF, then 3 Up/Down sweeps ON
+NUM_CYCLES_PER_PHASE = 1  # how many complete Up/Down sweeps OFF, then same number Up/Down sweeps ON
 
 # One-way sweep time
 SWEEP_DURATION = (2 * SWEEP_AMPLITUDE) / SWEEP_SPEED
-# Full cycle (Up + Down)
+# Full cycle (up + down)
 CYCLE_DURATION = 2 * SWEEP_DURATION
 MAX_TIME = CYCLE_DURATION * NUM_CYCLES_PER_PHASE * 2
 
 print(f"\nRunning for {MAX_TIME:.1f}s: {NUM_CYCLES_PER_PHASE} cycles OFF, then {NUM_CYCLES_PER_PHASE} cycles ON ...")
 
 # ---------------------------------------------------------------------------
+#
+# Readout is a single forward-pointing ommatidium
 
-# This should select just one ommatidium in each eye
-CONE_DEG = 10.0
+CONE_DEG = 10.0     # being generous with the forward direction
+
+# ---------------------------------------------------------------------------
+#
+# Rhabdomeres dynamics parameters
 
 GAIN_LAT = 1.5
 GAIN_AX = 8.0
@@ -79,10 +86,7 @@ def create_bar(name, cx, cy, width_x, width_y, distance, texture):
     v_2 = [cx + width_x / 2, cy + width_y / 2, -distance]
     v_3 = [cx + width_x / 2, cy - width_y / 2, -distance]
     vertices, uv_coords, faces = plane_geom(v_0, v_1, v_2, v_3)
-    return Asset.from_arrays(
-        name=name, vertices=vertices, faces=faces,
-        uv_coords=uv_coords, texture=texture,
-    )
+    return Asset.from_arrays(name=name, vertices=vertices, faces=faces, uv_coords=uv_coords, texture=texture)
 
 def pick_ommatidia(model, agent, cone_deg=CONE_DEG):
     cone = model.query_cone(agent.forward, angle=cone_deg, degrees=True, avoid_conflicts=True)
@@ -92,17 +96,17 @@ def pick_ommatidia(model, agent, cone_deg=CONE_DEG):
     chir = cone.chirality
     n_pos = int(np.sum(chir > 0))
     n_neg = int(np.sum(chir < 0))
-    print(f"Forward cartridges: lenses {cone} "
-          f"(chirality +1:{n_pos}, -1:{n_neg})  "
-          f"(picked from {len(cone)} candidates within {cone_deg} deg of forward)")
+    print(f"Forward cartridges: {cone} "
+          f"  (chirality +1: {n_pos}, chirality -1: {n_neg})"
+          f"  (picked from {len(cone)} candidates in {cone_deg}° cone forward)")
     return cone.indices
 
 
 def print_stim_geometry():
 
-    bar_t_deg = math.degrees(BAR_THICKNESS  / DISTANCE)
-    bar_s_deg = math.degrees(BAR_SEPARATION / DISTANCE)
-    sweep_w = math.degrees(SWEEP_SPEED / DISTANCE)
+    bar_t_deg = np.degrees(BAR_THICKNESS  / DISTANCE)
+    bar_s_deg = np.degrees(BAR_SEPARATION / DISTANCE)
+    sweep_w = np.degrees(SWEEP_SPEED / DISTANCE)
 
     print(f"Horizontal bars: {bar_t_deg:.2f}° thick (elevation), {bar_s_deg:.2f}° apart")
     print(f"Linear vertical sweep speed: {sweep_w:.1f}°/s")
@@ -177,7 +181,8 @@ selected_lenses = pick_ommatidia(model, agent)
 # Only take one lens / cartridge
 selected_lens = selected_lenses[0]
 
-renderer.selected_lenses = [571]
+# renderer.selected_lenses = [selected_lens]
+renderer.selected_lenses = [591]
 
 print(f"R7/8 acceptance: {np.degrees(model.rcpt_dynamic_data['acc_axes'][selected_lens * 7 + 6])}°")
 
@@ -191,11 +196,9 @@ results = {
     'motion_dir':       [],
 }
 
-while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=True):
+while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=False):
 
     context.input()
-    if not context.hud.show:
-        context.hud.show = True
 
     sim_time = context.total_time
 
@@ -220,9 +223,8 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_d
     radiance_cart = visual_output.per_cartridge[selected_lens, :, :3].mean(axis=-1)
     radiance_lens = visual_output.per_lens[selected_lens, :, :3].mean(axis=-1)
 
-    # Calculate LMC (Cartridge pool) and Central Cell
-    L2_cart = radiance_cart[:6].sum()
-    R78_cart = radiance_cart[6]
+    L2_cart = radiance_cart[:6].sum()   # LMC input (cartridge pool)
+    R78_cart = radiance_cart[6]         # central cell
 
     results['time'].append(sim_time)
     results['agent_y'].append(ay)
@@ -252,14 +254,14 @@ fig, axs = plt.subplots(3, 2, figsize=(10, 10), sharex=True)
 
 def plot_sweep(ax, data, direction, title):
     mask = (mdir == direction)
-    ax.scatter(agent_y[mask & ~act], data[mask & ~act], c='blue', s=1, alpha=0.5, label='OFF')
-    ax.scatter(agent_y[mask & act], data[mask & act], c='red', s=1, alpha=0.5, label='ON')
+    ax.scatter(agent_y[mask & ~act], data[mask & ~act], c='blue', s=1, alpha=0.5, label='Actuation OFF')
+    ax.scatter(agent_y[mask & act], data[mask & act], c='red', s=1, alpha=0.5, label='Actuation ON')
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
 
 
 def plot_individual_receptors(ax, direction, title):
-    """Plots lines for individual receptors."""
+
     mask = (mdir == direction) & act
     y_vals = agent_y[mask]
     sort_idx = np.argsort(y_vals)
