@@ -37,9 +37,7 @@ from scipy.sparse import csr_matrix, coo_matrix
 from scipy.optimize import linear_sum_assignment, milp, LinearConstraint, Bounds
 
 from insectvision.compound_eyes import RhabdomereKernel
-from insectvision.compound_eyes.buffers import EyesBuffer
-
-from insectvision.compound_eyes.datatypes import get_metadata_field, set_metadata_field
+from insectvision.compound_eyes.buffers import EyesBuffer, get_metadata_field, set_metadata_field
 from insectvision.compound_eyes.orientation import (
     BundlesAligner, trivial_orientation, apply_chirality, OrientationResult
 )

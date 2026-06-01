@@ -11,16 +11,6 @@ from contextlib import contextmanager
 from typing import Optional
 import numpy as np
 
-from insectvision.compound_eyes.datatypes import (
-    LENS_STATIC_DTYPE,
-    LENS_DYNAMIC_DTYPE,
-    RCPT_STATIC_DTYPE,
-    RCPT_DYNAMIC_DTYPE,
-    get_metadata_field,
-    set_metadata_field,
-    pack_metadata,
-)
-
 
 # Per-lens data
 
