@@ -1,3 +1,5 @@
+from itertools import cycle
+
 import numpy as np
 import pyvista as pv
 from scipy.spatial import Delaunay
@@ -169,6 +171,7 @@ class EyeViewer:
         aligner: BundlesAligner = None,
         optic_flow_world=None,
         sparsity: float = 0.0,
+        debug_IDs=None
     ):
 
         self.model = model
@@ -180,6 +183,8 @@ class EyeViewer:
         self.right = np.asarray(WORLD_RIGHT, dtype=np.float32)
         self.up = np.asarray(WORLD_UP, dtype=np.float32)
         self.fwd = np.asarray(WORLD_FORWARD, dtype=np.float32)
+
+        self._debug_ids = cycle(list(debug_IDs)) if debug_IDs else None
 
         if aligner is None:
             flow = optic_flow_world if optic_flow_world is not None else -self.fwd
@@ -630,7 +635,7 @@ class EyeViewer:
 
     # Wiring debugger
 
-    def _redraw_debugger(self, target_idx: int = None) -> None:
+    def _redraw_debugger(self) -> None:
 
         if self._debugger_subplot is not None:
             self.plotter.subplot(*self._debugger_subplot)
@@ -642,7 +647,8 @@ class EyeViewer:
         if not getattr(self.model, '_cartridges_wired', False) or self.R <= 1:
             return
 
-        target_idx = int(target_idx if target_idx is not None else np.random.randint(0, self.N))
+        target_idx = next(self._debug_ids) if self._debug_ids else np.random.randint(0, self.N)
+        print(f'Target idx: {target_idx}')
 
         k_nb = min(40, len(self.model.eye(self.model.lenses[target_idx].eye_index[0])))
         result = self.model.eye(self.model.lenses[target_idx].eye_index[0]).neighbours(
