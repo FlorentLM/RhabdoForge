@@ -200,8 +200,8 @@ float get_sensitivity(int mode, float angle_min, float angle_maj, ReceptorStatic
         return clamp(airy, 0.0, 1.0);
     }
     else { // MODE_GAUSSIAN
-        float g_min = angle_min / max(rd.acc_axes.x, 1e-6);
-        float g_maj = angle_maj / max(rd.acc_axes.y, 1e-6);
+        float g_min = angle_min / max(rd.acc_axes.x, 1e-15);
+        float g_maj = angle_maj / max(rd.acc_axes.y, 1e-15);
         return exp(-GAUSS_CONSTANT_K * (g_min*g_min + g_maj*g_maj));
     }
 }
@@ -228,23 +228,27 @@ vec3 sampledir_hybrid(int mode, ReceptorStatic rs, ReceptorDynamic rd, LensStati
     float sample_sigma_min = rd.acc_axes.x * spread_mult;
     float sample_sigma_maj = rd.acc_axes.y * spread_mult;
 
-    // These are the displacement angles to test
-    float angle_min = sample_sigma_min * sqrt(-log(u1) / GAUSS_CONSTANT_K);
-    float angle_maj = sample_sigma_maj * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    // These are the displacement angles to test (raw elliptical radii)
+    float r_min = sample_sigma_min * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    float r_maj = sample_sigma_maj * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+
+    // Cartesian angles (dx, dy) for this specific ray
+    float dx = r_min * cos(phi);
+    float dy = r_maj * sin(phi);
 
     // Receptor sensitivity (at this specific sampled angle) -> 'Physical truth'
-    float rcpt_sensitivity = get_sensitivity(mode, angle_min, angle_maj, rs, rd, ls);
+    float rcpt_sensitivity = get_sensitivity(mode, dx, dy, rs, rd, ls);
 
     // Sampling probability Density (PDF) of the proposal distribution -> likelihood that this ray was picked
-    float p_min = angle_min / sample_sigma_min;
-    float p_maj = angle_maj / sample_sigma_maj;
+    float p_min = dx / sample_sigma_min;
+    float p_maj = dy / sample_sigma_maj;
     float pdf = exp(-GAUSS_CONSTANT_K * (p_min*p_min + p_maj*p_maj));
 
     // weight is truth / sampling
-    weight = rcpt_sensitivity / max(pdf, 1e-4);  // avoid /0 in the extreme tails
+    weight = rcpt_sensitivity / max(pdf, 1e-6);  // avoid /0 in the extreme tails
 
     // and convert angles to direction vector
-    vec2 p = vec2(tan(angle_min) * cos(phi), tan(angle_maj) * sin(phi));
+    vec2 p = vec2(tan(dx), tan(dy));
     float s = sin(rs.acc_tilt), c = cos(rs.acc_tilt);
     vec2 tp = mat2(c, -s, s, c) * p;
 
