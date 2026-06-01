@@ -309,23 +309,23 @@ class LensView:
         self._mark_dirty()
 
     @property
-    def gain_lat_um(self) -> np.ndarray:
-        return self._model.lens_static_data['gain_lat_um'][self._gi].copy()
+    def ampl_lat_um(self) -> np.ndarray:
+        return self._model.lens_static_data['ampl_lat_um'][self._gi].copy()
 
-    @gain_lat_um.setter
-    def gain_lat_um(self, value: ArrayLike):
+    @ampl_lat_um.setter
+    def ampl_lat_um(self, value: ArrayLike):
         self._validate_write()
-        self._model.lens_static_data['gain_lat_um'][self._gi] = value
+        self._model.lens_static_data['ampl_lat_um'][self._gi] = value
         self._mark_dirty()
 
     @property
-    def gain_ax_um(self) -> np.ndarray:
-        return self._model.lens_static_data['gain_ax_um'][self._gi].copy()
+    def ampl_ax_um(self) -> np.ndarray:
+        return self._model.lens_static_data['ampl_ax_um'][self._gi].copy()
 
-    @gain_ax_um.setter
-    def gain_ax_um(self, value: ArrayLike):
+    @ampl_ax_um.setter
+    def ampl_ax_um(self, value: ArrayLike):
         self._validate_write()
-        self._model.lens_static_data['gain_ax_um'][self._gi] = value
+        self._model.lens_static_data['ampl_ax_um'][self._gi] = value
         self._mark_dirty()
 
     # Dynamic state
@@ -1791,8 +1791,8 @@ class CompoundEyeModel:
             self._buffer.lens_static_data['tau_relax'] = kernel.tau_relax
             self._buffer.lens_static_data['tau_fast'] = kernel.tau_fast
             self._buffer.lens_static_data['tau_adapt'] = kernel.tau_adapt
-            self._buffer.lens_static_data['gain_lat_um'] = kernel.gain_lat_um
-            self._buffer.lens_static_data['gain_ax_um'] = kernel.gain_ax_um
+            self._buffer.lens_static_data['ampl_lat_um'] = kernel.ampl_lat_um
+            self._buffer.lens_static_data['ampl_ax_um'] = kernel.ampl_ax_um
 
             self._eyes: List[Eye] = []
             self._build_eyes()

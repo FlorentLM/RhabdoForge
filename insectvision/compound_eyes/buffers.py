@@ -28,8 +28,8 @@ LENS_STATIC_DTYPE = np.dtype([
     ('tau_relax',         np.float32),      #  4 bytes: mechanical relaxation time (s)
     ('tau_fast',          np.float32),      #  4 bytes: fast adaptation EMA (s, ~PIP2)
     ('tau_adapt',         np.float32),      #  4 bytes: slow adaptation EMA (s, ~Ca²+)
-    ('gain_lat_um',       np.float32),      #  4 bytes: max lateral displacement at full drive (μm)
-    ('gain_ax_um',        np.float32),      #  4 bytes: max axial contraction at full drive (μm)
+    ('ampl_lat_um',       np.float32),      #  4 bytes: max lateral displacement at full drive (μm)
+    ('ampl_ax_um',        np.float32),      #  4 bytes: max axial contraction at full drive (μm)
     ('retina_x',          np.float32),      #  4 bytes: muscle-driven retinal shift local dx
     ('retina_y',          np.float32),      #  4 bytes: muscle-driven retinal shift local dy
 ])  # 96 bytes

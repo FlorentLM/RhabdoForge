@@ -36,8 +36,8 @@ struct LensStatic {
     float tau_relax;
     float tau_fast;
     float tau_adapt;
-    float gain_lat_um;
-    float gain_ax_um;
+    float ampl_lat_um;
+    float ampl_ax_um;
     float retina_x;
     float retina_y;
 }; // 96 bytes
@@ -169,37 +169,52 @@ Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rcpt_idx, u
 
 // =====================================================================================================================
 
-float get_sensitivity(int mode, float angle_min, float angle_maj, ReceptorStatic rs, ReceptorDynamic rd, LensStatic ls) {
+float airy_psf(float a_min, float a_maj, float D, float lambda) {
+    // pure lens diffraction at angular offset (a_min, a_maj)
 
-    if (mode == MODE_AIRY) {    // Airy mode
+    float x_min = (PI * D * a_min) / max(lambda, 0.01);
+    float x_maj = (PI * D * a_maj) / max(lambda, 0.01);
 
-        // The first null of an Airy disk is at 1.22 * lambda / D
-        float D = ls.lens_diameter_um;
-        float lambda = rs.wavelength_um;
+    float x = sqrt(x_min*x_min + x_maj*x_maj);
 
-        float x_min = (PI * D * angle_min) / max(lambda, 0.01);
-        float x_maj = (PI * D * angle_maj) / max(lambda, 0.01);
+    if (x < 0.001) return 1.0;
 
-        // 'stretch' Airy disk to match acc_axes ratio
-        float x = sqrt(x_min*x_min + x_maj*x_maj);
+    float j1 = (x < 3.75)
+        ? (x*0.5) - (pow(x,3.0)/16.0) + (pow(x,5.0)/384.0) - (pow(x,7.0)/18432.0)
+        : sqrt(0.636619/x) * cos(x - 0.785398);
 
-        if (abs(x) < 0.001) return 1.0;
+    return clamp(pow(2.0*j1/x, 2.0), 0.0, 1.0);
+}
 
-        // Airy pattern formula: [2 * J1(x) / x]^2
-        // Note: Taylor expansion only works for the center.
-        // for the rings, trigonometric approximation is used to prevent explosion
-        float j1;
-        if (x < 3.75) {
-            j1 = (x * 0.5) - (pow(x, 3.0) / 16.0) + (pow(x, 5.0) / 384.0) - (pow(x, 7.0) / 18432.0);
-        } else {
-            // Asymptotic approx for the rings
-            j1 = sqrt(0.636619 / x) * cos(x - 0.785398);
+float get_sensitivity(int mode, float angle_min, float angle_maj,
+                      ReceptorStatic rs, ReceptorDynamic rd, LensStatic ls) {
+    float D = ls.lens_diameter_um, lambda = rs.wavelength_um;
+
+    if (mode == MODE_AIRY) {  // Airy (x) rhabdomere acceptance
+        float rho_diff = lambda / D;
+        float rg_min = sqrt(max(rd.acc_axes.x*rd.acc_axes.x - rho_diff*rho_diff, 0.0));
+        float rg_maj = sqrt(max(rd.acc_axes.y*rd.acc_axes.y - rho_diff*rho_diff, 0.0));
+
+        if (rg_min < 1e-5 && rg_maj < 1e-5)  // diffraction-limited: nothing to convolve
+            return airy_psf(angle_min, angle_maj, D, lambda);
+
+        // numerical convolution with a Gaussian rhabdomere kernel (FWHM = rg)
+        const int   N    = 6;     // (2N+1)^2 taps (N ~3*rg/rho_diff for faithful rings)
+        const float SPAN = 2.2;   // kernel extent (in units of rg)
+
+        float acc = 0.0, wsum = 0.0;
+        for (int i = -N; i <= N; i++)
+        for (int j = -N; j <= N; j++) {
+            float ui = SPAN * float(i) / float(N);
+            float uj = SPAN * float(j) / float(N);
+            float kw = exp(-GAUSS_CONSTANT_K * (ui*ui + uj*uj));
+            acc  += kw * airy_psf(angle_min - ui*rg_min, angle_maj - uj*rg_maj, D, lambda);
+            wsum += kw;
         }
-
-        float airy = pow(2.0 * j1 / x, 2.0);
-        return clamp(airy, 0.0, 1.0);
+        return clamp(acc / max(wsum, 1e-6), 0.0, 1.0);
     }
     else { // MODE_GAUSSIAN
+        // Snyder quadrature approximation of that same convolution
         float g_min = angle_min / max(rd.acc_axes.x, 1e-15);
         float g_maj = angle_maj / max(rd.acc_axes.y, 1e-15);
         return exp(-GAUSS_CONSTANT_K * (g_min*g_min + g_maj*g_maj));

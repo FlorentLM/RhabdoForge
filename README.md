@@ -37,7 +37,7 @@ from insectvision.compound_eyes.kernel import drosophila_kernel
 
 # Load a Drosophila model with a custom rhabdomere kernel
 model = CompoundEyeModel.from_file(
-    'species_models/drosophila_custom.npz', 
+    'species_models/drosophila_custom.npz',
     kernel=drosophila_kernel()
 )
 
@@ -46,8 +46,8 @@ model.scale(1e-6)
 
 # Configure photomechanical gains
 with model.unlock(lenses=True):
-    model.lenses.gain_lat_um = 1.5  # Lateral displacement in microns
-    model.lenses.gain_ax_um = 8.0   # Axial contraction
+    model.lenses.ampl_lat_um = 1.5  # Lateral displacement in microns
+    model.lenses.ampl_ax_um = 8.0  # Axial contraction
 ```
 
 ### 2. Setting up a Raytraced Scene

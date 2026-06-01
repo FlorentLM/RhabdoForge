@@ -41,7 +41,7 @@ class RhabdomereKernel:
             The receptor's output is an EMA with this time constant. ~0.012 s in Drosophila.
         - tau_rise, tau_relax: float, Mechanical rise / relaxation time constants of the microsaccade (s).
         - tau_fast, tau_adapt: float, Fast (~PIP2 hydrolysis, ~5 ms) and slow (~Ca²+, ~50 ms) adaptation EMA times (s).
-        - gain_lat_um, gain_ax_um: float, Max lateral / axial bundle displacement at full microsaccade drive (μm).
+        - ampl_lat_um, ampl_ax_um: float, Max lateral / axial bundle displacement at full microsaccade drive (μm).
 
         - center_index: int, Index of the central rhabdomere (e.g. R7/8 in Drosophila is index 6).
         - main_axis_indices: (int, int), Indices of the two rhabdomeres defining the bundle's main structural axis.
@@ -64,8 +64,8 @@ class RhabdomereKernel:
         tau_relax: float = 0.080,
         tau_fast: float = 0.005,
         tau_adapt: float = 0.050,
-        gain_lat_um: float = 2.0,
-        gain_ax_um: float = 8.0,
+        ampl_lat_um: float = 2.0,
+        ampl_ax_um: float = 8.0,
         center_index: int = 0,
         main_axis_indices: Tuple[int, int] = (0, 0),
         flow_axis_deg: float = -81.0,
@@ -80,8 +80,8 @@ class RhabdomereKernel:
         self.tau_relax = float(tau_relax)
         self.tau_fast = float(tau_fast)
         self.tau_adapt = float(tau_adapt)
-        self.gain_lat_um = float(gain_lat_um)
-        self.gain_ax_um = float(gain_ax_um)
+        self.ampl_lat_um = float(ampl_lat_um)
+        self.ampl_ax_um = float(ampl_ax_um)
 
         self.center_index = int(center_index)
         self.main_axis_indices = (int(main_axis_indices[0]), int(main_axis_indices[1]))

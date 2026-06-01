@@ -140,7 +140,7 @@ class BaseRenderer(ABC):
         self._samples_per_rcpt = 1
         self._samples_per_px = 1
         self._noise_threshold = 0.05
-        self._use_hybrid_sampling = True
+        self._use_hybrid_sampling = False
         self._randomness_mode = self._to_enum(randomness_mode, RandomnessMode)
         self._sampling_mode = self._to_enum(sampling_mode, SamplingMode)
 

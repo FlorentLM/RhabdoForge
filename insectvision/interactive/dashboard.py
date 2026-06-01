@@ -151,13 +151,13 @@ class Dashboard:
 
                     dpg.add_slider_float(
                         label='Lateral Gain (um)',
-                        default_value=float(ra.lenses.gain_lat_um[0]),
+                        default_value=float(ra.lenses.ampl_lat_um[0]),
                         min_value=0.0, max_value=10.0,
                         callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'gain_lat_um', a)
                     )
                     dpg.add_slider_float(
                         label='Axial Gain (um)',
-                        default_value=float(ra.lenses.gain_ax_um[0]),
+                        default_value=float(ra.lenses.ampl_ax_um[0]),
                         min_value=0.0, max_value=20.0,
                         callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'gain_ax_um', a)
                     )

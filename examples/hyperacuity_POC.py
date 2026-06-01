@@ -1,6 +1,8 @@
 import numpy as np
+import scipy.signal as signal
 import matplotlib.pyplot as plt
 from insectvision.compound_eyes.kernel import drosophila_kernel, RECEPTOR_PALETTE
+from insectvision.compound_eyes.orientation import BundlesAligner
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.renderers import Raytracer
@@ -24,6 +26,7 @@ BAR_WIDTH_DEG  = 1.0      # degrees
 # BAR_SEP_DEG    = 1.0
 # BAR_SEP_DEG    = 2.0
 # BAR_SEP_DEG    = 3.0
+# BAR_SEP_DEG    = 3.5    # degrees centre-to-centre
 BAR_SEP_DEG    = 4.0    # degrees centre-to-centre
 # BAR_SEP_DEG    = 5.0
 # BAR_SEP_DEG    = 6.0
@@ -42,7 +45,7 @@ BAR_SEPARATION = 2.0 * DISTANCE * np.tan(np.radians(BAR_SEP_DEG) / 2.0)
 #
 # Motion: Agent oscillates vertically
 
-SWEEP_SPEED_DEG = 57.0    # deg/s (angular speed at the centre of the field)
+SWEEP_SPEED_DEG = 40.0    # deg/s (angular speed at the centre of the field)
 SWEEP_AMPLITUDE = 1.0     # m (total travel is +/- this value)
 
 SWEEP_SPEED = DISTANCE * np.radians(SWEEP_SPEED_DEG)
@@ -61,21 +64,21 @@ print(f"\nRunning for {MAX_TIME:.1f}s: {NUM_CYCLES_PER_PHASE} cycles OFF, then {
 #
 # Readout is a single forward-pointing ommatidium
 
-CONE_DEG = 10.0     # being generous with the forward direction
+CONE_DEG = 10.0     # being generous with the forward direction pre-selection
 
 # ---------------------------------------------------------------------------
 #
 # Rhabdomeres dynamics parameters
 
-GAIN_LAT = 1.5
-GAIN_AX = 8.0
+AMP_LAT = 1.5
+AMP_AX = 2.0
 
-TAU_MEMBRANE = 0.012
+TAU_MEMBRANE = 0.012 # (10-15 ms / 0.010–0.015 s)
 
-TAU_FAST     = 0.005
-TAU_ADAPT    = 0.050
-TAU_RISE     = 0.005
-TAU_RELAX    = 0.080
+TAU_FAST     = 0.005 # (5 ms / 0.005 s)
+TAU_ADAPT    = 0.050 # (50-100 ms / 0.050–0.100 s)
+TAU_RISE     = 0.012 # (10-15 ms / 0.010–0.015 s)
+TAU_RELAX    = 0.080 # (60-100 ms / 0.060–0.100 s)
 
 # ---------------------------------------------------------------------------
 
@@ -137,7 +140,23 @@ bar_high = create_bar('bar_high', 0.0, high_y, BAR_LENGTH, BAR_THICKNESS, DISTAN
 scene.add_instance(bar_low)
 scene.add_instance(bar_high)
 
-model = CompoundEyeModel.from_file('species_models/drosophila_custom.npz', kernel=drosophila_kernel())
+head_ptich = np.deg2rad(10.1)
+optic_flow = np.array([0.0, np.sin(head_ptich), np.cos(head_ptich)])
+
+aligner = BundlesAligner(
+    flow_direction=optic_flow,
+    diagonal_strength=1.0,
+    diagonal_angle_deg=45.0,
+    alignment_smoothing_iterations=4,
+    saccade_smoothing_iterations=15,
+)
+
+model = CompoundEyeModel.from_file(
+    'species_models/drosophila_custom.npz',
+    kernel=drosophila_kernel(), orientation=aligner,
+    alt_wiring_mode=False
+)
+
 model.scale(1e-6)
 
 with model.unlock(receptors=True):
@@ -146,8 +165,8 @@ with model.unlock(receptors=True):
 with model.unlock(lenses=True):
     model.lenses.tau_fast = TAU_FAST
     model.lenses.tau_adapt = TAU_ADAPT
-    model.lenses.gain_lat_um = GAIN_LAT
-    model.lenses.gain_ax_um = GAIN_AX
+    model.lenses.ampl_lat_um = AMP_LAT
+    model.lenses.ampl_ax_um = AMP_AX
     model.lenses.tau_rise = TAU_RISE
     model.lenses.tau_relax = TAU_RELAX
 
@@ -179,10 +198,10 @@ renderer.photon_concentration = 0.0
 selected_lenses = pick_ommatidia(model, agent)
 
 # Only take one lens / cartridge
-selected_lens = selected_lenses[0]
+# selected_lens = selected_lenses[0]
+selected_lens = 607
 
-# renderer.selected_lenses = [selected_lens]
-renderer.selected_lenses = [591]
+renderer.selected_lenses = [selected_lens]
 
 print(f"R7/8 acceptance: {np.degrees(model.rcpt_dynamic_data['acc_axes'][selected_lens * 7 + 6])}°")
 
@@ -192,6 +211,7 @@ results = {
     'actuation':        [],
     'L2_cart':          [],
     'R78_cart':         [],
+    'lens':             [],
     'cartridge':        [],
     'motion_dir':       [],
 }
@@ -229,6 +249,7 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_d
     results['time'].append(sim_time)
     results['agent_y'].append(ay)
     results['actuation'].append(bool(renderer.actuation))
+    results['lens'].append(radiance_lens)
     results['cartridge'].append(radiance_cart)
     results['L2_cart'].append(L2_cart)
     results['R78_cart'].append(R78_cart)
@@ -244,6 +265,7 @@ while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_d
 times = np.array(results['time'])
 agent_y = np.array(results['agent_y'])
 act = np.array(results['actuation'])
+lens = np.array(results['lens'])
 cartridge = np.array(results['cartridge'])
 L2_cart = np.array(results['L2_cart'])
 R78_cart = np.array(results['R78_cart'])

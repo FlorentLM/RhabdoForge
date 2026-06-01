@@ -25,7 +25,7 @@ void main() {
     LensDynamic ld = lens_dynamic[lens_idx];
     LensStatic  ls = lens_static[lens_idx];
 
-    // Signal Detection EMAs
+    // Signal detection EMAs
     // lum contains the concentrated radiance (from reduction.comp)
     // -> adaptation responds to the light the waveguide actually receives
     float lum = 0.0;
@@ -49,15 +49,15 @@ void main() {
     float contrast = (ld.fast_lum - ld.adapted_lum) / (ld.adapted_lum + 0.05);
 
     // Deadzone: subtract noise threshold
-    float clean_contrast = max(0.0, contrast - (noise_threshold * 1.0));
-//    float clean_contrast = contrast;                                          // DEBUG
+//    float clean_contrast = max(0.0, contrast - (noise_threshold * 1.0));
+    float clean_contrast = contrast;                                          // DEBUG
 
     // Apply gain curve
     float sensitivity = 0.2;
     float bright_drive = max(0.0, tanh(clean_contrast / sensitivity));
 
-    float target_lat = enable_actuation ? (bright_drive * ls.gain_lat_um) : 0.0;
-    float target_ax  = enable_actuation ? (bright_drive * ls.gain_ax_um)  : 0.0;
+    float target_lat = enable_actuation ? (bright_drive * ls.ampl_lat_um) : 0.0;
+    float target_ax  = enable_actuation ? (bright_drive * ls.ampl_ax_um)  : 0.0;
 
     // Safety mechanical floor: mix between biological speed and render-noise stability
     float safety_floor = mix(0.001, 0.010, clamp(noise_threshold * 5.0, 0.0, 1.0));
@@ -101,7 +101,6 @@ void main() {
 
         // Compose movements (microsaccade + retinal movement)
         vec2 sacc_off = ld.lateral_um * vec2(ls.sacc_local_x, ls.sacc_local_y);
-//        vec2 sacc_off = -1.0 * ld.lateral_um * vec2(ls.sacc_local_x, ls.sacc_local_y);    // DEBUG
 
         vec2 musc_off = muscle_tug * vec2(ls.retina_x, ls.retina_y);
         vec2 total_xy = rs.rot_offset + sacc_off + musc_off;
