@@ -13,10 +13,8 @@ from insectvision.geometry.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
 from insectvision.engine.resources import ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry
-from insectvision.compound_eyes.datatypes import (
-    LENS_STATIC_DTYPE, LENS_DYNAMIC_DTYPE,
-    RCPT_STATIC_DTYPE, RCPT_DYNAMIC_DTYPE
-)
+from insectvision.compound_eyes.buffers import LENS_STATIC_DTYPE, LENS_DYNAMIC_DTYPE, RCPT_STATIC_DTYPE, \
+    RCPT_DYNAMIC_DTYPE
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import CompoundEyeModel, Eye
