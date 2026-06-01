@@ -766,7 +766,7 @@ class Cartridge:
             raise ValueError("Cartridges not wired")
 
         R = model.receptors_per_lens
-        sources = model._cartridge_map[self._central_lens_idx]
+        sources = model._cartridge_map[self._central_lens_idx].copy()
 
         sources[sources == -1] = self._central_lens_idx
         self._member_indices = (sources * R + np.arange(R, dtype=np.intp))
