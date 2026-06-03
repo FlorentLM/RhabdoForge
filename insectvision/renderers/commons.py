@@ -550,6 +550,7 @@ class BaseRenderer(ABC):
         self._eye_uniforms.update(
             noise_threshold=self._noise_threshold,
             projection_mode=self.projection_mode,
+            output_mode=self.output_mode,
             tiled_mode=self.tiled_mode,
             randomness_mode=self._randomness_mode,
             enable_actuation=self._gpu_actuation,
