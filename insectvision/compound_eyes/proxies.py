@@ -1525,18 +1525,17 @@ class VisualOutput:
     """
     Per-receptor output array with various biological pathway mappings conveniences.
 
-    The renderers return a (N, 4) float array where N is the total
-    receptor count and the last axis is (R/UV, G, B, radiance), with radiance the
-    mean of the colour channels.
+    The renderers return a float array where the last axis is (R/UV, G, B, radiance).
+    This class supports both single snapshots (shape: N, 4) and timeseries (shape: T, N, 4).
 
     Layouts / pathways:
-        .per_lens          -> (N, R, 4)  Physical ommatidia grouping.
-        .per_cartridge     -> (N, R, 4)  Neural superposition grouping.
-        .per_receptor(i)   -> (N, 4)     Specific receptor type across all cartridges.
-        .peripheral_signal -> (N, 4)     Pooled R1-R6 (LMC pathway for motion).
-        .central_signal    -> (N, 4)     Central R7/R8 (Medulla colour pathway).
-        .lmc_input         -> (N, 4)     Alias for peripheral_signal.
-        .pale_input        -> (N, 4)     Alias for central_signal.
+        .per_lens          -> (..., N, R, 4) Physical ommatidia grouping.
+        .per_cartridge     -> (..., N, R, 4) Neural superposition grouping.
+        .per_receptor(i)   -> (..., N, 4)    Specific receptor type across all cartridges.
+        .peripheral_signal -> (..., N, 4)    Pooled R1-R6 (LMC pathway for motion).
+        .central_signal    -> (..., N, 4)    Central R7/R8 (Medulla colour pathway).
+        .lmc_input         -> (..., N, 4)    Alias for peripheral_signal.
+        .pale_input        -> (..., N, 4)    Alias for central_signal.
 
     Signal analysis:
         .colours      -> (..., 3) The adapted spectral response.
@@ -1545,16 +1544,26 @@ class VisualOutput:
         .raw_radiance -> (..., )  Physical light intensity recovered by 'un-baking'
                                   the adaptation factor.
     """
-    __slots__ = ('_data', '_model', '_R', '_N')
+    __slots__ = ('_data', '_model', '_R', '_N', '_T')
 
     def __init__(self, data: np.ndarray, model: 'CompoundEyeModel'):
-        if data.shape[0] % model.receptors_per_lens != 0:
-            raise ValueError(f"data length {data.shape[0]} not divisible by R={model.receptors_per_lens}")
+        shape = data.shape
+        if shape[-2] % model.receptors_per_lens != 0:
+            raise ValueError(f"data length {shape[-2]} not divisible by R={model.receptors_per_lens}")
 
         self._data = data
         self._model = model
         self._R = model.receptors_per_lens
-        self._N = data.shape[0] // self._R
+        self._N = shape[-2] // self._R
+        self._T = shape[0] if data.ndim == 3 else None
+
+    @classmethod
+    def from_history(cls, history: list['VisualOutput']) -> 'VisualOutput':
+        """Stacks a list of single-frame VisualOutputs into one timeseries VisualOutput."""
+        if not history:
+            raise ValueError("History list is empty")
+        stacked_data = np.stack([vo.data for vo in history], axis=0)
+        return cls(stacked_data, history[0]._model)
 
     @property
     def data(self) -> np.ndarray:
@@ -1612,47 +1621,51 @@ class VisualOutput:
     # Level 1: raw grids
     @property
     def per_lens(self) -> np.ndarray:
-        """Returns (N, R, 4) array of all receptor outputs, per lens."""
-        return self._data.reshape(self._N, self._R, 4)
+        """Returns (..., N, R, 4) array of all receptor outputs, per lens."""
+        if self._data.ndim == 2:
+            return self._data.reshape(self._N, self._R, 4)
+        return self._data.reshape(self._T, self._N, self._R, 4)
 
     @property
     def per_ommatidium(self) -> np.ndarray:
         """Alias to per_lens."""
-        return self._data.reshape(self._N, self._R, 4)
+        return self.per_lens
 
     @property
     def per_cartridge(self) -> np.ndarray:
-        """Returns (N, R, 4) array of all receptor outputs, per cartridge."""
+        """Returns (..., N, R, 4) array of all receptor outputs, per cartridge."""
         if not self._model._cartridges_wired:
-            return self.per_lens  # fallback for R=1 models
-        return self._data[self._model.cartridge_indices]
+            return self.per_lens   # fallback for R=1 models
+        if self._data.ndim == 2:
+            return self._data[self._model.cartridge_indices]
+        return self._data[:, self._model.cartridge_indices, :]
 
     # Level 2: type-based access
     def per_receptor(self, index: int) -> np.ndarray:
-        """Returns (N, 4) array for a specific receptor index (e.g. 0 for R1)."""
-        return self.per_cartridge[:, index, :]
+        """Returns (..., N, 4) array for a specific receptor index (e.g. 0 for R1)."""
+        return self.per_cartridge[..., index, :]
 
     # Level 3: biological pathways
     @property
     def peripheral_signal(self) -> np.ndarray:
         """The pooled response of all peripheral rhabdomeres (LMC-pathway)."""
         if self._R == 1:
-            return self.per_lens[:, 0, :]
+            return self.per_lens[..., 0, :]
 
-        indices = getattr(self._model.kernel, 'peripheral_indices', None)
+        indices = getattr(self._model.bundle, 'peripheral_indices', None)
         if indices is None or len(indices) == 0:
-            return self.per_cartridge[:, 0, :]
+            return self.per_cartridge[..., 0, :]
 
-        return np.mean(self.per_cartridge[:, indices, :], axis=1)
+        return np.mean(self.per_cartridge[..., indices, :], axis=-2)
 
     @property
     def central_signal(self) -> np.ndarray:
         """The response of the central rhabdomere (Medulla color pathway)."""
         if self._R == 1:
-            return self.per_lens[:, 0, :]
+            return self.per_lens[..., 0, :]
 
-        center_idx = getattr(self._model.kernel, 'center_index', 0)
-        return self.per_cartridge[:, center_idx, :]
+        center_idx = getattr(self._model.bundle, 'center_index', 0)
+        return self.per_cartridge[..., center_idx, :]
 
     @property
     def lmc_input(self):
@@ -1668,12 +1681,208 @@ class VisualOutput:
         return self._data[idx]
 
     def __len__(self) -> int:
-        return int(self._data.shape[0])
+        return self._T if self._T is not None else self._data.shape[0]
 
     def __repr__(self) -> str:
         c_str = f", cartridges={self._N}" if self._model._cartridges_wired else ""
-        return f"VisualOutput(N={self._N}, R={self._R}{c_str}, shape={self._data.shape})"
+        t_str = f", T={self._T}" if self._T is not None else ""
+        return f"VisualOutput(N={self._N}, R={self._R}{c_str}{t_str}, shape={self._data.shape})"
 
+    # Plotting methods
+
+    def plot(self, pathway: str = 'all', projection: str = 'equirectangular',
+             ax=None, false_colors: bool = False, uv_encoding: bool = False,
+             draw_edges: bool = False, dark_mode: bool = False):
+        """
+        Displays the visual output as a gapless Voronoi tessellation (like in the first person shader).
+        If this VisualOutput contains multiple timesteps, this plots the last one.
+        """
+        import matplotlib.pyplot as plt
+        from matplotlib.collections import PolyCollection
+        from scipy.spatial import Voronoi
+
+        if ax is None:
+            if projection == 'equirectangular':
+                fig, ax = plt.subplots(figsize=(10, 5))
+            else:
+                fig = plt.figure(figsize=(10, 5))
+                ax = fig.add_subplot(111, projection=projection)
+
+        is_ts = self._data.ndim == 3
+
+        # Extract spatial data and colour
+        if pathway == 'all':
+            rgb = self.colours[-1] if is_ts else self.colours
+            az = self._model.receptors.azimuth_rad
+            el = self._model.receptors.elevation_rad
+
+        elif pathway in ('peripheral', 'central', 'lens', 'cartridge'):
+            if pathway == 'peripheral':
+                sig = self.peripheral_signal
+            elif pathway == 'central':
+                sig = self.central_signal
+            elif pathway == 'lens':
+                sig = np.mean(self.per_lens, axis=-2)
+            elif pathway == 'cartridge':
+                sig = np.mean(self.per_cartridge, axis=-2)
+
+            rgb = sig[-1, :, :3] if is_ts else sig[:, :3]
+            az = self._model.lenses.azimuth_rad
+            el = self._model.lenses.elevation_rad
+
+            # Peripheral is greyscale
+            if pathway == 'peripheral':
+                gray = np.mean(rgb, axis=-1, keepdims=True)     # TODO: use weights?
+                rgb = np.repeat(gray, 3, axis=-1)
+        else:
+            raise ValueError("pathway must be 'all', 'peripheral', 'central', 'lens', or 'cartridge'")
+
+        # False colour modes
+        rgb = np.clip(rgb, 0.0, 1.0).copy()
+        if uv_encoding:
+            rgb[:, 2] = np.clip(rgb[:, 2] + rgb[:, 0], 0.0, 1.0)
+        elif false_colors:
+            rgb[:, 0] = 0.0
+
+        # Voronoi cells on the unwrapped cylinder
+        pts = np.column_stack((az, el))
+        pts_left = np.column_stack((az - 2 * np.pi, el))
+        pts_right = np.column_stack((az + 2 * np.pi + 1e-6, el))
+        cap_x = np.linspace(-2 * np.pi, 2 * np.pi, max(100, len(az) // 10))
+        pts_top = np.column_stack((cap_x, np.full_like(cap_x, np.pi / 2 + 0.5)))
+        pts_bot = np.column_stack((cap_x, np.full_like(cap_x, -np.pi / 2 - 0.5)))
+
+        all_pts = np.vstack((pts, pts_left, pts_right, pts_top, pts_bot))
+        vor = Voronoi(all_pts)
+
+        polygons = []
+        for i in range(len(pts)):
+            polygons.append(vor.vertices[vor.regions[vor.point_region[i]]])
+
+        if projection == 'equirectangular':
+            polygons = [np.degrees(p) for p in polygons]
+            ax.set_xlim(-180, 180)
+            ax.set_ylim(-90, 90)
+            ax.set_xlabel('Azimuth (deg)')
+            ax.set_ylabel('Elevation (deg)')
+            ax.set_aspect('equal', adjustable='box')
+        else:
+            for p in polygons:
+                p[:, 0] = (p[:, 0] + np.pi) % (2 * np.pi) - np.pi
+            ax.grid(True, alpha=0.3)
+
+        # Anti-aliasing workaround: 'face' draws a mini border of the polygon's
+        # own color over the pixel gaps left by matplotlib
+        edge_c = ('white' if dark_mode else 'black') if draw_edges else 'face'
+
+        collection = PolyCollection(
+            polygons,
+            facecolors=rgb,
+            edgecolors=edge_c,
+            linewidths=0.5,
+            antialiaseds=True
+        )
+        ax.add_collection(collection)
+
+        if dark_mode:
+            ax.set_facecolor('black')
+            if ax.figure is not None:
+                ax.figure.patch.set_facecolor('black')
+            ax.tick_params(colors='white')
+            ax.xaxis.label.set_color('white')
+            ax.yaxis.label.set_color('white')
+            for spine in ax.spines.values():
+                spine.set_color('white')
+
+        return ax
+
+    def plot_time_series(self, pathway: str = 'peripheral',
+                         max_items: int = 100, sort_by: str = 'azimuth',
+                         false_colors: bool = False, uv_encoding: bool = False,
+                         dark_mode: bool = False, ax=None):
+        """
+        Plots a spatio-temporal heatmap of the visual output over time.
+        """
+        import matplotlib.pyplot as plt
+
+        if self._data.ndim != 3:
+            raise ValueError("This requires a VisualOutput containing multiple timesteps. "
+                             "Use VisualOutput.from_history() to combine a list of frames.")
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(10, max(4, min(10, max_items * 0.1))))
+
+        if pathway == 'all':
+            data = self.colours
+            az = self._model.receptors.azimuth_rad
+        elif pathway in ('peripheral', 'central', 'lens', 'cartridge'):
+            if pathway == 'peripheral':
+                sig = self.peripheral_signal
+
+                # Grayscale for peripheral
+                data = sig[..., :3]
+                gray = np.mean(data, axis=-1, keepdims=True)
+                data = np.repeat(gray, 3, axis=-1)
+
+            elif pathway == 'central':
+                data = self.central_signal[..., :3]
+
+            elif pathway == 'lens':
+                data = np.mean(self.per_lens, axis=-2)[..., :3]
+
+            elif pathway == 'cartridge':
+                data = np.mean(self.per_cartridge, axis=-2)[..., :3]
+
+            az = self._model.lenses.azimuth_rad
+        else:
+            raise ValueError("Pathway must be 'all', 'peripheral', 'central', 'lens', or 'cartridge'")
+
+        data = np.clip(data, 0.0, 1.0)
+        if uv_encoding:
+            data[..., 2] = np.clip(data[..., 2] + data[..., 0], 0.0, 1.0)
+        elif false_colors:
+            data[..., 0] = 0.0
+
+        # Transpose to (Space, Time, RGB) for imshow
+        data = np.transpose(data, (1, 0, 2))
+
+        if sort_by == 'azimuth':
+            order = np.argsort(az)
+            data = data[order]
+
+        # downsample (spatially) if needed
+        S, T, C = data.shape
+        if S > max_items:
+            block_size = S // max_items
+            end = block_size * max_items
+            data = data[:end].reshape(max_items, block_size, T, C).mean(axis=1)
+
+        im = ax.imshow(data, aspect='auto', origin='lower', interpolation='none')
+        ax.set_xlabel("Time step")
+
+        ylabel = "Items"
+        if pathway == 'all':
+            ylabel = "Receptors"
+        elif pathway in ('cartridge', 'peripheral', 'central'):
+            ylabel = "Cartridges"
+        elif pathway == 'lens':
+            ylabel = "Lenses"
+
+        if sort_by == 'azimuth':
+            ylabel += " (sorted Left to Right)"
+        ax.set_ylabel(ylabel)
+
+        if dark_mode:
+            ax.set_facecolor('black')
+            if ax.figure is not None:
+                ax.figure.patch.set_facecolor('black')
+            ax.tick_params(colors='white')
+            ax.xaxis.label.set_color('white')
+            ax.yaxis.label.set_color('white')
+            for spine in ax.spines.values():
+                spine.set_color('white')
+
+        return ax
 
 class CompoundEyeModel:
     """

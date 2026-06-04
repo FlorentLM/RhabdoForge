@@ -675,7 +675,7 @@ class BaseRenderer(ABC):
             data_np = np.frombuffer(data_bytes, dtype=np.float32).reshape(frames_to_read, N, 4)
 
         self._frame_index = 0
-        return data_np.copy()
+        return data_np.copy()       # TODO: Should return a timeseries VisualOutput
 
     def sync_cpu(self, force_all=False):
         """
