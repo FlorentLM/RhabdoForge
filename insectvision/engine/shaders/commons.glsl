@@ -66,8 +66,11 @@ struct ReceptorStatic {
 
 // Receptor dynamic
 struct ReceptorDynamic {
-    vec3  direction;    float adaptation_state;
-    vec2  acc_axes;     vec2  pad;
+    vec3  direction;
+    float adaptation_state;
+    vec2  acc_axes;
+    float optical_scale;
+    float pad;
 }; // 32 bytes
 
 const uint RECEPTOR_UNWIRED = 0xFFFFFFFFu;

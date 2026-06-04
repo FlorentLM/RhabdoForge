@@ -16,6 +16,8 @@ uniform bool  enable_actuation;   // toggle for photomechanical saccades
 uniform float lum_ref;            // operating-point luminance for biochemical gain
 uniform float retina_drive_um[8]; // retina muscle pull strength (one per eye ID (0-7))
 uniform float noise_threshold;
+uniform float extra_narrow_ratio; // Extra, non-optical RF narrowing at full saccade (i.e. ~ voltage-level hyperacuity)
+                                  // 1.0 = pure optics
 
 void main() {
     uint lens_idx = gl_GlobalInvocationID.x;
@@ -88,39 +90,40 @@ void main() {
     uint eye_id = unpack_eye_id(rcpt_static[start_idx].metadata);
     float muscle_tug = retina_drive_um[eye_id];
 
+    // RF narrowing has two independent sources:
+    //   - Optical (derived, per receptor below): the axial move recedes the tip to d_eff,
+    //      shrinking the geometric blur arctan(d_rhab/d_eff). Computed from the same Snyder
+    //      terms that baked rest_acc. It scales with the axial amplitude (ampl_ax_um -> axial_um -> d_eff).
+    //   - Phenomenological (extra_narrow_ratio): extra non-optical narrowing.
+    //      Ramps with the saccade, independent of the optics.
+    float disp_frac   = clamp(ld.axial_um / max(ls.ampl_ax_um, 1e-6), 0.0, 1.0);
+    float pheno_scale = mix(1.0, extra_narrow_ratio, disp_frac);
+
     for (int r = 0; r < receptors_per_lens; r++) {
         uint rcpt_idx = start_idx + r;
         ReceptorStatic rs = rcpt_static[rcpt_idx];
 
-        // RF narrowing (Snyder)
-
-        float g_rest = rs.rhab_diameter_um / d_rest;
-
-        // Static diffraction limit (Lens)
-        float rho_diff = rs.wavelength_um / ls.lens_diameter_um;
-
-        // Geometric components (Rhabdomere)
-        float rho_geom_rest = rs.rhab_diameter_um / d_rest;
-        float rho_geom_now  = rs.rhab_diameter_um / d_eff;
-
-        float total_rest = sqrt(rho_diff*rho_diff + rho_geom_rest*rho_geom_rest);
-        float total_now  = sqrt(rho_diff*rho_diff + rho_geom_now*rho_geom_now);
-        float acc_scale  = total_now / total_rest;
-
-        // Compose movements (microsaccade + retinal movement)
+        // Compose lateral movements (microsaccade + retinal movement)
         vec2 sacc_off = ld.lateral_um * vec2(ls.sacc_local_x, ls.sacc_local_y);
-
         vec2 musc_off = muscle_tug * vec2(ls.retina_x, ls.retina_y);
         vec2 total_xy = rs.rot_offset + sacc_off + musc_off;
 
         vec3 tip = (total_xy.x * ls.right) + (total_xy.y * ls.up) + (-d_eff * ls.forward);
+        rcpt_dynamic[rcpt_idx].direction = normalize(-tip);
 
-        // Update buffers
-        rcpt_dynamic[rcpt_idx].direction        = normalize(-tip);
-        rcpt_dynamic[rcpt_idx].acc_axes         = rs.rest_acc * acc_scale;
-        
-        // This is purely the biochemical/neural gain
-        // (the optical concentration is handled physically in reduction.comp)
+        // Optical narrowing from the axial move (diffraction term is unchanged by the
+        // saccade, only the geometric blur recedes with d_eff)
+        float rho_diff  = rs.wavelength_um / max(ls.lens_diameter_um, 1e-3);
+        float geom_rest = atan(rs.rhab_diameter_um / max(d_rest, 1e-3));
+        float geom_eff  = atan(rs.rhab_diameter_um / max(d_eff,  1e-3));
+        float opt_rest  = sqrt(geom_rest*geom_rest + rho_diff*rho_diff);
+        float opt_eff   = sqrt(geom_eff*geom_eff   + rho_diff*rho_diff);
+        float optical_scale = opt_eff / max(opt_rest, 1e-9);   // Droso: ~ x0.92 at a 2 um move with 21 um lever arm
+
+        rcpt_dynamic[rcpt_idx].acc_axes      = rs.rest_acc * (optical_scale * pheno_scale);
+        rcpt_dynamic[rcpt_idx].optical_scale = optical_scale;  // for photon concentration
+
+        // This is purely the biochemical/neural gain (the optical concentration is done in reduction.comp)
         rcpt_dynamic[rcpt_idx].adaptation_state = lum_gain;
     }
 }

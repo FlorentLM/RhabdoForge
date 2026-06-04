@@ -66,6 +66,7 @@ class RhabdomereBundle:
                  tau_adapt: float = 0.050,
                  ampl_lat_um: float = 2.0,
                  ampl_ax_um: float = 2.0,
+                 extra_narrowing_ratio: float = 1.0,
                  center_index: int = 0,
                  main_axis_indices: Tuple[int, int] = (0, 0),
                  flow_axis_deg: float = -81.0,
@@ -82,6 +83,8 @@ class RhabdomereBundle:
         self.tau_adapt = float(tau_adapt)
         self.ampl_lat_um = float(ampl_lat_um)
         self.ampl_ax_um = float(ampl_ax_um)
+
+        self._extra_narrowing_ratio = float(min(max(0.0, extra_narrowing_ratio), 1.0))
 
         self.center_index = int(center_index)
         self.main_axis_indices = (int(main_axis_indices[0]), int(main_axis_indices[1]))
@@ -178,6 +181,16 @@ class RhabdomereBundle:
     def peripheral_indices(self) -> np.ndarray:
         """Indices of peripheral rhabdomeres (all except the central one)."""
         return np.array([i for i in self.indices if i != self.center_index])
+
+    # Phenomenological extra narrowing
+
+    @property
+    def extra_narrowing_ratio(self) -> float:
+        return self._extra_narrowing_ratio
+
+    @extra_narrowing_ratio.setter
+    def extra_narrowing_ratio(self, val: float):
+        self._extra_narrowing_ratio = float(min(max(0.0, val), 1.0))
 
     # Axes
 

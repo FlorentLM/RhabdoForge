@@ -337,7 +337,8 @@ class BaseRenderer(ABC):
             # Receptors dynamics
             enable_actuation=self._gpu_actuation,
             photon_concentration_factor=0.0,        # TODO: document this better
-            lum_ref=self.lum_ref
+            lum_ref=self.lum_ref,
+            narrow_ratio=float(self._model.bundle.extra_narrowing_ratio),
         )
 
     def __repr__(self):

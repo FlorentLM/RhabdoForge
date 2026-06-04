@@ -39,16 +39,13 @@ void main() {
     // Spectral sensitivity
     total_color *= rcpt_static[rcpt_idx].sensitivity;
 
-    // Photon concentration
-    // When the RF narrows, more light from a point source enters the waveguide.
-    // -> concentration factor based on the current RF axes
-    vec2 cur_acc = rcpt_dynamic[rcpt_idx].acc_axes;
-    vec2 res_acc = rcpt_static[rcpt_idx].rest_acc;
-    float s = cur_acc.x / max(res_acc.x, 1e-6);
+    // Photon concentration: a narrower optical RF (optical narrowing only) funnels
+    // a point source's light into the waveguide more tightly.
+    float s = rcpt_dynamic[rcpt_idx].optical_scale;
+    if (s < 1e-6) s = 1.0;                       // before the first dynamics pass
 
     float physical_gain = clamp(1.0 / (s * s), 1.0, 3.0);
-    // mix between 1.0 (no boost) and physical gain
-    float concentration_gain = mix(1.0, physical_gain, photon_concentration_factor);
+    float concentration_gain = mix(1.0, physical_gain, photon_concentration_factor);    // mix between 1.0 (no boost) and physical gain
 
     // this is the physical radiance hitting the phototransduction machinery
     float concentrated_radiance = ((total_color.r + total_color.g + total_color.b) / 3.0) * concentration_gain;
