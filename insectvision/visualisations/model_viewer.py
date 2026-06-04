@@ -900,4 +900,6 @@ if __name__ == "__main__":
     #     n=1600, bundle=drosophila_bundle(), orientation=aligner
     # )
 
+    model.cartridge_report()
+
     EyeViewer(model, aligner=aligner).show()

@@ -3542,6 +3542,88 @@ class CompoundEyeModel:
             reference_ratio=reference_ratio,
         )
 
+    def cartridges_report(self, relative_to_acceptance: bool = True, verbose: bool = True) -> dict:
+        """How tightly do the co-wired receptors in each cartridge agree on a viewing direction?
+
+        For every cartridge, takes the angular deviation of each member receptor from the
+        cartridge's mean viewing axis. Reports the distribution over members and the
+        worst-member spread per cartridge.
+        """
+
+        N, R = self.lens_count, self.receptors_per_lens
+        if R == 1 or not self._cartridges_wired:
+            if verbose:
+                print("Cartridge alignment: nothing to report (R == 1 or cartridges not wired).")
+            return {}
+
+        cmap = np.asarray(self._cartridge_map, dtype=np.intp).reshape(N, R)
+        dirs = np.asarray(self.receptors.direction, dtype=np.float64).reshape(N, R, 3)
+
+        cid = cmap.ravel()
+        vdir = dirs.reshape(-1, 3)
+        valid = cid >= 0
+        cid, vdir = cid[valid], vdir[valid]
+        if cid.size == 0:
+            if verbose:
+                print("Cartridge alignment: no wired receptors found.")
+            return {}
+
+        # spherical mean axis per cartridge (sum then renormalise, should exact in the small-spread regime)
+        sum_dir = np.zeros((N, 3))
+        np.add.at(sum_dir, cid, vdir)
+        count = np.bincount(cid, minlength=N)
+        mean_dir = sum_dir / np.maximum(np.linalg.norm(sum_dir, axis=1, keepdims=True), 1e-12)
+
+        cosang = np.clip(np.einsum('mc,mc->m', vdir, mean_dir[cid]), -1.0, 1.0)
+        member_ang = np.degrees(np.arccos(cosang))  # per-receptor deviation from cartridge axis
+
+        percart_max = np.zeros(N)
+        np.maximum.at(percart_max, cid, member_ang)  # worst member per cartridge
+        multi = count >= 2  # cartridges that actually pool >1 receptor
+
+        def _stats(a):
+            a = np.asarray(a)
+            if a.size == 0:
+                return {k: float('nan') for k in ('min', 'median', 'mean', 'p90', 'p99', 'max')}
+            return {'min': float(a.min()), 'median': float(np.median(a)), 'mean': float(a.mean()),
+                    'p90': float(np.percentile(a, 90)), 'p99': float(np.percentile(a, 99)),
+                    'max': float(a.max())}
+
+        out = {
+            'n_cartridges': int(N),
+            'n_pooled': int(multi.sum()),
+            'mean_receptors_per_pooled': float(count[multi].mean()) if multi.any() else 0.0,
+            'member_deviation_deg': _stats(member_ang),
+            'per_cartridge_spread_deg': _stats(percart_max[multi]),
+        }
+
+        if relative_to_acceptance:
+            acc = np.asarray(self.receptors.rest_acceptance_angles, dtype=np.float64)
+            acc_minor = (acc[..., 0] if acc.ndim >= 2 else acc).reshape(-1)[valid]
+            ratio = np.radians(member_ang) / np.maximum(acc_minor, 1e-9)
+            out['member_frac_of_acceptance'] = {
+                'median': float(np.median(ratio)), 'p90': float(np.percentile(ratio, 90)),
+                'max': float(ratio.max())}
+
+        if verbose:
+            m, s = out['member_deviation_deg'], out['per_cartridge_spread_deg']
+            lines = [
+                "Cartridge viewing-axis alignment:",
+                f"    pooled cartridges : {out['n_pooled']}/{out['n_cartridges']} "
+                f"(mean {out['mean_receptors_per_pooled']:.1f} receptors each)",
+                f"    member deviation  : median {m['median']:.3f} deg, "
+                f"p90 {m['p90']:.3f}, p99 {m['p99']:.3f}, max {m['max']:.3f}",
+                f"    per-cartridge worst: median {s['median']:.3f} deg, "
+                f"p90 {s['p90']:.3f}, max {s['max']:.3f}",
+            ]
+            if relative_to_acceptance:
+                f = out['member_frac_of_acceptance']
+                lines.append(f"    as fraction of Delta-rho : median {f['median']:.2f}, "
+                             f"p90 {f['p90']:.2f}, max {f['max']:.2f}")
+            print("\n".join(lines))
+
+        return out
+
     def _compute_ioa_baseline(
             self,
             k_search: int = 8,
