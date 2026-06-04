@@ -38,7 +38,7 @@ void main() {
     float alpha_adapt = exp(-dt / max(ls.tau_adapt, 0.001));
 
     if (ld.adapted_lum < 1e-6) {
-        ld.adapted_lum = max(lum, 0.01); // avoid div by 0 later
+        ld.adapted_lum = max(lum, 0.001); // avoid div by 0 later
         ld.fast_lum    = lum;
     } else {
         ld.fast_lum    = mix(lum, ld.fast_lum,    alpha_fast);
@@ -55,7 +55,14 @@ void main() {
 
 //    // Apply gain curve
     float sensitivity = 0.2;
-    float bright_drive = max(0.0, tanh(clean_contrast / sensitivity));
+//    float bright_drive = max(0.0, tanh(clean_contrast / sensitivity));
+
+    // A mix of temporal change (saccade) and steady-state light level (phototropic state)
+    float steady_state_drive = ld.adapted_lum / (ld.adapted_lum + lum_ref);
+    float transient_drive    = max(0.0, tanh(clean_contrast / sensitivity));
+
+    // Total drive is a combination
+    float bright_drive = clamp(steady_state_drive * 0.2 + transient_drive * 0.8, 0.0, 1.0);
 
     float target_lat = enable_actuation ? (bright_drive * ls.ampl_lat_um) : 0.0;
     float target_ax  = enable_actuation ? (bright_drive * ls.ampl_ax_um)  : 0.0;
