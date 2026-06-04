@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 from scipy.optimize import minimize_scalar
 from svg.path import parse_path, Line, Close
 
-from insectvision.utils.lattice_topology import fit_lattice, facet_diameters
+from insectvision.compound_eyes.lattice import fit_lattice, facet_diameters
 
 from species_models.drosophila_custom.plots_droso_custom import plot_buchner_3d
 from species_models.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d

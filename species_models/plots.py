@@ -4,9 +4,8 @@ from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from scipy.spatial import cKDTree
 
+from insectvision.compound_eyes.lattice import psi6_from_adjacency, spacing_from_adjacency, delaunay_edges
 from insectvision.utils.math import project_to_stereo
-from insectvision.utils.lattice_topology import psi6_from_adjacency, spacing_from_adjacency, delaunay_edges
-
 
 def plot_fitted_comparison(
         pts_2d_raw: np.ndarray,
