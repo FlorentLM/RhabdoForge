@@ -888,7 +888,7 @@ if __name__ == "__main__":
         diagonal_strength=1.0,
         diagonal_angle_deg=45.0,
         alignment_smoothing_iterations=4,
-        saccade_smoothing_iterations=15,
+        saccade_smoothing_iterations=5
     )
 
     model = CompoundEyeModel.from_file(

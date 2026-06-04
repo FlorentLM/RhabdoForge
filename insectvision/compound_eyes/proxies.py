@@ -45,7 +45,7 @@ from insectvision.compound_eyes.acceptance import (
 )
 from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD
 from insectvision.utils.math import normalise_vectors, tangent_frames, icosphere, fibonacci_sphere
-from insectvision.utils.hexatic import hexatic_phasor, hexatic_axis_angle, hexatic_order
+from insectvision.utils.hexatic import hexatic_phasor, hexatic_axis_angle, hexatic_order, smooth_tilt
 from insectvision.compound_eyes.lattice import (
     facet_diameters, angular_neighbour_median,
 )
@@ -2009,8 +2009,10 @@ class CompoundEyeModel:
             self._eyes: List[Eye] = []
             self._build_eyes()
 
-            # Lattice properties: IOA (minor, major), tilt, and per-lens lens spacing
-            baseline_axes, baseline_tilts, lens_spacing = self._compute_ioa_baseline()
+            # Lattice properties: IOA (minor, major), tilt, hexatic order, and per-lens lens spacing
+            baseline_axes, baseline_tilts, baseline_ioa_order, lens_spacing = self._compute_ioa_baseline()
+            # TODO: store baseline_ioa_order
+
             if interommatidial_angles_rad is not None:
                 ioa_axes, ioa_tilts = self._broadcast_ioa(interommatidial_angles_rad, N)
             else:
@@ -2800,6 +2802,7 @@ class CompoundEyeModel:
         identity_bias: float = 0.05,
         slack_cost: float = 1000.0,
         time_limit_s: float = 60.0,
+        assume_aligned: bool = False
         ) -> None:
         """
         Neural superposition wiring using rigid bundle templates and joint optimization.
@@ -2893,14 +2896,18 @@ class CompoundEyeModel:
                 if not mag_ok.any():
                     continue
 
-                # Build similarity-transform candidate set
+                # Candidate transforms. With a lattice-pinned bundle the correct
+                # transform is identity; the hex lattice makes the wider search
+                # degenerate (it can snap 60 deg and wire each rhabdomere to the
+                # next neighbour at equal cost), so trust the orientation.
                 ws_set = [1.0 + 0j]
-                nb_valid_idx = np.flatnonzero(valid_nb)
-                for i_a in np.flatnonzero(mag_ok):
-                    ws = nb_i[nb_valid_idx] / tpl_i[i_a]
-                    ok = (np.abs(np.angle(ws)) <= ang_gate) & (np.abs(np.abs(ws) - 1.0) <= scale_dev)
-                    if ok.any():
-                        ws_set.extend(ws[ok].tolist())
+                if not assume_aligned:
+                    nb_valid_idx = np.flatnonzero(valid_nb)
+                    for i_a in np.flatnonzero(mag_ok):
+                        ws = nb_i[nb_valid_idx] / tpl_i[i_a]
+                        ok = (np.abs(np.angle(ws)) <= ang_gate) & (np.abs(np.abs(ws) - 1.0) <= scale_dev)
+                        if ok.any():
+                            ws_set.extend(ws[ok].tolist())
 
                 # For each w, run a local Hungarian, build a candidate assignment
                 seen = set()
@@ -3020,6 +3027,7 @@ class CompoundEyeModel:
         allow_plasticity: bool = True,
         plasticity_radius: float = 2.0,
         time_limit_s: float = 60.0,
+        assume_aligned: bool = False
         ) -> None:
         """
         Neural superposition wiring allowing for local distortions and missing connections.
@@ -3092,10 +3100,10 @@ class CompoundEyeModel:
 
                 valid_nb = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
 
-                # Standard candidate generation
+                # Candidate transforms (identity only when the bundle is lattice-pinned).
                 ws_set = [1.0 + 0j]
                 mag_ok = np.abs(tpl_i) > 1e-8
-                if mag_ok.any():
+                if not assume_aligned and mag_ok.any():
                     nb_valid_idx = np.flatnonzero(valid_nb)
                     for i_a in np.flatnonzero(mag_ok):
                         ws = nb_i[nb_valid_idx] / tpl_i[i_a]
@@ -3668,6 +3676,7 @@ class CompoundEyeModel:
         ioa_minor = np.zeros(N, dtype=np.float32)
         ioa_major = np.zeros(N, dtype=np.float32)
         ioa_tilts = np.zeros(N, dtype=np.float32)
+        ioa_order = np.zeros(N, dtype=np.float32)
         lens_spacing = np.zeros(N, dtype=np.float32)
 
         for eye in self._eyes:
@@ -3709,7 +3718,7 @@ class CompoundEyeModel:
             # Hexatic order over the first ring
             z_avg = hexatic_phasor(bearings, weights=is_immediate, axis=1)
             e_tilts = hexatic_axis_angle(z_avg).astype(np.float32)
-            e_psi6_mag = hexatic_order(z_avg)
+            e_psi6_mag = hexatic_order(z_avg).astype(np.float32)
 
             # IOA: mean of 2 smallest / 2 largest first ring separations
             sep_for_min = np.where(is_immediate, angular_sep, np.inf)
@@ -3744,9 +3753,16 @@ class CompoundEyeModel:
                 e_lens_spacing = np.nanmedian(nbr_dist_masked, axis=1).astype(np.float32)
             e_lens_spacing = np.where(np.isfinite(e_lens_spacing), e_lens_spacing, 0.0)
 
+            # Smooth lattice axis as a |Psi6|-weighted 6-fold phasor
+            g2l = np.full(N, -1, dtype=np.intp)
+            g2l[this_eye_lens_ids] = np.arange(n)
+            nb_local = np.where(is_immediate, g2l[neighbours.indices], -1)
+            e_tilts = smooth_tilt(e_tilts, nb_local, weights=e_psi6_mag, iterations=2).astype(np.float32)
+
             ioa_minor[this_eye_lens_ids] = e_ioa_minor
             ioa_major[this_eye_lens_ids] = e_ioa_major
             ioa_tilts[this_eye_lens_ids] = e_tilts
+            ioa_order[this_eye_lens_ids] = e_psi6_mag
             lens_spacing[this_eye_lens_ids] = e_lens_spacing
 
             logger.debug(
@@ -3756,7 +3772,8 @@ class CompoundEyeModel:
             )
 
         ioa_axes = np.stack([ioa_minor, ioa_major], axis=-1).astype(np.float32)
-        return ioa_axes, ioa_tilts, lens_spacing
+
+        return ioa_axes, ioa_tilts, ioa_order, lens_spacing
 
 
 ##

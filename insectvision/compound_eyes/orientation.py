@@ -240,7 +240,7 @@ class BundlesAligner:
         diagonal_strength: float = 1.0,
         diagonal_angle_deg: float = 45.0,
         alignment_smoothing_iterations: int = 0,
-        saccade_smoothing_iterations: int = 10,
+        saccade_smoothing_iterations: int = 5,
         falloff: float = 0.7,
         strength: float = 1.0,
         ):
@@ -253,10 +253,13 @@ class BundlesAligner:
             raise ValueError("flow_direction has zero magnitude")
 
         self.flow_direction = S / float(np.linalg.norm(S))
+
         self.diagonal_strength = float(diagonal_strength)
         self.diagonal_angle_deg = float(diagonal_angle_deg)
+
         self.alignment_smoothing_iterations = int(alignment_smoothing_iterations)
         self.saccade_smoothing_iterations = int(saccade_smoothing_iterations)
+
         self.falloff = float(falloff)
         self.strength = float(strength)
 
