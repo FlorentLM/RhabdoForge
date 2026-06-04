@@ -1946,7 +1946,6 @@ class CompoundEyeModel:
                  orientation: Optional['BundlesAligner'] = None,
                  flow_direction: Optional[ArrayLike] = None,
                  retina_muscle_direction: Optional[ArrayLike] = None,
-                 alt_wiring_mode: bool = False      # TODO: GGet rid of the worse one
                  ):
 
         # Validate geometry
@@ -2143,9 +2142,8 @@ class CompoundEyeModel:
             self._buffer.lens_dirty = True
             self._buffer.receptors_dirty = True
 
-            wire_cartridges = self.wire_cartridges_rigid if alt_wiring_mode else self.wire_cartridges_adaptive
             if R > 1:
-                wire_cartridges()
+                self.wire_cartridges_adaptive()
             else:
                 self._buffer.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
 
