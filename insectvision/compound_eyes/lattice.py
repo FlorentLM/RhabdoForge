@@ -31,7 +31,11 @@ def estimate_density(
     tree = cKDTree(pts_2d)
     dist, _ = tree.query(pts_2d, k=k_neighbours)
     spacing = dist[:, 1:].mean(axis=1)
-    mean_spacing = float(spacing.mean())
+
+    # reference mean spacing using inner 80% (avoid boundary from polluting target density)
+    p10, p90 = np.percentile(spacing, [10, 90])
+    core_mask = (spacing >= p10) & (spacing <= p90)
+    mean_spacing = float(spacing[core_mask].mean()) if core_mask.any() else float(spacing.mean())
 
     # RBF of normalised spacing
     rbf = RBFInterpolator(
@@ -301,13 +305,42 @@ def _is_inside(points: np.ndarray, delaunay: Delaunay, tree: cKDTree, buffer: fl
     return inside
 
 
+def _mirror_across_hull(points: np.ndarray, equations: np.ndarray, depth: float) -> np.ndarray:
+    """
+    Mirror points close to the hull edges to the outside.
+    This creates a symmetric Voronoi pressure that prevents edge points
+    from squashing against the boundary.
+    """
+    mirrored = []
+    for eq in equations:
+        normal, offset = eq[:2], eq[2]
+
+        # ConvexHull convention: normals point outward
+        dist = points @ normal + offset
+
+        mask = (dist > -depth) & (dist <= 0)    # points inside the hull and within 'depth' of the edge
+        if not np.any(mask):
+            continue
+
+        close_pts = points[mask]
+        dist_close = dist[mask]
+
+        # Reflect across edge
+        mirrored_pts = close_pts - 2.0 * dist_close[:, None] * normal[None, :]
+        mirrored.append(mirrored_pts)
+
+    if mirrored:
+        return np.vstack(mirrored)
+    return np.zeros((0, 2))
+
+
 def lloyd_relaxation(
         points: np.ndarray,
         density_fn: Callable,
         boundary: ConvexHull,
         max_iter: int = 20,
         convergence_tol: float = 1e-6,
-        relaxation_factor: float = 0.8,
+        relaxation_factor: float = 0.85,
         verbose: bool = False,
 ) -> np.ndarray:
     """
@@ -328,15 +361,28 @@ def lloyd_relaxation(
     points = points.copy()
     n_real = len(points)
 
-    # get data domain (to place the ghost ring)
+    # get data domain (to place the ghost ring fallback)
     domain_center = np.mean(boundary.points[boundary.vertices], axis=0)
     domain_radius = np.max(np.linalg.norm(boundary.points[boundary.vertices] - domain_center, axis=1))
+    fallback_ghosts = _place_ghost_ring(domain_center, domain_radius, n_ghosts=128)
 
-    ghosts = _place_ghost_ring(domain_center, domain_radius, n_ghosts=128)
+    # estim initial spacing to define mirror depth and boundary expansion
+    tree = cKDTree(points)
+    d, _ = tree.query(points, k=2)
+    mean_nn = float(np.mean(d[:, 1]))
+
+    mirror_depth = mean_nn * 3.0
+
+    # Expand the hard boundary constraints by 1.5x mean spacing
+    # (pure safety net, the mirrored points do the actual bounding)
+    expanded_equations = boundary.equations.copy()
+    expanded_equations[:, 2] -= mean_nn * 1.5
 
     for it in range(max_iter):
-        all_pts = np.vstack([points, ghosts])
+        mirrored_ghosts = _mirror_across_hull(points, boundary.equations, mirror_depth)
+        ghosts = mirrored_ghosts if len(mirrored_ghosts) > 0 else fallback_ghosts
 
+        all_pts = np.vstack([points, ghosts])
         try:
             vor = Voronoi(all_pts)
         except Exception as exc:
@@ -344,8 +390,10 @@ def lloyd_relaxation(
                 print(f"  Lloyd iter {it}: Voronoi failed ({exc}), stopping.")
             break
 
+        # Voronoi edges between a point and its reflection lie exactly on the true boundary
+        # so we don't want the hard clipper to interfere
         new_pts = weighted_centroids_batch(
-            all_pts, vor, n_real, boundary.equations, density_fn
+            all_pts, vor, n_real, expanded_equations, density_fn
         )
 
         step = new_pts - points
@@ -464,6 +512,106 @@ def spring_relaxation(
 
 
 ##
+
+
+def facet_diameters(
+        positions: np.ndarray,
+        directions: np.ndarray,
+        k: int = 18,
+        packing: float = 1.0,
+        smooth_iter: int = 1,
+) -> np.ndarray:
+    """
+    Per-ommatidium facet diameter from the local Voronoi cell area on the eye surface.
+
+    The facet is the Voronoi cell of the optical axis (the dual of the lattice).
+    For each lens, project its k nearest neighbours into the tangent plane (normal = viewing direction),
+    build the 2D Voronoi cell and take the hexagon-equivalent diameter:
+        D = packing * sqrt(2 * A_cell / sqrt(3))
+
+    Boundary lenses (incomplete ring -> unbounded or blown-up cell) fall back to a robust first-ring spacing,
+    and a light neighbour-median pass removes residual outliers.
+
+    Args:
+        positions: (N, 3) lens world positions.
+        directions: (N, 3) lens optical axes (unit; the local surface normal).
+        k: neighbours used to bound each local cell (>= ~12 so the first ring is enclosed).
+        packing: scale on the hex flat-to-flat diameter (1.0 = facets tile edge-to-edge).
+        smooth_iter: neighbour-median smoothing passes applied to the result.
+    """
+    positions = np.asarray(positions, dtype=float)
+    directions = np.asarray(directions, dtype=float)
+    N = len(positions)
+
+    tree = cKDTree(positions)
+    kq = min(k + 1, N)
+    dist, idx = tree.query(positions, k=kq)          # col 0 is self
+    ref = np.median(dist[:, 1:min(7, kq)], axis=1)   # first-ring spacing
+
+    D = np.empty(N, dtype=float)
+    for i in range(N):
+        nb = idx[i, 1:]
+        n = directions[i] / max(np.linalg.norm(directions[i]), 1e-12)
+        a = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        u = np.cross(n, a); u /= np.linalg.norm(u)
+        v = np.cross(n, u)
+        rel = positions[nb] - positions[i]
+        P = np.column_stack([rel @ u, rel @ v])
+        pts2d = np.vstack([[0.0, 0.0], P])
+
+        fb = packing * ref[i]
+        d = fb
+        try:
+            vor = Voronoi(pts2d)
+            region = vor.regions[vor.point_region[0]]
+            if region and (-1 not in region):
+                poly = vor.vertices[region]
+                c = poly.mean(axis=0)
+                poly = poly[np.argsort(np.arctan2(poly[:, 1] - c[1], poly[:, 0] - c[0]))]
+                area = 0.5 * abs(np.dot(poly[:, 0], np.roll(poly[:, 1], -1))
+                                 - np.dot(poly[:, 1], np.roll(poly[:, 0], -1)))
+                dv = packing * np.sqrt(2.0 * area / np.sqrt(3.0))
+                if 0.6 * fb < dv < 1.5 * fb:
+                    d = dv
+        except Exception:
+            pass
+        D[i] = d
+
+    for _ in range(int(smooth_iter)):
+        D = np.median(np.concatenate([D[:, None], D[idx[:, 1:min(7, kq)]]], axis=1), axis=1)
+
+    return D.astype(np.float32)
+
+
+def angular_neighbour_median(values, directions, eye_index=None, k=6, n_iter=2):
+    """Median-smooth a per-lens scalar over each lens's angular nearest neighbours.
+
+    A low-pass filter on the sphere of viewing directions: removes per-lens jitter
+    while preserving smooth gradients (e.g. acute-zone facet-size trends).
+
+    Operates per eye if eye_index is given.
+    """
+    values = np.asarray(values, dtype=np.float32).copy()
+    dirs = np.asarray(directions, dtype=np.float64)
+    k = int(max(1, k))
+    if eye_index is None:
+        eye_index = np.zeros(values.shape[0], dtype=np.intp)
+    eye_index = np.asarray(eye_index)
+
+    for eid in np.unique(eye_index):
+        m = np.where(eye_index == eid)[0]
+        if m.size <= k + 1:
+            continue
+        V = dirs[m]
+        cos = V @ V.T
+        np.fill_diagonal(cos, -np.inf)
+        nn = np.argpartition(-cos, kth=k - 1, axis=1)[:, :k]
+        for _ in range(int(n_iter)):
+            vm = values[m]
+            stacked = np.concatenate([vm[:, None], vm[nn]], axis=1)
+            values[m] = np.median(stacked, axis=1).astype(np.float32)
+
+    return values
 
 
 def fit_lattice(
@@ -602,77 +750,77 @@ def fit_lattice(
 
     return stereo_to_sphere(lattice, fwd, rgt, up)
 
-
-def fit_lattice_from_density(
-        density_fn: Callable,
-        boundary_pts: np.ndarray,
-        n_target: int,
-        stereo_frame: Tuple[np.ndarray, np.ndarray, np.ndarray],
-        lattice_angle: float = np.pi / 3,
-        relaxation_max_iter: int = 20,
-        relaxation_factor: float = 0.8,
-        verbose: bool = False,
-        show_plots: bool = False,
-) -> np.ndarray:
-    """
-    Generate a true lattice from an explicit density function and boundary.
-
-    Args:
-        density_fn: (M, 2) -> (M,) Density (in the stereographic plane)
-        boundary_pts: (K, 2) Points (in the stereographic plane) defining the boundary
-        n_target (int): Approximate number of ommatidia to generate
-        stereo_frame: Orthonormal frame (fwd, rgt, up) for back-projection to the sphere
-        lattice_angle (float): Angle between hex basis vectors (pi/3 = regular hexagonal)
-        relaxation_max_iter (int): Upper limit for Lloyd's relaxation
-        relaxation_factor (float): Under-relaxation (0, 1]. 0.8 is a good default
-        verbose (bool): Whether to print progress
-        show_plots (bool): Whether to display plots
-    """
-
-    hull = ConvexHull(boundary_pts)
-    delaunay = Delaunay(boundary_pts)
-    tree = cKDTree(boundary_pts)
-
-    fwd, rgt, up = stereo_frame
-
-    domain_area = hull.volume  # 2D ConvexHull.volume = area
-    target_spacing = np.sqrt(domain_area / (n_target * np.sin(lattice_angle)))
-
-    if verbose:
-        print(f"Domain area: {domain_area:.5f},  target spacing: {target_spacing:.5f}")
-
-    # Seed grid
-    extent = np.max(np.abs(boundary_pts)) + 2 * target_spacing
-    grid = hexagonal_grid(target_spacing, lattice_angle, extent)
-
-    # Centre on data domain
-    centre = boundary_pts.mean(axis=0)
-    grid = grid + centre
-
-    # Prune
-    prune_buffer = target_spacing * 0.5
-    mask = _is_inside(grid, delaunay, tree, buffer=prune_buffer)
-    lattice = grid[mask]
-
-    if verbose:
-        print(f"Initial grid: {len(lattice)} points")
-
-    # Lloyd's relaxation (final hex regularity polish)
-    lattice = lloyd_relaxation(
-        lattice, density_fn, hull,
-        max_iter=relaxation_max_iter,
-        relaxation_factor=relaxation_factor,
-        verbose=verbose,
-    )
-
-    # and prune again (Lloyd's might have pushed points slightly outside)
-    mask = _is_inside(lattice, delaunay, tree, buffer=prune_buffer)
-    lattice = lattice[mask]
-
-    if verbose:
-        print(f"Final lattice: {len(lattice)} points")
-
-    # if show_plots:
-    #     plot_fitted_comparison(boundary_pts, lattice, density_fn)
-
-    return stereo_to_sphere(lattice, fwd, rgt, up)
+#
+# def fit_lattice_from_density(
+#         density_fn: Callable,
+#         boundary_pts: np.ndarray,
+#         n_target: int,
+#         stereo_frame: Tuple[np.ndarray, np.ndarray, np.ndarray],
+#         lattice_angle: float = np.pi / 3,
+#         relaxation_max_iter: int = 20,
+#         relaxation_factor: float = 0.8,
+#         verbose: bool = False,
+#         show_plots: bool = False,
+# ) -> np.ndarray:
+#     """
+#     Generate a true lattice from an explicit density function and boundary.
+#
+#     Args:
+#         density_fn: (M, 2) -> (M,) Density (in the stereographic plane)
+#         boundary_pts: (K, 2) Points (in the stereographic plane) defining the boundary
+#         n_target (int): Approximate number of ommatidia to generate
+#         stereo_frame: Orthonormal frame (fwd, rgt, up) for back-projection to the sphere
+#         lattice_angle (float): Angle between hex basis vectors (pi/3 = regular hexagonal)
+#         relaxation_max_iter (int): Upper limit for Lloyd's relaxation
+#         relaxation_factor (float): Under-relaxation (0, 1]. 0.8 is a good default
+#         verbose (bool): Whether to print progress
+#         show_plots (bool): Whether to display plots
+#     """
+#
+#     hull = ConvexHull(boundary_pts)
+#     delaunay = Delaunay(boundary_pts)
+#     tree = cKDTree(boundary_pts)
+#
+#     fwd, rgt, up = stereo_frame
+#
+#     domain_area = hull.volume  # 2D ConvexHull.volume = area
+#     target_spacing = np.sqrt(domain_area / (n_target * np.sin(lattice_angle)))
+#
+#     if verbose:
+#         print(f"Domain area: {domain_area:.5f},  target spacing: {target_spacing:.5f}")
+#
+#     # Seed grid
+#     extent = np.max(np.abs(boundary_pts)) + 2 * target_spacing
+#     grid = hexagonal_grid(target_spacing, lattice_angle, extent)
+#
+#     # Centre on data domain
+#     centre = boundary_pts.mean(axis=0)
+#     grid = grid + centre
+#
+#     # Prune
+#     prune_buffer = target_spacing * 0.5
+#     mask = _is_inside(grid, delaunay, tree, buffer=prune_buffer)
+#     lattice = grid[mask]
+#
+#     if verbose:
+#         print(f"Initial grid: {len(lattice)} points")
+#
+#     # Lloyd's relaxation (final hex regularity polish)
+#     lattice = lloyd_relaxation(
+#         lattice, density_fn, hull,
+#         max_iter=relaxation_max_iter,
+#         relaxation_factor=relaxation_factor,
+#         verbose=verbose,
+#     )
+#
+#     # and prune again (Lloyd's might have pushed points slightly outside)
+#     mask = _is_inside(lattice, delaunay, tree, buffer=prune_buffer)
+#     lattice = lattice[mask]
+#
+#     if verbose:
+#         print(f"Final lattice: {len(lattice)} points")
+#
+#     # if show_plots:
+#     #     plot_fitted_comparison(boundary_pts, lattice, density_fn)
+#
+#     return stereo_to_sphere(lattice, fwd, rgt, up)

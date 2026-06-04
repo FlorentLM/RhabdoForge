@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 from scipy.optimize import minimize_scalar
 from svg.path import parse_path, Line, Close
 
-from insectvision.utils.lattice_topology import fit_lattice
+from insectvision.utils.lattice_topology import fit_lattice, facet_diameters
 
 from species_models.drosophila_custom.plots_droso_custom import plot_buchner_3d
 from species_models.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d
@@ -26,11 +26,11 @@ from species_models.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d
 
 
 # Defaults
-DENSITY_SCALE = 1.0
+DENSITY_SCALE = 0.95
 LATTICE_ANGLE_DEG = 60.0
 REGULARISATION = True
 SHOW_DEBUG_PLOTS = True
-
+PHYS_SCALE = 1.0
 
 @dataclass
 class SVGContent:
@@ -168,17 +168,28 @@ def regularise(raw_dirs: np.ndarray, markers: np.ndarray) -> np.ndarray:
     return corrected / np.where(norms == 0, 1, norms)
 
 
-def ray_ellipsoid_intersection(directions: np.ndarray, rx: float, ry: float, rz: float) -> np.ndarray:
+def normals_to_ellipsoid(directions: np.ndarray, rx: float, ry: float, rz: float) -> np.ndarray:
     """
-    Ray-ellipsoid intersection for head surface placement.
+    Map viewing directions to positions on an ellipsoid such that the
+    directions are the surface normals.
+
+    This yields larger facet diameters in flatter regions.
     """
     # TODO: make this a more generic math util
+    nx = directions[:, 0]
+    ny = directions[:, 1]
+    nz = directions[:, 2]
 
-    val = (directions[:, 0] / rx) ** 2 + \
-          (directions[:, 1] / ry) ** 2 + \
-          (directions[:, 2] / rz) ** 2
-    t = 1.0 / np.sqrt(val)
-    return directions * t[:, np.newaxis]
+    # Calculate the scale factor for the normal mapping
+    K = np.sqrt((nx * rx) ** 2 + (ny * ry) ** 2 + (nz * rz) ** 2)
+
+    x = (rx ** 2 * nx) / K
+    y = (ry ** 2 * ny) / K
+    z = (rz ** 2 * nz) / K
+
+    return np.column_stack([x, y, z])
+
+
 
 
 def build_eye(
@@ -253,11 +264,18 @@ if __name__ == "__main__":
 
     # Head dimensions from Posnien et al. 2012 (10.1371/journal.pone.0037346)
     HW = 830.0     # head width (µm)
-    FW = 400.0     # frons width (µm)
-    EL = 530.0     # eye length, vertical (µm)
-    ED = 420.0     # eye depth, anterior-posterior (µm)
+    FW = 390.0     # frons width (µm)
+    EL = 460.0     # eye length, vertical (µm)
+
+    # inferred from D. simulans eye shape (ap axis is ~0.8 dv axis)
+    ED = 370.0     # eye depth, anterior-posterior (µm)
 
     svg_file = Path("species_models/drosophila_custom/drosophila_Buchner_1971_redigitized.svg")
+
+    HW *= PHYS_SCALE
+    FW *= PHYS_SCALE
+    EL *= PHYS_SCALE
+    ED *= PHYS_SCALE
 
     L_dirs = build_eye(
         svg_file,
@@ -272,13 +290,13 @@ if __name__ == "__main__":
     rz = ED / 2.0
 
     res = minimize_scalar(
-        lambda rx: (np.ptp(ray_ellipsoid_intersection(L_dirs, rx, ry, rz)[:, 0]) - target_width) ** 2,
+        lambda rx: (np.ptp(normals_to_ellipsoid(L_dirs, rx, ry, rz)[:, 0]) - target_width) ** 2,
         bounds=(10, 500), method='bounded',
     )
     best_rx = res.x
     print(f"Ellipsoid fit: Rx = {best_rx:.2f} µm")
 
-    L_positions = ray_ellipsoid_intersection(L_dirs, best_rx, ry, rz)
+    L_positions = normals_to_ellipsoid(L_dirs, best_rx, ry, rz)
 
     # Align medial edge
     shift_x = -FW / 2.0 - np.max(L_positions[:, 0])
@@ -294,6 +312,14 @@ if __name__ == "__main__":
     all_directions = np.vstack([L_dirs, R_dirs])
     eye_ids = np.concatenate([np.zeros(len(L_positions)), np.ones(len(R_positions))])
 
+    # Facet diameter per lens, from the Voronoi cell (the dual of the lattice)
+    L_diam = facet_diameters(L_positions, L_dirs)
+    R_diam = facet_diameters(R_positions, R_dirs)
+    all_diameters = np.concatenate([L_diam, R_diam]).astype(np.float32)
+    print(f"Facet diameter: median {np.median(all_diameters):.2f} µm  "
+          f"IQR {np.percentile(all_diameters, 25):.2f}-{np.percentile(all_diameters, 75):.2f}  "
+          f"range {all_diameters.min():.2f}-{all_diameters.max():.2f}")
+
     print(f"\nFinal model:  L={len(L_positions)}  R={len(R_positions)}")
 
     np.savez_compressed(
@@ -301,6 +327,7 @@ if __name__ == "__main__":
         directions=all_directions,
         positions=all_positions,
         eye_id=eye_ids,
+        lens_diameter_um=all_diameters,
     )
 
     if PLOT:
