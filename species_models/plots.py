@@ -318,12 +318,13 @@ def plot_density_2d(raw_pts_2d, lattice_pts_2d, rbf_func, mean_spacing):
     plt.show()
 
 
-def plot_density_3d(positions, directions, title="Visual density map"):
+def plot_density_3d(positions, directions, title="Ommatidia density"):
 
     tree = cKDTree(directions)
     dists, _ = tree.query(directions, k=7)
     angular_spacing_deg = np.degrees(np.mean(dists[:, 1:], axis=1))
 
+    # IOA
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
 
@@ -332,6 +333,39 @@ def plot_density_3d(positions, directions, title="Visual density map"):
 
     cbar = fig.colorbar(sc, ax=ax, shrink=0.5, aspect=10)
     cbar.set_label('Inter-ommatidial angle $\Delta\phi$ [degrees]')
+
+    ax.set_xlabel('Lateral (X)')
+    ax.set_ylabel('Anterior-Posterior (Z)')
+    ax.set_zlabel('Dorsal-Ventral (Y)')
+    ax.set_title(title)
+
+    # Set up axes properly
+    center = (positions.max(axis=0) + positions.min(axis=0)) / 2
+    x_range = np.ptp(positions[:, 0])
+    y_range = np.ptp(positions[:, 1])
+    z_range = np.ptp(positions[:, 2])
+
+    ax.set_box_aspect((x_range, y_range, z_range))
+
+    ax.set_xlim(center[0] - x_range, center[0] + x_range)
+    ax.set_ylim(center[1] - y_range, center[1] + y_range)
+    ax.set_zlim(center[2] - z_range, center[2] + z_range)
+
+    plt.show()
+
+
+def plot_lens_diameters_3d(positions, diameters, title="Lens diameters"):
+
+    # Lens diameters
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    sc = ax.scatter(
+        positions[:, 0], positions[:, 1], positions[:, 2],
+        c=diameters, cmap='plasma', s=15, alpha=0.9
+    )
+
+    fig.colorbar(sc, ax=ax, label="Facet Diameter (µm)", fraction=0.03)
 
     ax.set_xlabel('Lateral (X)')
     ax.set_ylabel('Anterior-Posterior (Z)')

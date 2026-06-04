@@ -18,7 +18,7 @@ from svg.path import parse_path, Line, Close
 from insectvision.compound_eyes.lattice import fit_lattice, facet_diameters
 
 from species_models.drosophila_custom.plots_droso_custom import plot_buchner_3d
-from species_models.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d
+from species_models.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d, plot_lens_diameters_3d
 
 # TODO: The SVG parsing needs to be made more generic
 
@@ -326,31 +326,11 @@ if __name__ == "__main__":
     )
 
     if PLOT:
-        import matplotlib.pyplot as plt
-
-        # 1. Standard plotting from your imports
         plot_eyes_3d(
             all_positions, all_directions, eye_ids,
             title='Drosophila eyes\n(parametric model fitted to Buchner, 1971)',
             show_sphere_projection=True,
         )
-        plot_density_3d(all_positions, all_directions, title="Ommatidia density")
+        plot_density_3d(all_positions, all_directions)
         plot_lattice_3d(L_dirs, wireframe=True, color_by='psi6', title="Hexatic order")
-
-        # 2. Custom plot for actual lens diameters
-        fig = plt.figure(figsize=(10, 8))
-        ax = fig.add_subplot(111, projection='3d')
-
-        # Scatter plot colored by facet diameters
-        sc = ax.scatter(
-            all_positions[:, 0], all_positions[:, 1], all_positions[:, 2],
-            c=all_diameters, cmap='plasma', s=15, alpha=0.9
-        )
-
-        # Make the axes aspect ratio equal so the eye isn't squashed
-        extents = np.ptp(all_positions, axis=0)
-        ax.set_box_aspect(extents)
-
-        ax.set_title("Lens Diameters (µm)")
-        fig.colorbar(sc, ax=ax, label="Facet Diameter (µm)", fraction=0.03)
-        plt.show()
+        plot_lens_diameters_3d(all_positions, all_diameters)
