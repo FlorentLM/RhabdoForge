@@ -401,12 +401,16 @@ for sep in BAR_SEPARATIONS:
     # Figure for current condition
     plot_single_run(res, sep, bars_m)
 
+    plt.savefig(f"hyperacuity_{label.replace(' ', '-')}_run_narrow{EXTRA_NARROWING}.png")
+
 
 # Synthesis figure: 1-bar vs. 2-bar overlay (if both were run)
 controls = [s for s in BAR_SEPARATIONS if s == 0.0]
 tests = [s for s in BAR_SEPARATIONS if s > 0.0]
 if controls and tests:
     plot_both_runs(all_results[controls[0]], all_results[tests[0]], tests[0])
+
+    plt.savefig(f"hyperacuity_both_runs_narrow{EXTRA_NARROWING}.png")
 
 
 plt.show()
