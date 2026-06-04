@@ -63,10 +63,12 @@ def main():
 
     # Setup eye model
 
-    # model = CompoundEyeModel.from_sphere(n=1962, force_isotropic=True)
-    # model = CompoundEyeModel.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
-    # model = CompoundEyeModel.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
-    model = CompoundEyeModel.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
+
+    model = CompoundEyeModel.from_file(
+        'species_models/drosophila_custom.npz',
+        # 'species_models/bee_Sturzl.npz',
+        # 'species_models/drosophila_Kemppainen.npz'
+    )
     model.scale(1e-6)
 
     # Example setting time adaptation
