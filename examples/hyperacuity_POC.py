@@ -311,7 +311,7 @@ def plot_single_run(res, sep_deg, bars_m):
     axs[lastrow - 1, 1].legend(loc='upper right', fontsize=8)
 
     title = ("one bar (control)" if sep_deg == 0 else f"two bars {sep_deg:.1f} deg apart")
-    fig.suptitle(f"{title}   |   narrowing = {EXTRA_NARROWING}   "
+    fig.suptitle(f"{title}  |  phenom. narrowing = {EXTRA_NARROWING}  "
                  f"(dotted = true bar positions)", y=1.0)
 
     plt.tight_layout()
@@ -381,7 +381,7 @@ def plot_both_runs(res_1bar, res_2bar, sep_2bar):
             ax.set_xlim([-0.75, 0.75])
 
     axs[0, 1].legend(fontsize=8, loc='upper right')
-    fig.suptitle(f"Single-bar vs. Two-bar ({sep_2bar:.1f} deg)", y=1.0)
+    fig.suptitle(f"Single-bar vs. Two-bar ({sep_2bar:.1f} deg) | phenom. narrowing = {EXTRA_NARROWING}", y=1.0)
 
     plt.tight_layout()
 
