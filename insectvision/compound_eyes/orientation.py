@@ -239,7 +239,7 @@ class BundlesAligner:
         flow_direction: ArrayLike,
         diagonal_strength: float = 1.0,
         diagonal_angle_deg: float = 45.0,
-        alignment_smoothing_iterations: int = 0,
+        alignment_smoothing_iterations: int = 5,
         saccade_smoothing_iterations: int = 5,
         falloff: float = 0.7,
         strength: float = 1.0,
