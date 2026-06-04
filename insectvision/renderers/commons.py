@@ -296,8 +296,8 @@ class BaseRenderer(ABC):
             noise_threshold=self._noise_threshold,
             receptors_per_lens=self._model.receptors_per_lens,
 
-            # Rhabdomere kernel params (constants during runtime)
-            kernel_centre_idx=self._model.kernel.center_index,
+            # Rhabdomere bundle params (constants during runtime)
+            bundle_centre_idx=self._model.bundle.center_index,
 
             # Various visualisation parameters (currently fixed and not modifiable)
             visualisation_eye_surface_albedo=1.0,
