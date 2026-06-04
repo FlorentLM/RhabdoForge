@@ -5,6 +5,7 @@ import pyvista as pv
 from scipy.spatial import Delaunay
 
 from insectvision.compound_eyes import CompoundEyeModel
+from insectvision.compound_eyes.buffers import get_metadata_field
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, RHAB_COLOURS
 from insectvision.compound_eyes.orientation import BundlesAligner
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD
@@ -253,6 +254,8 @@ class EyeViewer:
         self.actors_conflicts = []
         self.actors_debugger = []
         self.actors_binocular = []
+        self.actors_edge = []
+        self.actors_neighbours = []
         self.state_heatmap = 0  # 0: Collinearity, 1: Smoothness
         self.actors_collinearity = []
         self.actors_smoothness = []
@@ -263,7 +266,7 @@ class EyeViewer:
 
         # Big panel state: 0 = bundles, 1 = debugger, 2 = conflicts heatmap
         self.state_bigpanel = 1
-        self._BIGPANEL_LABELS = ['Bundles', 'Wiring debugger', 'Conflicts', 'Binocularity']
+        self._BIGPANEL_LABELS = ['Bundles', 'Wiring debugger', 'Conflicts', 'Binocularity', 'Edges', 'Neighbours']
 
         self._debugger_subplot = None  # filled in show()
 
@@ -554,6 +557,89 @@ class EyeViewer:
         )
         self.actors_binocular.append(act)
 
+    def _add_edginess_view(self) -> None:
+        """
+        Visualises edge detection logic.
+        """
+
+        eps = float(np.median(self.disc_radii)) * 0.1
+        positions = self.p + eps * self.d
+        pd = pv.PolyData(positions.astype(np.float32))
+
+        pd.point_data['vectors'] = self.d.astype(np.float32)
+        pd.point_data['radius'] = self.disc_radii.astype(np.float32)
+        pd.point_data['edge_mask'] = (self.model.is_edge).astype(np.float32)
+
+        discs = pd.glyph(geom=_disc_template(), orient='vectors', scale='radius', factor=1.2)
+
+        # 0: Interior gray, 1: Edge magenta
+        edge_colors = ['#e0e0e0', '#ff00ff']
+
+        act = self.plotter.add_mesh(
+            discs, scalars='edge_mask',
+            cmap=edge_colors, clim=[-0.5, 1.5],
+            show_scalar_bar=True,
+            scalar_bar_args={
+                'title': 'Edges', 'n_labels': 0,
+                'position_x': 0.70, 'position_y': 0.05,
+                'width': 0.28, 'height': 0.06, 'color': 'black',
+            },
+            ambient=0.4, diffuse=0.7,
+        )
+        self.actors_edge.append(act)
+
+    def _add_neighb_count_view(self) -> None:
+        """
+        Visualises the 'neighbour_count' metadata field.
+        """
+
+        R = self.model.receptors_per_lens
+
+        meta = self.model.rcpt_static_data['metadata'][::R]
+        counts = get_metadata_field(meta, 'neighbour_count').astype(np.float32)
+
+        eps = float(np.median(self.disc_radii)) * 0.1
+        positions = self.p + eps * self.d
+        pd = pv.PolyData(positions.astype(np.float32))
+        pd.point_data['vectors'] = self.d.astype(np.float32)
+        pd.point_data['radius'] = self.disc_radii.astype(np.float32)
+        pd.point_data['counts'] = counts
+
+        discs = pd.glyph(geom=_disc_template(), orient='vectors', scale='radius', factor=1.2)
+
+        count_colors = [
+            'black',  # 0
+            'black',  # 1
+            'black',  # 2
+            '#e74c3c',  # 3: Red
+            '#e67e22',  # 4: Orange
+            '#f1c40f',  # 5: Yellow
+            '#ecf0f1',  # 6: Light gray (standard)
+            '#3498db',  # 7: Blue
+            '#414181'  # 8: Dark blue
+        ]
+
+        act = self.plotter.add_mesh(
+            discs,
+            scalars='counts',
+            cmap=count_colors,
+            clim=[-0.5, 8.5],
+            show_scalar_bar=True,
+            scalar_bar_args={
+                'title': 'Neighbours counts',
+                'n_labels': 9,
+                'position_x': 0.70,
+                'position_y': 0.05,
+                'width': 0.28,
+                'height': 0.06,
+                'color': 'black',
+            },
+            ambient=0.4,
+            diffuse=0.7,
+            interpolate_before_map=False
+        )
+        self.actors_neighbours.append(act)
+
     def _add_bigpanel(self) -> None:
         """Bottom-right panel (wide)."""
 
@@ -630,6 +716,12 @@ class EyeViewer:
 
         # Mode 4: Binocular zone
         self._add_binocular_view()
+
+        # Mode 5: Edges
+        self._add_edginess_view()
+
+        # Mode 6: Neighbours counts
+        self._add_neighb_count_view()
 
     ##
 
@@ -744,12 +836,18 @@ class EyeViewer:
         for a in self.actors_debugger:  a.SetVisibility(s == 1)
         for a in self.actors_conflicts: a.SetVisibility(s == 2)
         for a in self.actors_binocular: a.SetVisibility(s == 3)
+        for a in self.actors_edge:      a.SetVisibility(s == 4)
+        for a in self.actors_neighbours: a.SetVisibility(s == 5)
 
         for title, bar in self.plotter.scalar_bars.items():
             if 'Conflicts' in title:
                 bar.SetVisibility(s == 2)
             elif 'Zones' in title:
                 bar.SetVisibility(s == 3)
+            elif 'Edges' in title:
+                bar.SetVisibility(s == 4)
+            elif 'Neighbours' in title:
+                bar.SetVisibility(s == 5)
 
     def _apply_heatmap_visibility(self) -> None:
         h = self.state_heatmap
@@ -810,9 +908,7 @@ class EyeViewer:
             self.plotter.render()
 
         def cycle_bigpanel():
-            self.state_bigpanel = (self.state_bigpanel + 1) % 4
-            label = self._BIGPANEL_LABELS[self.state_bigpanel]
-
+            self.state_bigpanel = (self.state_bigpanel + 1) % len(self._BIGPANEL_LABELS)
             self._apply_bigpanel_visibility()
             self._update_bigpanel_hint()
             self.plotter.render()
@@ -900,6 +996,7 @@ if __name__ == "__main__":
     #     n=1600, bundle=drosophila_bundle(), orientation=aligner
     # )
 
+    model.refine_bundle_alignment(max_nudge_deg=30.0)
     model.cartridges_report()
 
     EyeViewer(model, aligner=aligner).show()

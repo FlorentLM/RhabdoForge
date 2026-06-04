@@ -408,6 +408,16 @@ class LensView:
         mask = self.is_binocular
         return float(np.mean(mask)) if mask.size > 0 else 0.0
 
+    @property
+    def is_edge(self) -> np.ndarray:
+        """(M,) True if the ommatidium is on the eye boundary."""
+        return self._model.is_edge[self._gi]
+
+    @property
+    def is_interior(self) -> np.ndarray:
+        """(M,) True if the ommatidium is not on the boundary."""
+        return ~self._model.is_edge[self._gi]
+
     # Linking to receptors / eye
 
     @property
@@ -971,8 +981,8 @@ class Eye:
                 The result's 'is_immediate' field is all True.
             - neighbour_dist_factor: when immediate_only=False, tags 'is_immediate'
                 in the result: a neighbour at distance d is "immediate" if
-                d <= neighbour_dist_factor * closest_neighbour_dist. Set to None
-                to skip the tagging.
+                d <= (neighbour_dist_factor * mean_neighbour_dist).
+                Set to None to skip the tagging.
 
         Returns a NeighbourResult.
         """
@@ -1023,8 +1033,10 @@ class Eye:
 
             # Populate immediacy
             d_factor = float(neighbour_dist_factor if neighbour_dist_factor is not None else 1.25)
-            if distances.size > 0:
-                result.is_immediate = distances <= (distances[:, 0:1] * d_factor)
+            if neighbour_dist_factor is not None and distances.size > 0:
+                n_ref = min(3, distances.shape[1])
+                local_scale = np.mean(distances[:, :n_ref], axis=1, keepdims=True)
+                result.is_immediate = distances <= (local_scale * float(neighbour_dist_factor))
 
             return result
 
@@ -1047,8 +1059,9 @@ class Eye:
         )
 
         if neighbour_dist_factor is not None and distances.size > 0:
-            closest = distances[:, 0:1]
-            result.is_immediate = distances <= closest * float(neighbour_dist_factor)
+            n_ref = min(3, distances.shape[1])
+            local_scale = np.mean(distances[:, :n_ref], axis=1, keepdims=True)
+            result.is_immediate = distances <= (local_scale * float(neighbour_dist_factor))
         # not possible in points mode (no query lens identity)
 
         return result
@@ -2095,17 +2108,19 @@ class CompoundEyeModel:
 
             # Fill neighbours count from neighbour graph
             for eye in self._eyes:
-                graph = eye._ensure_neighbour_graph(k=6)
-                n_in_eye_per_lens = graph.shape[1]
-                rcpt_indices_eye = (
-                    eye._lens_indices[:, None] * R + np.arange(R, dtype=np.intp)[None, :]
-                ).ravel()
+                res = eye.neighbours(lens_indices=eye._lens_indices, k=6, neighbour_dist_factor=1.5)
+
+                counts = np.sum(res.is_immediate, axis=1)
+                rcpt_indices_eye = (eye._lens_indices[:, None] * R + np.arange(R, dtype=np.intp)[None, :]).ravel()
 
                 self._buffer.rcpt_static_data['metadata'][rcpt_indices_eye] = set_metadata_field(
                     self._buffer.rcpt_static_data['metadata'][rcpt_indices_eye],
                     'neighbour_count',
-                    n_in_eye_per_lens,
+                    np.repeat(counts, R),  # repeat the count for all R receptors in the ommatidium
                 )
+
+            self.is_edge = self._identify_boundary_lenses()
+            self.is_interior = ~self.is_edge
 
             # Orientation pipeline
 
@@ -2146,7 +2161,7 @@ class CompoundEyeModel:
             self._buffer.receptors_dirty = True
 
             if R > 1:
-                self.wire_cartridges_adaptive()
+                self.wire_cartridges()
             else:
                 self._buffer.rcpt_static_data['cartridge_src'] = np.arange(N * R, dtype=np.uint32)
 
@@ -2789,232 +2804,39 @@ class CompoundEyeModel:
 
         return is_binocular
 
+    def _identify_boundary_lenses(self) -> np.ndarray:
+        """
+        Identifies edge lenses: < 6 neighbours and at least two of its neighbours also have < 6 neighbours.
+        """
+        N = self.lens_count
+        R = self.receptors_per_lens
+        is_edge = np.zeros(N, dtype=bool)
+
+        meta = self._buffer.rcpt_static_data['metadata'][::R]
+        counts = get_metadata_field(meta, 'neighbour_count')
+
+        # Potential edges
+        is_candidate = counts < 6
+        for eye in self._eyes:
+            gi = eye.lens_indices
+            adj = eye._ensure_neighbour_graph(k=6)
+
+            eye_candidates = is_candidate[gi]
+
+            for i_local in range(len(gi)):
+                if eye_candidates[i_local]:
+                    nb_locals = adj[i_local]
+                    nb_locals = nb_locals[nb_locals >= 0]
+
+                    neighbour_candidates = np.sum(eye_candidates[nb_locals])
+                    if neighbour_candidates >= 2:
+                        is_edge[gi[i_local]] = True
+
+        return is_edge
+
     # Cartridges (neural-superposition wiring)
 
-    def wire_cartridges_rigid(self,
-        assign_radius: float = 0.5,
-        angular_dev: float = 35.0,
-        scale_dev: float = 0.7,
-        min_snap_matches: int = 2,
-        neighbour_dist_factor: float = 1.25,
-        k_search: int = 20,
-        top_k: int = 8,
-        identity_bias: float = 0.05,
-        slack_cost: float = 1000.0,
-        time_limit_s: float = 60.0,
-        assume_aligned: bool = False
-        ) -> None:
-        """
-        Neural superposition wiring using rigid bundle templates and joint optimization.
-
-        This method assumes the rhabdomere bundle maintains a consistent geometric
-        structure. It uses similarity transforms (rotation + scale) to "snap" the
-        idealised rhabdomere bundle template onto the ommatidial lattice.
-
-        Args:
-            - assign_radius: Max distance (μm) to consider a rhabdomere "hitting" a lens.
-            - angular_dev: Max angular deviation (deg) allowed for bundle rotation.
-            - scale_dev: Max scaling allowed (fraction) relative to the bundle size.
-            - min_snap_matches: Minimum number of rhabdomeres that must align for a valid candidate.
-            - neighbour_dist_factor: Multiplier to define "immediate" lattice neighbors.
-            - k_search: Number of nearest neighbors to search for candidates.
-            - top_k: Number of best-scoring candidates per lens to pass to the MILP solver.
-            - slack_cost: Penalty for leaving a lens completely unwired.
-            - identity_bias: Preference for the "default" orientation (0 rotation, 1 scale).
-            - time_limit_s: Hard timeout for the Mixed-Integer Linear Programming solver.
-        """
-        N, R = self.lens_count, self.receptors_per_lens
-        if R == 1:
-            return
-
-        center = self._bundle.center_index
-        periph = np.array([i for i in range(R) if i != center], dtype=np.intp)
-        P = periph.size
-
-        cartridge_map = np.full((N, R), -1, dtype=np.intp)
-        cartridge_map[:, center] = np.arange(N)
-
-        rot_dx, rot_dy = self._bundle.rotated_offsets(
-            self._bundle_orientation, self._chirality_arr)
-        kp = self._bundle.offsets_um[periph] - self._bundle.offsets_um[center]
-        k_scale = float(np.mean(np.linalg.norm(kp, axis=1))) or 1.0
-        tpl_dx = (rot_dx - rot_dx[:, center:center + 1]) / k_scale
-        tpl_dy = (rot_dy - rot_dy[:, center:center + 1]) / k_scale
-        ang_gate = np.radians(angular_dev)
-
-        for eye in self._eyes:
-            n_e = len(eye)
-            if n_e < 2:
-                continue
-
-            neighb = eye.neighbours(
-                lens_indices=eye._lens_indices,
-                k=min(k_search, n_e - 1),
-                neighbour_dist_factor=neighbour_dist_factor,
-            )
-            if not neighb:
-                continue
-
-            gi = eye._lens_indices
-            immed = neighb.is_immediate
-            same_chi = neighb.same_chirality
-            no_self = neighb.indices != gi[:, None]
-
-            with np.errstate(all='ignore'):
-                spacing = np.nanmedian(np.where(immed, neighb.distances, np.nan), axis=1)
-            spacing = np.where(np.isfinite(spacing) & (spacing > 1e-9), spacing, 1.0)
-
-            dirs = self._lens_directions[gi]
-            nbr_dirs = self._lens_directions[neighb.indices]
-            delta = nbr_dirs - dirs[:, None, :]
-            du = np.einsum('ijk,ik->ij', delta, self._local_right[gi])
-            dv = np.einsum('ijk,ik->ij', delta, self._local_up[gi])
-
-            # Normalised by angular spacing per lens
-            nb_mag = np.sqrt(du ** 2 + dv ** 2)
-            ang_spacing = np.nanmedian(np.where(immed, nb_mag, np.nan), axis=1)
-            ang_spacing = np.where(np.isfinite(ang_spacing) & (ang_spacing > 1e-9), ang_spacing, 1.0)
-
-            z_nb = (du + 1j * dv) / ang_spacing[:, None]
-
-            z_tpl = (tpl_dx[gi][:, periph] + 1j * tpl_dy[gi][:, periph])
-
-            # Stage 1: enumerate candidates per lens
-            # candidates[i_loc] = list of (cost, donors_global, slots_global)
-            candidates = [[] for _ in range(n_e)]
-
-            for i_loc in range(n_e):
-                if not immed[i_loc].any():
-                    continue
-                tpl_i = z_tpl[i_loc]
-                nb_i = z_nb[i_loc]
-                valid_nb = no_self[i_loc] & same_chi[i_loc]
-                if not valid_nb.any():
-                    continue
-
-                mag_ok = np.abs(tpl_i) > 1e-8
-                if not mag_ok.any():
-                    continue
-
-                # Candidate transforms. With a lattice-pinned bundle the correct
-                # transform is identity; the hex lattice makes the wider search
-                # degenerate (it can snap 60 deg and wire each rhabdomere to the
-                # next neighbour at equal cost), so trust the orientation.
-                ws_set = [1.0 + 0j]
-                if not assume_aligned:
-                    nb_valid_idx = np.flatnonzero(valid_nb)
-                    for i_a in np.flatnonzero(mag_ok):
-                        ws = nb_i[nb_valid_idx] / tpl_i[i_a]
-                        ok = (np.abs(np.angle(ws)) <= ang_gate) & (np.abs(np.abs(ws) - 1.0) <= scale_dev)
-                        if ok.any():
-                            ws_set.extend(ws[ok].tolist())
-
-                # For each w, run a local Hungarian, build a candidate assignment
-                seen = set()
-                lens_cands = []
-                d_inf = np.full_like(np.abs(nb_i[None, :]), np.inf, dtype=float)
-
-                for w in ws_set:
-                    z_placed = w * tpl_i
-                    d = np.abs(z_placed[:, None] - nb_i[None, :])
-                    d = np.where(valid_nb[None, :], d, np.inf)
-                    # Pad to square so linear_sum_assignment can run if k > P
-                    r_idx, c_idx = linear_sum_assignment(d)
-                    md = d[r_idx, c_idx]
-                    keep = (md < assign_radius) & np.isfinite(md)
-                    if int(keep.sum()) < min_snap_matches:
-                        continue
-                    donors_g = neighb.indices[i_loc][c_idx[keep]]
-                    slots_g = periph[r_idx[keep]]
-                    # Dedupe key: assignment as sorted (slot, donor) tuples
-                    key = tuple(sorted(zip(slots_g.tolist(), donors_g.tolist())))
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    cost = float(md[keep].sum()) + identity_bias * float(np.abs(w - 1.0))
-                    lens_cands.append((cost, donors_g, slots_g))
-
-                lens_cands.sort(key=lambda t: t[0])
-                candidates[i_loc] = lens_cands[:top_k]
-
-            # Stage 2: MILP selection
-            # One null candidate per lens at slack cost so unwireable rims fall through
-            slack_cost = slack_cost * assign_radius * P
-
-            # Variable layout: x[lens_var_start[i_loc] + ci]
-            n_vars = sum(len(c) + 1 for c in candidates)  # +1 for null candidate per lens
-            if n_vars == 0:
-                self._finalize_wiring(cartridge_map)
-                return
-
-            costs = np.zeros(n_vars, dtype=float)
-            # var -> (i_loc, c_idx, donors, slots), null candidate has empty arrays
-            var_meta = []
-            lens_var_start = np.zeros(n_e + 1, dtype=np.intp)
-            v = 0
-            for i_loc in range(n_e):
-                lens_var_start[i_loc] = v
-                for cost, donors_g, slots_g in candidates[i_loc]:
-                    costs[v] = cost
-                    var_meta.append((i_loc, donors_g, slots_g))
-                    v += 1
-                # null candidate
-                costs[v] = slack_cost
-                var_meta.append((i_loc, np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp)))
-                v += 1
-            lens_var_start[n_e] = v
-
-            # C1: one candidate per lens (equality)
-            rows1 = np.repeat(np.arange(n_e), np.diff(lens_var_start))
-            cols1 = np.arange(n_vars)
-            data1 = np.ones(n_vars, dtype=float)
-            A1 = coo_matrix((data1, (rows1, cols1)), shape=(n_e, n_vars)).tocsr()
-
-            # C2: each (donor j, slot r) used at most once
-            ds_to_row = {}
-            rows2, cols2 = [], []
-            for vid, (_, donors_g, slots_g) in enumerate(var_meta):
-                for jg, sg in zip(donors_g.tolist(), slots_g.tolist()):
-                    key = (jg, sg)
-                    if key not in ds_to_row:
-                        ds_to_row[key] = len(ds_to_row)
-                    rows2.append(ds_to_row[key])
-                    cols2.append(vid)
-            n_c2 = len(ds_to_row)
-            if n_c2 > 0:
-                data2 = np.ones(len(rows2), dtype=float)
-                A2 = coo_matrix((data2, (rows2, cols2)), shape=(n_c2, n_vars)).tocsr()
-                cons = [
-                    LinearConstraint(A1, lb=1.0, ub=1.0),
-                    LinearConstraint(A2, lb=0.0, ub=1.0),
-                ]
-            else:
-                cons = [LinearConstraint(A1, lb=1.0, ub=1.0)]
-
-            result = milp(
-                c=costs,
-                constraints=cons,
-                bounds=Bounds(0, 1),
-                integrality=np.ones(n_vars, dtype=int),
-                options={'time_limit': time_limit_s, 'disp': False},
-            )
-
-            if not result.success:
-                logger.warning(f"Eye {eye.eye_index}: MILP failed ({result.message}); leaving unwired.")
-                continue
-
-            chosen = np.flatnonzero(result.x > 0.5)
-            for vid in chosen:
-                _, donors_g, slots_g = var_meta[vid]
-                if donors_g.size == 0:
-                    continue
-                # var_meta stores the host lens implicitly via lens_var_start; recover it:
-                i_loc = int(np.searchsorted(lens_var_start, vid, side='right') - 1)
-                cartridge_map[gi[i_loc], slots_g] = donors_g
-
-        self._finalize_wiring(cartridge_map)
-
-    def wire_cartridges_adaptive(self,
+    def wire_cartridges(self,
         assign_radius: float = 0.5,
         angular_dev: float = 40.0,
         scale_dev: float = 0.75,
@@ -3042,8 +2864,8 @@ class CompoundEyeModel:
             - angular_dev: Max angular deviation (deg) allowed for bundle rotation.
             - scale_dev: Max scaling allowed (fraction) relative to the bundle size.
             - min_snap_matches: Minimum number of rhabdomeres that must align for a valid candidate.
-            - neighbour_dist_factor: Multiplier to define "immediate" lattice neighbors.
-            - k_search: Number of nearest neighbors to search for candidates.
+            - neighbour_dist_factor: Multiplier to define "immediate" lattice neighbours.
+            - k_search: Number of nearest neighbours to search for candidates.
             - top_k: Number of best-scoring candidates per lens to pass to the MILP solver.
             - identity_bias: Preference for the "default" orientation (0 rotation, 1 scale).
             - unassigned_penalty: Cost incurred for every receptor slot left unwired.
@@ -3282,6 +3104,77 @@ class CompoundEyeModel:
                             cartridge_map[i_glob, r] = j
 
         self._finalize_wiring(cartridge_map)
+
+    def refine_bundle_alignment(self, max_nudge_deg: float = 5.0):
+        """
+        Refines chi to minimize cartridge spread without breaking global topology.
+        """
+
+        N = self.lens_count
+        R = self.receptors_per_lens
+        if R == 1 or not self._cartridges_wired:
+            return
+
+        bundle = self._bundle
+        periph = bundle.peripheral_indices
+        cmap = self._cartridge_map
+
+        # raw template offsets (relative to center)
+        raw_dx = bundle.offsets_um[periph, 0] - bundle.center[0]
+        raw_dy = bundle.offsets_um[periph, 1] - bundle.center[1]
+        tpl_angles = np.arctan2(raw_dy, raw_dx)
+
+        new_chis = self._bundle_orientation.copy()
+
+        with self.unlock(lenses=True, receptors=True):
+            for i in range(N):
+                if self.is_edge[i]:
+                    continue
+
+                donors = cmap[i, periph]
+                valid = (donors >= 0) & (~self.is_edge[donors])
+
+                if np.sum(valid) < 3:
+                    continue
+
+                # Project neighbour directions into home lens i's tangent plane
+                nb_dirs = self._lens_directions[donors[valid]] - self._lens_directions[i]
+                u = np.sum(nb_dirs * self._local_right[i], axis=1)
+                v = np.sum(nb_dirs * self._local_up[i], axis=1)
+
+                actual_angles = np.arctan2(v, u)
+
+                # Angles the rhabdomeres currently want to make
+                eye_chirality = self._chirality_arr[i]
+                if eye_chirality < 0:
+                    current_tpl_angles = np.arctan2(raw_dy[valid], -raw_dx[valid])
+                else:
+                    current_tpl_angles = tpl_angles[valid]
+
+                # Required rotation
+                angle_errors = (actual_angles - current_tpl_angles)
+                angle_errors = (angle_errors + np.pi) % (2 * np.pi) - np.pi
+
+                # This is essentially Procrustes rotation
+                weights = np.sqrt(raw_dx[valid] ** 2 + raw_dy[valid] ** 2)
+                mean_error = np.arctan2(
+                    np.sum(weights * np.sin(angle_errors)),
+                    np.sum(weights * np.cos(angle_errors))
+                )
+
+                delta = (mean_error - self._bundle_orientation[i] + np.pi) % (2 * np.pi) - np.pi
+
+                limit = np.radians(max_nudge_deg)
+                delta_clamped = np.clip(delta, -limit, limit)
+
+                new_chis[i] = self._bundle_orientation[i] + delta_clamped
+
+            res = OrientationResult(
+                chi=new_chis.astype(np.float32),
+                chirality=self._chirality_arr,
+                saccade_phasor=self._saccade_cache
+            )
+            self._apply_orientation(res)
 
     def _finalize_wiring(self, cartridge_map: np.ndarray) -> None:
 
@@ -3550,13 +3443,8 @@ class CompoundEyeModel:
             reference_ratio=reference_ratio,
         )
 
-    def cartridges_report(self, relative_to_acceptance: bool = True, verbose: bool = True) -> dict:
-        """How tightly do the co-wired receptors in each cartridge agree on a viewing direction?
-
-        For every cartridge, takes the angular deviation of each member receptor from the
-        cartridge's mean viewing axis. Reports the distribution over members and the
-        worst-member spread per cartridge.
-        """
+    def cartridges_report(self, exclude_edges: bool = False, verbose: bool = True):
+        """How tightly do the co-wired receptors in each cartridge agree on a viewing direction?"""
 
         N, R = self.lens_count, self.receptors_per_lens
         if R == 1 or not self._cartridges_wired:
@@ -3570,24 +3458,52 @@ class CompoundEyeModel:
         cmap = np.asarray(self._cartridge_map, dtype=np.intp).reshape(N, R)
         dirs = np.asarray(self.receptors.direction, dtype=np.float64).reshape(N, R, 3)
 
+        # Map valid connections
         home = np.repeat(np.arange(N), R)
         slot = np.tile(np.arange(R), N)
         donor = cmap.ravel()
-        valid = donor >= 0
-        home, slot, donor = home[valid], slot[valid], donor[valid]
-        mdir = dirs[donor, slot]  # pooled receptor direction
 
+        valid_mask = donor >= 0
+        home, slot, donor = home[valid_mask], slot[valid_mask], donor[valid_mask]
+
+        # Pooled directions and individual deviations
+        mdir = dirs[donor, slot]  # pooled receptor direction
         sum_dir = np.zeros((N, 3))
         np.add.at(sum_dir, home, mdir)
-        count = np.bincount(home, minlength=N)
-        mean_dir = sum_dir / np.maximum(np.linalg.norm(sum_dir, axis=1, keepdims=True), 1e-12)
 
+        # mean direction per cartridge
+        norm = np.linalg.norm(sum_dir, axis=1, keepdims=True)
+        mean_dir = sum_dir / np.maximum(norm, 1e-12)
+
+        # Angular deviation for every (successfully) wired receptor
         cosang = np.clip(np.einsum('mc,mc->m', mdir, mean_dir[home]), -1.0, 1.0)
-        member_ang = np.degrees(np.arccos(cosang)) # per-receptor deviation from cartridge axis
+        member_ang = np.degrees(np.arccos(cosang))
 
-        percart_max = np.zeros(N)
-        np.maximum.at(percart_max, home, member_ang)  # worst member per cartridge
-        multi = count >= 2  # cartridges that actually pool >1 receptor
+        acc = np.asarray(self.receptors.rest_acceptance_angles, dtype=np.float64)
+        acc_minor = (acc[..., 0] if acc.ndim >= 2 else acc).reshape(N, R)
+        ratio = np.radians(member_ang) / np.maximum(acc_minor[donor, slot], 1e-9)
+
+        if exclude_edges:
+            # only keep connections where the cartridge (home lens) is not an edge
+            mask = ~self.is_edge[home]
+            home = home[mask]
+            slot = slot[mask]
+            donor = donor[mask]
+            member_ang = member_ang[mask]
+            ratio = ratio[mask]
+
+        # Reduce to per-cartridge maximum spread
+        percart_max = np.zeros(N, dtype=np.float64)
+        np.maximum.at(percart_max, home, member_ang)
+
+        # Recalculate counts for the cartridges we are actually interested in
+        count = np.bincount(home, minlength=N)
+
+        # A cartridge is 'pooled' if it has >= 2 receptors and meets our edge criteria
+        if exclude_edges:
+            multi_mask = (count >= 2) & (~self.is_edge)
+        else:
+            multi_mask = (count >= 2)
 
         def _stats(a):
             a = np.asarray(a)
@@ -3598,45 +3514,38 @@ class CompoundEyeModel:
                     'max': float(a.max())}
 
         n_periph_slots = N * periph.size
+        # Unwired count always calculated globally for context
         n_unwired = int((cmap[:, periph] < 0).sum())
+
         out = {
             'n_cartridges': int(N),
-            'n_pooled': int(multi.sum()),
-            'mean_receptors_per_pooled': float(count[multi].mean()) if multi.any() else 0.0,
+            'n_pooled': int(np.sum(multi_mask)),
+            'mean_receptors_per_pooled': float(count[multi_mask].mean()) if np.any(multi_mask) else 0.0,
             'fill_rate': 1.0 - n_unwired / max(n_periph_slots, 1),
-            'donation_conflicts': int(np.sum(getattr(self, 'donation_conflicts', np.zeros(N, bool)))),
-            'receiving_conflicts': int(np.sum(getattr(self, 'receiving_conflicts', np.zeros(N, bool)))),
+            'donation_conflicts': int(np.sum(self.donation_conflicts)),
+            'receiving_conflicts': int(np.sum(self.receiving_conflicts)),
             'member_deviation_deg': _stats(member_ang),
-            'per_cartridge_spread_deg': _stats(percart_max[multi]),
+            'per_cartridge_spread_deg': _stats(percart_max[multi_mask]),
+            'member_frac_of_acceptance': {
+                'median': float(np.median(ratio)) if ratio.size else 0.0,
+                'p90': float(np.percentile(ratio, 90)) if ratio.size else 0.0,
+                'max': float(ratio.max()) if ratio.size else 0.0
+            }
         }
-
-        if relative_to_acceptance:
-            acc = np.asarray(self.receptors.rest_acceptance_angles, dtype=np.float64)
-            acc_minor = (acc[..., 0] if acc.ndim >= 2 else acc).reshape(N, R)
-            ratio = np.radians(member_ang) / np.maximum(acc_minor[donor, slot], 1e-9)
-            out['member_frac_of_acceptance'] = {
-                'median': float(np.median(ratio)), 'p90': float(np.percentile(ratio, 90)),
-                'max': float(ratio.max())}
 
         if verbose:
             m, s = out['member_deviation_deg'], out['per_cartridge_spread_deg']
-            lines = [
-                "Cartridge viewing-axis alignment:",
-                f"    pooled cartridges : {out['n_pooled']}/{out['n_cartridges']} "
-                f"(mean {out['mean_receptors_per_pooled']:.1f} receptors each), "
-                f"peripheral fill {out['fill_rate'] * 100:.1f}%",
-                f"    conflicts         : {out['donation_conflicts']} donation, "
-                f"{out['receiving_conflicts']} receiving",
-                f"    member deviation  : median {m['median']:.3f} deg, "
-                f"p90 {m['p90']:.3f}, p99 {m['p99']:.3f}, max {m['max']:.3f}",
-                f"    per-cartridge worst: median {s['median']:.3f} deg, "
-                f"p90 {s['p90']:.3f}, max {s['max']:.3f}",
-            ]
-            if relative_to_acceptance:
-                f = out['member_frac_of_acceptance']
-                lines.append(f"    as fraction of Delta-rho : median {f['median']:.2f}, "
-                             f"p90 {f['p90']:.2f}, max {f['max']:.2f}")
-            print("\n".join(lines))
+            suffix = " (excluding edges)" if exclude_edges else ""
+            print(f"\nCartridge viewing-axis alignment{suffix}:")
+            print(f"    pooled cartridges : {out['n_pooled']}/{out['n_cartridges']} "
+                  f"(avg {out['mean_receptors_per_pooled']:.1f} rcpts)")
+            print(f"    conflicts         : {out['donation_conflicts']} donation, "
+                  f"{out['receiving_conflicts']} receiving")
+            print(f"    member deviation  : median {m['median']:.3f}°, p90 {m['p90']:.3f}°, max {m['max']:.3f}°")
+            print(f"    cartridge spread  : median {s['median']:.3f}°, p90 {s['p90']:.3f}°, max {s['max']:.3f}°")
+
+            f = out['member_frac_of_acceptance']
+            print(f"    vs. acceptance    : median {f['median']:.2f}Δρ, p90 {f['p90']:.2f}Δρ")
 
         return out
 
