@@ -16,8 +16,8 @@ uniform bool  enable_actuation;   // toggle for photomechanical saccades
 uniform float lum_ref;            // operating-point luminance for biochemical gain
 uniform float retina_drive_um[8]; // retina muscle pull strength (one per eye ID (0-7))
 uniform float noise_threshold;
-uniform float extra_narrowing_ratio = 1.0; // Extra, non-optical RF narrowing at full saccade (i.e. ~ voltage-level hyperacuity)
-                                  // 1.0 = pure optics
+uniform float extra_narrowing_ratio; // Extra, non-optical RF narrowing at full saccade (i.e. ~ voltage-level hyperacuity)
+                                    // 1.0 = pure optics
 
 void main() {
     uint lens_idx = gl_GlobalInvocationID.x;
@@ -97,6 +97,7 @@ void main() {
     //   - Phenomenological (extra_narrowing_ratio): extra non-optical narrowing.
     //      Ramps with the saccade, independent of the optics.
     float disp_frac   = clamp(ld.axial_um / max(ls.ampl_ax_um, 1e-6), 0.0, 1.0);
+    float er = (extra_narrowing_ratio <= 0.0) ? 1.0 : extra_narrowing_ratio;  // unset uniform -> pure optics
     float pheno_scale = mix(1.0, extra_narrowing_ratio, disp_frac);
 
     for (int r = 0; r < receptors_per_lens; r++) {
