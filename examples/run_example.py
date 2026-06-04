@@ -1,8 +1,9 @@
 import numpy as np
 
+from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.geometry.meshes import CUBE_VERTICES, CUBE_INDICES
-from insectvision.compound_eyes import CompoundEyeModel
+from insectvision.compound_eyes import CompoundEyeModel, VisualOutput
 from insectvision.renderers import Rasterizer, Raytracer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
 from insectvision.utils import RandomnessMode
@@ -134,7 +135,7 @@ def main():
 
 
     # Run
-    all_ommatidia_data = []
+    all_timesteps = []
 
     if not HEADLESS:
 
@@ -153,8 +154,7 @@ def main():
     else:
         # Headless and batched mode
 
-        max_steps = 10000
-        all_ommatidia_data = []
+        max_steps = 1000
 
         print(f"Running headless simulation for {max_steps} steps...")
 
@@ -171,22 +171,22 @@ def main():
 
             # If the return value is not None, it's a valid chunk of data (either a single frame or a full batch)
             if visual_output is not None:
-                all_ommatidia_data.append(visual_output.per_cartridge)
+                all_timesteps.append(visual_output)
 
         # After the loop, flush() gets the last partial batch from async mode
         # (this is harmless in sync mode, it will just return an empty array)
         final_chunk = renderer.flush()  # TODO: This might actually be done automatically
 
         if final_chunk.size > 0:
-            all_ommatidia_data.append(final_chunk)
+            all_timesteps.append(final_chunk)
 
     print(f"Ran for {context.frame_count} frames in {context.wall_time:.2f}s (avg. {context.frame_count / context.wall_time:.2f} fps).")
 
-    if all_ommatidia_data:
+    if all_timesteps:
         # In sync mode, this combines 10,000 arrays of shape (19362, 4)
         # In async mode, this might combine 10 arrays of shape (1000, 19362, 4)
 
-        full_dataset = np.concatenate(all_ommatidia_data, axis=0)
+        full_dataset = np.concatenate(all_timesteps, axis=0)
         print(f"Final concatenated dataset shape: {full_dataset.shape}")
 
     # Cleanup

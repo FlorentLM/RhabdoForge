@@ -35,7 +35,7 @@ uniform bool tiled_mode;
 uniform float vis_rf_scale;
 uniform int output_mode;
 uniform int receptors_per_lens;
-uniform int kernel_centre_idx;
+uniform int bundle_centre_idx;
 uniform int selected_lenses[10];
 
 void main() {
@@ -70,7 +70,7 @@ void main() {
         #endif
     } else {
         l_id = uint(inst_idx);
-        uint c_idx = l_id * uint(receptors_per_lens) + uint(kernel_centre_idx);
+        uint c_idx = l_id * uint(receptors_per_lens) + uint(bundle_centre_idx);
         p_vec = (projection_mode == 1) ? rcpt_dynamic[c_idx].direction : normalize(rcpt_static[c_idx].position);
 
         for (int r = 0; r < receptors_per_lens; r++) {
@@ -96,10 +96,10 @@ void main() {
         value /= float(receptors_per_lens);
     }
 
-    float tilt = tiled_mode ? lens_static[l_id].ioa_tilt : rcpt_static[output_mode == 0 ? inst_idx : l_id * receptors_per_lens + kernel_centre_idx].acc_tilt;
-    vec2 axes = tiled_mode ? lens_static[l_id].ioa_axes : rcpt_dynamic[output_mode == 0 ? inst_idx : l_id * receptors_per_lens + kernel_centre_idx].acc_axes;
+    float tilt = tiled_mode ? lens_static[l_id].ioa_tilt : rcpt_static[output_mode == 0 ? inst_idx : l_id * receptors_per_lens + bundle_centre_idx].acc_tilt;
+    vec2 axes = tiled_mode ? lens_static[l_id].ioa_axes : rcpt_dynamic[output_mode == 0 ? inst_idx : l_id * receptors_per_lens + bundle_centre_idx].acc_axes;
 
-    uint rcpt_idx = (output_mode == 0 ? inst_idx : l_id * receptors_per_lens + kernel_centre_idx);
+    uint rcpt_idx = (output_mode == 0 ? inst_idx : l_id * receptors_per_lens + bundle_centre_idx);
     vec2 dynamic_axes = rcpt_dynamic[rcpt_idx].acc_axes;
     vec2 rest_axes = rcpt_static[rcpt_idx].rest_acc;
 

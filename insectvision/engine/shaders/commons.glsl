@@ -30,7 +30,7 @@ struct LensStatic {
     vec3  forward;
     float ioa_tilt;
     vec2  ioa_axes;
-    float nodal_distance_um;
+    float focal_um;
     float lens_diameter_um;
     float tau_rise;
     float tau_relax;
@@ -198,9 +198,9 @@ float get_sensitivity(int mode, float angle_min, float angle_maj,
         if (rg_min < 1e-5 && rg_maj < 1e-5)  // diffraction-limited: nothing to convolve
             return airy_psf(angle_min, angle_maj, D, lambda);
 
-        // numerical convolution with a Gaussian rhabdomere kernel (FWHM = rg)
+        // numerical convolution with a Gaussian rhabdomere bundle (FWHM = rg)
         const int   N    = 6;     // (2N+1)^2 taps (N ~3*rg/rho_diff for faithful rings)
-        const float SPAN = 2.2;   // kernel extent (in units of rg)
+        const float SPAN = 2.2;   // bundle extent (in units of rg)
 
         float acc = 0.0, wsum = 0.0;
         for (int i = -N; i <= N; i++)

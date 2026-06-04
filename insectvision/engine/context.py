@@ -351,7 +351,7 @@ class Context:
             return None
 
         model = self.renderer._model
-        c_idx = model.kernel.center_index
+        c_idx = model.bundle.center_index
         rcpt_idx = np.arange(model.lens_count) * model.receptors_per_lens + c_idx
         p_local = model.rcpt_static_data['position'][rcpt_idx]
 

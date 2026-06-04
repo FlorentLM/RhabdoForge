@@ -47,12 +47,13 @@ void main() {
 
     // Raw contrast
     float contrast = (ld.fast_lum - ld.adapted_lum) / (ld.adapted_lum + 0.05);
+//    float contrast = (ld.fast_lum - ld.adapted_lum) / ld.adapted_lum;         // DEBUG
 
     // Deadzone: subtract noise threshold
-//    float clean_contrast = max(0.0, contrast - (noise_threshold * 1.0));
-    float clean_contrast = contrast;                                          // DEBUG
+    float clean_contrast = max(0.0, contrast - (noise_threshold * 1.0));
+//    float clean_contrast = contrast;                                          // DEBUG
 
-    // Apply gain curve
+//    // Apply gain curve
     float sensitivity = 0.2;
     float bright_drive = max(0.0, tanh(clean_contrast / sensitivity));
 
@@ -73,10 +74,10 @@ void main() {
     // -> neural gain based on the adapted light level
     float lum_gain = lum_ref / (lum_ref + max(ld.adapted_lum, 0.0));
 
-    // Optics & movement geometry
-    float d_rest = ls.nodal_distance_um;
+    // Optics and movement geometry
+    float d_rest = ls.focal_um;            // per-lens focal length (lever arm)
     float d_eff  = max(d_rest + ld.axial_um, 1.0);
-    
+
     uint eye_id = unpack_eye_id(rcpt_static[start_idx].metadata);
     float muscle_tug = retina_drive_um[eye_id];
 

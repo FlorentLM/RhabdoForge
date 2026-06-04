@@ -273,7 +273,7 @@ class BundlesAligner:
 
         lens_directions = model._lens_directions
         lens_positions = model._lens_positions
-        kernel = model._kernel
+        bundle = model._bundle
         N = lens_directions.shape[0]
 
         e_x, e_y, e_z = _flow_aligned_frame(self.flow_direction)
@@ -315,7 +315,7 @@ class BundlesAligner:
             )
 
         # Major axis: alignment rotated by +/- flow_axis_deg, per eye
-        base_flow_rot = float(np.radians(kernel.flow_axis_deg))
+        base_flow_rot = float(np.radians(bundle.flow_axis_deg))
         major = _major_axis_field(
             alignment_phasor=alignment,
             lens_directions=lens_directions,
@@ -334,14 +334,14 @@ class BundlesAligner:
             )
             effective_main = np.where(
                 chirality > 0,
-                float(kernel.main_axis_rad) + np.pi,
-                -float(kernel.main_axis_rad),
+                float(bundle.main_axis_rad) + np.pi,
+                -float(bundle.main_axis_rad),
             ).astype(np.float32)
             chi = (major_angle - effective_main).astype(np.float32)
             chi = (chi + np.pi) % (2.0 * np.pi) - np.pi
 
         # Saccade phasor: major axis rotated by base_sacc * chirality (4 zones), smoothed, and polarised
-        base_sacc_rot = -float(np.radians(kernel.saccade_offset_deg))
+        base_sacc_rot = -float(np.radians(bundle.saccade_offset_deg))
         sacc = _saccade_phasor_field(
             major_axis=major,
             lens_directions=lens_directions,
@@ -390,7 +390,7 @@ class BundlesAligner:
 
 def trivial_orientation(N: int) -> OrientationResult:
     """
-    For R=1 kernels or any case with no bundle to orient.
+    For R=1 bundles or any case with no bundle to orient.
     """
     return OrientationResult(
         chi=np.zeros(N, dtype=np.float32),
@@ -420,8 +420,8 @@ def apply_chirality(
     Derive a OrientationResult when the user supplies chi and chirality directly
     (no flow direction available).
 
-    Major axis is kernel.main_axis_rad + chi + chirality
-    saccade phasor is major + kernel.saccade_offset_deg + chirality
+    Major axis is bundle.main_axis_rad + chi + chirality
+    saccade phasor is major + bundle.saccade_offset_deg + chirality
 
     No smoothing (it is presumed the user knows what they want).
     """
@@ -430,14 +430,14 @@ def apply_chirality(
     chi = _prepare_per_lens(chi, N, 'chi').astype(np.float32)
     chirality = _prepare_per_lens(chirality, N, 'chirality').astype(np.float32)
 
-    main_rad = float(model._kernel.main_axis_rad)
+    main_rad = float(model._bundle.main_axis_rad)
     effective_main = np.where(chirality > 0, main_rad, np.pi - main_rad).astype(np.float32)
     major_angle = chi + effective_main
     cos_m = np.cos(major_angle)[:, None]
     sin_m = np.sin(major_angle)[:, None]
     major = cos_m * model._local_right + sin_m * model._local_up
 
-    base_sacc_rot = -float(np.radians(model._kernel.saccade_offset_deg))
+    base_sacc_rot = -float(np.radians(model._bundle.saccade_offset_deg))
     angles = (base_sacc_rot * chirality).astype(np.float32)
     cos_a = np.cos(angles)[:, None]
     sin_a = np.sin(angles)[:, None]

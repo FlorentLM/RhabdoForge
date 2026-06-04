@@ -4,7 +4,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 
-RECEPTOR_PALETTE = [
+RHAB_COLOURS = [
     '#ffad13',  # R1
     '#FF1C25',  # R2
     '#880015',  # R3
@@ -15,7 +15,7 @@ RECEPTOR_PALETTE = [
 ]
 
 
-class RhabdomereKernel:
+class RhabdomereBundle:
     """
     Model of the rhabdomere bundle (inside a single ommatidium).
 
@@ -23,9 +23,9 @@ class RhabdomereKernel:
         - name: str, Identifier (e.g. species name)
         - offsets_um: (R, 2) array_like, Rhabdomere offsets in the focal plane (μm). R is the bundle size.
         - diameters_um: float or (R,) array_like, Waveguide diameters (μm). Scalar broadcasts to all receptors.
-        - nodal_distance_um: float (optional), Distance from the lens inner surface (nodal point) to the rhabdomere
-            tips at rest (μm). The lever arm converting lateral focal-plane offsets into angular shifts.
-            ~20-21 μm in Drosophila (Kemppainen et al. 2022, Stavenga 2003).
+        - focal_um: float (optional), Effective nodal->tip distance at the rhabdomere's dark-resting position (μm).
+            This is the lever arm converting lateral focal-plane offsets into angular shifts,
+            and the distance at which the optical (Snyder) acceptance angle is evaluated.
             Required when R > 1.
         - sensitivity: scalar, (3,), (R,), or (R, 3) array_like, Spectral multipliers in the order (UV, Green, Blue).
             UV (slot 0) is rendered in the red sub-pixel of the output.
@@ -36,13 +36,13 @@ class RhabdomereKernel:
                 (R, 3): explicit per-receptor, per-channel values
         - wavelengths_nm: float or (R,) array_like, Per-receptor peak wavelengths (nm).
             Used by the Snyder diffraction term. Scalar broadcasts.
-
         - tau_membrane: float, Membrane RC integration time (s).
             The receptor's output is an EMA with this time constant. ~0.012 s in Drosophila.
         - tau_rise, tau_relax: float, Mechanical rise / relaxation time constants of the microsaccade (s).
         - tau_fast, tau_adapt: float, Fast (~PIP2 hydrolysis, ~5 ms) and slow (~Ca²+, ~50 ms) adaptation EMA times (s).
-        - ampl_lat_um, ampl_ax_um: float, Max lateral / axial bundle displacement at full microsaccade drive (μm).
-
+        - ampl_lat_um, ampl_ax_um: float, Max lateral / axial rhabdomere tip displacement at full microsaccade drive (μm).
+        - extra_narrowing_ratio: float, Extra, non-optical RF narrowing at full saccade (i.e. ~ voltage-level hyperacuity).
+            1.0 = pure optics
         - center_index: int, Index of the central rhabdomere (e.g. R7/8 in Drosophila is index 6).
         - main_axis_indices: (int, int), Indices of the two rhabdomeres defining the bundle's main structural axis.
             R3, R6 in Drosophila, indices (2, 5).
@@ -53,27 +53,27 @@ class RhabdomereKernel:
     """
 
     def __init__(self,
-        name: str = 'Simple',
-        offsets_um: ArrayLike = ((0.0, 0.0),),
-        diameters_um: Union[float, ArrayLike] = 2.0,
-        nodal_distance_um: Optional[float] = 21.0,
-        sensitivity: Union[float, ArrayLike] = 1.0,
-        wavelengths_nm: Union[float, ArrayLike] = 540.0,
-        tau_membrane: float = 0.012,
-        tau_rise: float = 0.008,
-        tau_relax: float = 0.080,
-        tau_fast: float = 0.005,
-        tau_adapt: float = 0.050,
-        ampl_lat_um: float = 2.0,
-        ampl_ax_um: float = 8.0,
-        center_index: int = 0,
-        main_axis_indices: Tuple[int, int] = (0, 0),
-        flow_axis_deg: float = -81.0,
-        saccade_offset_deg: float = 0.0,
-    ):
+                 name: str = 'Simple',
+                 offsets_um: ArrayLike = ((0.0, 0.0),),
+                 diameters_um: Union[float, ArrayLike] = 2.0,
+                 focal_um: Optional[float] = 20.0,
+                 sensitivity: Union[float, ArrayLike] = 1.0,
+                 wavelengths_nm: Union[float, ArrayLike] = 540.0,
+                 tau_membrane: float = 0.005,
+                 tau_rise: float = 0.015,
+                 tau_relax: float = 0.060,
+                 tau_fast: float = 0.005,
+                 tau_adapt: float = 0.050,
+                 ampl_lat_um: float = 2.0,
+                 ampl_ax_um: float = 2.0,
+                 center_index: int = 0,
+                 main_axis_indices: Tuple[int, int] = (0, 0),
+                 flow_axis_deg: float = -81.0,
+                 saccade_offset_deg: float = 0.0,
+                 ):
 
-        self.name = name
-        self.nodal_distance_um = nodal_distance_um
+        self.name = str(name)
+        self.focal_um = float(focal_um)
 
         self.tau_membrane = float(tau_membrane)
         self.tau_rise = float(tau_rise)
@@ -105,14 +105,14 @@ class RhabdomereKernel:
 
         if R > 1 and i1 == i2:
             warnings.warn(
-                f"RhabdomereKernel '{self.name}': R={R} but main_axis_indices=({i1},{i2}) "
+                f"RhabdomereBundle '{self.name}': R={R} but main_axis_indices=({i1},{i2}) "
                 "are identical; bundle orientation pipeline cannot derive an alignment axis.",
                 stacklevel=2,
             )
 
-        if R > 1 and self.nodal_distance_um is None:
+        if R > 1 and self.focal_um is None:
             warnings.warn(
-                f"RhabdomereKernel '{self.name}': R={R} but nodal_distance_um is None. "
+                f"RhabdomereBundle '{self.name}': R={R} but focal_um is None. "
                 "Receptor directions cannot be computed without it.",
                 stacklevel=2,
             )
@@ -139,7 +139,7 @@ class RhabdomereKernel:
                 return np.tile(spec, (R, 1)).astype(np.float32)
             if spec.size == R:
                 return np.column_stack([spec, spec, spec]).astype(np.float32)
-            raise ValueError(f"1-D sensitivity must be size 1, 3, or R={R}; got {spec.size}.")
+            raise ValueError(f"1D sensitivity must be size 1, 3, or R={R}; got {spec.size}.")
 
         if spec.ndim == 2:
             if spec.shape == (R, 3):
@@ -151,7 +151,7 @@ class RhabdomereKernel:
 
     def __repr__(self) -> str:
         return (
-            f"RhabdomereKernel(name={self.name!r}, R={self.count}, "
+            f"RhabdomereBundle(name={self.name!r}, R={self.count}, "
             f"center={self.center_index}, "
             f"main_axis={self.main_axis_indices}, flow_axis_deg={self.flow_axis_deg:g})"
         )
@@ -161,7 +161,7 @@ class RhabdomereKernel:
 
     @property
     def count(self) -> int:
-        """Number of rhabdomeres in this kernel."""
+        """Number of rhabdomeres in this bundle."""
         return len(self)
 
     @property
@@ -231,7 +231,7 @@ class RhabdomereKernel:
         Args:
             - chi: (N,) array, Bundle yaw in each lens tangent frame (rad).
             - chirality: (N,) array, Per-lens chirality (+1 or -1).
-                The chirality flip mirrors the kernel across the x-axis *before* rotating by chi.
+                The chirality flip mirrors the bundle across the x-axis *before* rotating by chi.
 
         Returns:
             rot_dx, rot_dy: (N, R) arrays, Per-(lens, receptor) focal-plane offsets.
@@ -279,7 +279,7 @@ class RhabdomereKernel:
                     color='black', linestyle='--', alpha=0.7, label='Microsaccade axis')
 
         ax.set_aspect('equal')
-        ax.set_title(f'Kernel: {self.name} (R={self.count})')
+        ax.set_title(f'Bundle: {self.name} (R={self.count})')
         ax.legend(loc='upper right', bbox_to_anchor=(1.45, 1))
 
         if spectral:
@@ -299,18 +299,17 @@ class RhabdomereKernel:
 
 ## =====================================================================================================================
 #
-# Built-in kernel: Drosophila melanogaster
-# (values from Kemppainen et al., 2022)
-#
+# Built-in bundle: Drosophila melanogaster
+# (values inspired from Kemppainen et al., 2022)
 
-def drosophila_kernel(name: str = 'Drosophila') -> RhabdomereKernel:
-    """Reference Drosophila melanogaster kernel."""
+def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
+    """Reference Drosophila melanogaster bundle."""
 
     # R1-R6 panchromatic, R7/8 strong UV bias
     sensitivity = np.ones((7, 3), dtype=np.float32)
     sensitivity[6] = [1.0, 0.2, 0.6]
 
-    return RhabdomereKernel(
+    return RhabdomereBundle(
         name=name,
         offsets_um=[
             [-1.6881,  1.0273],   # R1
@@ -321,9 +320,16 @@ def drosophila_kernel(name: str = 'Drosophila') -> RhabdomereKernel:
             [ 1.6567,  0.9762],   # R6
             [ 0.0045, -0.0113],   # R7/8 (central)
         ],
-        diameters_um=[1.8627] * 6 + [1.5743],
+        diameters_um=[1.8, 1.6, 1.6, 1.6, 1.6, 1.8, 1.0],  # Kemppainen 2022: R1/R6 1.8, R2-R5 1.6, R7/8 1.0
         sensitivity=sensitivity,
-        nodal_distance_um=21.0,
+        focal_um=21.36,     # lens nodal point -> rhabdomere tip distance
+        tau_membrane = 0.005,
+        tau_rise=0.015,
+        tau_relax=0.060,
+        tau_fast=0.005,
+        tau_adapt=0.100,
+        ampl_lat_um=2.0,    # upper-range microsaccade, ~6° RF shift
+        ampl_ax_um=2.0,     # axial move 17->19 μm (Kemppainen 2022, Table S6)
         center_index=6,
         main_axis_indices=(2, 5),    # R3-R6
         flow_axis_deg=-81.0,
@@ -334,13 +340,13 @@ def drosophila_kernel(name: str = 'Drosophila') -> RhabdomereKernel:
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
 
-    k = drosophila_kernel()
+    b = drosophila_bundle()
 
-    print(k)
-    print(f"  Main axis: {k.main_axis_deg:.1f}°")
-    print(f"  Flow axis: {np.degrees(k.flow_axis_rad):.1f}°")
-    print(f"  Saccade axis: {k.saccade_axis_deg:.1f}°")
-    print(f"  UV sensitivity per cell: {k.sensitivity_uv}")
-    k.plot(spectral=True)
+    print(b)
+    print(f"  Main axis: {b.main_axis_deg:.1f}°")
+    print(f"  Flow axis: {np.degrees(b.flow_axis_rad):.1f}°")
+    print(f"  Saccade axis: {b.saccade_axis_deg:.1f}°")
+    print(f"  UV sensitivity per cell: {b.sensitivity_uv}")
+    b.plot(spectral=True)
 
     plt.show()

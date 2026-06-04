@@ -48,7 +48,7 @@ uniform int frame_offset;
 
 uniform int output_mode;    // 0 = Raw, 1 = Ommatidium, 2 = Cartridge
 uniform int receptors_per_lens;
-uniform int kernel_centre_idx;
+uniform int bundle_centre_idx;
 
 mat3 rmatFromDir(vec3 z) {
     vec3 x = normalize(cross((abs(z.y) > 0.999) ? vec3(1,0,0) : vec3(0,1,0), z));
@@ -89,7 +89,7 @@ void main() {
 
     } else {
         l_id = uint(i);
-        uint c_idx = l_id * uint(receptors_per_lens) + uint(kernel_centre_idx);
+        uint c_idx = l_id * uint(receptors_per_lens) + uint(bundle_centre_idx);
         rs = rcpt_static[c_idx]; rd = rcpt_dynamic[c_idx];
         for (int r = 0; r < receptors_per_lens; r++) {
             uint src = (output_mode == 2) ? rcpt_static[l_id * receptors_per_lens + r].cartridge_src : (l_id * receptors_per_lens + r);

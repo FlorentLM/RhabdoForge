@@ -28,24 +28,23 @@ Notes:
     the orientation pipeline, so they can't be set directly.
 """
 import logging
-from dataclasses import dataclass
 from typing import Optional, Tuple, Union, TYPE_CHECKING, List
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
-from scipy.sparse import csr_matrix, coo_matrix
+from scipy.sparse import coo_matrix
 from scipy.optimize import linear_sum_assignment, milp, LinearConstraint, Bounds
 
-from insectvision.compound_eyes import RhabdomereKernel
 from insectvision.compound_eyes.buffers import EyesBuffer, get_metadata_field, set_metadata_field
 from insectvision.compound_eyes.orientation import (
     BundlesAligner, trivial_orientation, apply_chirality, OrientationResult
 )
 from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD
 from insectvision.utils.math import normalise_vectors, tangent_frames, icosphere, fibonacci_sphere
-
-if TYPE_CHECKING:
-    from insectvision.compound_eyes.kernel import RhabdomereKernel
+from insectvision.compound_eyes.lattice import (
+    facet_diameters, angular_neighbour_median,
+)
+from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
 
 logger = logging.getLogger(__name__)
 
@@ -230,14 +229,14 @@ class LensView:
         self._mark_dirty()
 
     @property
-    def nodal_distance_um(self) -> np.ndarray:
+    def focal_um(self) -> np.ndarray:
         """(M,) lens-to-rhabdomere lever arms (μm)."""
-        return self._model.lens_static_data['nodal_distance_um'][self._gi].copy()
+        return self._model.lens_static_data['focal_um'][self._gi].copy()
 
-    @nodal_distance_um.setter
-    def nodal_distance_um(self, value: ArrayLike):
+    @focal_um.setter
+    def focal_um(self, value: ArrayLike):
         self._validate_write()
-        self._model.lens_static_data['nodal_distance_um'][self._gi] = value
+        self._model.lens_static_data['focal_um'][self._gi] = value
         self._mark_dirty()
 
     # Bundle orientation
@@ -266,7 +265,7 @@ class LensView:
         sy = self._model.lens_static_data['sacc_y'][self._gi][:, None]
         return sx * self._model._local_right[self._gi] + sy * self._model._local_up[self._gi]
 
-    # Photomechanical biophysics (per-lens, broadcast from kernel)
+    # Photomechanical biophysics (per-lens, broadcast from bundle)
 
     @property
     def tau_rise(self) -> np.ndarray:
@@ -1678,13 +1677,13 @@ class VisualOutput:
 
 class CompoundEyeModel:
     """
-    A compound eye specified as N lens positions / directions and a kernel
+    A compound eye specified as N lens positions / directions and a bundle
     of R rhabdomeres per ommatidium.
 
     The packed per-lens / per-receptor data lives in an EyesBuffer class.
 
     This class owns that buffer and adds everything the model needs:
-      - the RhabdomereKernel and the list of per-eye objects
+      - the RhabdomereBundle and the list of per-eye objects
         (KDtrees, neighbour graphs, side-aware queries),
       - the orientation / chirality / saccade fields produced by the
         BundlesAligner pipeline,
@@ -1697,7 +1696,7 @@ class CompoundEyeModel:
     Args:
         - directions: (N, 3) array_like, Lens optical-axis (forward) directions. Will be normalised.
         - positions: (N, 3) array_like, Lens world positions.
-        - kernel: RhabdomereKernel (optional), Per-species bundle model. Defaults to a single panchromatic receptor.
+        - bundle: RhabdomereBundle (optional), Per-species bundle model. Defaults to a single panchromatic receptor.
         - eye_index: (N,) array_like of uint (optional), Eye membership for each lens (0-7).
             If None, splits in two eyes on x: x < 0 -> 0 (left), x ≥ 0 -> 1 (right).
         - lens_diameter_um: float or (N,) array_like or None, Lens aperture (μm).
@@ -1722,13 +1721,13 @@ class CompoundEyeModel:
             Defaults to forward-facing optic flow.
     """
 
-    HEX_PACKING_FACTOR = 1.0 # Fraction spacing that the lens diameter occupies (1.0 = fully
+    HEX_PACKING_FACTOR = 0.9 # Fraction spacing that the lens diameter occupies (1.0 = fully
     # touching, 0.9 leaves a small interommatidial cuticle gap, etc)
 
     def __init__(self,
                  directions: ArrayLike,
                  positions: ArrayLike,
-                 kernel: Optional[RhabdomereKernel] = None,
+                 bundle: Optional['RhabdomereBundle'] = None,
                  eye_indices: Optional[ArrayLike] = None,
                  lens_diameter_um: Optional[Union[float, ArrayLike]] = None,
                  interommatidial_angles_rad: Optional[ArrayLike] = None,
@@ -1736,7 +1735,7 @@ class CompoundEyeModel:
                  eye_parameter: Optional[Union[float, Tuple[float, float]]] = None,
                  bundle_orientations: Optional[ArrayLike] = None,
                  chiralities: Optional[ArrayLike] = None,
-                 orientation: Optional[BundlesAligner] = None,
+                 orientation: Optional['BundlesAligner'] = None,
                  flow_direction: Optional[ArrayLike] = None,
                  retina_muscle_direction: Optional[ArrayLike] = None,
                  alt_wiring_mode: bool = False      # TODO: GGet rid of the worse one
@@ -1758,11 +1757,11 @@ class CompoundEyeModel:
         self._lens_directions = normalise_vectors(dirs).astype(np.float32)
         self._lens_positions = pos.astype(np.float32).copy()
 
-        # Kernel
-        if kernel is None:
-            kernel = RhabdomereKernel()  # default R=1
-        self._kernel = kernel
-        R = kernel.count
+        # Bundle
+        if bundle is None:
+            bundle = RhabdomereBundle()  # default R=1
+        self._bundle = bundle
+        R = bundle.count
 
         # Allocate the packed buffer
         self._buffer = EyesBuffer(n_lenses=N, receptors_per_lens=R)
@@ -1784,15 +1783,15 @@ class CompoundEyeModel:
             self._buffer.lens_static_data['right'] = self._local_right
             self._buffer.lens_static_data['up'] = self._local_up
             self._buffer.lens_static_data['forward'] = self._lens_directions
-            self._buffer.lens_static_data['nodal_distance_um'] = kernel.nodal_distance_um or 1.0
+            self._buffer.lens_static_data['focal_um'] = bundle.focal_um or 1.0
 
-            # Broadcast kernel-level photomechanical biophysics to every lens
-            self._buffer.lens_static_data['tau_rise'] = kernel.tau_rise
-            self._buffer.lens_static_data['tau_relax'] = kernel.tau_relax
-            self._buffer.lens_static_data['tau_fast'] = kernel.tau_fast
-            self._buffer.lens_static_data['tau_adapt'] = kernel.tau_adapt
-            self._buffer.lens_static_data['ampl_lat_um'] = kernel.ampl_lat_um
-            self._buffer.lens_static_data['ampl_ax_um'] = kernel.ampl_ax_um
+            # Broadcast bundle-level photomechanical biophysics to every lens
+            self._buffer.lens_static_data['tau_rise'] = bundle.tau_rise
+            self._buffer.lens_static_data['tau_relax'] = bundle.tau_relax
+            self._buffer.lens_static_data['tau_fast'] = bundle.tau_fast
+            self._buffer.lens_static_data['tau_adapt'] = bundle.tau_adapt
+            self._buffer.lens_static_data['ampl_lat_um'] = bundle.ampl_lat_um
+            self._buffer.lens_static_data['ampl_ax_um'] = bundle.ampl_ax_um
 
             self._eyes: List[Eye] = []
             self._build_eyes()
@@ -1825,10 +1824,10 @@ class CompoundEyeModel:
 
             # Fill receptors static data
             self._buffer.rcpt_static_data['position'] = np.repeat(self._lens_positions, R, axis=0)
-            self._buffer.rcpt_static_data['sensitivity'] = np.tile(kernel.sensitivity, (N, 1))
-            self._buffer.rcpt_static_data['tau_membrane'] = kernel.tau_membrane
-            self._buffer.rcpt_static_data['rhab_diameter_um'] = np.tile(kernel.diameters_um, N)
-            self._buffer.rcpt_static_data['wavelength_um'] = np.tile(kernel.wavelengths_nm * 1e-3, N)
+            self._buffer.rcpt_static_data['sensitivity'] = np.tile(bundle.sensitivity, (N, 1))
+            self._buffer.rcpt_static_data['tau_membrane'] = bundle.tau_membrane
+            self._buffer.rcpt_static_data['rhab_diameter_um'] = np.tile(bundle.diameters_um, N)
+            self._buffer.rcpt_static_data['wavelength_um'] = np.tile(bundle.wavelengths_nm * 1e-3, N)
 
             # Acceptance angles (rest + initial dynamic)
             if acceptance_angles_rad is not None:
@@ -1883,7 +1882,10 @@ class CompoundEyeModel:
                 result = apply_chirality(self, bundle_orientations, chiralities)
             elif use_pipeline:
                 if orientation is None:
-                    orientation = BundlesAligner(flow_direction or -WORLD_FORWARD)
+                    if flow_direction is not None:
+                        orientation = BundlesAligner(flow_direction)
+                    else:
+                        orientation = BundlesAligner(-WORLD_FORWARD)
                 result = orientation.compute(
                     self,
                     override_chi=bundle_orientations,
@@ -2057,7 +2059,7 @@ class CompoundEyeModel:
     def __repr__(self) -> str:
         return (
             f"CompoundEyeModel(N={self.lens_count}, R={self.receptors_per_lens}, "
-            f"eyes={len(self._eyes)}, kernel={self._kernel.name!r})"
+            f"eyes={len(self._eyes)}, bundle={self._bundle.name!r})"
         )
 
     def __len__(self) -> int:
@@ -2094,15 +2096,15 @@ class CompoundEyeModel:
 
     @property
     def receptors_per_lens(self) -> int:
-        return self._kernel.count
+        return self._bundle.count
 
     @property
     def total_receptors(self) -> int:
         return self.lens_count * self.receptors_per_lens
 
     @property
-    def kernel(self) -> RhabdomereKernel:
-        return self._kernel
+    def bundle(self) -> 'RhabdomereBundle':
+        return self._bundle
 
     @property
     def eyes(self) -> List[Eye]:
@@ -2388,7 +2390,7 @@ class CompoundEyeModel:
         Scale all positions about the origin by 'factor'.
 
         Note: only world-scale geometry scales. Lens and rhabdomere
-        diameters (μm) and the nodal distance (μm) are at ommatidium
+        diameters (μm) and the focal length (μm) are at ommatidium
         scale and are unchanged.
         """
         f = float(factor)
@@ -2455,7 +2457,7 @@ class CompoundEyeModel:
         self._buffer.lens_static_data['sacc_y'] = np.einsum('ij,ij->i', sacc, self._local_up)
 
         # Per-receptor: rotated focal-plane offsets
-        rot_dx, rot_dy = self._kernel.rotated_offsets(chi, chirality)
+        rot_dx, rot_dy = self._bundle.rotated_offsets(chi, chirality)
         rot_offset = np.stack([rot_dx.ravel(), rot_dy.ravel()], axis=-1).astype(np.float32)
         self._buffer.rcpt_static_data['rot_offset'] = rot_offset
 
@@ -2491,10 +2493,10 @@ class CompoundEyeModel:
         nd = kernel.nodal_distance_um
         if nd is None:
             if R > 1:
-                raise ValueError("kernel.nodal_distance_um is None but R > 1")
+                raise ValueError("bundle.focal_um is None but R > 1")
             nd = 1.0
 
-        rot_dx, rot_dy = kernel.rotated_offsets(self._bundle_orientation, self._chirality_arr)
+        rot_dx, rot_dy = bundle.rotated_offsets(self._bundle_orientation, self._chirality_arr)
 
         local_tip = np.stack(
             [rot_dx, rot_dy, np.full((N, R), -nd, dtype=np.float32)],
@@ -2569,7 +2571,7 @@ class CompoundEyeModel:
         Args:
             - assign_radius: Max distance (μm) to consider a rhabdomere "hitting" a lens.
             - angular_dev: Max angular deviation (deg) allowed for bundle rotation.
-            - scale_dev: Max scaling allowed (fraction) relative to the kernel size.
+            - scale_dev: Max scaling allowed (fraction) relative to the bundle size.
             - min_snap_matches: Minimum number of rhabdomeres that must align for a valid candidate.
             - neighbour_dist_factor: Multiplier to define "immediate" lattice neighbors.
             - k_search: Number of nearest neighbors to search for candidates.
@@ -2582,16 +2584,16 @@ class CompoundEyeModel:
         if R == 1:
             return
 
-        center = self._kernel.center_index
+        center = self._bundle.center_index
         periph = np.array([i for i in range(R) if i != center], dtype=np.intp)
         P = periph.size
 
         cartridge_map = np.full((N, R), -1, dtype=np.intp)
         cartridge_map[:, center] = np.arange(N)
 
-        rot_dx, rot_dy = self._kernel.rotated_offsets(
+        rot_dx, rot_dy = self._bundle.rotated_offsets(
             self._bundle_orientation, self._chirality_arr)
-        kp = self._kernel.offsets_um[periph] - self._kernel.offsets_um[center]
+        kp = self._bundle.offsets_um[periph] - self._bundle.offsets_um[center]
         k_scale = float(np.mean(np.linalg.norm(kp, axis=1))) or 1.0
         tpl_dx = (rot_dx - rot_dx[:, center:center + 1]) / k_scale
         tpl_dy = (rot_dy - rot_dy[:, center:center + 1]) / k_scale
@@ -2784,7 +2786,7 @@ class CompoundEyeModel:
         Args:
             - assign_radius: Max distance (μm) for standard rhabdomere-to-lens assignment.
             - angular_dev: Max angular deviation (deg) allowed for bundle rotation.
-            - scale_dev: Max scaling allowed (fraction) relative to the kernel size.
+            - scale_dev: Max scaling allowed (fraction) relative to the bundle size.
             - min_snap_matches: Minimum number of rhabdomeres that must align for a valid candidate.
             - neighbour_dist_factor: Multiplier to define "immediate" lattice neighbors.
             - k_search: Number of nearest neighbors to search for candidates.
@@ -2799,14 +2801,14 @@ class CompoundEyeModel:
         if R == 1:
             return
 
-        center = self._kernel.center_index
+        center = self._bundle.center_index
         periph = np.array([i for i in range(R) if i != center], dtype=np.intp)
 
         cartridge_map = np.full((N, R), -1, dtype=np.intp)
         cartridge_map[:, center] = np.arange(N)
 
-        rot_dx, rot_dy = self._kernel.rotated_offsets(self._bundle_orientation, self._chirality_arr)
-        kp = self._kernel.offsets_um[periph] - self._kernel.offsets_um[center]
+        rot_dx, rot_dy = self._bundle.rotated_offsets(self._bundle_orientation, self._chirality_arr)
+        kp = self._bundle.offsets_um[periph] - self._bundle.offsets_um[center]
         k_scale = float(np.mean(np.linalg.norm(kp, axis=1))) or 1.0
         tpl_dx = (rot_dx - rot_dx[:, center:center + 1]) / k_scale
         tpl_dy = (rot_dy - rot_dy[:, center:center + 1]) / k_scale
@@ -3025,7 +3027,7 @@ class CompoundEyeModel:
         N = self.lens_count
         R = self.receptors_per_lens
 
-        center = self._kernel.center_index
+        center = self._bundle.center_index
         periph = np.array([i for i in range(R) if i != center], dtype=np.intp)
 
         self._buffer.cartridge_map = cartridge_map
@@ -3482,7 +3484,7 @@ class CompoundEyeModel:
 ##
 
 if __name__ == '__main__':
-    from insectvision.compound_eyes.kernel import drosophila_kernel
+    from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
 
     ra = CompoundEyeModel.from_sphere(n=500)
 
@@ -3492,11 +3494,11 @@ if __name__ == '__main__':
     print(f"  Buffer: {ra.buffer}")
 
     # Drosophila with flow direction
-    droso = drosophila_kernel()
+    droso = drosophila_bundle()
 
     ra2 = CompoundEyeModel.from_sphere(
         n=1600,
-        kernel=droso,
+        bundle=droso,
         flow_direction=[1.0, 0.0, 0.0],  # Anterior flow
     )
     print(ra2)

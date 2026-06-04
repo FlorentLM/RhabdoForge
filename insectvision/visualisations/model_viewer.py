@@ -5,7 +5,7 @@ import pyvista as pv
 from scipy.spatial import Delaunay
 
 from insectvision.compound_eyes import CompoundEyeModel
-from insectvision.compound_eyes.kernel import drosophila_kernel, RECEPTOR_PALETTE
+from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, RHAB_COLOURS
 from insectvision.compound_eyes.orientation import BundlesAligner
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD
 from insectvision.utils.math import project_to_stereo
@@ -175,7 +175,7 @@ class EyeViewer:
     ):
 
         self.model = model
-        self.kernel = model.kernel
+        self.bundle = model.bundle
         self.N = model.lens_count
         self.R = model.receptors_per_lens
         self.sparsity = float(sparsity)
@@ -567,7 +567,7 @@ class EyeViewer:
                 tip_scale = (self.r_sphere * 0.012) / max_off
                 tip_positions = self.p[:, None, :] + offsets * tip_scale
                 is_mirrored = self.model.lenses.chirality < 0
-                i1, i2 = self.kernel.main_axis_indices
+                i1, i2 = self.bundle.main_axis_indices
 
                 groups = {
                     'gold': [], 'red': [], 'white': [],
@@ -687,7 +687,7 @@ class EyeViewer:
                 # Wiring lines
                 line = pv.Line(self.p[target_idx], self.p[l_idx])
                 self.actors_debugger.append(
-                    self.plotter.add_mesh(line, color=RECEPTOR_PALETTE[r_type], line_width=2, opacity=0.4))
+                    self.plotter.add_mesh(line, color=RHAB_COLOURS[r_type], line_width=2, opacity=0.4))
 
         if member_lenses:
             pd_mem = pv.PolyData(self.p[member_lenses])
@@ -696,8 +696,8 @@ class EyeViewer:
 
             glyph_mem = pd_mem.glyph(geom=_disc_template(), orient='vec', factor=d_rad)
             self.actors_debugger.append(self.plotter.add_mesh(
-                glyph_mem, scalars='r_type', cmap=RECEPTOR_PALETTE,
-                clim=[0, len(RECEPTOR_PALETTE) - 1], show_scalar_bar=False,
+                glyph_mem, scalars='r_type', cmap=RHAB_COLOURS,
+                clim=[0, len(RHAB_COLOURS) - 1], show_scalar_bar=False,
                 ambient=0.3, diffuse=0.8, show_edges=False, opacity=0.8
             ))
 
@@ -710,7 +710,7 @@ class EyeViewer:
             tip_pos = bundle_origin + offsets[r_type] * tip_scale
             self.actors_debugger.append(self.plotter.add_mesh(
                 pv.Sphere(radius=d_rad * 0.15, center=tip_pos),
-                color=RECEPTOR_PALETTE[r_type], lighting=True
+                color=RHAB_COLOURS[r_type], lighting=True
             ))
 
         # Labels
@@ -893,13 +893,11 @@ if __name__ == "__main__":
 
     model = CompoundEyeModel.from_file(
         'species_models/drosophila_custom.npz',
-        kernel=drosophila_kernel(), orientation=aligner,
-        alt_wiring_mode=False
+        bundle=drosophila_bundle(), orientation=aligner
     )
 
     # model = CompoundEyeModel.from_sphere(
-    #     n=1600, kernel=drosophila_kernel(), orientation=aligner,
-    #     alt_wiring_mode=False
+    #     n=1600, bundle=drosophila_bundle(), orientation=aligner
     # )
 
     EyeViewer(model, aligner=aligner).show()

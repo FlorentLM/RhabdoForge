@@ -469,7 +469,7 @@ class BaseRenderer(ABC):
 
     def _eye_dynamics(self):
 
-        if self._model.kernel.nodal_distance_um is not None:
+        if self._model.bundle.focal_um is not None:
             with self.dynamics_shader as shader:
                 with self.eye_buffers.grouped_bind(['rcpt_static', 'lens_static', 'colors', 'ema_state', 'rcpt_dynamic', 'lens_dynamic']):
 
@@ -536,7 +536,7 @@ class BaseRenderer(ABC):
             for i in range(10):
                 if shader_highlight_ids[i] != -1:
                     shader_highlight_ids[i] *= self._model.receptors_per_lens
-                    shader_highlight_ids[i] += self._model.kernel.center_index
+                    shader_highlight_ids[i] += self._model.bundle.center_index
 
         # Sampling changes
         self._eye_uniforms.update(

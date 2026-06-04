@@ -2,6 +2,8 @@ import dearpygui.dearpygui as dpg
 import numpy as np
 import collections
 from pyglm import glm
+
+from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
 from insectvision.utils import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode
 
 
@@ -12,13 +14,8 @@ class Dashboard:
         'Cartridge': (40, 40, 100, 80)
     }
 
-    REC_PALETTE = [
-        (255, 0, 0), (0, 255, 0), (0, 150, 255),
-        (255, 255, 0), (0, 255, 255), (255, 0, 255),
-        (255, 165, 0), (150, 100, 255), (200, 200, 200)
-    ]
-
     def __init__(self, context):
+        
         self.ctx = context
         self.plot_history_len = 200
 
@@ -41,8 +38,8 @@ class Dashboard:
         dpg.create_viewport(title='InsectVision Dashboard', width=650, height=950, vsync=self.ctx.vsync)
         dpg.setup_dearpygui()
 
-        ra = self.ctx.renderer._model
-        self.rec_data_buffers = [collections.deque(maxlen=self.plot_history_len) for _ in range(ra.receptors_per_lens)]
+        model = self.ctx.renderer._model
+        self.rec_data_buffers = [collections.deque(maxlen=self.plot_history_len) for _ in range(model.receptors_per_lens)]
 
         with dpg.window(label='Inspector', width=650, height=950, no_close=True, no_move=True, tag='main_window'):
 
@@ -89,15 +86,15 @@ class Dashboard:
 
                     self.omm_selection_text = dpg.add_text("Selected Lenses: [0]")
                     self.omm_slider = dpg.add_slider_int(label="Primary Lens ID (or type)", default_value=0,
-                                                         max_value=ra.lens_count - 1, callback=self._on_slider_change)
+                                                         max_value=model.lens_count - 1, callback=self._on_slider_change)
                     dpg.add_button(label="Clear Selection", callback=lambda: self.toggle_lens_selection(None))
 
                     dpg.add_separator()
                     self.show_all_rec_toggle = dpg.add_checkbox(
-                        label=f'Show individual receptors (R1-R{ra.receptors_per_lens})', default_value=False)
+                        label=f'Show individual receptors (R1-R{model.receptors_per_lens})', default_value=False)
                     self.rec_slider = dpg.add_slider_int(label='Probed Receptor ID', default_value=0,
-                                                         max_value=max(0, ra.receptors_per_lens - 1),
-                                                         show=(ra.receptors_per_lens > 1))
+                                                         max_value=max(0, model.receptors_per_lens - 1),
+                                                         show=(model.receptors_per_lens > 1))
 
                     self.rgb_toggle = dpg.add_checkbox(label='Show RGB channels', default_value=False)
                     self.instant_toggle = dpg.add_checkbox(label='Show instantaneous (Alpha)', default_value=False)
@@ -131,7 +128,7 @@ class Dashboard:
                         pool_item['ax'] = dpg.add_line_series([], [], label=f'Ax L{i}', parent='y_axis_2')
 
                         pool_item['receptors'] = []
-                        for r_idx in range(ra.receptors_per_lens):
+                        for r_idx in range(model.receptors_per_lens):
                             tag = dpg.add_line_series([], [], label=f'R{r_idx + 1} L{i}', parent='y_axis_1')
                             pool_item['receptors'].append(tag)
 
@@ -151,25 +148,25 @@ class Dashboard:
 
                     dpg.add_slider_float(
                         label='Lateral Gain (um)',
-                        default_value=float(ra.lenses.ampl_lat_um[0]),
-                        min_value=0.0, max_value=10.0,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'gain_lat_um', a)
+                        default_value=float(model.lenses.ampl_lat_um[0]),
+                        min_value=0.0, max_value=5.0,
+                        callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'ampl_lat_um', a)
                     )
                     dpg.add_slider_float(
                         label='Axial Gain (um)',
-                        default_value=float(ra.lenses.ampl_ax_um[0]),
-                        min_value=0.0, max_value=20.0,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'gain_ax_um', a)
+                        default_value=float(model.lenses.ampl_ax_um[0]),
+                        min_value=0.0, max_value=5.0,
+                        callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'ampl_ax_um', a)
                     )
                     dpg.add_slider_float(
                         label='Tau Fast (s)',
-                        default_value=float(ra.lenses.tau_fast[0]),
+                        default_value=float(model.lenses.tau_fast[0]),
                         min_value=0.001, max_value=0.1,
                         callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'tau_fast', a)
                     )
                     dpg.add_slider_float(
                         label='Tau Relaxation (s)',
-                        default_value=float(ra.lenses.tau_relax[0]),
+                        default_value=float(model.lenses.tau_relax[0]),
                         min_value=0.01, max_value=0.5,
                         callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'tau_relax', a)
                     )
@@ -373,7 +370,7 @@ class Dashboard:
                 if len(self.selected_lenses) < self.max_selected:
                     self.selected_lenses.append(lens_id)
 
-        ra = self.ctx.renderer._model
+        model = self.ctx.renderer._model
         pad_len = len(self.frame_data)
         for lid in self.selected_lenses:
             if lid not in self.lens_histories:
@@ -386,7 +383,7 @@ class Dashboard:
                     'lat': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
                     'ax': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
                     'receptors': [collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len) for _ in
-                                  range(ra.receptors_per_lens)]
+                                  range(model.receptors_per_lens)]
                 }
 
         if dpg.does_item_exist(self.omm_selection_text):
@@ -431,7 +428,7 @@ class Dashboard:
                 dpg.bind_item_theme(pool_item[key], t)
 
             for r_idx, rec_series in enumerate(pool_item['receptors']):
-                rec_color = self.REC_PALETTE[r_idx % len(self.REC_PALETTE)]
+                rec_color = RHAB_COLOURS[r_idx % len(RHAB_COLOURS)]
                 with dpg.theme() as t:
                     with dpg.theme_component(dpg.mvLineSeries):
                         dpg.add_theme_color(dpg.mvPlotCol_Line, rec_color, category=dpg.mvThemeCat_Plots)
