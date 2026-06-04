@@ -16,7 +16,7 @@ from insectvision.engine.resources import (
     write_pytinybvh_preamble, ShaderProgram, GPUResourceManager,
     BufferRegistry, TextureRegistry, UniformRegistry
 )
-from insectvision.renderers.commons import BaseRenderer
+from insectvision.renderers.base import BaseRenderer
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import ReceptorArray

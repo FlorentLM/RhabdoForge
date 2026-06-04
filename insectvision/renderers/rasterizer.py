@@ -13,7 +13,7 @@ from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight
 from insectvision.engine.resources import ShaderProgram, GPUResourceManager
-from insectvision.renderers.commons import BaseRenderer
+from insectvision.renderers.base import BaseRenderer
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import ReceptorArray

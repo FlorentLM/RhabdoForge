@@ -18,7 +18,7 @@ from insectvision.interactive.debug import DebugOverlay
 from insectvision.interactive.dashboard import Dashboard
 
 if TYPE_CHECKING:
-    from insectvision.renderers.commons import BaseRenderer
+    from insectvision.renderers.base import BaseRenderer
     from insectvision.compound_eyes import VisualOutput
 
 
