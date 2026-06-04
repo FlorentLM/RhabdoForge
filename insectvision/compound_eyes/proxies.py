@@ -28,7 +28,7 @@ Notes:
     the orientation pipeline, so they can't be set directly.
 """
 import logging
-from typing import Optional, Tuple, Union, TYPE_CHECKING, List
+from typing import Optional, Tuple, Union, List
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
@@ -45,6 +45,7 @@ from insectvision.compound_eyes.acceptance import (
 )
 from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD
 from insectvision.utils.math import normalise_vectors, tangent_frames, icosphere, fibonacci_sphere
+from insectvision.utils.hexatic import hexatic_phasor, hexatic_axis_angle, hexatic_order
 from insectvision.compound_eyes.lattice import (
     facet_diameters, angular_neighbour_median,
 )
@@ -3604,7 +3605,6 @@ class CompoundEyeModel:
             neighb_dirs = self._lens_directions[neighb_global]
             neighb_pos = self._lens_positions[neighb_global]
             is_immediate = neighbours.is_immediate
-            n_imm = np.maximum(is_immediate.sum(axis=1), 1).astype(np.float64)
 
             # Optical IOA: angular separation in optical-axis space
             dots = np.clip(np.einsum('ik,ijk->ij', home_dirs, neighb_dirs), -1.0, 1.0)
@@ -3616,11 +3616,10 @@ class CompoundEyeModel:
             proj_y = np.einsum('ijk,ik->ij', delta_pos, home_up)
             bearings = np.arctan2(proj_y, proj_x)
 
-            # Hexatic order parameter Ψ6( over first ring only)
-            phasors = np.where(is_immediate, np.exp(1j * 6 * bearings), 0.0 + 0.0j)
-            z_avg = phasors.sum(axis=1) / n_imm
-            e_tilts = (np.angle(z_avg) / 6.0).astype(np.float32)
-            e_psi6_mag = np.abs(z_avg)
+            # Hexatic order over the first ring
+            z_avg = hexatic_phasor(bearings, weights=is_immediate, axis=1)
+            e_tilts = hexatic_axis_angle(z_avg).astype(np.float32)
+            e_psi6_mag = hexatic_order(z_avg)
 
             # IOA: mean of 2 smallest / 2 largest first ring separations
             sep_for_min = np.where(is_immediate, angular_sep, np.inf)

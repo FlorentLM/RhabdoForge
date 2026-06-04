@@ -13,7 +13,6 @@ from typing import Dict
 
 import numpy as np
 import xml.etree.ElementTree as ET
-from scipy.optimize import minimize_scalar
 from svg.path import parse_path, Line, Close
 
 from insectvision.compound_eyes.lattice import fit_lattice, facet_diameters
@@ -26,7 +25,7 @@ from species_models.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d
 
 
 # Defaults
-DENSITY_SCALE = 0.95
+DENSITY_SCALE = 1.1
 LATTICE_ANGLE_DEG = 60.0
 REGULARISATION = True
 SHOW_DEBUG_PLOTS = True
@@ -289,11 +288,7 @@ if __name__ == "__main__":
     ry = EL / 2.0
     rz = ED / 2.0
 
-    res = minimize_scalar(
-        lambda rx: (np.ptp(normals_to_ellipsoid(L_dirs, rx, ry, rz)[:, 0]) - target_width) ** 2,
-        bounds=(10, 500), method='bounded',
-    )
-    best_rx = res.x
+    best_rx = target_width
     print(f"Ellipsoid fit: Rx = {best_rx:.2f} µm")
 
     L_positions = normals_to_ellipsoid(L_dirs, best_rx, ry, rz)
@@ -331,11 +326,31 @@ if __name__ == "__main__":
     )
 
     if PLOT:
+        import matplotlib.pyplot as plt
+
+        # 1. Standard plotting from your imports
         plot_eyes_3d(
             all_positions, all_directions, eye_ids,
             title='Drosophila eyes\n(parametric model fitted to Buchner, 1971)',
             show_sphere_projection=True,
         )
         plot_density_3d(all_positions, all_directions, title="Ommatidia density")
+        plot_lattice_3d(L_dirs, wireframe=True, color_by='psi6', title="Hexatic order")
 
-        plot_lattice_3d(L_dirs, wireframe=True, color_by='psi6', title=f"Hexatic order")
+        # 2. Custom plot for actual lens diameters
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Scatter plot colored by facet diameters
+        sc = ax.scatter(
+            all_positions[:, 0], all_positions[:, 1], all_positions[:, 2],
+            c=all_diameters, cmap='plasma', s=15, alpha=0.9
+        )
+
+        # Make the axes aspect ratio equal so the eye isn't squashed
+        extents = np.ptp(all_positions, axis=0)
+        ax.set_box_aspect(extents)
+
+        ax.set_title("Lens Diameters (µm)")
+        fig.colorbar(sc, ax=ax, label="Facet Diameter (µm)", fraction=0.03)
+        plt.show()

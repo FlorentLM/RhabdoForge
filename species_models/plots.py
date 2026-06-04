@@ -4,7 +4,8 @@ from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from scipy.spatial import cKDTree
 
-from insectvision.compound_eyes.lattice import psi6_from_adjacency, spacing_from_adjacency, delaunay_edges
+from insectvision.compound_eyes.lattice import spacing_from_adjacency, delaunay_edges
+from insectvision.utils.hexatic import hexatic_order, phasor_from_points
 from insectvision.utils.math import project_to_stereo
 
 def plot_fitted_comparison(
@@ -120,7 +121,8 @@ def plot_lattice_3d(
         c_label = 'Local spacing (stereo)'
 
     elif color_by == 'psi6' and adj is not None:
-        c_values = psi6_from_adjacency(pts_2d, adj)
+        # Psi6 using topological (Delaunay) neighbours
+        c_values = hexatic_order(phasor_from_points(pts_2d, adj)).astype(np.float64)
         c_label = 'Hexatic order (ψ₆)'
         cmap = 'RdYlGn'
 
@@ -140,7 +142,17 @@ def plot_lattice_3d(
 
         ax.add_collection3d(lc)
 
-    ax.set_box_aspect([1, 1, 1])
+    # Set up axes properly
+    center = (dirs_3d.max(axis=0) + dirs_3d.min(axis=0)) / 2
+    x_range = np.ptp(dirs_3d[:, 0])
+    y_range = np.ptp(dirs_3d[:, 1])
+    z_range = np.ptp(dirs_3d[:, 2])
+
+    ax.set_box_aspect((x_range, y_range, z_range))
+
+    ax.set_xlim(center[0] - x_range, center[0] + x_range)
+    ax.set_ylim(center[1] - y_range, center[1] + y_range)
+    ax.set_zlim(center[2] - z_range, center[2] + z_range)
 
     if title:
         ax.set_title(title, fontsize=12)
@@ -258,27 +270,20 @@ def plot_eyes_3d(origins, directions, eye_id, title, arrow_length=0.1, show_sphe
     ax.set_zlabel('← Insect\'s back | Insect\'s front →')
     ax.set_title(title)
 
-    # Equal aspect ratio
-    if show_sphere_projection:
-        limit = sphere_radius * 1.1
-        ax.set_xlim(-limit, limit)
-        ax.set_ylim(-limit, limit)
-        ax.set_zlim(-limit, limit)
-    else:
-        mid_x = (origins[:, 0].max() + origins[:, 0].min()) * 0.5
-        mid_y = (origins[:, 1].max() + origins[:, 1].min()) * 0.5
-        mid_z = (origins[:, 2].max() + origins[:, 2].min()) * 0.5
-        ax.set_xlim(mid_x - plot_scale, mid_x + plot_scale)
-        ax.set_ylim(mid_y - plot_scale, mid_y + plot_scale)
-        ax.set_zlim(mid_z - plot_scale, mid_z + plot_scale)
-
-    try:
-        ax.set_box_aspect([1, 1, 1])
-    except AttributeError:
-        # older matplotlib versions
-        pass
-
     ax.legend(loc='upper right', fontsize=8)
+
+    # Set up axes properly
+    center = (origins.max(axis=0) + origins.min(axis=0)) / 2
+    x_range = np.ptp(origins[:, 0])
+    y_range = np.ptp(origins[:, 1])
+    z_range = np.ptp(origins[:, 2])
+
+    ax.set_box_aspect((x_range, y_range, z_range))
+
+    ax.set_xlim(center[0] - x_range, center[0] + x_range)
+    ax.set_ylim(center[1] - y_range, center[1] + y_range)
+    ax.set_zlim(center[2] - z_range, center[2] + z_range)
+
     plt.tight_layout()
     plt.show()
 
@@ -333,14 +338,16 @@ def plot_density_3d(positions, directions, title="Visual density map"):
     ax.set_zlabel('Dorsal-Ventral (Y)')
     ax.set_title(title)
 
-    max_range = np.array([positions[:, 0].max() - positions[:, 0].min(),
-                          positions[:, 1].max() - positions[:, 1].min(),
-                          positions[:, 2].max() - positions[:, 2].min()]).max() / 2.0
-    mid_x = (positions[:, 0].max() + positions[:, 0].min()) * 0.5
-    mid_y = (positions[:, 1].max() + positions[:, 1].min()) * 0.5
-    mid_z = (positions[:, 2].max() + positions[:, 2].min()) * 0.5
-    ax.set_xlim(mid_x - max_range, mid_x + max_range)
-    ax.set_ylim(mid_z - max_range, mid_z + max_range)
-    ax.set_zlim(mid_y - max_range, mid_y + max_range)
+    # Set up axes properly
+    center = (positions.max(axis=0) + positions.min(axis=0)) / 2
+    x_range = np.ptp(positions[:, 0])
+    y_range = np.ptp(positions[:, 1])
+    z_range = np.ptp(positions[:, 2])
+
+    ax.set_box_aspect((x_range, y_range, z_range))
+
+    ax.set_xlim(center[0] - x_range, center[0] + x_range)
+    ax.set_ylim(center[1] - y_range, center[1] + y_range)
+    ax.set_zlim(center[2] - z_range, center[2] + z_range)
 
     plt.show()

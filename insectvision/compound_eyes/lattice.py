@@ -4,6 +4,7 @@ from scipy.interpolate import RBFInterpolator
 from scipy.optimize import minimize
 from scipy.spatial import ConvexHull, Voronoi, cKDTree, Delaunay
 
+from insectvision.utils.hexatic import phasor_from_points, hexatic_rest_vectors, hexatic_order
 from insectvision.utils.math import project_to_stereo, stereo_to_sphere
 # from species_models.plots import plot_fitted_comparison
 
@@ -210,28 +211,6 @@ def weighted_centroids_batch(
     return new_pts
 
 
-def psi6_from_adjacency(pts_2d: np.ndarray, adj) -> np.ndarray:
-    """
-    Hexatic order parameter using topological (Delaunay) neighbours.
-    This handles varying density correctly (unlike kNN) because the adjacency follows connectivity, not metric distance.
-    i.e. points with 5 or 7 neighbours are handled just fine by the phasor average.
-    """
-    N = len(pts_2d)
-    psi6 = np.zeros(N)
-
-    for i in range(N):
-        nb = adj[i]
-
-        if len(nb) < 2:
-            continue
-
-        delta = pts_2d[nb] - pts_2d[i]
-        angles = np.arctan2(delta[:, 1], delta[:, 0])
-        psi6[i] = abs(np.mean(np.exp(6j * angles)))
-
-    return psi6
-
-
 def spacing_from_adjacency(pts_2d: np.ndarray, adj) -> np.ndarray:
     """
     Mean distance to Delaunay neighbours (more robust than kNN at boundaries).
@@ -246,6 +225,64 @@ def spacing_from_adjacency(pts_2d: np.ndarray, adj) -> np.ndarray:
         spacing[i] = np.linalg.norm(pts_2d[nb] - pts_2d[i], axis=1).mean()
 
     return spacing
+
+
+def delaunay_adjacency(pts_2d: np.ndarray, max_length_factor: float = 0.0):
+    """One-ring neighbour lists from a 2D Delaunay triangulation.
+    If max_length_factor > 0, drop edges longer than that times local spacing
+    (removes boundary bearings corruptions)."""
+    tri = Delaunay(pts_2d)
+    adj = [set() for _ in range(len(pts_2d))]
+    for sx in tri.simplices:
+        for i in range(3):
+            a, b = int(sx[i]), int(sx[(i + 1) % 3])
+            adj[a].add(b); adj[b].add(a)
+    adj = [np.fromiter(s, dtype=np.intp, count=len(s)) for s in adj]
+    if max_length_factor > 0:
+        tree = cKDTree(pts_2d)
+        d, _ = tree.query(pts_2d, k=min(7, len(pts_2d)))
+        loc = d[:, 1:].mean(axis=1)
+        adj = [nb[np.linalg.norm(pts_2d[nb] - pts_2d[i], axis=1) < max_length_factor * loc[i]]
+               for i, nb in enumerate(adj)]
+    return adj
+
+
+def hexatic_axis_field(pts_2d, adj=None, smoothing=0.5, min_order=0.5,
+                       max_length_factor=1.8, return_confidence=False):
+    """Continuous local hexatic-axis interpolant.
+
+    Points with |Psi6| < min_order (incomplete rings at the boundary) are excluded from the fit,
+    so the boundary inherits the smooth interior field instead of defining its own noisy one.
+    """
+
+    pts_2d = np.asarray(pts_2d, dtype=np.float64)
+
+    if adj is None:
+        adj = delaunay_adjacency(pts_2d, max_length_factor=max_length_factor)
+
+    z6 = phasor_from_points(pts_2d, adj)
+    order = hexatic_order(z6)
+
+    keep = order >= min_order
+    if keep.sum() < 4:  # safety: nothing trusted
+        keep = np.ones(len(pts_2d), dtype=bool)
+
+    rbf_re = RBFInterpolator(pts_2d[keep], z6[keep].real, kernel='thin_plate_spline', smoothing=smoothing)
+    rbf_im = RBFInterpolator(pts_2d[keep], z6[keep].imag, kernel='thin_plate_spline', smoothing=smoothing)
+
+    def theta_fn(q):
+        q = np.atleast_2d(np.asarray(q, dtype=np.float64))
+        return (np.angle(rbf_re(q) + 1j * rbf_im(q)) / 6.0).astype(np.float64)
+
+    if not return_confidence:
+        return theta_fn
+    rbf_c = RBFInterpolator(pts_2d[keep], order[keep], kernel='thin_plate_spline', smoothing=smoothing)
+
+    def conf_fn(q):
+        q = np.atleast_2d(np.asarray(q, dtype=np.float64))
+        return np.clip(rbf_c(q), 0.0, 1.0)
+
+    return theta_fn, conf_fn
 
 
 def delaunay_edges(pts_2d: np.ndarray, max_length_factor: float = 0.0):
@@ -444,74 +481,74 @@ def density_warp(
 
 
 def spring_relaxation(
-        points: np.ndarray,
-        spacing_fn: Callable,
-        n_iterations: int = 120,
-        dt: float = 0.05,
-        verbose: bool = False,
-) -> np.ndarray:
+        points,
+        spacing_fn,
+        theta_fn=None,
+        confidence_fn=None,
+        n_iterations=120,
+        retriangulate_every=0,
+        max_length_factor=1.8,
+        force_cap=2.0,
+        dt=0.05,
+        verbose=False
+    ):
     """
     Density adaptation via spring relaxation.
 
-    Each Delaunay edge acts as a spring, their rest length are set by the local spacing.
-    Forces are integrated with gradient descent (no velocity accumulation) and clamped for stability.
+    Each Delaunay edge acts as a spring. If theta_fn is given, the rest state
+    is a vector whose direction is the edge's bearing snapped to the nearest
+    local hexatic axis and whose length is the local target spacing
 
-    Delaunay topology is computed once from the initial grid and then fixed to preserves hex row structure.
+    -> edges are pulled toward both the right length and the right orientation.
+
+    Without theta_fn the rest state is a scalar length only.
+
+    With an orientation field, topology must follow it (T1 transitions), so set retriangulate_every nedds to be >0.
 
     Args:
-        points: (N, 2) Initial grid positions (should be a regular hex grid)
-        spacing_fn: (M, 2) -> (M,) Returns the target local spacing at each query point
-        n_iterations (int):
-        dt (float): Step size (in fraction of mean spacing)
-        verbose (bool):
+        points: (N, 2) initial positions (a roughly hex grid)
+        spacing_fn: (M, 2) -> (M,) target local spacing
+        theta_fn: (M, 2) -> (M,) local hexatic-axis angle [rad], or None
+        retriangulate_every: recompute Delaunay edges every k iters (0 = never)
+        dt: step size (fraction of mean spacing)
+        verbose: print progress
     """
     pts = points.copy()
-    edges = delaunay_edges(pts)
-
-    # initial mean edge length (for normalisation)
-    diff0 = pts[edges[:, 0]] - pts[edges[:, 1]]
-    mean_edge_len = np.linalg.norm(diff0, axis=1).mean()
+    edges = delaunay_edges(pts, max_length_factor=max_length_factor)
+    mean_edge_len = np.linalg.norm(pts[edges[:, 0]] - pts[edges[:, 1]], axis=1).mean()
 
     for it in range(n_iterations):
+        if retriangulate_every and it > 0 and it % retriangulate_every == 0:
+            edges = delaunay_edges(pts, max_length_factor=max_length_factor)
+            mean_edge_len = np.linalg.norm(pts[edges[:, 0]] - pts[edges[:, 1]], axis=1).mean()
 
-        # Target spacing at each edge midpoint
-        midpoints = 0.5 * (pts[edges[:, 0]] + pts[edges[:, 1]])
-        target_lengths = spacing_fn(midpoints).ravel()
-
+        mid = 0.5 * (pts[edges[:, 0]] + pts[edges[:, 1]])
+        target_lengths = spacing_fn(mid).ravel()
         current_diff = pts[edges[:, 1]] - pts[edges[:, 0]]
-        current_lengths = np.linalg.norm(current_diff, axis=1)
-        current_lengths = np.maximum(current_lengths, 1e-12)
-        unit = current_diff / current_lengths[:, None]
+        cur_len = np.maximum(np.linalg.norm(current_diff, axis=1, keepdims=True), 1e-12)
+        iso_rest = target_lengths[:, None] * current_diff / cur_len  # length-only rest
 
-        # Spring force: strain = (actual - target) / target
-        strain = (current_lengths - target_lengths) / target_lengths
-        force_per_edge = strain[:, None] * unit
+        if theta_fn is None:
+            rest = iso_rest
+        else:
+            ax_rest = hexatic_rest_vectors(current_diff, theta_fn(mid), target_lengths)
+            if confidence_fn is not None:
+                w = np.clip(confidence_fn(mid), 0.0, 1.0)[:, None]  # taper to isotropic
+                rest = w * ax_rest + (1.0 - w) * iso_rest
+            else:
+                rest = ax_rest
 
-        # Accumulate forces per point
+        force_per_edge = np.clip((current_diff - rest) / target_lengths[:, None], -force_cap, force_cap)
         forces = np.zeros_like(pts)
         np.add.at(forces, edges[:, 0], force_per_edge)
         np.add.at(forces, edges[:, 1], -force_per_edge)
 
-        displacement = dt * mean_edge_len * forces
-        max_disp = 0.5 * mean_edge_len
-        norms = np.linalg.norm(displacement, axis=1, keepdims=True)
-        displacement = np.where(norms > max_disp, displacement * max_disp / norms, displacement)
-
-        pts += displacement
-
-        if verbose and (it % 20 == 0 or it == n_iterations - 1):
-            rms_strain = np.sqrt(np.mean(strain ** 2))
-            max_strain = np.max(np.abs(strain))
-            mean_disp = np.linalg.norm(displacement, axis=1).mean()
-            print(f"  Spring iter {it:3d}:  "
-                  f"RMS strain = {rms_strain:.4f}  "
-                  f"max |strain| = {max_strain:.4f}  "
-                  f"mean disp = {mean_disp:.6f}")
+        disp = dt * mean_edge_len * forces
+        norms = np.linalg.norm(disp, axis=1, keepdims=True)
+        cap = 0.5 * mean_edge_len
+        pts += np.where(norms > cap, disp * cap / norms, disp)
 
     return pts
-
-
-##
 
 
 def facet_diameters(
@@ -621,7 +658,8 @@ def fit_lattice(
         relaxation_max_iter: int = 20,
         relaxation_factor: float = 0.8,
         smoothing: float = 0.1,
-        boundary_buffer_factor: float = 0.6,
+        axis_smoothing: float = 0.5,
+        boundary_buffer_factor: float = 1.1,
         verbose: bool = False,
         show_plots: bool = False,
 ) -> np.ndarray:
@@ -646,6 +684,12 @@ def fit_lattice(
     pts_2d, fwd, rgt, up = project_to_stereo(raw_directions)
 
     density_fn, mean_spacing = estimate_density(pts_2d, smoothing)
+
+    # Local hexatic-axis field from the reference data
+    ref_adj = delaunay_adjacency(pts_2d, max_length_factor=1.8)
+    axis_fn, conf_fn = hexatic_axis_field(pts_2d, ref_adj, smoothing=axis_smoothing,
+                                          min_order=0.5, return_confidence=True)
+    theta0 = float(axis_fn(pts_2d.mean(axis=0, keepdims=True))[0])
 
     hull = ConvexHull(pts_2d)
     delaunay = Delaunay(pts_2d)
@@ -686,6 +730,9 @@ def fit_lattice(
 
     for trial in range(5):
         grid = hexagonal_grid(current_spacing, lattice_angle, extent)
+
+        c0, s0 = np.cos(theta0), np.sin(theta0)
+        grid = grid @ np.array([[c0, -s0], [s0, c0]]).T  # pre-orient seed to the field
         aligned = align_grid(grid, pts_2d)
 
         mask = _is_inside(aligned, delaunay, tree_raw, buffer=light_buffer)
@@ -718,9 +765,12 @@ def fit_lattice(
     # Spring relaxation (local cleanup, preserves hex topology and rows)
     lattice = spring_relaxation(
         lattice, spacing_fn,
-        n_iterations=40,
+        theta_fn=axis_fn,
+        n_iterations=80,
+        retriangulate_every=10,
         dt=0.05,
         verbose=verbose,
+        confidence_fn=conf_fn
     )
 
     # Prune
@@ -741,6 +791,18 @@ def fit_lattice(
     # and prune again (Lloyd's might have pushed points slightly outside)
     mask = _is_inside(lattice, delaunay, tree_raw, buffer=prune_buffer)
     lattice = lattice[mask]
+
+    # Re-assert the hexatic axes after the isotropic Lloyd polish
+    lattice = spring_relaxation(
+        lattice, spacing_fn, theta_fn=axis_fn,
+        n_iterations=15, retriangulate_every=5, dt=0.03,
+        confidence_fn=conf_fn,
+        verbose=verbose,
+    )
+    mask = _is_inside(lattice, delaunay, tree_raw, buffer=prune_buffer)
+    lattice = lattice[mask]
+
+    # TODO: All these steps might be a bit too... cautious, but it's pretty quick anyway
 
     if verbose:
         print(f"Final lattice: {len(lattice)} points")

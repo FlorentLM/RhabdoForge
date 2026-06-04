@@ -21,21 +21,26 @@ def plot_buchner_3d(ommatidia_3d, stars_3d, origin_3d, axes_3d, title="Drosophil
 
     ax.set_title(title, fontsize=16)
 
-    # Set up axes properly
-    all_points = np.vstack([ommatidia_3d, stars_3d])
-    min_coords, max_coords = all_points.min(axis=0), all_points.max(axis=0)
-    center, max_range = (max_coords + min_coords) / 2, (max_coords - min_coords).max() / 2
-
     ax.quiver(0, 0, 0, 0.5, 0, 0, color='r', label='Right (+X)')
     ax.quiver(0, 0, 0, 0, 0.5, 0, color='g', label='Up (+Y)')
     ax.quiver(0, 0, 0, 0, 0, -0.5, color='b', label='Forward (-Z)')
 
-    ax.set_xlim(center[0] - max_range, center[0] + max_range)
-    ax.set_ylim(center[1] - max_range, center[1] + max_range)
-    ax.set_zlim(center[2] - max_range, center[2] + max_range)
-    ax.set_box_aspect([1, 1, 1])
+    # Set up axes properly
+    all_points = np.vstack([ommatidia_3d, stars_3d])
+
+    center = (all_points.max(axis=0) + all_points.min(axis=0)) / 2
+    x_range = np.ptp(all_points[:, 0])
+    y_range = np.ptp(all_points[:, 1])
+    z_range = np.ptp(all_points[:, 2])
+
+    ax.set_box_aspect((x_range, y_range, z_range))
+
+    ax.set_xlim(center[0] - x_range, center[0] + x_range)
+    ax.set_ylim(center[1] - y_range, center[1] + y_range)
+    ax.set_zlim(center[2] - z_range, center[2] + z_range)
+
+
     ax.view_init(elev=30, azim=45)
     ax.legend()
-
     plt.tight_layout()
     plt.show()
