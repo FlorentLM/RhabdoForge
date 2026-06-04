@@ -1,3 +1,4 @@
+import warnings
 from typing import Callable, Tuple
 import numpy as np
 from scipy.interpolate import RBFInterpolator
@@ -552,22 +553,23 @@ def spring_relaxation(
 
 
 def facet_diameters(
-        positions: np.ndarray,
-        directions: np.ndarray,
-        k: int = 18,
-        packing: float = 1.0,
-        smooth_iter: int = 1,
-) -> np.ndarray:
+        positions,
+        directions,
+        k=18,
+        packing=1.0,
+        smooth_iter=1,
+        shell_factor=1.5,
+        min_ring=4,
+        fill_sweeps=6
+    ):
     """
     Per-ommatidium facet diameter from the local Voronoi cell area on the eye surface.
 
-    The facet is the Voronoi cell of the optical axis (the dual of the lattice).
-    For each lens, project its k nearest neighbours into the tangent plane (normal = viewing direction),
-    build the 2D Voronoi cell and take the hexagon-equivalent diameter:
-        D = packing * sqrt(2 * A_cell / sqrt(3))
-
-    Boundary lenses (incomplete ring -> unbounded or blown-up cell) fall back to a robust first-ring spacing,
-    and a light neighbour-median pass removes residual outliers.
+    First-ring spacing is taken over a *shell* (neighbours within shell_factor x the
+    nearest) rather than the kNN-6, so boundary/spur lenses aren't biased high by
+    second-ring points padding the count. Boundary lenses (< min_ring genuine
+    first-ring neighbours, or no bounded Voronoi cell) are filled from their interior
+    neighbours instead of trusting their own inflated fallback.
 
     Args:
         positions: (N, 3) lens world positions.
@@ -582,22 +584,32 @@ def facet_diameters(
 
     tree = cKDTree(positions)
     kq = min(k + 1, N)
-    dist, idx = tree.query(positions, k=kq)          # col 0 is self
-    ref = np.median(dist[:, 1:min(7, kq)], axis=1)   # first-ring spacing
+    dist, idx = tree.query(positions, k=kq)  # col 0 is self
+    nn = dist[:, 1:]
+    ring_idx = idx[:, 1:min(7, kq)]
 
-    D = np.empty(N, dtype=float)
+    shell = np.where(nn <= shell_factor * dist[:, 1:2], nn, np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        ref = np.nanmedian(shell, axis=1)
+
+    ref = np.where(np.isfinite(ref), ref, dist[:, 1])
+    n_shell = np.sum(np.isfinite(shell), axis=1)
+    boundary = n_shell < min_ring
+
+    D = np.full(N, np.nan, dtype=float)
+
     for i in range(N):
         nb = idx[i, 1:]
         n = directions[i] / max(np.linalg.norm(directions[i]), 1e-12)
         a = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-        u = np.cross(n, a); u /= np.linalg.norm(u)
+        u = np.cross(n, a)
+        u /= np.linalg.norm(u)
         v = np.cross(n, u)
         rel = positions[nb] - positions[i]
-        P = np.column_stack([rel @ u, rel @ v])
-        pts2d = np.vstack([[0.0, 0.0], P])
-
+        pts2d = np.vstack([[0.0, 0.0], np.column_stack([rel @ u, rel @ v])])
         fb = packing * ref[i]
-        d = fb
+
         try:
             vor = Voronoi(pts2d)
             region = vor.regions[vor.point_region[0]]
@@ -609,13 +621,25 @@ def facet_diameters(
                                  - np.dot(poly[:, 1], np.roll(poly[:, 0], -1)))
                 dv = packing * np.sqrt(2.0 * area / np.sqrt(3.0))
                 if 0.6 * fb < dv < 1.5 * fb:
-                    d = dv
+                    D[i] = dv
         except Exception:
             pass
-        D[i] = d
+
+        if np.isnan(D[i]) and not boundary[i]:
+            D[i] = fb  # interior fallback
+
+    D[boundary] = np.nan  # Never trust boundary fallback
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for _ in range(fill_sweeps):  # propagate interior values outward
+            med = np.nanmedian(np.concatenate([D[:, None], D[ring_idx]], axis=1), axis=1)
+            D[boundary] = med[boundary]
+
+    D = np.where(np.isfinite(D), D, packing * ref)  # last resort
 
     for _ in range(int(smooth_iter)):
-        D = np.median(np.concatenate([D[:, None], D[idx[:, 1:min(7, kq)]]], axis=1), axis=1)
+        D = np.median(np.concatenate([D[:, None], D[ring_idx]], axis=1), axis=1)
 
     return D.astype(np.float32)
 
