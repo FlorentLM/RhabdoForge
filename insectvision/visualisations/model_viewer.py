@@ -575,7 +575,7 @@ class EyeViewer:
                 }
                 for r in range(self.R):
                     pts_r = tip_positions[:, r, :]
-                    if r == self.kernel.center_index:
+                    if r == self.bundle.center_index:
                         groups['gold'].append(pts_r)
                     elif r == i1:
                         groups['red'].append(pts_r)
