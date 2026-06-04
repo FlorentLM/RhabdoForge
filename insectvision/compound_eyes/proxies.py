@@ -3556,29 +3556,29 @@ class CompoundEyeModel:
                 print("Cartridge alignment: nothing to report (R == 1 or cartridges not wired).")
             return {}
 
+        center = self._bundle.center_index
+        periph = np.array([r for r in range(R) if r != center], dtype=np.intp)
+
         cmap = np.asarray(self._cartridge_map, dtype=np.intp).reshape(N, R)
         dirs = np.asarray(self.receptors.direction, dtype=np.float64).reshape(N, R, 3)
 
-        cid = cmap.ravel()
-        vdir = dirs.reshape(-1, 3)
-        valid = cid >= 0
-        cid, vdir = cid[valid], vdir[valid]
-        if cid.size == 0:
-            if verbose:
-                print("Cartridge alignment: no wired receptors found.")
-            return {}
+        home = np.repeat(np.arange(N), R)
+        slot = np.tile(np.arange(R), N)
+        donor = cmap.ravel()
+        valid = donor >= 0
+        home, slot, donor = home[valid], slot[valid], donor[valid]
+        mdir = dirs[donor, slot]  # pooled receptor direction
 
-        # spherical mean axis per cartridge (sum then renormalise, should exact in the small-spread regime)
         sum_dir = np.zeros((N, 3))
-        np.add.at(sum_dir, cid, vdir)
-        count = np.bincount(cid, minlength=N)
+        np.add.at(sum_dir, home, mdir)
+        count = np.bincount(home, minlength=N)
         mean_dir = sum_dir / np.maximum(np.linalg.norm(sum_dir, axis=1, keepdims=True), 1e-12)
 
-        cosang = np.clip(np.einsum('mc,mc->m', vdir, mean_dir[cid]), -1.0, 1.0)
-        member_ang = np.degrees(np.arccos(cosang))  # per-receptor deviation from cartridge axis
+        cosang = np.clip(np.einsum('mc,mc->m', mdir, mean_dir[home]), -1.0, 1.0)
+        member_ang = np.degrees(np.arccos(cosang)) # per-receptor deviation from cartridge axis
 
         percart_max = np.zeros(N)
-        np.maximum.at(percart_max, cid, member_ang)  # worst member per cartridge
+        np.maximum.at(percart_max, home, member_ang)  # worst member per cartridge
         multi = count >= 2  # cartridges that actually pool >1 receptor
 
         def _stats(a):
@@ -3589,18 +3589,23 @@ class CompoundEyeModel:
                     'p90': float(np.percentile(a, 90)), 'p99': float(np.percentile(a, 99)),
                     'max': float(a.max())}
 
+        n_periph_slots = N * periph.size
+        n_unwired = int((cmap[:, periph] < 0).sum())
         out = {
             'n_cartridges': int(N),
             'n_pooled': int(multi.sum()),
             'mean_receptors_per_pooled': float(count[multi].mean()) if multi.any() else 0.0,
+            'fill_rate': 1.0 - n_unwired / max(n_periph_slots, 1),
+            'donation_conflicts': int(np.sum(getattr(self, 'donation_conflicts', np.zeros(N, bool)))),
+            'receiving_conflicts': int(np.sum(getattr(self, 'receiving_conflicts', np.zeros(N, bool)))),
             'member_deviation_deg': _stats(member_ang),
             'per_cartridge_spread_deg': _stats(percart_max[multi]),
         }
 
         if relative_to_acceptance:
             acc = np.asarray(self.receptors.rest_acceptance_angles, dtype=np.float64)
-            acc_minor = (acc[..., 0] if acc.ndim >= 2 else acc).reshape(-1)[valid]
-            ratio = np.radians(member_ang) / np.maximum(acc_minor, 1e-9)
+            acc_minor = (acc[..., 0] if acc.ndim >= 2 else acc).reshape(N, R)
+            ratio = np.radians(member_ang) / np.maximum(acc_minor[donor, slot], 1e-9)
             out['member_frac_of_acceptance'] = {
                 'median': float(np.median(ratio)), 'p90': float(np.percentile(ratio, 90)),
                 'max': float(ratio.max())}
@@ -3610,7 +3615,10 @@ class CompoundEyeModel:
             lines = [
                 "Cartridge viewing-axis alignment:",
                 f"    pooled cartridges : {out['n_pooled']}/{out['n_cartridges']} "
-                f"(mean {out['mean_receptors_per_pooled']:.1f} receptors each)",
+                f"(mean {out['mean_receptors_per_pooled']:.1f} receptors each), "
+                f"peripheral fill {out['fill_rate'] * 100:.1f}%",
+                f"    conflicts         : {out['donation_conflicts']} donation, "
+                f"{out['receiving_conflicts']} receiving",
                 f"    member deviation  : median {m['median']:.3f} deg, "
                 f"p90 {m['p90']:.3f}, p99 {m['p99']:.3f}, max {m['max']:.3f}",
                 f"    per-cartridge worst: median {s['median']:.3f} deg, "
