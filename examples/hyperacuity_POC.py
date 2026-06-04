@@ -100,7 +100,6 @@ model = CompoundEyeModel.from_file(
     'species_models/drosophila_custom.npz',
     bundle=bundle, orientation=aligner, acceptance=SnyderAcceptance(),
 )
-model.calibrate_superposition_alignment()
 model.scale(1e-6)
 
 
