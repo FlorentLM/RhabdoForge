@@ -39,6 +39,10 @@ from insectvision.compound_eyes.buffers import EyesBuffer, get_metadata_field, s
 from insectvision.compound_eyes.orientation import (
     BundlesAligner, trivial_orientation, apply_chirality, OrientationResult
 )
+from insectvision.compound_eyes.acceptance import (
+    AcceptanceModel, LensOptics, ReceptorOptics,
+    SnyderAcceptance, SamplingAcceptance, ExplicitAcceptance, report_acceptance,
+)
 from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD
 from insectvision.utils.math import normalise_vectors, tangent_frames, icosphere, fibonacci_sphere
 from insectvision.compound_eyes.lattice import (
@@ -1913,15 +1917,11 @@ class CompoundEyeModel:
         - interommatidial_angles_rad: (2,), (N, 2), or None, Per-lens (minor, major) IOA.
             If None, computed from the local lattice (sorted mean over first ring,
             tilt from the hexatic Ψ6 order parameter).
-        - acceptance_angles_rad: (R,), (N, R), (N, R, 2), or None, Per-receptor acceptance half-widths.
-            If None, computed from optics (Snyder, when nodal distance is known) or
-            from the local IOA (lattice-convention fallback), scaled by 'eye_parameter'.
-        - eye_parameter: float or 2-tuple (p_min, p_maj) or None,
-            Multiplier on the optical/lattice baseline that controls how wide the
-            RFs are relative to physical optics.
-            p=1.0 (default) is pure Snyder / pure IOA
-            p>1 makes RFs wider, p<1 narrower.
-            A 2-tuple gives anisotropic scaling per (minor, major).
+        - acceptance: AcceptanceModel or None, Provider of the per-receptor rest Δρ field.
+            Any callable (lens: LensOptics, rcpt: ReceptorOptics) -> (N, R, 2) half-widths
+            (minor, major), radians. See insectvision.compound_eyes.acceptance.
+            If None (default): SnyderAcceptance() when bundle.focal_um is set, else
+            SamplingAcceptance(). Pass ExplicitAcceptance(array) to supply Δρ verbatim.
         - bundle_orientations: (N,) array_like or None, Override chi from the orientation pipeline (rad).
         - chiralities: (N,) array_like or None, Override chirality from the orientation pipeline (±1).
         - orientation: BundlesAligner or None, Explicit pipeline configuration.
@@ -1940,8 +1940,7 @@ class CompoundEyeModel:
                  eye_indices: Optional[ArrayLike] = None,
                  lens_diameter_um: Optional[Union[float, ArrayLike]] = None,
                  interommatidial_angles_rad: Optional[ArrayLike] = None,
-                 acceptance_angles_rad: Optional[ArrayLike] = None,
-                 eye_parameter: Optional[Union[float, Tuple[float, float]]] = None,
+                 acceptance: Optional['AcceptanceModel'] = None,
                  bundle_orientations: Optional[ArrayLike] = None,
                  chiralities: Optional[ArrayLike] = None,
                  orientation: Optional['BundlesAligner'] = None,
@@ -1971,6 +1970,11 @@ class CompoundEyeModel:
             bundle = RhabdomereBundle()  # default R=1
         self._bundle = bundle
         R = bundle.count
+
+        # Acceptance model: per-receptor rest Δρ
+        if acceptance is None:
+            acceptance = SnyderAcceptance() if bundle.focal_um is not None else SamplingAcceptance()
+        self._acceptance = acceptance
 
         # Allocate the packed buffer
         self._buffer = EyesBuffer(n_lenses=N, receptors_per_lens=R)
@@ -2014,14 +2018,25 @@ class CompoundEyeModel:
             self._buffer.lens_static_data['ioa_axes'] = ioa_axes
             self._buffer.lens_static_data['ioa_tilt'] = ioa_tilts
 
-            # Lens diameter: if caller supplied a value, use it.
-            # Otherwise derive from lattice spacing.
             if lens_diameter_um is None:
-                ld_arr = (self.HEX_PACKING_FACTOR * lens_spacing).astype(np.float32)
-                # Sparse lattices (single-lens eye, etc): fallback to a reasonable default of 20 μm
-                # TODO: Maybe just raise instead? Why would a single lens be any useful?
-                ld_arr = np.where(ld_arr > 0, ld_arr, np.float32(20.0))
-                self._buffer.lens_static_data['lens_diameter_um'] = ld_arr
+                spacing_est = (self.HEX_PACKING_FACTOR * lens_spacing).astype(np.float32)
+                spacing_est = np.where(spacing_est > 0, spacing_est, np.float32(20.0))
+
+                lens_diameters = spacing_est.copy()
+                for eid in np.unique(self._lens_eye_index):
+                    m = np.where(self._lens_eye_index == eid)[0]
+                    if m.size > 19:
+                        try:
+                            lens_diameters[m] = facet_diameters(self._lens_positions[m], self._lens_directions[m])
+                            continue
+                        except Exception:
+                            pass  # fall through to denoised spacing estimate
+
+                    # Voronoi estimator unavailable: denoise the single-edge readout
+                    lens_diameters[m] = angular_neighbour_median(spacing_est[m], self._lens_directions[m])
+
+                self._buffer.lens_static_data['lens_diameter_um'] = lens_diameters.astype(np.float32)
+
             else:
                 ld = np.atleast_1d(np.asarray(lens_diameter_um, dtype=np.float32))
                 if ld.size == 1:
@@ -2031,6 +2046,23 @@ class CompoundEyeModel:
                 else:
                     raise ValueError(f"lens_diameter_um size {ld.size} must be 1 or N={N}")
 
+            # Per-lens focal length scales with facet diameter at a constant F-number,
+            # so larger facets focus longer and see narrower RFs.
+
+            # Note: this feeds both the Snyder acceptance model and the microsaccade lever arm,
+            # so it is computed whenever focal_um is available, no matter of which acceptance model is used
+            if bundle.focal_um is not None:
+                D = self._buffer.lens_static_data['lens_diameter_um'].astype(np.float32)
+                pos_D = D[D > 0]
+                D_med = float(np.median(pos_D)) if pos_D.size else 1.0
+
+                f_number = float(bundle.focal_um) / max(D_med, 1e-6)
+                f_per_lens = (f_number * D).astype(np.float32)
+                f_per_lens = np.where(
+                    f_per_lens > 1e-3, f_per_lens, np.float32(bundle.focal_um)
+                ).astype(np.float32)
+                self._buffer.lens_static_data['focal_um'] = f_per_lens
+
             # Fill receptors static data
             self._buffer.rcpt_static_data['position'] = np.repeat(self._lens_positions, R, axis=0)
             self._buffer.rcpt_static_data['sensitivity'] = np.tile(bundle.sensitivity, (N, 1))
@@ -2039,11 +2071,7 @@ class CompoundEyeModel:
             self._buffer.rcpt_static_data['wavelength_um'] = np.tile(bundle.wavelengths_nm * 1e-3, N)
 
             # Acceptance angles (rest + initial dynamic)
-            if acceptance_angles_rad is not None:
-                acc = self._broadcast_acceptance(acceptance_angles_rad, N, R)
-            else:
-                acc = self._compute_acceptance_baseline(eye_parameter=eye_parameter)
-
+            acc = self._resolve_acceptance()
             self._buffer.rcpt_static_data['rest_acc'] = acc
             self._buffer.rcpt_dynamic_data['acc_axes'] = acc
 
@@ -2202,7 +2230,7 @@ class CompoundEyeModel:
             - left / right: (N,) bool, fallback if no eye_indices
             - lens_diameter_um: 'lens_diameter_um', 'lens_diameter', 'aperture_um'
             - interommatidial_angles_rad: 'interommatidial_angles_rad', 'ioa', 'ioa_axes'
-            - acceptance_angles_rad: 'acceptance_angles_rad', 'acceptance', 'rho'
+            - acceptance (rest half-widths): 'acceptance_angles', 'acceptance', 'rho'
             - bundle_orientations: 'bundle_orientations', 'chi'
             - chiralities: 'chiralities', 'chirality'
 
@@ -2245,8 +2273,7 @@ class CompoundEyeModel:
             # Optional geometry fields: only set if not overridden in kwargs.
             optional_field_aliases = {
                 'lens_diameter_um': ['lens_diameter_um', 'lens_diameter', 'aperture_um'],
-                'interommatidial_angles_rad': ['interommatidial_angles_rad', 'ioa', 'ioa_axes'],
-                'acceptance_angles_rad': ['acceptance_angles_rad', 'acceptance', 'rho'],
+                'interommatidial_angles_rad': ['interommatidial_angles_rad', 'interommatidial_angles', 'ioa', 'ioa_axes'],
                 'bundle_orientations': ['bundle_orientations', 'chi'],
                 'chiralities': ['chiralities', 'chirality'],
             }
@@ -2256,6 +2283,11 @@ class CompoundEyeModel:
                 value = first_present(aliases)
                 if value is not None:
                     kwargs[param] = value
+
+            if 'acceptance' not in kwargs:
+                rho = first_present(['acceptance_angles_rad', 'acceptance_angles', 'acceptance', 'rho'])
+                if rho is not None:
+                    kwargs['acceptance'] = ExplicitAcceptance(rho)
 
         logger.info(
             "Loaded %d lenses from %s (fields: %s)",
@@ -2697,9 +2729,9 @@ class CompoundEyeModel:
         through the nodal point (i.e. the receptor's line of sight on the
         outside world).
         """
-        kernel = self._kernel
+        bundle = self._bundle
         N, R = self.lens_count, self.receptors_per_lens
-        nd = kernel.nodal_distance_um
+        nd = bundle.focal_um
         if nd is None:
             if R > 1:
                 raise ValueError("bundle.focal_um is None but R > 1")
@@ -2830,12 +2862,18 @@ class CompoundEyeModel:
                 spacing = np.nanmedian(np.where(immed, neighb.distances, np.nan), axis=1)
             spacing = np.where(np.isfinite(spacing) & (spacing > 1e-9), spacing, 1.0)
 
-            pos = self._lens_positions[gi]
-            nbr_pos = self._lens_positions[neighb.indices]
-            delta = nbr_pos - pos[:, None, :]
-            du = np.einsum('ijk,ik->ij', delta, self._local_right[gi]) / spacing[:, None]
-            dv = np.einsum('ijk,ik->ij', delta, self._local_up[gi]) / spacing[:, None]
-            z_nb = du + 1j * dv
+            dirs = self._lens_directions[gi]
+            nbr_dirs = self._lens_directions[neighb.indices]
+            delta = nbr_dirs - dirs[:, None, :]
+            du = np.einsum('ijk,ik->ij', delta, self._local_right[gi])
+            dv = np.einsum('ijk,ik->ij', delta, self._local_up[gi])
+
+            # Normalised by angular spacing per lens
+            nb_mag = np.sqrt(du ** 2 + dv ** 2)
+            ang_spacing = np.nanmedian(np.where(immed, nb_mag, np.nan), axis=1)
+            ang_spacing = np.where(np.isfinite(ang_spacing) & (ang_spacing > 1e-9), ang_spacing, 1.0)
+
+            z_nb = (du + 1j * dv) / ang_spacing[:, None]
 
             z_tpl = (tpl_dx[gi][:, periph] + 1j * tpl_dy[gi][:, periph])
 
@@ -3041,11 +3079,18 @@ class CompoundEyeModel:
                 i_glob = gi[i_loc]
                 tpl_i = (tpl_dx[i_glob] + 1j * tpl_dy[i_glob])
 
-                # Setup neighbor coordinates in tangent plane
-                nb_vecs = self._lens_positions[neighb.indices[i_loc]] - self._lens_positions[i_glob]
-                nb_uv = (nb_vecs @ np.stack([self._local_right[i_glob], self._local_up[i_glob]], axis=1)) / spacing[
-                    i_loc]
-                nb_i = nb_uv[:, 0] + 1j * nb_uv[:, 1]
+                # Setup neighbour coordinates in tangent plane (using optical axes)
+                nb_dirs = self._lens_directions[neighb.indices[i_loc]] - self._lens_directions[i_glob]
+                nb_uv = (nb_dirs @ np.stack([self._local_right[i_glob], self._local_up[i_glob]], axis=1))
+
+                # Normalised by local angular spacing
+                nb_mag = np.linalg.norm(nb_uv, axis=1)
+                ang_spacing = np.nanmedian(np.where(neighb.is_immediate[i_loc], nb_mag, np.nan))
+                if np.isnan(ang_spacing) or ang_spacing < 1e-9:
+                    ang_spacing = 1.0
+
+                nb_i = (nb_uv[:, 0] + 1j * nb_uv[:, 1]) / ang_spacing
+
                 valid_nb = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
 
                 # Standard candidate generation
@@ -3462,104 +3507,41 @@ class CompoundEyeModel:
         tilts = np.zeros(N, dtype=np.float32)
         return axes, tilts
 
-    def _broadcast_acceptance(self,
-        value: ArrayLike,
-        N: int,
-        R: int,
-        ) -> np.ndarray:
+    def _lens_optics(self) -> LensOptics:
+        """Snapshot of per-lens optics for the acceptance model."""
+        s = self._buffer.lens_static_data
+        ioa = s['ioa_axes'].astype(np.float32)
+        return LensOptics(
+            focal_um=s['focal_um'].astype(np.float32),
+            lens_diameter_um=s['lens_diameter_um'].astype(np.float32),
+            ioa_minor=ioa[:, 0],
+            ioa_major=ioa[:, 1],
+        )
 
-        arr = np.asarray(value, dtype=np.float32)
-        if arr.shape == (R,):
-            # Same per-receptor for every lens, circular
-            acc = np.tile(arr[:, None], (N, 1, 2)).reshape(N * R, 2)
-        elif arr.shape == (N, R):
-            acc = np.broadcast_to(arr[..., None], (N, R, 2)).reshape(N * R, 2).astype(np.float32)
-        elif arr.shape == (N, R, 2):
-            acc = arr.reshape(N * R, 2).astype(np.float32)
-        else:
-            raise ValueError(
-                f"acceptance_angles_rad must be shape ({R},), ({N}, {R}), or ({N}, {R}, 2), got {arr.shape}"
-            )
-        return acc
-
-    def _compute_acceptance_baseline(
-        self,
-        eye_parameter: Optional[Union[float, Tuple[float, float]]] = None,
-        ) -> np.ndarray:
-        """
-        Per-receptor acceptance half-widths (rad), as (M, 2) (minor, major).
-
-        Two cases:
-
-        - Snyder optics (kernel.nodal_distance_um is not None):
-              rho_geom = arctan(d_rhab / nodal_distance)
-              rho_diff = lambda / lens_diameter
-              rho = sqrt(rho_geom^2 + rho_diff^2)
-          Then scaled by the eye parameter p:
-              acc_minor = p_min * rho
-              acc_major = p_maj * rho
-          p = 1 -> pure Snyder, p > 1 -> wider RFs than Snyder predicts, p < 1 -> narrower
-          Tuple p = (p_min, p_maj) gives anisotropic RFs (same Snyder baseline, different per-axis scaling).
-
-          Note / TODO: per-receptor Snyder baseline is currently isotropic (single rhab_diameter and single lens_diameter). Anisotropy comes only from p_min vs p_maj.
-
-        - No optics (kernel.nodal_distance_um is None):
-              acc_minor = p_min * ioa_minor * (d_rhab / max(d_rhab))
-              acc_major = p_maj * ioa_major * (d_rhab / max(d_rhab))
-          Uses lattice spacing: RF width is the local IOA scaled
-          by the eye parameter p and modulated by the per-receptor
-          rhabdomere diameter (smaller rhabdomeres still get smaller RFs).
-
-        Args:
-            - eye_parameter: scalar 'p' applied to both axes, or a tuple '(p_min, p_maj)' for anisotropic scaling.
-                None defaults to 1.0.
-        """
+    def _resolve_acceptance(self) -> np.ndarray:
+        """Per-receptor rest acceptance half-widths (rad), as (N*R, 2) (minor, major)."""
         N, R = self.lens_count, self.receptors_per_lens
-        kernel = self._kernel
+        rcpt = ReceptorOptics(
+            rhab_diameter_um=self._bundle.diameters_um.astype(np.float32),
+            wavelength_um=(self._bundle.wavelengths_nm * 1e-3).astype(np.float32),
+        )
+        acc = np.asarray(self._acceptance(self._lens_optics(), rcpt), dtype=np.float32)
+        if acc.shape != (N, R, 2):
+            raise ValueError(
+                f"acceptance model {type(self._acceptance).__name__} returned {acc.shape}, "
+                f"expected {(N, R, 2)}"
+            )
+        return np.ascontiguousarray(acc.reshape(N * R, 2), dtype=np.float32)
 
-        # Resolve eye parameter to (p_min, p_maj)
-        if eye_parameter is None:
-            p_min = p_maj = 1.0
-        elif isinstance(eye_parameter, (int, float, np.number)):
-            p_min = p_maj = float(eye_parameter)
-        else:
-            p = tuple(eye_parameter)
-            if len(p) != 2:
-                raise ValueError(
-                    f"eye_parameter must be a scalar or 2-tuple, got length {len(p)}"
-                )
-            p_min, p_maj = float(p[0]), float(p[1])
-
-        rhab = kernel.diameters_um
-        wl_um = (kernel.wavelengths_nm * 1e-3).astype(np.float32)
-
-        if kernel.nodal_distance_um is not None:
-            # Snyder mode: physical baseline from diffraction + geometric optics
-            nd = self._buffer.lens_static_data['nodal_distance_um'].astype(np.float32)
-            ld = self._buffer.lens_static_data['lens_diameter_um'].astype(np.float32)
-
-            rho_geom = np.arctan(rhab[None, :] / np.clip(nd[:, None], 1e-6, None))
-            rho_diff = wl_um[None, :] / np.clip(ld[:, None], 1e-6, None)
-            rho = np.sqrt(rho_geom ** 2 + rho_diff ** 2).astype(np.float32)
-
-            acc_min = (p_min * rho).reshape(N * R)
-            acc_maj = (p_maj * rho).reshape(N * R)
-        else:
-            # No optical model: lattice spacing mode
-            ioa_axes = self._buffer.lens_static_data['ioa_axes'].astype(np.float32)
-            ioa_minor = ioa_axes[:, 0]
-            ioa_major = ioa_axes[:, 1]
-
-            max_d = float(np.max(rhab)) if rhab.size > 0 else 1.0
-            rel_d = (rhab / max_d).astype(np.float32) if max_d > 0 else np.ones(R, dtype=np.float32)
-
-            acc_min = (np.repeat(p_min * ioa_minor, R)
-                       * np.tile(rel_d, N)).astype(np.float32)
-            acc_maj = (np.repeat(p_maj * ioa_major, R)
-                       * np.tile(rel_d, N)).astype(np.float32)
-
-        acc = np.column_stack([acc_min, acc_maj]).astype(np.float32)
-        return acc
+    def acceptance_report(self, reference_ratio: Optional[float] = None) -> str:
+        N, R = self.lens_count, self.receptors_per_lens
+        acc = self._buffer.rcpt_static_data['rest_acc'].reshape(N, R, 2)
+        return report_acceptance(
+            acc, self._lens_optics(),
+            peripheral_indices=self._bundle.peripheral_indices,
+            narrowing_ratio=self._bundle.extra_narrowing_ratio,
+            reference_ratio=reference_ratio,
+        )
 
     def _compute_ioa_baseline(
             self,
