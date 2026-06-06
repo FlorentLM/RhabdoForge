@@ -135,6 +135,23 @@ def tangent_bearing(
     return np.degrees(bearing) if degrees else bearing
 
 
+def local_to_world(coords: ArrayLike, *basis: ArrayLike) -> np.ndarray:
+    """
+    Express local coordinates in world space against a set of basis vectors.
+    The result is *not* renormalised.
+    """
+    coords = np.asarray(coords)
+    if coords.shape[-1] != len(basis):
+        raise ValueError(
+            f"local_to_world: coords last axis ({coords.shape[-1]}) must equal "
+            f"the number of basis vectors ({len(basis)})"
+        )
+    out = coords[..., 0, None] * np.asarray(basis[0])
+    for i in range(1, len(basis)):
+        out = out + coords[..., i, None] * np.asarray(basis[i])
+    return out
+
+
 # Rotations
 
 def rotate_vectors(

@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Tuple
 import numpy as np
 from numpy.typing import ArrayLike
-from insectvision.utils.math import norm_l2, tangent_frames
+from insectvision.utils.math import norm_l2, tangent_frames, local_to_world
 
 
 # Spherical <-> Cartesian
@@ -86,8 +86,8 @@ def stereo_to_sphere(
     r2 = x ** 2 + y ** 2
     denom = 1.0 + r2
 
-    dirs = (
-        (2.0 / denom)[:, None] * (x[:, None] * rgt + y[:, None] * up)
-        + ((1.0 - r2) / denom)[:, None] * fwd
+    dirs = local_to_world(
+        np.column_stack([2.0 * x / denom, 2.0 * y / denom, (1.0 - r2) / denom]),
+        rgt, up, fwd,
     )
     return norm_l2(dirs)

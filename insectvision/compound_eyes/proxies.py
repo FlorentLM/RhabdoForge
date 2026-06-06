@@ -46,7 +46,7 @@ from insectvision.compound_eyes.acceptance import (
 from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD
 from insectvision.utils.fields import neighbour_smooth
 from insectvision.utils.geodesic import icosphere, fibonacci_sphere
-from insectvision.utils.math import norm_l2, tangent_frames
+from insectvision.utils.math import norm_l2, tangent_frames, local_to_world
 from insectvision.utils.knns import knn, angle_to_chord, chord_to_angle, within_angle, lookat_topk
 from insectvision.utils.hexatic import hexatic_phasor, hexatic_axis_angle, hexatic_order, smooth_tilt
 from insectvision.compound_eyes.lattice import facet_diameters
@@ -270,9 +270,12 @@ class LensView:
     @property
     def saccade_axes(self) -> np.ndarray:
         """(M, 3) saccade actuation axis in world coordinates."""
-        sx = self._model.lens_static_data['sacc_x'][self._gi][:, None]
-        sy = self._model.lens_static_data['sacc_y'][self._gi][:, None]
-        return sx * self._model._local_right[self._gi] + sy * self._model._local_up[self._gi]
+        sx = self._model.lens_static_data['sacc_x'][self._gi]
+        sy = self._model.lens_static_data['sacc_y'][self._gi]
+        return local_to_world(
+            np.stack([sx, sy], axis=-1),
+            self._model._local_right[self._gi], self._model._local_up[self._gi],
+        )
 
     # Photomechanical biophysics (per-lens, broadcast from bundle)
 
@@ -2690,10 +2693,11 @@ class CompoundEyeModel:
             [rot_dx, rot_dy, np.full((N, R), -nd, dtype=np.float32)],
             axis=-1,
         )
-        world_tip = (
-            local_tip[..., 0:1] * self._local_right[:, None, :]
-            + local_tip[..., 1:2] * self._local_up[:, None, :]
-            + local_tip[..., 2:3] * self._lens_directions[:, None, :]
+        world_tip = local_to_world(
+            local_tip,
+            self._local_right[:, None, :],
+            self._local_up[:, None, :],
+            self._lens_directions[:, None, :],
         ).reshape(N * R, 3)
 
         rec_pos = np.repeat(self._lens_positions, R, axis=0)

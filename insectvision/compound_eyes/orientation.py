@@ -4,7 +4,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
-from insectvision.utils.math import norm_l2, tangent_frames, rotate_in_tangent_plane, broadcast_1d
+from insectvision.utils.math import norm_l2, tangent_frames, rotate_in_tangent_plane, broadcast_1d, local_to_world
 from insectvision.utils.knns import knn
 from insectvision.utils.circular import wrap_angle
 from insectvision.utils.fields import smooth_nematic_vectors
@@ -384,9 +384,10 @@ def apply_chirality(
     main_rad = float(model._bundle.main_axis_rad)
     effective_main = np.where(chirality > 0, main_rad, np.pi - main_rad).astype(np.float32)
     major_angle = chi + effective_main
-    cos_m = np.cos(major_angle)[:, None]
-    sin_m = np.sin(major_angle)[:, None]
-    major = cos_m * model._local_right + sin_m * model._local_up
+    major = local_to_world(
+        np.stack([np.cos(major_angle), np.sin(major_angle)], axis=-1),
+        model._local_right, model._local_up,
+    )
 
     base_sacc_rot = -float(np.radians(model._bundle.saccade_offset_deg))
     angles = (base_sacc_rot * chirality).astype(np.float32)
