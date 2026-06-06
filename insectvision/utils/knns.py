@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 import numpy as np
 from scipy.spatial import cKDTree
+from insectvision.utils.math import norm_l2
 
 
 def knn(
@@ -84,3 +85,31 @@ def within_angle(tree: cKDTree, query_dirs: np.ndarray, angle_rad: float) -> Lis
     query_ball_point output (a list of index arrays, one per query direction).
     """
     return tree.query_ball_point(query_dirs, r=angle_to_chord(angle_rad))
+
+
+def lookat_topk(
+        pos: np.ndarray,
+        dirs: np.ndarray,
+        targets: np.ndarray,
+        k: int,
+        conflict_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Local indices (Q, k_eff) of the lenses best looking at each target.
+
+    Score is the dot product of each lens optical axis with the unit vector from
+    that lens to the target. Columns are ordered best-first. 'conflict_mask' (a
+    boolean over the lenses) excludes conflicted lenses from selection.
+    """
+    desired = targets[:, None, :] - pos[None, :, :]
+    desired = norm_l2(desired, axis=-1)
+    dots = np.einsum('jk,ijk->ij', dirs, desired)
+
+    if conflict_mask is not None:
+        dots[:, conflict_mask] = -np.inf
+
+    k_eff = min(k, dots.shape[1])
+    part = np.argpartition(dots, -k_eff, axis=1)[:, -k_eff:]
+    top = np.take_along_axis(dots, part, axis=1)
+    order = np.argsort(top, axis=1)[:, ::-1]
+    return np.take_along_axis(part, order, axis=1)

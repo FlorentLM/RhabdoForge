@@ -1,5 +1,6 @@
 from __future__ import annotations
 import numpy as np
+from insectvision.utils.math import norm_l2
 
 # TODO: These will go to the geometry / meshes module
 
@@ -62,7 +63,7 @@ def subdivide_icosahedron(n_subdiv: int) -> np.ndarray:
     bary = barycentric_coords(n_subdiv)
 
     all_v = np.einsum('ij,kjl->kil', bary, verts).reshape(-1, 3)
-    all_v /= np.linalg.norm(all_v, axis=1)[:, np.newaxis]
+    all_v = norm_l2(all_v)
     _, iu = np.unique(np.round(all_v, 6), axis=0, return_index=True)
 
     return all_v[iu].astype(np.float32)

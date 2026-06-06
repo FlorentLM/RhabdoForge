@@ -2,6 +2,7 @@ import warnings
 from typing import Optional, Tuple, Union
 import numpy as np
 from numpy.typing import ArrayLike
+from insectvision.utils.math import broadcast_1d
 
 
 RHAB_COLOURS = [
@@ -122,16 +123,9 @@ class RhabdomereBundle:
 
     # Construction helpers
 
-    # TODO: This broadcast should be moved to a shared broadcast_to(value, n, name) helper, like _resolve_sensitivity
-    #  also with orientation._prepare_per_lens and acceptance.broadcast_to_nr2
     @staticmethod
     def _broadcast_to_R(value: Union[float, ArrayLike], R: int, name: str) -> np.ndarray:
-        arr = np.atleast_1d(np.asarray(value, dtype=np.float32))
-        if arr.size == 1:
-            return np.full(R, arr.item(), dtype=np.float32)
-        if arr.size == R:
-            return arr.flatten().astype(np.float32)
-        raise ValueError(f"{name} size ({arr.size}) must be 1 or match receptor count R={R}")
+        return broadcast_1d(value, R, name)
 
     @staticmethod
     def _resolve_sensitivity(sensitivity: Union[float, ArrayLike], R: int) -> np.ndarray:

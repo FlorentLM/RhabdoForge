@@ -47,11 +47,12 @@ from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD
 from insectvision.utils.fields import neighbour_smooth
 from insectvision.utils.geodesic import icosphere, fibonacci_sphere
 from insectvision.utils.math import norm_l2, tangent_frames
-from insectvision.utils.knns import knn, chord_to_angle, within_angle
+from insectvision.utils.knns import knn, angle_to_chord, chord_to_angle, within_angle, lookat_topk
 from insectvision.utils.hexatic import hexatic_phasor, hexatic_axis_angle, hexatic_order, smooth_tilt
 from insectvision.compound_eyes.lattice import facet_diameters
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
 from insectvision.utils.projections import cartesian_to_spherical, spherical_gradients
+from insectvision.utils.circular import wrap_angle, weighted_circ_mean
 
 logger = logging.getLogger(__name__)
 
@@ -1128,27 +1129,14 @@ class Eye:
         if k < 1:
             raise ValueError("k must be >= 1")
         q = np.asarray(targets, dtype=np.float32).reshape(-1, 3)
-        Q = q.shape[0]
         if len(self._lens_indices) == 0:
             return LensView(self._model, np.empty(0, dtype=np.intp))
 
         pos = self._model._lens_positions[self._lens_indices]
         dirs = self._model._lens_directions[self._lens_indices]
+        conflict = self._model.have_conflicts[self._lens_indices] if avoid_conflicts else None
 
-        desired = q[:, None, :] - pos[None, :, :]
-        norms = np.linalg.norm(desired, axis=-1, keepdims=True)
-        np.divide(desired, norms, out=desired, where=norms > 0)
-        dots = np.einsum('jk,ijk->ij', dirs, desired)
-
-        if avoid_conflicts:
-            conflicts = self._model.have_conflicts[self._lens_indices]
-            dots[:, conflicts] = -np.inf
-
-        k_eff = min(k, dots.shape[1])
-        part = np.argpartition(dots, -k_eff, axis=1)[:, -k_eff:]
-        top = np.take_along_axis(dots, part, axis=1)
-        order = np.argsort(top, axis=1)[:, ::-1]
-        best = np.take_along_axis(part, order, axis=1)
+        best = lookat_topk(pos, dirs, q, k, conflict)
         return LensView(self._model, self._lens_indices[best].ravel())
 
     def query_cone(self,
@@ -1168,7 +1156,7 @@ class Eye:
             return np.empty(0, dtype=np.intp)
         c = c / n
         a = np.deg2rad(angle) if degrees else float(angle)
-        radius = 2.0 * np.sin(a / 2.0)
+        radius = angle_to_chord(a)
 
         if avoid_conflicts:
             tree_cf, _, cf_local = self._ensure_trees_cf()
@@ -1223,7 +1211,7 @@ class Eye:
         chord_dists, _ = tree.query(dirs, k=2)
         max_chord = float(np.max(chord_dists[:, 1]))
         # Convert chord to great-circle angle
-        return float(np.arccos(np.clip(1.0 - (max_chord ** 2) / 2.0, -1.0, 1.0)))
+        return float(chord_to_angle(max_chord))
 
     def neighbours_by_bearing(self,
         query_lens_indices: Optional[ArrayLike] = None,
@@ -1436,7 +1424,7 @@ class Eye:
                 f"Coordinate must be 'spherical' or 'cartesian', got {coordinate!r}"
             )
 
-        target_norms = np.sqrt(target_dx ** 2 + target_dy ** 2)
+        target_norms = np.hypot(target_dx, target_dy)
         zero_mask = target_norms < 1e-12
         target_dx_n = np.where(zero_mask, 1.0, target_dx / np.where(zero_mask, 1.0, target_norms))
         target_dy_n = np.where(zero_mask, 0.0, target_dy / np.where(zero_mask, 1.0, target_norms))
@@ -1448,7 +1436,7 @@ class Eye:
         nb_local = graph['neighbour_local_indices'][valid_local]
 
         nb_angles = np.arctan2(nb_proj_y, nb_proj_x)
-        angle_diff = (nb_angles - target_angle[:, None] + np.pi) % (2 * np.pi) - np.pi
+        angle_diff = wrap_angle(nb_angles - target_angle[:, None])
         score = np.abs(angle_diff)
         # Anything more than 90 deg off is rejected
         score = np.where(score > (np.pi / 2.0), 1e6, score)
@@ -1745,7 +1733,7 @@ class VisualOutput:
             ax.set_aspect('equal', adjustable='box')
         else:
             for p in polygons:
-                p[:, 0] = (p[:, 0] + np.pi) % (2 * np.pi) - np.pi
+                p[:, 0] = wrap_angle(p[:, 0])
             ax.grid(True, alpha=0.3)
 
         # Anti-aliasing workaround: 'face' draws a mini border of the polygon's
@@ -2449,6 +2437,30 @@ class CompoundEyeModel:
 
     # Animal-wide spatial queries (dispatch across eyes)
 
+    def _merge_topk(self, per_eye_query, Q: int, k: int) -> Tuple['LensView', np.ndarray]:
+        """
+        Merge per-eye (LensView, distances) results into a global top-k.
+
+        'per_eye_query(eye)' must return the (LensView, distances) for one eye.
+        """
+        best_idx = np.full((Q, k), -1, dtype=np.intp)
+        best_dist = np.full((Q, k), np.inf, dtype=np.float32)
+        rows = np.arange(Q)[:, None]
+
+        for eye in self._eyes:
+            view, dist = per_eye_query(eye)
+            if len(view) == 0:
+                continue
+
+            combined_idx = np.concatenate([best_idx, view.indices.reshape(Q, -1)], axis=1)
+            combined_dist = np.concatenate([best_dist, dist], axis=1)
+
+            order = np.argsort(combined_dist, axis=1)[:, :k]
+            best_idx = combined_idx[rows, order]
+            best_dist = combined_dist[rows, order]
+
+        return LensView(self, best_idx.ravel()), best_dist
+
     def query_directions(self,
          directions: ArrayLike,
          k: int = 1,
@@ -2461,24 +2473,10 @@ class CompoundEyeModel:
         Returns (LensView, distances).
         """
         dirs = np.asarray(directions, dtype=np.float32).reshape(-1, 3)
-        Q = dirs.shape[0]
-        best_idx = np.full((Q, k), -1, dtype=np.intp)
-        best_dist = np.full((Q, k), np.inf, dtype=np.float32)
-
-        for eye in self._eyes:
-            view, dist = eye.query_directions(dirs, k=k, avoid_conflicts=avoid_conflicts)
-            if len(view) == 0:
-                continue
-
-            combined_idx = np.concatenate([best_idx, view.indices.reshape(Q, -1)], axis=1)
-            combined_dist = np.concatenate([best_dist, dist], axis=1)
-
-            order = np.argsort(combined_dist, axis=1)[:, :k]
-            rows = np.arange(Q)[:, None]
-            best_idx = combined_idx[rows, order]
-            best_dist = combined_dist[rows, order]
-
-        return LensView(self, best_idx.ravel()), best_dist
+        return self._merge_topk(
+            lambda eye: eye.query_directions(dirs, k=k, avoid_conflicts=avoid_conflicts),
+            dirs.shape[0], k,
+        )
 
     def query_positions(self,
         positions: ArrayLike,
@@ -2492,24 +2490,10 @@ class CompoundEyeModel:
         Returns (LensView, distances).
         """
         pts = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
-        Q = pts.shape[0]
-        best_idx = np.full((Q, k), -1, dtype=np.intp)
-        best_dist = np.full((Q, k), np.inf, dtype=np.float32)
-
-        for eye in self._eyes:
-            view, dist = eye.query_positions(pts, k=k, avoid_conflicts=avoid_conflicts)
-            if len(view) == 0:
-                continue
-
-            combined_idx = np.concatenate([best_idx, view.indices.reshape(Q, -1)], axis=1)
-            combined_dist = np.concatenate([best_dist, dist], axis=1)
-
-            order = np.argsort(combined_dist, axis=1)[:, :k]
-            rows = np.arange(Q)[:, None]
-            best_idx = combined_idx[rows, order]
-            best_dist = combined_dist[rows, order]
-
-        return LensView(self, best_idx.ravel()), best_dist
+        return self._merge_topk(
+            lambda eye: eye.query_positions(pts, k=k, avoid_conflicts=avoid_conflicts),
+            pts.shape[0], k,
+        )
 
     def query_lookat(self,
         targets: ArrayLike,
@@ -2530,22 +2514,8 @@ class CompoundEyeModel:
             return LensView(self, np.empty(0, dtype=np.intp))
 
         # Score against all lenses (across all eyes)
-        pos = self._lens_positions
-        dirs = self._lens_directions
-        desired = q[:, None, :] - pos[None, :, :]
-        norms = np.linalg.norm(desired, axis=-1, keepdims=True)
-        np.divide(desired, norms, out=desired, where=norms > 0)
-        dots = np.einsum('jk,ijk->ij', dirs, desired)
-
-        if avoid_conflicts:
-            dots[:, self.have_conflicts] = -np.inf
-
-        k_eff = min(k, dots.shape[1])
-        part = np.argpartition(dots, -k_eff, axis=1)[:, -k_eff:]
-        top = np.take_along_axis(dots, part, axis=1)
-        order = np.argsort(top, axis=1)[:, ::-1]
-        best = np.take_along_axis(part, order, axis=1)
-
+        conflict = self.have_conflicts if avoid_conflicts else None
+        best = lookat_topk(self._lens_positions, self._lens_directions, q, k, conflict)
         return LensView(self, best.ravel().astype(np.intp))
 
     def query_cone(self,
@@ -3149,17 +3119,13 @@ class CompoundEyeModel:
                     current_tpl_angles = tpl_angles[valid]
 
                 # Required rotation
-                angle_errors = (actual_angles - current_tpl_angles)
-                angle_errors = (angle_errors + np.pi) % (2 * np.pi) - np.pi
+                angle_errors = wrap_angle(actual_angles - current_tpl_angles)
 
                 # This is essentially Procrustes rotation
-                weights = np.sqrt(raw_dx[valid] ** 2 + raw_dy[valid] ** 2)
-                mean_error = np.arctan2(
-                    np.sum(weights * np.sin(angle_errors)),
-                    np.sum(weights * np.cos(angle_errors))
-                )
+                weights = np.hypot(raw_dx[valid], raw_dy[valid])
+                mean_error = weighted_circ_mean(angle_errors, weights)
 
-                delta = (mean_error - self._bundle_orientation[i] + np.pi) % (2 * np.pi) - np.pi
+                delta = wrap_angle(mean_error - self._bundle_orientation[i])
 
                 limit = np.radians(max_nudge_deg)
                 delta_clamped = np.clip(delta, -limit, limit)
@@ -3229,8 +3195,7 @@ class CompoundEyeModel:
             muscle_direction: A (3,) vector in head-space defining the direction
                            the rhabdomere sheet is pulled by muscles.
         """
-        m = np.asarray(muscle_direction, dtype=np.float32)
-        m /= np.linalg.norm(m)
+        m = norm_l2(np.asarray(muscle_direction, dtype=np.float32)).astype(np.float32)
 
         # Project the global vector into the tangent plane of every lens
         rx = np.sum(m * self._local_right, axis=1)
@@ -3467,8 +3432,7 @@ class CompoundEyeModel:
         np.add.at(sum_dir, home, mdir)
 
         # mean direction per cartridge
-        norm = np.linalg.norm(sum_dir, axis=1, keepdims=True)
-        mean_dir = sum_dir / np.maximum(norm, 1e-12)
+        mean_dir = norm_l2(sum_dir)
 
         # Angular deviation for every (successfully) wired receptor
         cosang = np.clip(np.einsum('mc,mc->m', mdir, mean_dir[home]), -1.0, 1.0)

@@ -8,6 +8,7 @@ from scipy.spatial import ConvexHull, Voronoi, cKDTree, Delaunay
 from insectvision.utils.hexatic import phasor_from_points, hexatic_rest_vectors, hexatic_order
 from insectvision.utils.knns import local_spacing
 from insectvision.utils.projections import stereo_to_sphere, project_to_stereo
+from insectvision.utils.math import tangent_frames, polygon_area
 
 
 # from species_models.plots import plot_fitted_comparison
@@ -168,7 +169,7 @@ def weighted_centroid(polygon: np.ndarray, density_fn: Callable) -> np.ndarray:
     for i in range(1, n - 1):
         tri = np.array([v0, polygon[i], polygon[i + 1]])
         centre = tri.mean(axis=0)
-        area = 0.5 * abs(np.cross(tri[1] - tri[0], tri[2] - tri[0]))
+        area = polygon_area(tri)
 
         if area < 1e-14:
             continue
@@ -241,6 +242,11 @@ def _delaunay_pairs(pts_2d: np.ndarray) -> set:
     return pairs
 
 
+def _ring_spacing(pts_2d: np.ndarray) -> np.ndarray:
+    """Per-point local spacing used to gate long Delaunay edges (first-ring kNN)."""
+    return local_spacing(cKDTree(pts_2d), pts_2d, k=min(6, max(1, len(pts_2d) - 1)))
+
+
 def delaunay_adjacency(pts_2d: np.ndarray, max_length_factor: float = 0.0):
     """One-ring neighbour lists from a 2D Delaunay triangulation.
     If max_length_factor > 0, drop edges longer than that times local spacing
@@ -255,7 +261,7 @@ def delaunay_adjacency(pts_2d: np.ndarray, max_length_factor: float = 0.0):
     adj = [np.fromiter(s, dtype=np.intp, count=len(s)) for s in adj]
 
     if max_length_factor > 0:
-        loc = local_spacing(cKDTree(pts_2d), pts_2d, k=min(6, max(1, len(pts_2d) - 1)))
+        loc = _ring_spacing(pts_2d)
         adj = [nb[np.linalg.norm(pts_2d[nb] - pts_2d[i], axis=1) < max_length_factor * loc[i]]
                for i, nb in enumerate(adj)]
     return adj
@@ -311,7 +317,7 @@ def delaunay_edges(pts_2d: np.ndarray, max_length_factor: float = 0.0):
 
     if max_length_factor > 0 and len(edges):
         # Prune long edges (convex hull boundary, not real neighbours)
-        loc = local_spacing(cKDTree(pts_2d), pts_2d, k=min(6, max(1, len(pts_2d) - 1)))
+        loc = _ring_spacing(pts_2d)
         lengths = np.linalg.norm(pts_2d[edges[:, 0]] - pts_2d[edges[:, 1]], axis=1)
         mean_local = 0.5 * (loc[edges[:, 0]] + loc[edges[:, 1]])
         edges = edges[lengths < mean_local * max_length_factor]
@@ -602,13 +608,12 @@ def facet_diameters(
 
     D = np.full(N, np.nan, dtype=float)
 
+    # Per-lens tangent basis
+    right_b, up_b = tangent_frames(directions)
+
     for i in range(N):
         nb = idx[i, 1:]
-        n = directions[i] / max(np.linalg.norm(directions[i]), 1e-12)
-        a = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-        u = np.cross(n, a)
-        u /= np.linalg.norm(u)
-        v = np.cross(n, u)
+        u, v = right_b[i], up_b[i]
         rel = positions[nb] - positions[i]
         pts2d = np.vstack([[0.0, 0.0], np.column_stack([rel @ u, rel @ v])])
         fb = packing * ref[i]
@@ -620,8 +625,7 @@ def facet_diameters(
                 poly = vor.vertices[region]
                 c = poly.mean(axis=0)
                 poly = poly[np.argsort(np.arctan2(poly[:, 1] - c[1], poly[:, 0] - c[0]))]
-                area = 0.5 * abs(np.dot(poly[:, 0], np.roll(poly[:, 1], -1))
-                                 - np.dot(poly[:, 1], np.roll(poly[:, 0], -1)))
+                area = polygon_area(poly)
                 dv = packing * np.sqrt(2.0 * area / np.sqrt(3.0))
                 if 0.6 * fb < dv < 1.5 * fb:
                     D[i] = dv

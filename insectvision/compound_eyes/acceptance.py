@@ -87,7 +87,7 @@ class SnyderAcceptance:
 
         rho_geom = np.arctan(d / f)
         rho_diff = lam / D
-        rho = np.sqrt(rho_geom ** 2 + rho_diff ** 2).astype(np.float32)
+        rho = np.hypot(rho_geom, rho_diff).astype(np.float32)
         return np.repeat(rho[..., None], 2, axis=-1)
 
 

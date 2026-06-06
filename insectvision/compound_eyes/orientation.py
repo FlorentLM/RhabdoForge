@@ -4,8 +4,10 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
-from insectvision.utils.math import norm_l2, tangent_frames
+from insectvision.utils.math import norm_l2, tangent_frames, rotate_in_tangent_plane, broadcast_1d
 from insectvision.utils.knns import knn
+from insectvision.utils.circular import wrap_angle
+from insectvision.utils.fields import smooth_nematic_vectors
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import CompoundEyeModel
@@ -106,19 +108,16 @@ def _major_axis_field(
     disambiguation.
     """
     angles = (base_rotation_rad * eye_sign).astype(np.float32)
-    cos_a = np.cos(angles)[:, None]
-    sin_a = np.sin(angles)[:, None]
-
-    n_cross_v = np.cross(lens_directions, alignment_phasor)
-    rotated = alignment_phasor * cos_a + n_cross_v * sin_a
+    rotated = rotate_in_tangent_plane(
+        alignment_phasor, lens_directions, angles, normalize=False
+    )
 
     # Equatorial flip: bundle point up dorsally, and down ventrally
     ref = -hemisphere_sign[:, None] * alignment_phasor
     dot_check = np.einsum('ij,ij->i', rotated, ref)
     rotated[dot_check < 0] *= -1.0
 
-    norms = np.linalg.norm(rotated, axis=1, keepdims=True).clip(min=1e-8)
-    return (rotated / norms).astype(np.float32)
+    return norm_l2(rotated).astype(np.float32)
 
 
 def _saccade_phasor_field(
@@ -133,14 +132,8 @@ def _saccade_phasor_field(
     Smoothing, then polarisation, then give global coherence.
     """
     angles = (base_rotation_rad * chirality).astype(np.float32)
-    cos_a = np.cos(angles)[:, None]
-    sin_a = np.sin(angles)[:, None]
-
-    n_cross_v = np.cross(lens_directions, major_axis)
-    sacc = major_axis * cos_a + n_cross_v * sin_a
-
-    norms = np.linalg.norm(sacc, axis=1, keepdims=True).clip(min=1e-8)
-    return (sacc / norms).astype(np.float32)
+    sacc = rotate_in_tangent_plane(major_axis, lens_directions, angles, normalize=True)
+    return sacc.astype(np.float32)
 
 
 def _smooth_phasor_field(
@@ -174,20 +167,8 @@ def _smooth_phasor_field(
         tree = cKDTree(positions_zone)
         _, nidx = knn(tree, positions_zone, k)  # transient tree
 
-        zone_field = out[mask].copy()
-        for _ in range(iterations):
-            base = zone_field
-            neigh = zone_field[nidx]
-
-            dots = np.einsum('ik,ijk->ij', base, neigh)
-            neigh = np.where(dots[..., None] < 0, -neigh, neigh)
-
-            stacked = np.concatenate([base[:, None, :], neigh], axis=1)
-            avg = stacked.mean(axis=1)
-            norms = np.linalg.norm(avg, axis=1, keepdims=True)
-            zone_field = np.where(norms > 1e-8, avg / norms.clip(min=1e-8), base)
-
-        out[mask] = zone_field.astype(np.float32)
+        smoothed = smooth_nematic_vectors(out[mask], nidx, iterations=iterations)
+        out[mask] = smoothed.astype(np.float32)
     return out
 
 
@@ -316,7 +297,7 @@ class BundlesAligner:
                 -float(bundle.main_axis_rad),
             ).astype(np.float32)
             chi = (major_angle - effective_main).astype(np.float32)
-            chi = (chi + np.pi) % (2.0 * np.pi) - np.pi
+            chi = wrap_angle(chi)
 
         # Saccade phasor: major axis rotated by base_sacc * chirality (4 zones), smoothed, and polarised
         base_sacc_rot = -float(np.radians(bundle.saccade_offset_deg))
@@ -378,15 +359,7 @@ def trivial_orientation(N: int) -> OrientationResult:
 
 
 def _prepare_per_lens(value: ArrayLike, N: int, name: str) -> np.ndarray:
-    arr = np.asarray(value, dtype=np.float32)
-
-    if arr.ndim == 0:
-        return np.full(N, arr.item(), dtype=np.float32)
-
-    if arr.ndim == 1 and arr.size == N:
-        return arr.astype(np.float32)
-
-    raise ValueError(f"'{name}' must be scalar or shape ({N},); got {arr.shape}")
+    return broadcast_1d(value, N, name)
 
 
 def apply_chirality(
@@ -417,10 +390,7 @@ def apply_chirality(
 
     base_sacc_rot = -float(np.radians(model._bundle.saccade_offset_deg))
     angles = (base_sacc_rot * chirality).astype(np.float32)
-    cos_a = np.cos(angles)[:, None]
-    sin_a = np.sin(angles)[:, None]
-    n_cross_major = np.cross(model._lens_directions, major)
-    sacc = major * cos_a + n_cross_major * sin_a
-    sacc = norm_l2(sacc).astype(np.float32)
+    sacc = rotate_in_tangent_plane(major, model._lens_directions, angles, normalize=True)
+    sacc = sacc.astype(np.float32)
 
     return OrientationResult(chi=chi, chirality=chirality, saccade_phasor=sacc, major_axis=major)

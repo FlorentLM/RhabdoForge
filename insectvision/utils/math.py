@@ -164,3 +164,39 @@ def rotate_vectors(
     dot = np.sum(k * v, axis=-1, keepdims=True)
 
     return v * c + cross * s + k * dot * (1.0 - c)
+
+
+# Broadcasting
+
+def broadcast_1d(
+        value: ArrayLike,
+        n: int,
+        name: str = 'value',
+        dtype=np.float32,
+) -> np.ndarray:
+    """
+    Broadcast a scalar or length-1 array to (n,), or pass a length-n array through.
+    """
+    arr = np.atleast_1d(np.asarray(value, dtype=dtype))
+    if arr.size == 1:
+        return np.full(n, arr.item(), dtype=dtype)
+    if arr.size == n:
+        return arr.reshape(-1).astype(dtype)
+    raise ValueError(f"{name} size ({arr.size}) must be 1 or match n={n}")
+
+
+# Polygons
+
+def polygon_area(polygon: ArrayLike, signed: bool = False) -> float:
+    """
+    Shoelace area of a 2D polygon whose vertices are given in order.
+
+    Returns the absolute area unless 'signed' is True (positive for CCW winding).
+    Degenerate polygons (< 3 vertices) have zero area.
+    """
+    p = np.asarray(polygon, dtype=np.float64)
+    if p.shape[0] < 3:
+        return 0.0
+    x, y = p[:, 0], p[:, 1]
+    a = 0.5 * (np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+    return float(a) if signed else float(abs(a))

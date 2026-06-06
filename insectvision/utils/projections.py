@@ -61,7 +61,7 @@ def project_to_stereo(dirs_3d: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.n
         fwd, rgt, up: (3,) orthonormal frame of the projection plane
     """
     centre_dir = np.mean(dirs_3d, axis=0)
-    fwd = centre_dir / np.linalg.norm(centre_dir)
+    fwd = norm_l2(centre_dir)
     rgt, up = tangent_frames(fwd)
 
     denom = 1.0 + np.dot(dirs_3d, fwd)
