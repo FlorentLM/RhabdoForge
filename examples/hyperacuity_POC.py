@@ -30,7 +30,7 @@ from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.engine.world_utils import WORLD_FORWARD
 from insectvision.renderers import Raytracer
 from insectvision.geometry import plane_geom
-
+from insectvision.utils.math import norm_minmax
 
 # Config ----------------------------------------------------------
 
@@ -316,13 +316,6 @@ def plot_single_run(res, sep_deg, bars_m):
     plt.tight_layout()
 
 
-def norm(v):
-    """Normalise a vector to [0, 1] for visual overlays."""
-    v = np.asarray(v, float)
-    vmin, vmax = np.nanmin(v), np.nanmax(v)
-    return (v - vmin) / (vmax - vmin + 1e-9)
-
-
 def binned(y, sig, bins=200):
     """Clean spatial binning for aligning different runs"""
 
@@ -367,7 +360,7 @@ def plot_both_runs(res_1bar, res_2bar, sep_2bar):
                     grid, row_data_binned = binned(ay, row_data)
                     ls, lw = ('-', 1.8) if is_2bar else ('--', 1.4)
 
-                    ax.plot(grid, norm(row_data_binned), color=color, lw=lw, ls=ls,
+                    ax.plot(grid, norm_minmax(row_data_binned), color=color, lw=lw, ls=ls,
                             label=row_label + f'{"2-bar" if is_2bar else "1-bar"}')
 
             bar_m = 2.0 * DISTANCE * np.tan(np.radians(sep_2bar) / 2.0)

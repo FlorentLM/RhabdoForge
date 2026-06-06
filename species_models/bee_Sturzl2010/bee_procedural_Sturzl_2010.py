@@ -2,7 +2,6 @@ import numpy as np
 from scipy.interpolate import interp1d, Akima1DInterpolator
 from species_models.bee_Sturzl2010.plots_Sturzl2010 import plot_eye_zones, plot_ortho_projection, plot_receptive_fields
 from species_models.plots import plot_eyes_3d
-from insectvision.utils.math import spherical_to_cartesian
 
 # Exact replica of model from Stürlz et al., 2010 (10.1088/1748-3182/5/3/036002) with smooth boundary interpolation.
 # Azimuth values taken from https://github.com/BioroboticsLab/bee_view/blob/master/data/azimuth_max.csv
@@ -26,6 +25,23 @@ BEE_EYE_SEPARATION = 3000.0  # micrometres
 
 
 ##
+
+
+def sturzl_spherical_to_cartesian(azimuth, elevation, radius=1.0, degrees=False):
+    """
+    Converts spherical coordinates to cartesian coordinates (in the correct frame for this script).
+    """
+    # TODO: unify this with the rest of the codebase
+
+    az_rad = np.radians(azimuth) if degrees else np.array(azimuth)
+    el_rad = np.radians(elevation) if degrees else np.array(elevation)
+
+    x = radius * np.cos(el_rad) * np.cos(az_rad)
+    y = radius * np.cos(el_rad) * np.sin(az_rad)
+    z = radius * np.sin(el_rad)
+
+    return np.stack([x, y, z])
+
 
 
 def akima_interpolator(x, y, fill_value: float):
@@ -217,7 +233,7 @@ def generate_eyes(right_eye_dirs):
     Generate both eyes in OpenGL coordinate system (X=right, Y=up, Z=back).
     """
 
-    pts_internal = spherical_to_cartesian(
+    pts_internal = sturzl_spherical_to_cartesian(
         right_eye_dirs[:, 0],
         right_eye_dirs[:, 1],
         degrees=True

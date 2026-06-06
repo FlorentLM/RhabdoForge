@@ -3,8 +3,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.collections import EllipseCollection
 import matplotlib.patches as patches
-
-from insectvision.utils.math import spherical_to_cartesian
+from species_models.bee_Sturzl2010.bee_procedural_Sturzl_2010 import sturzl_spherical_to_cartesian
 
 
 def plot_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):
@@ -52,7 +51,7 @@ def plot_ortho_projection(ommatidia_dirs):
 
     az = ommatidia_dirs[:, 0]
     el = ommatidia_dirs[:, 1]
-    dirs = spherical_to_cartesian(az, el, degrees=True)
+    dirs = sturzl_spherical_to_cartesian(az, el, degrees=True)
     x, y, z = dirs
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=True)

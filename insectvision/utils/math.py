@@ -1,27 +1,65 @@
-from typing import Tuple
+from typing import Tuple, Union, Any, Optional
 import numpy as np
 from numpy.typing import ArrayLike
 
 
-def normalise_vectors(vectors: ArrayLike):
-    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-    return np.divide(vectors, norms, out=vectors, where=norms != 0)
+def norm_minmax(
+        array: ArrayLike,
+        axis: Any = None,
+        inplace: bool = False,
+        eps: float = 1e-9
+) -> np.ndarray:
+
+    if inplace:
+        arr = np.asarray(array)
+        if not np.issubdtype(arr.dtype, np.floating):
+            raise ValueError("In-place normalisation requires a float array dtype.")
+    else:
+        arr = np.array(array, dtype=float, copy=True)
+
+    keep = (axis is not None)
+    vmin = np.nanmin(arr, axis=axis, keepdims=keep)
+    vmax = np.nanmax(arr, axis=axis, keepdims=keep)
+
+    np.subtract(arr, vmin, out=arr)
+    np.divide(arr, (vmax - vmin) + eps, out=arr)
+
+    return arr
 
 
-def project_to_tangent(vectors: np.ndarray, normals: np.ndarray) -> np.ndarray:
-    """Project world-space vectors to tangent planes defined by unit normals."""
+def norm_l2(
+        vectors: ArrayLike,
+        axis: int = -1,
+        inplace: bool = False,
+        eps: float = 1e-9
+) -> np.ndarray:
 
-    dots = np.sum(vectors * normals, axis=-1, keepdims=True)
-    return vectors - dots * normals
+    if inplace:
+        arr = np.asarray(vectors)
+        if not np.issubdtype(arr.dtype, np.floating):
+            raise ValueError("In-place normalisation requires a float array dtype.")
+    else:
+        arr = np.array(vectors, dtype=float, copy=True)
+
+    norms = np.linalg.norm(arr, axis=axis, keepdims=True)
+
+    np.divide(arr, norms, out=arr, where=norms > eps)
+
+    return arr
 
 
-def tangent_frames(directions: ArrayLike, world_up=None, world_right=None):
+def tangent_frames(
+        directions: ArrayLike,
+        world_up: Optional[ArrayLike] = None,
+        world_right: Optional[ArrayLike] = None
+    ):
     """
     Computes orthonormal basis vectors (right, up) for given direction vectors.
     Handles poles/gimbal lock by switching reference vectors.
     """
 
     from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT
+
     if world_up is None:
         world_up = WORLD_UP
     if world_right is None:
@@ -32,7 +70,7 @@ def tangent_frames(directions: ArrayLike, world_up=None, world_right=None):
     if is_1d:
         dirs = dirs[np.newaxis, :]
 
-    fwd = normalise_vectors(dirs)
+    fwd = norm_l2(dirs)
 
     dots = np.abs(fwd @ world_up)
 
@@ -40,10 +78,10 @@ def tangent_frames(directions: ArrayLike, world_up=None, world_right=None):
     ref_ups = (1.0 - blend) * world_up + blend * world_right
 
     right = np.cross(fwd, ref_ups)
-    right = normalise_vectors(right)
+    right = norm_l2(right)
 
     up = np.cross(right, fwd)
-    up = normalise_vectors(up)
+    up = norm_l2(up)
 
     if is_1d:
         return right[0], up[0]
@@ -97,45 +135,155 @@ def stereo_to_sphere(
         (2.0 / denom)[:, None] * (x[:, None] * rgt + y[:, None] * up)
         + ((1.0 - r2) / denom)[:, None] * fwd
     )
-    dirs = normalise_vectors(dirs)
+    dirs = norm_l2(dirs)
 
     return dirs
 
 
-def spherical_to_cartesian(azimuth, elevation, radius=1.0, degrees=False):
-    """
-    Converts spherical coordinates to cartesian coordinates in internal reference frame.
-    """
-    az_rad = np.radians(azimuth) if degrees else np.array(azimuth)
-    el_rad = np.radians(elevation) if degrees else np.array(elevation)
+def rotate_vectors(
+        vectors: Union[np.ndarray, list],
+        axes: Union[np.ndarray, list],
+        angles: Union[np.ndarray, float],
+        degrees: bool = True,
+        normalize_axes: bool = False
+) -> np.ndarray:
+    """Rotate vectors around axes (Rodrigues formula)."""
 
-    x = radius * np.cos(el_rad) * np.cos(az_rad)
-    y = radius * np.cos(el_rad) * np.sin(az_rad)
-    z = radius * np.sin(el_rad)
+    v = np.asarray(vectors)
+    k = np.asarray(axes)
+    theta = np.asarray(angles)
 
+    if normalize_axes:
+        k = k / np.linalg.norm(k, axis=-1, keepdims=True)
+
+    if degrees:
+        theta = np.deg2rad(theta)
+
+    theta = theta[..., np.newaxis]
+
+    c = np.cos(theta)
+    s = np.sin(theta)
+    cross = np.cross(k, v, axis=-1)
+    dot = np.sum(k * v, axis=-1, keepdims=True)
+
+    return v * c + cross * s + k * dot * (1.0 - c)
+
+
+def wrap_angle(angles: ArrayLike) -> np.ndarray:
+    """Wrap angle(s) to (-pi, pi]."""
+    a = np.asarray(angles)
+    return (a + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def weighted_circ_mean(angles: ArrayLike, weights: Optional[ArrayLike] = None,
+                       axis: Optional[int] = None) -> np.ndarray:
+    """Weighted circular mean of angles."""
+    a = np.asarray(angles)
+    w = np.ones_like(a) if weights is None else np.asarray(weights)
+    s = np.sum(w * np.sin(a), axis=axis)
+    c = np.sum(w * np.cos(a), axis=axis)
+    return np.arctan2(s, c)
+
+
+def weighted_circ_std(angles: ArrayLike, weights: Optional[ArrayLike] = None, axis: Optional[int] = None) -> np.ndarray:
+    """Circular standard deviation (rad). 0 = perfectly rigid, grows with shear."""
+    a = np.asarray(angles)
+    w = np.ones_like(a) if weights is None else np.asarray(weights)
+    s = np.sum(w * np.sin(a), axis=axis)
+    c = np.sum(w * np.cos(a), axis=axis)
+    R = np.hypot(s, c) / np.clip(np.sum(w, axis=axis), 1e-9, None)
+    R = np.clip(R, 1e-9, 1.0)
+    return np.sqrt(-2.0 * np.log(R))
+
+
+def cartesian_to_spherical(directions: ArrayLike, degrees: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+    """Converts (N, 3) Cartesian vectors to Azimuth and Elevation following the project convention."""
+    d = np.asarray(directions)
+    az = np.arctan2(d[..., 0], -d[..., 2])
+    el = np.arcsin(np.clip(d[..., 1], -1.0, 1.0))
+    if degrees:
+        return np.degrees(az), np.degrees(el)
+    return az, el
+
+
+def spherical_to_cartesian(azimuth: ArrayLike, elevation: ArrayLike, radius: float = 1.0, degrees: bool = False) -> np.ndarray:
+    """Converts spherical coordinates to cartesian coordinates in the internal reference frame."""
+    az = np.radians(azimuth) if degrees else np.asarray(azimuth)
+    el = np.radians(elevation) if degrees else np.asarray(elevation)
+    x = radius * np.sin(az) * np.cos(el)
+    y = radius * np.sin(el)
+    z = -radius * np.cos(az) * np.cos(el)
     return np.stack([x, y, z])
 
 
-def rotate_vectors(vectors: np.ndarray, axes: np.ndarray, angles: np.ndarray, degrees: bool = True) -> np.ndarray:
-    """Rotate vectors around axes (Rodrigues formula)."""
+def spherical_gradients(azimuth: ArrayLike, elevation: ArrayLike, degrees: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute spatial gradients with respect to Azimuth and Elevation on the unit sphere."""
+    az = np.radians(azimuth) if degrees else np.asarray(azimuth)
+    el = np.radians(elevation) if degrees else np.asarray(elevation)
 
-    angles_arr = np.asarray(angles)
-    angles_rad = np.deg2rad(angles_arr) if degrees else angles_arr
+    cos_az, sin_az = np.cos(az), np.sin(az)
+    cos_el, sin_el = np.cos(el), np.sin(el)
 
-    if angles_rad.ndim == 0:
-        cos_a = np.cos(angles_rad)
-        sin_a = np.sin(angles_rad)
-    else:
-        cos_a = np.cos(angles_rad)[:, np.newaxis]
-        sin_a = np.sin(angles_rad)[:, np.newaxis]
+    az_grad = np.column_stack([cos_az * cos_el, np.zeros_like(az), sin_az * cos_el])
+    el_grad = np.column_stack([-sin_az * sin_el, cos_el, cos_az * sin_el])
+    return az_grad, el_grad
 
-    rotated = (
-            vectors * cos_a
-            + np.cross(axes, vectors) * sin_a
-            + axes * np.sum(axes * vectors, axis=1, keepdims=True) * (1 - cos_a)
-    )
-    return rotated
 
+def tangent_bearing(target_dirs: ArrayLike, home_dirs: ArrayLike, right: ArrayLike, up: ArrayLike, degrees: bool = False) -> np.ndarray:
+    """Projects difference vectors onto a tangent plane and returns the bearing angle."""
+    delta = np.asarray(target_dirs) - np.asarray(home_dirs)
+    u = np.sum(delta * np.asarray(right), axis=-1)
+    v = np.sum(delta * np.asarray(up), axis=-1)
+    bearing = np.arctan2(v, u)
+    return np.degrees(bearing) if degrees else bearing
+
+
+def neighbour_smooth(
+        values: np.ndarray,
+        neighbours: np.ndarray,
+        mask: Optional[np.ndarray] = None,
+        n_iter: int = 2,
+        method: str = 'mean'
+) -> np.ndarray:
+    """
+    Smooth a 1D field over a precomputed neighbour graph.
+
+    Args:
+        values: (N,) array of values to smooth.
+        neighbours: (N, k) integer array of neighbour indices. -1 padding is ignored.
+        mask: (N,) bool array. If provided, only True items are updated.
+        n_iter: Smoothing passes.
+        method: 'mean' or 'median'.
+    """
+    out = np.asarray(values, dtype=np.float64).copy()
+    if n_iter <= 0:
+        return out.astype(values.dtype)
+
+    update_mask = mask if mask is not None else np.ones(out.shape[0], dtype=bool)
+    valid_nb = neighbours >= 0
+    safe_nb = np.where(valid_nb, neighbours, 0)
+
+    for _ in range(n_iter):
+        nb_vals = out[safe_nb]
+
+        if method == 'mean':
+            sum_nb = np.sum(np.where(valid_nb, nb_vals, 0.0), axis=1)
+            count_nb = np.maximum(np.sum(valid_nb, axis=1), 1)
+            cur = 0.5 * out + 0.5 * (sum_nb / count_nb)
+        elif method == 'median':
+            nb_vals = np.where(valid_nb, nb_vals, np.nan)
+            stacked = np.concatenate([out[:, None], nb_vals], axis=1)
+            with np.errstate(all='ignore'):
+                cur = np.nanmedian(stacked, axis=1)
+        else:
+            raise ValueError(f"Unknown method {method}")
+
+        out = np.where(update_mask, cur, out)
+
+    return out.astype(values.dtype)
+
+
+##
 
 def icosahedron_faces() -> np.ndarray:
     """

@@ -5,7 +5,7 @@ from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
 from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD, WORLD_RIGHT
-from insectvision.utils.math import normalise_vectors
+from insectvision.utils.math import norm_l2
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import CompoundEyeModel
@@ -446,6 +446,6 @@ def apply_chirality(
     sin_a = np.sin(angles)[:, None]
     n_cross_major = np.cross(model._lens_directions, major)
     sacc = major * cos_a + n_cross_major * sin_a
-    sacc = normalise_vectors(sacc).astype(np.float32)
+    sacc = norm_l2(sacc).astype(np.float32)
 
     return OrientationResult(chi=chi, chirality=chirality, saccade_phasor=sacc, major_axis=major)

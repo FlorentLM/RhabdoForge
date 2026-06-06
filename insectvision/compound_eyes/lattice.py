@@ -644,37 +644,6 @@ def facet_diameters(
     return D.astype(np.float32)
 
 
-def angular_neighbour_median(values, directions, eye_index=None, k=6, n_iter=2):
-    """Median-smooth a per-lens scalar over each lens's angular nearest neighbours.
-
-    A low-pass filter on the sphere of viewing directions: removes per-lens jitter
-    while preserving smooth gradients (e.g. acute-zone facet-size trends).
-
-    Operates per eye if eye_index is given.
-    """
-    values = np.asarray(values, dtype=np.float32).copy()
-    dirs = np.asarray(directions, dtype=np.float64)
-    k = int(max(1, k))
-    if eye_index is None:
-        eye_index = np.zeros(values.shape[0], dtype=np.intp)
-    eye_index = np.asarray(eye_index)
-
-    for eid in np.unique(eye_index):
-        m = np.where(eye_index == eid)[0]
-        if m.size <= k + 1:
-            continue
-        V = dirs[m]
-        cos = V @ V.T
-        np.fill_diagonal(cos, -np.inf)
-        nn = np.argpartition(-cos, kth=k - 1, axis=1)[:, :k]
-        for _ in range(int(n_iter)):
-            vm = values[m]
-            stacked = np.concatenate([vm[:, None], vm[nn]], axis=1)
-            values[m] = np.median(stacked, axis=1).astype(np.float32)
-
-    return values
-
-
 def fit_lattice(
         raw_directions: np.ndarray,
         density_scale: float = 1.0,

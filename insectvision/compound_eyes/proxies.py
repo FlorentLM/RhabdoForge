@@ -44,11 +44,9 @@ from insectvision.compound_eyes.acceptance import (
     SnyderAcceptance, SamplingAcceptance, ExplicitAcceptance, report_acceptance,
 )
 from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD
-from insectvision.utils.math import normalise_vectors, tangent_frames, icosphere, fibonacci_sphere
+from insectvision.utils.math import norm_l2, tangent_frames, icosphere, fibonacci_sphere
 from insectvision.utils.hexatic import hexatic_phasor, hexatic_axis_angle, hexatic_order, smooth_tilt
-from insectvision.compound_eyes.lattice import (
-    facet_diameters, angular_neighbour_median,
-)
+from insectvision.compound_eyes.lattice import facet_diameters
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
 
 logger = logging.getLogger(__name__)
@@ -182,8 +180,8 @@ class LensView:
     @property
     def azimuth_rad(self) -> np.ndarray:
         """(M,) lens azimuths (rad)."""
-        d = self.direction
-        return np.arctan2(d[:, 0], -d[:, 2])
+        az, _ = cartesian_to_spherical(self.direction)
+        return az
 
     @property
     def azimuth_deg(self) -> np.ndarray:
@@ -192,7 +190,8 @@ class LensView:
     @property
     def elevation_rad(self) -> np.ndarray:
         """(M,) lens elevations (rad)."""
-        return np.arcsin(np.clip(self.direction[:, 1], -1.0, 1.0))
+        _, el = cartesian_to_spherical(self.direction)
+        return el
 
     @property
     def elevation_deg(self) -> np.ndarray:
@@ -1448,6 +1447,8 @@ class Eye:
                 )
             d_az, d_el = float(direction[0]), float(direction[1])
             dirs = self._model._lens_directions[self._lens_indices][valid_local]
+            az, el = cartesian_to_spherical(dirs)
+            az_grad, el_grad = spherical_gradients(az, el)
 
             # Convention: az = arctan2(x, -z) (i.e. +z = forward, +x = right, +y = up)
             # TODO: This is wrong, coords are OpenGL, forward is -Z
@@ -1975,7 +1976,7 @@ class CompoundEyeModel:
         if N == 0:
             raise ValueError("CompoundEyeModel needs at least 1 lens")
 
-        self._lens_directions = normalise_vectors(dirs).astype(np.float32)
+        self._lens_directions = norm_l2(dirs).astype(np.float32)
         self._lens_positions = pos.astype(np.float32).copy()
 
         # Bundle
@@ -2036,21 +2037,23 @@ class CompoundEyeModel:
             if lens_diameter_um is None:
                 spacing_est = (self.HEX_PACKING_FACTOR * lens_spacing).astype(np.float32)
                 spacing_est = np.where(spacing_est > 0, spacing_est, np.float32(20.0))
-
                 lens_diameters = spacing_est.copy()
+
                 for eid in np.unique(self._lens_eye_index):
                     m = np.where(self._lens_eye_index == eid)[0]
                     if m.size > 19:
                         try:
-                            lens_diameters[m] = facet_diameters(self._lens_positions[m], self._lens_directions[m])
+                            lens_diameters[m] = facet_diameters(
+                                self._lens_positions[m], self._lens_directions[m]
+                            )
                             continue
                         except Exception:
                             pass  # fall through to denoised spacing estimate
 
-                    # Voronoi estimator unavailable: denoise the single-edge readout
-                    lens_diameters[m] = angular_neighbour_median(spacing_est[m], self._lens_directions[m])
-
-                self._buffer.lens_static_data['lens_diameter_um'] = lens_diameters.astype(np.float32)
+                # Voronoi estimator unavailable: denoise the single-edge readout
+                self._buffer.lens_static_data['lens_diameter_um'] = self._smooth_lens_field(
+                    lens_diameters, k=6, n_iter=2, method='median', metric='angular'
+                ).astype(np.float32)
 
             else:
                 ld = np.atleast_1d(np.asarray(lens_diameter_um, dtype=np.float32))
@@ -2766,7 +2769,7 @@ class CompoundEyeModel:
         ).reshape(N * R, 3)
 
         rec_pos = np.repeat(self._lens_positions, R, axis=0)
-        rec_dirs = normalise_vectors(-world_tip).astype(np.float32)
+        rec_dirs = norm_l2(-world_tip).astype(np.float32)
         return rec_dirs, rec_pos.astype(np.float32)
 
     def _compute_binocular_mask(self, angle_threshold_deg: float = None) -> np.ndarray:
@@ -2833,6 +2836,45 @@ class CompoundEyeModel:
                         is_edge[gi[i_local]] = True
 
         return is_edge
+
+    def _smooth_lens_field(
+            self,
+            values: np.ndarray,
+            k: int = 6,
+            n_iter: int = 2,
+            mask: Optional[np.ndarray] = None,
+            method: str = 'mean',
+            metric: str = 'angular'
+    ) -> np.ndarray:
+        """Smooth a per-lens scalar field, independently within each eye."""
+
+        out = np.asarray(values).copy()
+        if n_iter <= 0:
+            return out
+
+        for eye in self._eyes:
+            gi = eye.lens_indices
+            n_e = gi.size
+            if n_e < 3:
+                continue
+
+            actual_k = min(k, n_e - 1)
+
+            # Use cached KD-trees on the eye!
+            if metric == 'angular':
+                tree = eye._ensure_direction_tree()
+                _, nn_local = tree.query(self._lens_directions[gi], k=actual_k + 1)
+                nn_local = nn_local[:, 1:]
+            else:
+                nn_local = eye._ensure_neighbour_graph(actual_k)
+
+            eye_mask = mask[gi] if mask is not None else None
+
+            out[gi] = neighbour_smooth(
+                out[gi], nn_local, mask=eye_mask, n_iter=n_iter, method=method
+            )
+
+        return out
 
     # Cartridges (neural-superposition wiring)
 
