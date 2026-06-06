@@ -44,7 +44,7 @@ from insectvision.compound_eyes.acceptance import (
     SnyderAcceptance, SamplingAcceptance, ExplicitAcceptance, report_acceptance,
 )
 from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD
-from insectvision.utils.math import norm_l2, tangent_frames, icosphere, fibonacci_sphere
+from insectvision.utils.math import norm_l2, tangent_frames, icosphere, fibonacci_sphere, cartesian_to_spherical, spherical_gradients
 from insectvision.utils.hexatic import hexatic_phasor, hexatic_axis_angle, hexatic_order, smooth_tilt
 from insectvision.compound_eyes.lattice import facet_diameters
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
@@ -1450,16 +1450,6 @@ class Eye:
             az, el = cartesian_to_spherical(dirs)
             az_grad, el_grad = spherical_gradients(az, el)
 
-            # Convention: az = arctan2(x, -z) (i.e. +z = forward, +x = right, +y = up)
-            # TODO: This is wrong, coords are OpenGL, forward is -Z
-            az = np.arctan2(dirs[:, 0], -dirs[:, 2])
-            el = np.arcsin(np.clip(dirs[:, 1], -1.0, 1.0))
-            cos_az, sin_az = np.cos(az), np.sin(az)
-            cos_el, sin_el = np.cos(el), np.sin(el)
-
-            # Gradients of position with respect to az and el on the unit sphere
-            az_grad = np.column_stack([cos_az * cos_el, np.zeros(Q), sin_az * cos_el])
-            el_grad = np.column_stack([-sin_az * sin_el, cos_el, cos_az * sin_el])
             target_world = d_az * az_grad + d_el * el_grad
 
             target_dx = np.sum(target_world * local_x, axis=1)
