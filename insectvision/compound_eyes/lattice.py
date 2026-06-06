@@ -6,7 +6,10 @@ from scipy.optimize import minimize
 from scipy.spatial import ConvexHull, Voronoi, cKDTree, Delaunay
 
 from insectvision.utils.hexatic import phasor_from_points, hexatic_rest_vectors, hexatic_order
-from insectvision.utils.math import project_to_stereo, stereo_to_sphere
+from insectvision.utils.knns import local_spacing
+from insectvision.utils.projections import stereo_to_sphere, project_to_stereo
+
+
 # from species_models.plots import plot_fitted_comparison
 
 # TODO: Might benefit from a bit of cleaning here too
@@ -31,8 +34,7 @@ def estimate_density(
         mean_spacing (float): mean nearest-neighbour distance in the cloud
     """
     tree = cKDTree(pts_2d)
-    dist, _ = tree.query(pts_2d, k=k_neighbours)
-    spacing = dist[:, 1:].mean(axis=1)
+    spacing = local_spacing(tree, pts_2d, k=k_neighbours - 1)
 
     # reference mean spacing using inner 80% (avoid boundary from polluting target density)
     p10, p90 = np.percentile(spacing, [10, 90])
@@ -228,21 +230,32 @@ def spacing_from_adjacency(pts_2d: np.ndarray, adj) -> np.ndarray:
     return spacing
 
 
+def _delaunay_pairs(pts_2d: np.ndarray) -> set:
+    """Unique undirected (i, j) Delaunay edges (i < j). Shared simplex walk."""
+    tri = Delaunay(pts_2d)
+    pairs = set()
+    for sx in tri.simplices:
+        for i in range(3):
+            a, b = int(sx[i]), int(sx[(i + 1) % 3])
+            pairs.add((a, b) if a < b else (b, a))
+    return pairs
+
+
 def delaunay_adjacency(pts_2d: np.ndarray, max_length_factor: float = 0.0):
     """One-ring neighbour lists from a 2D Delaunay triangulation.
     If max_length_factor > 0, drop edges longer than that times local spacing
     (removes boundary bearings corruptions)."""
-    tri = Delaunay(pts_2d)
+
+    pts_2d = np.asarray(pts_2d)
     adj = [set() for _ in range(len(pts_2d))]
-    for sx in tri.simplices:
-        for i in range(3):
-            a, b = int(sx[i]), int(sx[(i + 1) % 3])
-            adj[a].add(b); adj[b].add(a)
+
+    for a, b in _delaunay_pairs(pts_2d):
+        adj[a].add(b); adj[b].add(a)
+
     adj = [np.fromiter(s, dtype=np.intp, count=len(s)) for s in adj]
+
     if max_length_factor > 0:
-        tree = cKDTree(pts_2d)
-        d, _ = tree.query(pts_2d, k=min(7, len(pts_2d)))
-        loc = d[:, 1:].mean(axis=1)
+        loc = local_spacing(cKDTree(pts_2d), pts_2d, k=min(6, max(1, len(pts_2d) - 1)))
         adj = [nb[np.linalg.norm(pts_2d[nb] - pts_2d[i], axis=1) < max_length_factor * loc[i]]
                for i, nb in enumerate(adj)]
     return adj
@@ -292,26 +305,16 @@ def delaunay_edges(pts_2d: np.ndarray, max_length_factor: float = 0.0):
     Optionally prunes edges longer than max_length_factor * local spacing (disabled if <= 0)
     """
 
-    tri = Delaunay(pts_2d)
-    edges = set()
-    for simplex in tri.simplices:
-        for i in range(3):
-            a, b = simplex[i], simplex[(i + 1) % 3]
-            edges.add((min(a, b), max(a, b)))
-    edges = np.array(list(edges))
+    pts_2d = np.asarray(pts_2d)
+    pairs = _delaunay_pairs(pts_2d)
+    edges = np.array(sorted(pairs)) if pairs else np.zeros((0, 2), dtype=int)
 
-    if max_length_factor > 0:
+    if max_length_factor > 0 and len(edges):
         # Prune long edges (convex hull boundary, not real neighbours)
-
-        tree = cKDTree(pts_2d)
-        d, _ = tree.query(pts_2d, k=7)
-        local_spacing = d[:, 1:].mean(axis=1)
-
+        loc = local_spacing(cKDTree(pts_2d), pts_2d, k=min(6, max(1, len(pts_2d) - 1)))
         lengths = np.linalg.norm(pts_2d[edges[:, 0]] - pts_2d[edges[:, 1]], axis=1)
-        mean_local = 0.5 * (local_spacing[edges[:, 0]] + local_spacing[edges[:, 1]])
-        to_keep = lengths < mean_local * max_length_factor
-
-        return edges[to_keep]
+        mean_local = 0.5 * (loc[edges[:, 0]] + loc[edges[:, 1]])
+        edges = edges[lengths < mean_local * max_length_factor]
 
     return edges
 
@@ -704,11 +707,10 @@ def fit_lattice(
 
     # Spacing function (target inter-ommatidial distance at each point)
     tree_ref = cKDTree(pts_2d)
-    d_ref, _ = tree_ref.query(pts_2d, k=7)
-    local_spacing = d_ref[:, 1:].mean(axis=1) / np.sqrt(density_scale)
+    local_sp = local_spacing(tree_ref, pts_2d, k=6) / np.sqrt(density_scale)
 
     spacing_rbf = RBFInterpolator(
-        pts_2d, local_spacing,
+        pts_2d, local_sp,
         kernel='thin_plate_spline', smoothing=smoothing,
     )
 

@@ -122,6 +122,8 @@ class RhabdomereBundle:
 
     # Construction helpers
 
+    # TODO: This broadcast should be moved to a shared broadcast_to(value, n, name) helper, like _resolve_sensitivity
+    #  also with orientation._prepare_per_lens and acceptance.broadcast_to_nr2
     @staticmethod
     def _broadcast_to_R(value: Union[float, ArrayLike], R: int, name: str) -> np.ndarray:
         arr = np.atleast_1d(np.asarray(value, dtype=np.float32))
@@ -237,24 +239,47 @@ class RhabdomereBundle:
 
     # Geometry transforms
 
-    def rotated_offsets(self, chi: np.ndarray, chirality: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def rotated_offsets(
+            self,
+            chi: np.ndarray,
+            chirality: np.ndarray,
+            scale: Optional[Union[float, ArrayLike]] = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Per-lens rotation and chirality flip of focal-plane offsets.
+        Per-lens rotation and chirality flip of focal-plane offsets, with optional scaling.
 
         Args:
-            - chi: (N,) array, Bundle yaw in each lens tangent frame (rad).
-            - chirality: (N,) array, Per-lens chirality (+1 or -1).
-                The chirality flip mirrors the bundle across the x-axis *before* rotating by chi.
+            chi: (N,) array, Bundle yaw in each lens tangent frame (rad).
+            chirality: (N,) array, Per-lens chirality (+1 or -1). Mirrors the
+                bundle across the x-axis *before* rotating by chi.
+            scale: (N,) array, float, or None. If provided, scales the spread of
+                the receptors about the bundle's center_index.
 
         Returns:
             rot_dx, rot_dy: (N, R) arrays, Per-(lens, receptor) focal-plane offsets.
         """
-        cos_chi = np.cos(chi)[:, None]
-        sin_chi = np.sin(chi)[:, None]
-        dx_chiral = self.offsets_um[:, 0][None, :] * chirality[:, None]
-        dy = self.offsets_um[:, 1]
-        rot_dx = cos_chi * dx_chiral - sin_chi * dy[None, :]
-        rot_dy = sin_chi * dx_chiral + cos_chi * dy[None, :]
+
+        off = np.asarray(self.offsets_um)
+
+        # Optional scaling about the centre
+        if scale is not None:
+            s = np.asarray(scale)
+            if s.ndim > 0:
+                s = s.reshape(-1, 1, 1)
+
+            c = off[self.center_index]
+            off = c + s * (off - c)
+
+        dx = off[..., 0]
+        dy = off[..., 1]
+        dx_chiral = dx * chirality[:, np.newaxis]
+
+        cos_chi = np.cos(chi)[:, np.newaxis]
+        sin_chi = np.sin(chi)[:, np.newaxis]
+
+        rot_dx = cos_chi * dx_chiral - sin_chi * dy
+        rot_dy = sin_chi * dx_chiral + cos_chi * dy
+
         return rot_dx, rot_dy
 
     # Visualisation

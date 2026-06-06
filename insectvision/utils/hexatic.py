@@ -18,6 +18,7 @@ in whatever tangent frame they care about.
 from __future__ import annotations
 from typing import Sequence
 import numpy as np
+from insectvision.utils.fields import smooth_phasor
 
 _AXES_3 = np.array([0.0, np.pi / 3.0, 2.0 * np.pi / 3.0])
 
@@ -105,41 +106,6 @@ def hexatic_rest_vectors(edge_vec: np.ndarray, theta, length) -> np.ndarray:
     flip = np.einsum('ij,ij->i', rest, edge_vec) < 0.0
     rest[flip] *= -1.0
     return rest
-
-
-def smooth_phasor(z6, neighbours, weights=None, iterations=3, include_self=True) -> np.ndarray:
-    """Smooth a per-point 6-fold phasor over a precomputed neighbour graph.
-
-    Operates on the complex phasor so the 60 deg ambiguity is respected (no domain
-    walls, unlike nematic/vector smoothing of the resulting axis). Renormalises to
-    a unit phasor each pass, confidence lives in 'weights'.
-
-    Args:
-        z6: (N,) complex per-point phasors (need not be unit)
-        neighbours: (N, k) int neighbour indices; entries < 0 are ignored (padding)
-        weights: (N,) per-point confidence (e.g. |Psi6|); None -> uniform
-        iterations: smoothing passes
-        include_self: keep each point's own phasor in its average
-    """
-
-    z6 = np.asarray(z6, dtype=np.complex128).copy()
-    nb = np.asarray(neighbours, dtype=np.intp)
-    N = z6.shape[0]
-    w = np.ones(N) if weights is None else np.asarray(weights, dtype=np.float64)
-
-    valid = nb >= 0
-    safe = np.where(valid, nb, 0)
-
-    for _ in range(int(iterations)):
-        zw = z6 * w
-        num = np.where(valid, zw[safe], 0.0 + 0.0j).sum(axis=1)
-        den = np.where(valid, w[safe], 0.0).sum(axis=1)
-        if include_self:
-            num = num + zw
-            den = den + w
-        z6 = np.divide(num, np.maximum(den, 1e-12))
-        z6 = np.divide(z6, np.maximum(np.abs(z6), 1e-12))
-    return z6
 
 
 def smooth_tilt(tilt, neighbours, weights=None, iterations=3) -> np.ndarray:

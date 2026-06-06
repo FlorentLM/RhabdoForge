@@ -37,7 +37,7 @@ from scipy.optimize import linear_sum_assignment, milp, LinearConstraint, Bounds
 
 from insectvision.compound_eyes.buffers import EyesBuffer, get_metadata_field, set_metadata_field
 from insectvision.compound_eyes.orientation import (
-    BundlesAligner, trivial_orientation, apply_chirality, OrientationResult
+BundlesAligner, trivial_orientation, apply_chirality, OrientationResult
 )
 from insectvision.compound_eyes.acceptance import (
     AcceptanceModel, LensOptics, ReceptorOptics,
@@ -45,10 +45,13 @@ from insectvision.compound_eyes.acceptance import (
 )
 from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD
 from insectvision.utils.fields import neighbour_smooth
-from insectvision.utils.math import norm_l2, tangent_frames, icosphere, fibonacci_sphere, cartesian_to_spherical, spherical_gradients
+from insectvision.utils.geodesic import icosphere, fibonacci_sphere
+from insectvision.utils.math import norm_l2, tangent_frames
+from insectvision.utils.knns import knn, chord_to_angle, within_angle
 from insectvision.utils.hexatic import hexatic_phasor, hexatic_axis_angle, hexatic_order, smooth_tilt
 from insectvision.compound_eyes.lattice import facet_diameters
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
+from insectvision.utils.projections import cartesian_to_spherical, spherical_gradients
 
 logger = logging.getLogger(__name__)
 
@@ -934,11 +937,7 @@ class Eye:
             if actual_k == 0:
                 self._neighbour_graph = np.empty((n, 0), dtype=np.intp)
             else:
-                _, nidx_local = tree.query(positions, k=actual_k + 1)
-                # nidx_local has shape (n, k+1), drop the self column (the first)
-                if nidx_local.ndim == 1:
-                    nidx_local = nidx_local.reshape(-1, 1)
-                self._neighbour_graph = nidx_local[:, 1:].astype(np.intp)
+                _, self._neighbour_graph = knn(tree, positions, k)
             self._neighbour_k = k
 
         return self._neighbour_graph
@@ -1015,13 +1014,7 @@ class Eye:
             else:
                 tree = self._ensure_position_tree()
                 positions = self._model._lens_positions[self._lens_indices][valid_local]
-                actual_k = min(k, len(local_to_global) - 1)
-                distances, local_nidx = tree.query(positions, k=actual_k + 1)
-                if local_nidx.ndim == 1:
-                    local_nidx = local_nidx.reshape(-1, 1)
-                    distances = distances.reshape(-1, 1)
-                local_nidx = local_nidx[:, 1:]
-                distances = distances[:, 1:]
+                distances, local_nidx = knn(tree, positions, k)
 
             global_nidx = local_to_global[local_nidx]
             result = NeighbourResult(self, mask=in_this_eye, indices=global_nidx, distances=distances)
@@ -1043,12 +1036,7 @@ class Eye:
         # Points path
         pts = np.asarray(points, dtype=np.float32).reshape(-1, 3)
         tree = self._ensure_position_tree()
-        actual_k = min(k, len(local_to_global))
-        distances, local_nidx = tree.query(pts, k=actual_k)
-
-        if local_nidx.ndim == 1:
-            local_nidx = local_nidx.reshape(-1, 1)
-            distances = distances.reshape(-1, 1)
+        distances, local_nidx = knn(tree, pts, k, drop_self=False)
         global_nidx = local_to_global[local_nidx]
 
         result = NeighbourResult(
@@ -1086,19 +1074,11 @@ class Eye:
             if tree_cf is None:
                 return np.empty((Q, 0), dtype=np.intp), np.empty((Q, 0), dtype=np.float32)
 
-            actual_k = min(k, len(cf_local))
-            distances, local_idx_cf = tree_cf.query(dirs, k=actual_k)
-            if local_idx_cf.ndim == 1:
-                local_idx_cf = local_idx_cf.reshape(-1, 1)
-                distances = distances.reshape(-1, 1)
+            distances, local_idx_cf = knn(tree_cf, dirs, k, drop_self=False)
             local_idx = cf_local[local_idx_cf]
         else:
             tree = self._ensure_direction_tree()
-            actual_k = min(k, len(self._lens_indices))
-            distances, local_idx = tree.query(dirs, k=actual_k)
-            if local_idx.ndim == 1:
-                local_idx = local_idx.reshape(-1, 1)
-                distances = distances.reshape(-1, 1)
+            distances, local_idx = knn(tree, dirs, k, drop_self=False)
 
         view = LensView(self._model, self._lens_indices[local_idx].ravel())
         return view, distances
@@ -1121,19 +1101,11 @@ class Eye:
             if tree_cf is None:
                 return np.empty((Q, 0), dtype=np.intp), np.empty((Q, 0), dtype=np.float32)
 
-            actual_k = min(k, len(cf_local))
-            distances, local_idx_cf = tree_cf.query(pts, k=actual_k)
-            if local_idx_cf.ndim == 1:
-                local_idx_cf = local_idx_cf.reshape(-1, 1)
-                distances = distances.reshape(-1, 1)
+            distances, local_idx_cf = knn(tree_cf, pts, k, drop_self=False)
             local_idx = cf_local[local_idx_cf]
         else:
             tree = self._ensure_position_tree()
-            actual_k = min(k, len(self._lens_indices))
-            distances, local_idx = tree.query(pts, k=actual_k)
-            if local_idx.ndim == 1:
-                local_idx = local_idx.reshape(-1, 1)
-                distances = distances.reshape(-1, 1)
+            distances, local_idx = knn(tree, pts, k, drop_self=False)
 
         view = LensView(self._model, self._lens_indices[local_idx].ravel())
         return view, distances
@@ -1341,16 +1313,11 @@ class Eye:
             self._directional_graph = empty
             return empty
 
-        k_eff = min(k_search, n - 1)
         tree = self._ensure_direction_tree()
         dirs = self._model._lens_directions[self._lens_indices]
-        dists, kd_idx = tree.query(dirs, k=k_eff + 1)
-        if kd_idx.ndim == 1:
-            kd_idx = kd_idx.reshape(-1, 1)
-            dists = dists.reshape(-1, 1)
-        nb_idx = kd_idx[:, 1:]
-        nb_chord = dists[:, 1:]
-        angular_sep = 2.0 * np.arcsin(np.clip(nb_chord / 2.0, -1.0, 1.0))
+        nb_chord, nb_idx = knn(tree, dirs, k_search)
+        k_eff = nb_idx.shape[1]
+        angular_sep = chord_to_angle(nb_chord)
 
         # Tangent frame for each lens
         local_x = self._model._local_right[self._lens_indices]
@@ -2788,10 +2755,8 @@ class CompoundEyeModel:
             else:
                 threshold_rad = np.radians(angle_threshold_deg)
 
-            chord_threshold = 2.0 * np.sin(threshold_rad / 2.0)
-
-            # Find if any other eye has a lens within threshold
-            indices = other_tree.query_ball_point(my_dirs, r=chord_threshold)
+            # Find if any other eye has a lens within the angular threshold
+            indices = within_angle(other_tree, my_dirs, threshold_rad)
 
             eye_binoc_mask = np.array([len(hits) > 0 for hits in indices])
             is_binocular[eye.lens_indices] = eye_binoc_mask
@@ -2854,8 +2819,7 @@ class CompoundEyeModel:
             # Use cached KD-trees on the eye!
             if metric == 'angular':
                 tree = eye._ensure_direction_tree()
-                _, nn_local = tree.query(self._lens_directions[gi], k=actual_k + 1)
-                nn_local = nn_local[:, 1:]
+                _, nn_local = knn(tree, self._lens_directions[gi], actual_k)
             else:
                 nn_local = eye._ensure_neighbour_graph(actual_k)
 
@@ -3312,11 +3276,9 @@ class CompoundEyeModel:
         if N == 1:
             return np.zeros(1, dtype=np.uint32)
 
-        actual_k = min(k, N - 1)
-        tree = cKDTree(positions)
-        dists, idx = tree.query(positions, k=actual_k + 1)
-        dists = dists[:, 1:]   # drop self
-        idx = idx[:, 1:]
+        tree = cKDTree(positions)  # transient tree (runs before Eye objects exist)
+        dists, idx = knn(tree, positions, k)
+        actual_k = idx.shape[1]
 
         median_edge = float(np.median(dists))
         if median_edge <= 0.0:

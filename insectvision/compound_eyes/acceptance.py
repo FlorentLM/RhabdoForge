@@ -154,6 +154,7 @@ class MatchedAcceptance:
 
 # Helpers
 
+# TODO: Make this a more general broadcast_to(value, n, name) helper and use it elsewere
 def broadcast_to_nr2(values: ArrayLike, n_lenses: int, n_receptors: int) -> np.ndarray:
     """Broadcast (R,), (N, R), or (N, R, 2) to a contiguous (N, R, 2) float32 array."""
     arr = np.asarray(values, dtype=np.float32)

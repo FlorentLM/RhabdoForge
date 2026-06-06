@@ -9,7 +9,7 @@ from insectvision.compound_eyes.buffers import get_metadata_field
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, RHAB_COLOURS
 from insectvision.compound_eyes.orientation import BundlesAligner
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD
-from insectvision.utils.math import project_to_stereo
+from insectvision.utils.projections import project_to_stereo
 
 CHIRALITY_NEG_COLOR = '#B95D21'
 CHIRALITY_POS_COLOR = '#FF9800'

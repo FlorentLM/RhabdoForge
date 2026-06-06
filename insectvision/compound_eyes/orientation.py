@@ -4,8 +4,8 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
-from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD, WORLD_RIGHT
-from insectvision.utils.math import norm_l2
+from insectvision.utils.math import norm_l2, tangent_frames
+from insectvision.utils.knns import knn
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import CompoundEyeModel
@@ -28,32 +28,6 @@ class OrientationResult:
     eye_sign: Optional[np.ndarray] = None
     hemisphere_sign: Optional[np.ndarray] = None
     flow_frame: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
-
-
-def _flow_aligned_frame(flow_direction: ArrayLike) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Orthonormal frame aligned with an external flow direction.
-      e_x: flow direction (anterior).
-      e_y: lateral axis (cross of WORLD_UP with e_x).
-      e_z: dorsal axis (perpendicular to both). Coincides with WORLD_UP when flow is purely sagittal.
-    """
-
-    S = np.asarray(flow_direction, dtype=np.float32)
-    n = float(np.linalg.norm(S))
-    if n < 1e-8:
-        raise ValueError("flow_direction has zero magnitude")
-    S = S / n
-
-    up = np.asarray(WORLD_UP, dtype=np.float32)
-    if abs(float(S @ up)) > 0.999:
-        # Flow nearly parallel to world up, any perpendicular reference works
-        ref = np.asarray(WORLD_FORWARD, dtype=np.float32)
-        e_y = np.cross(ref, S)
-    else:
-        e_y = np.cross(up, S)
-    e_y = e_y / np.linalg.norm(e_y)
-    e_z = np.cross(S, e_y)
-    return S.astype(np.float32), e_y.astype(np.float32), e_z.astype(np.float32)
 
 
 def _alignment_phasor_field(
@@ -198,8 +172,7 @@ def _smooth_phasor_field(
         positions_zone = positions[mask]
         k = min(n_neighbours, n - 1)
         tree = cKDTree(positions_zone)
-        _, nidx = tree.query(positions_zone, k=k + 1)
-        nidx = nidx[:, 1:]  # drop self
+        _, nidx = knn(tree, positions_zone, k)  # transient tree
 
         zone_field = out[mask].copy()
         for _ in range(iterations):
@@ -279,7 +252,9 @@ class BundlesAligner:
         bundle = model._bundle
         N = lens_directions.shape[0]
 
-        e_x, e_y, e_z = _flow_aligned_frame(self.flow_direction)
+        e_x = self.flow_direction
+        _rgt, _up = tangent_frames(e_x)
+        e_y, e_z = -_rgt, _up
 
         # Eye / hemisphere signs (geometric)
         side_map = {e.eye_index: e.side_sign for e in model.eyes}
