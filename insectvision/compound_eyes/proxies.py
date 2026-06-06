@@ -44,6 +44,7 @@ from insectvision.compound_eyes.acceptance import (
     SnyderAcceptance, SamplingAcceptance, ExplicitAcceptance, report_acceptance,
 )
 from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD
+from insectvision.utils.fields import neighbour_smooth
 from insectvision.utils.math import norm_l2, tangent_frames, icosphere, fibonacci_sphere, cartesian_to_spherical, spherical_gradients
 from insectvision.utils.hexatic import hexatic_phasor, hexatic_axis_angle, hexatic_order, smooth_tilt
 from insectvision.compound_eyes.lattice import facet_diameters

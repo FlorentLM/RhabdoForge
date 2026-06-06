@@ -32,19 +32,19 @@ _DISC_TEMPLATE = None
 
 # Helper functions
 
-def receptor_tip_offsets(ra) -> np.ndarray:
-    N, R = ra.lens_count, ra.receptors_per_lens
-    d = ra.lenses.direction
-    rec_dirs = ra.rcpt_dynamic_data['direction'].reshape(N, R, 3)
+def receptor_tip_offsets(model) -> np.ndarray:
+    N, R = model.lens_count, model.receptors_per_lens
+    d = model.lenses.direction
+    rec_dirs = model.rcpt_dynamic_data['direction'].reshape(N, R, 3)
     axial = np.sum(rec_dirs * d[:, None, :], axis=2, keepdims=True)
     return -(rec_dirs - axial * d[:, None, :])
 
 
-def radii_from_lattice(ra) -> np.ndarray:
+def radii_from_lattice(model) -> np.ndarray:
     """Per-lens display radius = mean distance to the lens's immediate lattice neighbours."""
 
-    radii = np.zeros(ra.lens_count, dtype=np.float32)
-    for eye in ra.eyes:
+    radii = np.zeros(model.lens_count, dtype=np.float32)
+    for eye in model.eyes:
         if len(eye) == 0:
             continue
         result = eye.neighbours(lens_indices=eye.lens_indices, k=6, immediate_only=True)
@@ -55,16 +55,16 @@ def radii_from_lattice(ra) -> np.ndarray:
     return radii
 
 
-def make_eye_mesh(ra) -> pv.PolyData:
+def make_eye_mesh(model) -> pv.PolyData:
     """
     Lens-indexed mesh: vertex i = lens i.
     """
-    positions = ra.lenses.position
+    positions = model.lenses.position
     if positions.shape[0] == 0:
         return pv.PolyData()
 
     all_faces = []
-    for eye in ra.eyes:
+    for eye in model.eyes:
         if len(eye) < 3:
             continue
 
@@ -438,7 +438,14 @@ class EyeViewer:
         if self.lens_data_mesh.n_cells == 0 or self.R <= 1:
             return
 
-        major = self.result_smooth.major_axis.astype(np.float32)
+        chi = self.model.lenses.bundle_orientation
+        chirality = self.model.lenses.chirality
+        effective_main = np.where(chirality > 0, self.bundle.main_axis_rad, np.pi - self.bundle.main_axis_rad)
+        major_angle = chi + effective_main
+        major = (
+                np.cos(major_angle)[:, None] * self.model.lenses.right_local +
+                np.sin(major_angle)[:, None] * self.model.lenses.up_local
+        ).astype(np.float32)
 
         pos_mask = self.chirality > 0
         neg_mask = self.chirality < 0
@@ -459,7 +466,7 @@ class EyeViewer:
             return
 
         m_smooth = self.lens_data_mesh.copy()
-        m_smooth.point_data['SaccadeSmooth'] = self.result_smooth.saccade_phasor.astype(np.float32)
+        m_smooth.point_data['SaccadeSmooth'] = self.model.saccade_field()
         g_smooth = self._glyph_arrows(m_smooth, 'SaccadeSmooth')
         a_smooth = self.plotter.add_mesh(g_smooth, color='red',
                                          ambient=0.4, diffuse=0.7, smooth_shading=True)
