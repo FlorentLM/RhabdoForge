@@ -10,8 +10,8 @@ from insectvision.renderers import Raytracer
 from insectvision.utils import Colormap
 from insectvision.geometry import plane_geom
 from insectvision.geometry.materials_utils import checkerboard_texture
-from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD
-
+from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD, GradientFlowDetector
+from insectvision.utils.math import norm_minmax
 
 # Configuration
 
@@ -29,13 +29,18 @@ MODE_COLOUR = {MODE_YAW: COL_YAW, MODE_STRAFE: COL_STRAFE}
 WALL_SYMMETRIC = 'symmetric'
 WALL_ASYMMETRIC = 'asymmetric'
 
+MODEL_HRC = 'HRC'
+MODEL_GRADIENT = 'gradient'
+MODEL_LABEL = {MODEL_HRC: 'Hassenstein-Reichardt', MODEL_GRADIENT: 'Gradient (ratio)'}
+MODEL_CLASS = {MODEL_HRC: HassensteinReichardtEMD, MODEL_GRADIENT: GradientFlowDetector}
+
 
 @dataclass
 class Configuration:
     # Tunnel geometry (metres)
     width: float = 0.2
     height: float = 0.2
-    length: float = 6.0
+    length: float = 10.0
 
     time_step: float = 0.01            # 10 ms time step: at 500 fps this means 5 times faster than real time
 
@@ -46,10 +51,11 @@ class Configuration:
     texture_res: int = 1024
 
     # Flight / control
-    flight_speed: float = 0.5          # m/s
-    yaw_gain: float = 30.0
-    damping_gain: float = 5.0
-    strafe_gain: float = 0.05
+    flight_speed: float = 0.5          # m/s base forward speed
+    control_authority: float = 0.15    # k: lateral correction at full error, as a fraction of flight_speed
+    heading_tau: float = 0.30          # s: yaw inner-loop heading time constant (yaw mode only)
+    speed_modulation: float = 0.5      # slow forward speed when steering hard (0 = off, 1 = full)
+    motor_noise_frac: float = 0.30     # motor noise sd as a fraction of full-scale correction
     motor_noise: bool = True
 
     eye_model_path: str = 'species_models/drosophila_custom.npz'
@@ -88,7 +94,7 @@ class RunLog:
         return -self.arr('z')
 
 
-Results = Dict[Tuple[str, str], List[RunLog]]
+Results = Dict[Tuple[str, str, str], List[RunLog]]
 
 
 # Scene construction
@@ -156,7 +162,7 @@ def randomise_wall_textures(scene: Scene, cfg: Configuration, wall_condition: st
 # Runner functions ---------------------------------------------------------------------------
 
 def run_trial(cfg: Configuration, context: Context, scene: Scene, renderer: Raytracer,
-              agent: Agent, left_eye, right_eye, mode: str,
+              agent: Agent, left_eye, right_eye, mode: str, model_name: str,
               rng: np.random.Generator, draw: bool = False) -> RunLog:
     """One closed-loop run from a random lateral start to the end of the tunnel."""
 
@@ -166,8 +172,9 @@ def run_trial(cfg: Configuration, context: Context, scene: Scene, renderer: Rayt
     agent.position = (sx, cfg.height / 2.0, sz)
     agent.yaw = agent.pitch = agent.roll = 0.0
 
-    left_emd = HassensteinReichardtEMD(eye=left_eye, direction=(-1.0, 0.0), coordinate='spherical')
-    right_emd = HassensteinReichardtEMD(eye=right_eye, direction=(1.0, 0.0), coordinate='spherical')
+    EMD = MODEL_CLASS[model_name]
+    left_emd = EMD(eye=left_eye, direction=(-1.0, 0.0), coordinate='spherical')
+    right_emd = EMD(eye=right_eye, direction=(1.0, 0.0), coordinate='spherical')
 
     log = RunLog()
     w, l = cfg.width, cfg.length
@@ -176,36 +183,38 @@ def run_trial(cfg: Configuration, context: Context, scene: Scene, renderer: Rayt
     while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
 
         context.input()
+        dt = context.dt
 
         visual_output = renderer.step()
 
-        left_motion = left_emd.process(visual_output,)
-        right_motion = right_emd.process(visual_output)
-        mean_left = float(np.mean(left_motion))
-        mean_right = float(np.mean(right_motion))
+        left_motion = left_emd.process(visual_output, dt)
+        right_motion = right_emd.process(visual_output, dt)
 
-        diff = mean_right - mean_left
-        summ = abs(mean_right) + abs(mean_left) + 1e-6
+        left_estim = left_emd.last_estimate
+        right_estim = right_emd.last_estimate
+
+        diff = right_estim - left_estim
+        summ = abs(right_estim) + abs(left_estim) + 1e-6
         error = diff / summ
 
-        dt = context.dt
+        k = cfg.control_authority
+        u = -k * error
+
+        if cfg.motor_noise:
+            u += rng.normal(0.0, cfg.motor_noise_frac * k)
+
+        # Slow forward speed when steering hard (more time to correct before overshoot)
+        v_fwd = cfg.flight_speed * (1.0 - cfg.speed_modulation * min(abs(error), 1.0))
 
         if mode == MODE_YAW:
-            turn_rate = error * cfg.yaw_gain - agent.yaw * cfg.damping_gain
+            psi_cmd = -1.0 * np.degrees(np.arcsin(np.clip(u, -1.0, 1.0)))
+            turn_rate = (psi_cmd - agent.yaw) / cfg.heading_tau
 
-            if cfg.motor_noise:
-                turn_rate += rng.normal(loc=0.0, scale=cfg.yaw_gain)
-
-            agent.rotate(yaw=turn_rate * dt)
-            agent.translate(agent.forward * cfg.flight_speed * dt)
+            agent.rotate(yaw=turn_rate * dt).translate(agent.forward * v_fwd * dt)
 
         elif mode == MODE_STRAFE:
-            strafe_speed = -1.0 * error * cfg.strafe_gain
+            agent.translate((agent.forward * v_fwd + agent.right * u * cfg.flight_speed) * dt)
 
-            if cfg.motor_noise:
-                strafe_speed += rng.normal(loc=0.0, scale=cfg.strafe_gain)
-
-            agent.translate((agent.forward * cfg.flight_speed + agent.right * strafe_speed) * dt)
         else:
             raise ValueError(f'Unknown mode {mode!r}')
 
@@ -226,8 +235,8 @@ def run_trial(cfg: Configuration, context: Context, scene: Scene, renderer: Rayt
         log.x.append(float(agent.position.x))
         log.y.append(float(agent.position.y))
         log.z.append(float(agent.position.z))
-        log.left_flow.append(mean_left)
-        log.right_flow.append(mean_right)
+        log.left_flow.append(left_estim)
+        log.right_flow.append(right_estim)
         log.yaw.append(float(agent.yaw))
         log.error.append(error)
 
@@ -238,9 +247,7 @@ def run_trial(cfg: Configuration, context: Context, scene: Scene, renderer: Rayt
 
 
 def run_all_trials(cfg: Configuration) -> Results:
-    """Run n_trials per (wall condition x control mode)."""
-
-    rng = np.random.default_rng(cfg.seed)
+    """Run n_trials per (wall condition x motion model x control mode)."""
 
     context = Context(window_size=(1280, 720))
     context.mouse_captured = False
@@ -261,6 +268,7 @@ def run_all_trials(cfg: Configuration) -> Results:
     for wall_condition in (WALL_SYMMETRIC, WALL_ASYMMETRIC):
 
         scene = build_tunnel(cfg, wall_condition)
+        scene.sun.elevation, scene.sun.azimuth, scene.sun.color = 0.0, 0.0, (1.0, 1.0, 1.0)
 
         renderer = Raytracer(
             model=model, scene=scene, agent=agent, context=context,
@@ -268,20 +276,26 @@ def run_all_trials(cfg: Configuration) -> Results:
             randomness_mode='Halton', enable_shadows=False
         )
 
-        for mode in (MODE_YAW, MODE_STRAFE):
-            runs: List[RunLog] = []
+        # Fix textures once per wall condition, so every model/mode sees the same scene
+        randomise_wall_textures(scene, cfg, wall_condition, renderer)
 
-            randomise_wall_textures(scene, cfg, wall_condition, renderer)
+        for model_name in (MODEL_HRC, MODEL_GRADIENT):
 
-            for t in range(cfg.n_trials):
-                print(f'  {wall_condition:11s} / {MODE_LABEL[mode]:24s}  trial {t+1}/{cfg.n_trials}')
+            rng = np.random.default_rng(cfg.seed)
 
-                runs.append(
-                    run_trial(cfg, context, scene, renderer, agent,
-                                      left_eye, right_eye, mode, rng, draw=True)
-                )
+            for mode in (MODE_YAW, MODE_STRAFE):
+                runs: List[RunLog] = []
 
-            results[(wall_condition, mode)] = runs
+                for t in range(cfg.n_trials):
+                    print(f'  {wall_condition:11s} / {MODEL_LABEL[model_name]:22s} / '
+                          f'{MODE_LABEL[mode]:24s}  trial {t+1}/{cfg.n_trials}')
+
+                    runs.append(
+                        run_trial(cfg, context, scene, renderer, agent,
+                                  left_eye, right_eye, mode, model_name, rng, draw=True)
+                    )
+
+                results[(wall_condition, mode, model_name)] = runs
 
     context.free()
 
@@ -312,12 +326,13 @@ def _trajectory_panel(
         ax,
         results: Results,
         wall_condition: str,
+        model_name: str,
         cfg: Configuration,
         title: str
     ):
 
     for mode in (MODE_YAW, MODE_STRAFE):
-        runs = results.get((wall_condition, mode), [])
+        runs = results.get((wall_condition, mode, model_name), [])
         colour = MODE_COLOUR[mode]
 
         for r in runs:
@@ -374,11 +389,11 @@ def make_figure(
         cfg: Configuration
 ) -> plt.Figure:
 
-    fig = plt.figure(figsize=(11, 15), constrained_layout=True)
+    fig = plt.figure(figsize=(11, 17), constrained_layout=True)
     fig.suptitle('Optic-flow centering', fontsize=14, fontweight='bold')
 
-    # A spans the top, D spans the bottom
-    gs = GridSpec(3, 2, figure=fig, height_ratios=[1.10, 1.0, 1.0])
+    # Row 0: summary, Rows 1-2: HRC / gradient trajectories, Row 3: flow + error
+    gs = GridSpec(4, 2, figure=fig, height_ratios=[1.0, 0.9, 0.9, 0.9])
 
     # A: task-summary placeholder
     axA = fig.add_subplot(gs[0, :])
@@ -389,31 +404,40 @@ def make_figure(
     axA.set_xticks([])
     axA.set_yticks([])
 
-    # for s in axA.spines.values():
-    #     s.set_linestyle((0, (4, 4))); s.set_color('grey')
+    asym_title = f'Asymmetric walls (right {cfg.asym_factor}x larger)'
 
-    # B / C: trajectory + heading quiver
-    _trajectory_panel(fig.add_subplot(gs[1, 0]), results, WALL_SYMMETRIC, cfg,
-                      'Symmetric walls')
-    axC = fig.add_subplot(gs[1, 1])
-    _trajectory_panel(axC, results, WALL_ASYMMETRIC, cfg, f'Asymmetric walls (right {cfg.asym_factor}x larger)')
+    # Row 1: Hassenstein-Reichardt correlator
+    _trajectory_panel(fig.add_subplot(gs[1, 0]), results, WALL_SYMMETRIC, MODEL_HRC, cfg,
+                      f'{MODEL_LABEL[MODEL_HRC]} — Symmetric walls')
+    _trajectory_panel(fig.add_subplot(gs[1, 1]), results, WALL_ASYMMETRIC, MODEL_HRC, cfg,
+                      f'{MODEL_LABEL[MODEL_HRC]} — {asym_title}')
 
-    # D: bilateral flow + balance error (representative asym-yaw)
-    axD = fig.add_subplot(gs[2, :])
-    rep = _representative(results.get((WALL_SYMMETRIC, MODE_YAW), []))
+    # Row 2: Gradient (ratio) detector
+    _trajectory_panel(fig.add_subplot(gs[2, 0]), results, WALL_SYMMETRIC, MODEL_GRADIENT, cfg,
+                      f'{MODEL_LABEL[MODEL_GRADIENT]} — Symmetric walls')
+    _trajectory_panel(fig.add_subplot(gs[2, 1]), results, WALL_ASYMMETRIC, MODEL_GRADIENT, cfg,
+                      f'{MODEL_LABEL[MODEL_GRADIENT]} — {asym_title}')
+
+    # D: bilateral flow + balance error (representative HRC symmetric-yaw)
+    axD = fig.add_subplot(gs[3, :])
+    rep = _representative(results.get((WALL_SYMMETRIC, MODE_YAW, MODEL_HRC), []))
 
     left_flow = rep.arr('left_flow')
     right_flow = rep.arr('right_flow')
+
+    left_flow_norm = norm_minmax(left_flow)
+    right_flow_norm = norm_minmax(right_flow)
+
     err = rep.arr('error')
     dist = rep.dist
 
-    axD.plot(dist, left_flow, color=COL_LEFT, lw=0.9, alpha=0.8, label='left eye')
-    axD.plot(dist, right_flow, color=COL_RIGHT, lw=0.9, alpha=0.8, label='right eye')
+    axD.plot(dist, left_flow_norm, color=COL_LEFT, lw=0.9, alpha=0.8, label='left eye')
+    axD.plot(dist, right_flow_norm, color=COL_RIGHT, lw=0.9, alpha=0.8, label='right eye')
 
     axD.axhline(0.0, color='k', ls='--', lw=0.5)
     axD.set_xlabel('Distance down tunnel (m)')
     axD.set_ylabel('Mean EMD response')
-    axD.set_ylim(-0.005, 0.025)   # TODO: have this automatic
+    axD.set_ylim(-0.05, 1.05)
 
     axD.set_title('Bilateral flow & balance error')
     axD.legend(fontsize=7, loc='upper left')
