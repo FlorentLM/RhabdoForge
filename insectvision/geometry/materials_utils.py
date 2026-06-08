@@ -1,3 +1,4 @@
+from typing import Optional
 import numpy as np
 
 
@@ -103,3 +104,100 @@ def chirp_texture(resolution: int, f_start: float, f_end: float, phase: float, a
     pattern = (np.sin(2 * np.pi * total_phase) > 0).astype(np.uint8) * 255
 
     return pattern
+
+
+# TODO: Move these somewhere else maybe
+
+def aces_tonemap(x):
+    """
+    ACES tonemapping curve approx
+    """
+    a = 2.51
+    b = 0.03
+    c = 2.43
+    d = 0.59
+    e = 0.14
+    return np.clip((x * (a * x + b)) / (x * (c * x + d) + e), 0, 1)
+
+
+def exr_to_cubemap(input_path, output_size: Optional[int] = None, exposure=1.0, contrast=1.05, fmt='jpg'):
+
+    from pathlib import Path
+    import cv2
+    import os
+
+    os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+
+    input_path = Path(input_path)
+
+    # Load EXR
+    img = cv2.imread(input_path, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYCOLOR)
+    if img is None:
+        print(f"Error: Could not load {input_path}")
+        return
+
+    # Define the 6 faces and their rotations
+    faces = ['right', 'left', 'top', 'bottom', 'front', 'back']
+
+    output_folder = Path('assets/textures') / input_path.stem
+    output_folder.mkdir(exist_ok=True, parents=True)
+
+    fmt = fmt.strip('.').lower()
+    output_size = output_size or min(img.shape[:2])
+
+    print(f'Converting {input_path.name} ({img.shape[1]}x{img.shape[0]}) to {output_size}x{output_size} {fmt} cubemap...')
+
+    for i, face in enumerate(faces):
+
+        # Create coordinates for the cube face
+        grid = np.indices((output_size, output_size), dtype=np.float32)
+        y, x = grid[0], grid[1]
+
+        xx = 2.0 * x / (output_size - 1) - 1.0
+        yy = 2.0 * y / (output_size - 1) - 1.0
+
+        if face == 'right':  # Right
+            vx, vy, vz = np.ones_like(xx), -yy, -xx
+        elif face == 'left':  # Left
+            vx, vy, vz = -np.ones_like(xx), -yy, xx
+        elif face == 'top':  # Top
+            vx, vy, vz = xx, np.ones_like(xx), yy
+        elif face == 'bottom':  # Bottom
+            vx, vy, vz = xx, -np.ones_like(xx), -yy
+        elif face == 'front':  # Front
+            vx, vy, vz = xx, -yy, np.ones_like(xx)
+        elif face == 'back':  # Back
+            vx, vy, vz = -xx, -yy, -np.ones_like(xx)
+
+        # To spherical coordinates
+        mag = np.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
+        vx, vy, vz = vx / mag, vy / mag, vz / mag
+
+        phi = np.arctan2(vx, vz)
+        theta = np.arcsin(vy)
+
+        # Back to equirect UV
+        out_x = (phi / (2 * np.pi) + 0.5) * (img.shape[1] - 1)
+        out_y = (0.5 - theta / np.pi) * (img.shape[0] - 1)
+
+        face_img = cv2.remap(img, out_x, out_y, cv2.INTER_LINEAR)
+
+        # Tonemapping & Gamma correction (HDR -> LDR)
+
+        # Exposure
+        face_img = face_img * exposure
+
+        # ACES tonemapping
+        face_img = aces_tonemap(face_img)
+
+        # Contrast adjust (S curve)
+        face_img = np.clip((face_img - 0.5) * contrast + 0.5, 0, 1)
+
+        # Gamma (linear to sRGB)
+        face_img = np.power(face_img, 1.0 / 2.2)
+
+        face_img = (np.clip(face_img, 0, 1) * 255).astype(np.uint8)
+
+        cv2.imwrite((output_folder / face).with_suffix('.' + fmt), face_img)
+
+    print('Done.')
