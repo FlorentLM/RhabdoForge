@@ -18,24 +18,23 @@ class HassensteinReichardtEMD:
     Args:
         eye (Eye): The single eye to process.
         direction (ArrayLike): The motion direction to correlate against
-        delay_hz (float): Cutoff frequency for the low-pass delay filter (Medulla delay line).
-        highpass_hz (float): Cutoff frequency for the LMC adaptation filter.
+
         coordinate (str): 'spherical' or 'cartesian' for the direction parameter.
     """
 
     def __init__(self,
         eye: Eye,
         direction: ArrayLike,
-        delay_hz: float = 8.0,
-        highpass_hz: float = 2.0,
+        delay_coeff: float = 0.20,      # delay-line blend (smaller = longer delay/memory)
+        highpass_coeff: float = 0.10,   # LMC adaptation blend
         coordinate='cartesian'
         ):
+
         self.eye = eye
         self.self_indices = eye.lens_indices
 
-        # Convert Hz to time constants
-        self.tau_delay = 1.0 / (2.0 * np.pi * delay_hz)
-        self.tau_hp = 1.0 / (2.0 * np.pi * highpass_hz)
+        self.delay_coeff = delay_coeff
+        self.highpass_coeff = highpass_coeff
 
         # Lens-level directed neighbours (eye-local indices)
         self.targets, self.weights = eye.lenses.directed_neighbours(
@@ -50,20 +49,19 @@ class HassensteinReichardtEMD:
         self._delayed_OFF_A = None
         self._delayed_OFF_B = None
 
-    def process(self, visual_output: 'VisualOutput', dt: float) -> np.ndarray:
+    def process(self, visual_output: 'VisualOutput') -> np.ndarray:
 
         lmc_signal = visual_output.lmc_input
 
         # Radiance/Luminance
         luminance = lmc_signal[:, :3].mean(axis=-1)
 
-        # Lamina L1/L2 high-pass (luminance adaptation / contrast)
-        alpha_hp = dt / (self.tau_hp + dt)
         if self._mean_lum is None:
             self._mean_lum = luminance.copy()
             return np.zeros(len(self.eye), dtype=np.float32)
 
-        self._mean_lum += alpha_hp * (luminance - self._mean_lum)
+        # Lamina L1/L2 high-pass (luminance adaptation / contrast)
+        self._mean_lum += self.highpass_coeff * (luminance - self._mean_lum)
         global_contrast = (luminance - self._mean_lum) / (self._mean_lum + 1e-6)
 
         # Split into ON (L1->T4) and OFF (L2->T5) pathways
@@ -76,8 +74,6 @@ class HassensteinReichardtEMD:
         sig_OFF_B = signal_OFF[self.targets]
 
         # Medulla delay lines
-        alpha_delay = dt / (self.tau_delay + dt)
-
         if self._delayed_ON_A is None:
             self._delayed_ON_A = sig_ON_A.copy()
             self._delayed_ON_B = sig_ON_B.copy()
@@ -85,16 +81,17 @@ class HassensteinReichardtEMD:
             self._delayed_OFF_B = sig_OFF_B.copy()
             return np.zeros(len(self.eye), dtype=np.float32)
 
-        self._delayed_ON_A += alpha_delay * (sig_ON_A - self._delayed_ON_A)
-        self._delayed_ON_B += alpha_delay * (sig_ON_B - self._delayed_ON_B)
-        self._delayed_OFF_A += alpha_delay * (sig_OFF_A - self._delayed_OFF_A)
-        self._delayed_OFF_B += alpha_delay * (sig_OFF_B - self._delayed_OFF_B)
+        a = self.delay_coeff
+        self._delayed_ON_A += a * (sig_ON_A - self._delayed_ON_A)
+        self._delayed_ON_B += a * (sig_ON_B - self._delayed_ON_B)
+        self._delayed_OFF_A += a * (sig_OFF_A - self._delayed_OFF_A)
+        self._delayed_OFF_B += a * (sig_OFF_B - self._delayed_OFF_B)
 
         # Correlate ON with ON, OFF with OFF
         motion_ON = sig_ON_B * self._delayed_ON_A - sig_ON_A * self._delayed_ON_B
         motion_OFF = sig_OFF_B * self._delayed_OFF_A - sig_OFF_A * self._delayed_OFF_B
 
         # Recombine T4 and T5
-        total_motion = motion_ON + motion_OFF
+        total_motion = (motion_ON + motion_OFF) * self.weights
 
-        return total_motion * self.weights
+        return total_motion
