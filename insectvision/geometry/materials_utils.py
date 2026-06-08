@@ -123,10 +123,9 @@ def aces_tonemap(x):
 def exr_to_cubemap(input_path, output_size: Optional[int] = None, exposure=1.0, contrast=1.05, fmt='jpg'):
 
     from pathlib import Path
-    import cv2
     import os
-
     os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+    import cv2
 
     input_path = Path(input_path)
 
