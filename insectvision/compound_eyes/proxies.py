@@ -48,7 +48,6 @@ from insectvision.engine.meshes import icosphere, fibonacci_sphere
 from insectvision.geometry.linalg import tangent_frames, local_to_world
 from insectvision.utils.shared import norm_l2
 from insectvision.geometry.neighbours import knn, smooth_scalars, smooth_phasors
-from insectvision.compound_eye.lattice import lookat_topk
 from insectvision.utils.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.compound_eyes.lenses import facet_diameters
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
@@ -56,6 +55,37 @@ from insectvision.geometry.spherical import cartesian_to_spherical, spherical_gr
 from insectvision.geometry.circular import resultant, wrap_angle, circ_mean
 
 logger = logging.getLogger(__name__)
+
+
+# TODO: Proxies are (again) a mess - needs to be cleaned up
+
+
+def _lookat_top_k(
+        pos: np.ndarray,
+        dirs: np.ndarray,
+        targets: np.ndarray,
+        k: int,
+        conflict_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Local indices (Q, k_eff) of the lenses best looking at each target.
+
+    Score is the dot product of each lens optical axis with the unit vector from
+    that lens to the target. Columns are ordered best-first. 'conflict_mask' (a
+    boolean over the lenses) excludes conflicted lenses from selection.
+    """
+    desired = targets[:, None, :] - pos[None, :, :]
+    desired = norm_l2(desired, axis=-1)
+    dots = np.einsum('jk,ijk->ij', dirs, desired)
+
+    if conflict_mask is not None:
+        dots[:, conflict_mask] = -np.inf
+
+    k_eff = min(k, dots.shape[1])
+    part = np.argpartition(dots, -k_eff, axis=1)[:, -k_eff:]
+    top = np.take_along_axis(dots, part, axis=1)
+    order = np.argsort(top, axis=1)[:, ::-1]
+    return np.take_along_axis(part, order, axis=1)
 
 
 class NeighbourResult:
@@ -1140,7 +1170,7 @@ class Eye:
         dirs = self._model._lens_directions[self._lens_indices]
         conflict = self._model.have_conflicts[self._lens_indices] if avoid_conflicts else None
 
-        best = lookat_topk(pos, dirs, q, k, conflict)
+        best = _lookat_top_k(pos, dirs, q, k, conflict)
         return LensView(self._model, self._lens_indices[best].ravel())
 
     def query_cone(self,
@@ -2519,7 +2549,7 @@ class CompoundEyeModel:
 
         # Score against all lenses (across all eyes)
         conflict = self.have_conflicts if avoid_conflicts else None
-        best = lookat_topk(self._lens_positions, self._lens_directions, q, k, conflict)
+        best = _lookat_top_k(self._lens_positions, self._lens_directions, q, k, conflict)
         return LensView(self, best.ravel().astype(np.intp))
 
     def query_cone(self,
