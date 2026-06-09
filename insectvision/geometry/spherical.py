@@ -2,7 +2,8 @@ from __future__ import annotations
 from typing import Tuple
 import numpy as np
 from numpy.typing import ArrayLike
-from insectvision.utils.math import norm_l2, tangent_frames, local_to_world
+from insectvision.geometry.linalg import tangent_frames, local_to_world
+from insectvision.utils.shared import norm_l2
 
 
 # Spherical <-> Cartesian
@@ -51,31 +52,32 @@ def spherical_gradients(azimuth: ArrayLike, elevation: ArrayLike, degrees: bool 
 
 # Stereographic projection
 
-def project_to_stereo(dirs_3d: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def stereo_proj(dirs_3d: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Stereographic projection of unit directions onto a tangent plane centred
     on the mean viewing direction.
 
     Returns:
         pts_2d: (N, 2)
-        fwd, rgt, up: (3,) orthonormal frame of the projection plane
+        forward, right, up: (3,) orthonormal frame of the projection plane
     """
-    centre_dir = np.mean(dirs_3d, axis=0)
-    fwd = norm_l2(centre_dir)
-    rgt, up = tangent_frames(fwd)
 
-    denom = 1.0 + np.dot(dirs_3d, fwd)
+    centre_dir = np.mean(dirs_3d, axis=0)
+    forward = norm_l2(centre_dir)
+    right, up = tangent_frames(forward)
+
+    denom = 1.0 + np.dot(dirs_3d, forward)
     pts_2d = np.column_stack([
-        np.dot(dirs_3d, rgt) / denom,
+        np.dot(dirs_3d, right) / denom,
         np.dot(dirs_3d, up) / denom,
     ])
-    return pts_2d, fwd, rgt, up
+    return pts_2d, forward, right, up
 
 
 def stereo_to_sphere(
         pts_2d: np.ndarray,
-        fwd: np.ndarray,
-        rgt: np.ndarray,
+        forward: np.ndarray,
+        right: np.ndarray,
         up: np.ndarray,
 ) -> np.ndarray:
     """
@@ -88,6 +90,16 @@ def stereo_to_sphere(
 
     dirs = local_to_world(
         np.column_stack([2.0 * x / denom, 2.0 * y / denom, (1.0 - r2) / denom]),
-        rgt, up, fwd,
+        right, up, forward,
     )
     return norm_l2(dirs)
+
+
+def angle_to_chord(angle_rad) -> np.ndarray:
+    """Great-circle angle (rad) -> Euclidean chord length on the unit sphere."""
+    return 2.0 * np.sin(0.5 * np.asarray(angle_rad, dtype=float))
+
+
+def chord_to_angle(chord) -> np.ndarray:
+    """Euclidean chord length on the unit sphere -> great-circle angle (rad)."""
+    return 2.0 * np.arcsin(np.clip(0.5 * np.asarray(chord, dtype=float), -1.0, 1.0))

@@ -11,7 +11,7 @@ from collections import deque
 from .scene import Scene
 from .agent import Agent, OrbitCamera
 
-from insectvision.utils import DisplayMode
+from insectvision.utils.shared import DisplayMode
 from insectvision.interactive.controls import Controls, ActionRegistry
 from insectvision.interactive.hud import HUD
 from insectvision.interactive.debug import DebugOverlay
@@ -286,7 +286,7 @@ class Context:
         self.renderer.tiled_mode = not self.renderer.tiled_mode
 
     def toggle_projection_mode(self):
-        from insectvision.utils import OmmatidiaProjection
+        from insectvision.utils.shared import OmmatidiaProjection
 
         self.renderer.projection_mode = (
             OmmatidiaProjection.Position

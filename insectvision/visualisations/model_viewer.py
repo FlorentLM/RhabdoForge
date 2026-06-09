@@ -8,9 +8,9 @@ from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.compound_eyes.buffers import get_metadata_field
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, RHAB_COLOURS
 from insectvision.compound_eyes.orientation import BundlesAligner
-from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD
-from insectvision.utils.projections import project_to_stereo
-from insectvision.utils.math import norm_l2
+from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
+from insectvision.geometry.spherical import stereo_proj
+from insectvision.utils.shared import norm_l2
 
 CHIRALITY_NEG_COLOR = '#B95D21'
 CHIRALITY_POS_COLOR = '#FF9800'
@@ -74,9 +74,10 @@ def make_eye_mesh(model) -> pv.PolyData:
 
         eye_dirs = norm_l2(eye_pos)
         try:
-            pts_2d, _, _, _ = project_to_stereo(eye_dirs)
+            pts_2d, _, _, _ = stereo_proj(eye_dirs)
             tri = Delaunay(pts_2d)
             simplices = tri.simplices
+
         except Exception:
             continue
 

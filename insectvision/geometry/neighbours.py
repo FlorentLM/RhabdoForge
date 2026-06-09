@@ -1,0 +1,278 @@
+from typing import List, Optional, Tuple
+import numpy as np
+from scipy.spatial import cKDTree, Delaunay
+
+
+# 2D neighbours stuff
+
+def _delaunay_pairs(pts_2d: np.ndarray) -> set:
+    """Unique undirected (i, j) Delaunay edges (i < j)."""
+    tri = Delaunay(pts_2d)
+    pairs = set()
+    for sx in tri.simplices:
+        for i in range(3):
+            a, b = int(sx[i]), int(sx[(i + 1) % 3])
+            pairs.add((a, b) if a < b else (b, a))
+    return pairs
+
+
+def delaunay_neighbours(pts_2d: np.ndarray, max_length_factor: float = 0.0) -> List[np.ndarray]:
+    """
+    One-ring neighbour lists from a 2D Delaunay triangulation.
+
+    If max_length_factor > 0, drop edges longer than that times local spacing
+    (removes boundary-bearing corruption).
+    """
+    pts_2d = np.asarray(pts_2d)
+    neighbours = [set() for _ in range(len(pts_2d))]
+
+    for a, b in _delaunay_pairs(pts_2d):
+        neighbours[a].add(b)
+        neighbours[b].add(a)
+
+    neighbours = [np.fromiter(s, dtype=np.intp, count=len(s)) for s in neighbours]
+
+    if max_length_factor > 0:
+        loc = local_spacing(cKDTree(pts_2d), pts_2d, k=min(6, max(1, len(pts_2d) - 1)))
+        neighbours = [nb[np.linalg.norm(pts_2d[nb] - pts_2d[i], axis=1) < max_length_factor * loc[i]]
+               for i, nb in enumerate(neighbours)]
+    return neighbours
+
+
+def delaunay_edges(pts_2d: np.ndarray, max_length_factor: float = 0.0) -> np.ndarray:
+    """
+    Delaunay edges in the plane.
+
+    Optionally prunes edges longer than max_length_factor * local spacing
+    (convex-hull boundary edges, not real neighbours). Disabled if <= 0.
+    """
+    pts_2d = np.asarray(pts_2d)
+    pairs = _delaunay_pairs(pts_2d)
+    edges = np.array(sorted(pairs)) if pairs else np.zeros((0, 2), dtype=int)
+
+    if max_length_factor > 0 and len(edges):
+        loc = local_spacing(cKDTree(pts_2d), pts_2d, k=min(6, max(1, len(pts_2d) - 1)))
+        lengths = np.linalg.norm(pts_2d[edges[:, 0]] - pts_2d[edges[:, 1]], axis=1)
+        mean_local = 0.5 * (loc[edges[:, 0]] + loc[edges[:, 1]])
+        edges = edges[lengths < mean_local * max_length_factor]
+
+    return edges
+
+
+# 3D neighbours stuff
+
+# TODO: rename?
+def knn(
+        tree: cKDTree,
+        query_pts: np.ndarray,
+        k: int,
+        drop_self: bool = True,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    k-nearest-neighbour query against a prebuilt tree.
+
+    Args:
+        tree: a prebuilt cKDTree (owned/cached by the caller)
+        query_pts: (Q, D) query points
+        k: number of neighbours requested. Clamped to the tree size.
+        drop_self: if True, query k+1 and drop the first (self) column. Use for
+            self-queries (query points are tree members). Set False when querying
+            external points, where the nearest match is not the point itself.
+
+    Returns:
+        (distances, indices), both (Q, k_eff) with k_eff = min(k, n - 1) when drop_self else min(k, n)
+        When k_eff == 0, returns (Q, 0) arrays
+    """
+    query_pts = np.atleast_2d(query_pts)
+    n = tree.n
+    max_k = (n - 1) if drop_self else n
+    k_eff = min(int(k), max_k)
+
+    if k_eff <= 0:
+        q = query_pts.shape[0]
+        return np.empty((q, 0), dtype=float), np.empty((q, 0), dtype=np.intp)
+
+    kq = k_eff + 1 if drop_self else k_eff
+    dist, idx = tree.query(query_pts, k=kq)
+
+    if idx.ndim == 1:  # kq == 1
+        idx = idx.reshape(-1, 1)
+        dist = dist.reshape(-1, 1)
+    if drop_self:
+        idx = idx[:, 1:]
+        dist = dist[:, 1:]
+
+    return dist, idx.astype(np.intp)
+
+
+# TODO: rename?
+def local_spacing(
+        tree: cKDTree,
+        query_pts: Optional[np.ndarray] = None,
+        k: int = 6,
+) -> np.ndarray:
+    """
+    Mean distance from each query point to the k nearest other points.
+    If 'query_pts' is None the tree's own data is used (i.e. "mean spacing of this cloud").
+    Returns NaN for points with no available neighbours.
+    """
+    pts = tree.data if query_pts is None else query_pts
+    dist, _ = knn(tree, pts, k, drop_self=True)
+    if dist.shape[1] == 0:
+        return np.full(dist.shape[0], np.nan)
+    return dist.mean(axis=1)
+
+
+# Neighbourhood-based smoothing
+
+def _masked_neighbours(neighbours: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """(valid, safe) for an (N, k) neighbour array using -1 (or any < 0) as padding.
+
+    'valid' is the boolean keep-mask, 'safe' is 'neighbours' with padding clamped
+    to 0 so it can be used for fancy-indexing without going out of bounds.
+    """
+    nb = np.asarray(neighbours, dtype=np.intp)
+    valid = nb >= 0
+    safe = np.where(valid, nb, 0)
+    return valid, safe
+
+
+# TODO: unify these three functions?
+
+def smooth_scalars(
+        values: np.ndarray,
+        neighbours: np.ndarray,
+        n_iter: int = 2,
+        mask: Optional[np.ndarray] = None,
+        method: str = 'mean',
+) -> np.ndarray:
+    """
+    Smooth a 1D scalar field over a precomputed neighbour graph.
+
+    Args:
+        values: (N,) values to smooth
+        neighbours: (N, k) neighbour indices, entries < 0 are ignored (padding)
+        mask: (N,) bool. If given, only True entries are updated
+        n_iter: smoothing passes
+        method: 'mean' (half-self half-neighbours) or 'median' (self + neighbours)
+    """
+    out = np.asarray(values, dtype=np.float64).copy()
+    if n_iter <= 0:
+        return out.astype(values.dtype)
+
+    update_mask = mask if mask is not None else np.ones(out.shape[0], dtype=bool)
+    valid_nb, safe_nb = _masked_neighbours(neighbours)
+
+    for _ in range(n_iter):
+        nb_vals = out[safe_nb]
+
+        if method == 'mean':
+            sum_nb = np.sum(np.where(valid_nb, nb_vals, 0.0), axis=1)
+            count_nb = np.maximum(np.sum(valid_nb, axis=1), 1)
+            cur = 0.5 * out + 0.5 * (sum_nb / count_nb)
+        elif method == 'median':
+            nb_vals = np.where(valid_nb, nb_vals, np.nan)
+            stacked = np.concatenate([out[:, None], nb_vals], axis=1)
+            with np.errstate(all='ignore'):
+                cur = np.nanmedian(stacked, axis=1)
+        else:
+            raise ValueError(f"Unknown method {method!r}")
+
+        out = np.where(update_mask, cur, out)
+
+    return out.astype(values.dtype)
+
+
+def smooth_phasors(
+        values: np.ndarray,
+        neighbours: np.ndarray,
+        n_iter: int = 3,
+        weights: Optional[np.ndarray] = None,
+        include_self: bool = True,
+) -> np.ndarray:
+    """
+    Smooth a per-point complex phasor over a precomputed neighbour graph.
+
+    Args:
+        values: (N,) complex phasors (need not be unit). For a hexatic field these are
+            exp(6i*theta), for a nematic field, exp(2i*theta), etc.
+        neighbours: (N, k) int neighbour indices, entries < 0 are ignored (padding).
+        weights: (N,) per-point confidence (e.g. |Psi|), None -> uniform.
+        n_iter: smoothing passes.
+        include_self: keep each point's own phasor in its average.
+    """
+
+    z = np.asarray(values, dtype=np.complex128).copy()
+    w = np.ones(z.shape[0]) if weights is None else np.asarray(weights, dtype=np.float64)
+
+    valid_nb, safe_nb = _masked_neighbours(neighbours)
+
+    for _ in range(n_iter):
+        zw = z * w
+        num = np.where(valid_nb, zw[safe_nb], 0.0 + 0.0j).sum(axis=1)
+        den = np.where(valid_nb, w[safe_nb], 0.0).sum(axis=1)
+        if include_self:
+            num += zw
+            den += w
+
+        z = np.divide(num, np.maximum(den, 1e-12))
+        z = np.divide(z, np.maximum(np.abs(z), 1e-12))
+
+    return z
+
+
+def smooth_nematic_vectors(
+        values: np.ndarray,
+        neighbours: np.ndarray,
+        n_iter: int = 10,
+        include_self: bool = True
+) -> np.ndarray:
+    """
+    Smooth sign-ambiguous (nematic) unit vectors over a precomputed neighbour graph.
+
+    Each neighbour is flipped into the same hemisphere as the centre vector
+    before averaging, so 180-degree-equivalent directors don't cancel. Used for
+    director-like fields (e.g. bundle / saccade axes) where orientation matters
+    but sign does not.
+
+    Unlike 'smooth_phasors' / 'smooth_scalars', this expects a *dense* (M, k)
+    neighbour array with no padding (every entry a valid index), e.g. straight
+    from a cKDTree query with self dropped.
+
+    Args:
+        values: (M, D) unit vectors
+        neighbours: (M, k) neighbour indices into 'vectors'
+        n_iter: smoothing passes
+        include_self: keep each vecrtor's own phasor in its average
+    """
+    out = np.asarray(values, dtype=np.float64).copy()
+    if n_iter <= 0:
+        return out
+
+    valid_nb, safe_nb = _masked_neighbours(neighbours)
+
+    for _ in range(n_iter):
+        base = out
+        neigh = out[safe_nb]
+
+        # Align sign per neighbour
+        dots = np.einsum('id,ikd->ik', base, neigh)
+        neigh = np.where(dots[..., None] < 0, -neigh, neigh)
+
+        # Zero out invalid padded neighbours
+        neigh = np.where(valid_nb[..., None], neigh, 0.0)
+
+        sum_vecs = neigh.sum(axis=1)
+        counts = valid_nb.sum(axis=1, keepdims=True)
+
+        if include_self:
+            sum_vecs += base
+            counts += 1
+
+        avg = np.divide(sum_vecs, np.maximum(counts, 1))
+        norms = np.linalg.norm(avg, axis=1, keepdims=True)
+
+        # Re-normalise, falling back to previous vector if magnitude is destroyed
+        out = np.where(norms > 1e-8, avg / np.clip(norms, 1e-8, None), base)
+
+    return out

@@ -7,8 +7,8 @@ import numpy as np
 from PIL import Image
 from pyglm import glm
 
-from insectvision.utils.math import tangent_frames
-from insectvision.utils import DisplayMode, RandomnessMode, SamplingMode
+from insectvision.geometry.linalg import tangent_frames
+from insectvision.utils.shared import DisplayMode, RandomnessMode, SamplingMode
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, Asset, AssetType
 from insectvision.engine.lights import DirectionalLight

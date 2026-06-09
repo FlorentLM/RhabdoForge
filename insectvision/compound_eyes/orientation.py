@@ -4,10 +4,10 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
-from insectvision.utils.math import norm_l2, tangent_frames, rotate_in_tangent_plane, broadcast_1d, local_to_world
-from insectvision.utils.knns import knn
-from insectvision.utils.circular import wrap_angle
-from insectvision.utils.fields import smooth_nematic_vectors
+from insectvision.geometry.linalg import tangent_frames, rotate_in_tangent_plane, local_to_world
+from insectvision.utils.shared import norm_l2, broadcast_1d
+from insectvision.geometry.neighbours import knn, smooth_nematic_vectors
+from insectvision.geometry.circular import wrap_angle
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import CompoundEyeModel
@@ -32,6 +32,8 @@ class OrientationResult:
     flow_frame: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
 
 
+
+# TODO: Clarify the boundary between these Compound eye-aware helpers and the pure smoothers in neighbours.py
 def _alignment_phasor_field(
     lens_directions: np.ndarray,
     e_x: np.ndarray,
@@ -108,9 +110,7 @@ def _major_axis_field(
     disambiguation.
     """
     angles = (base_rotation_rad * eye_sign).astype(np.float32)
-    rotated = rotate_in_tangent_plane(
-        alignment_phasor, lens_directions, angles, normalize=False
-    )
+    rotated = rotate_in_tangent_plane(alignment_phasor, lens_directions, angles, normalize=False)
 
     # Equatorial flip: bundle point up dorsally, and down ventrally
     ref = -hemisphere_sign[:, None] * alignment_phasor
@@ -167,7 +167,7 @@ def _smooth_phasor_field(
         tree = cKDTree(positions_zone)
         _, nidx = knn(tree, positions_zone, k)  # transient tree
 
-        smoothed = smooth_nematic_vectors(out[mask], nidx, iterations=iterations)
+        smoothed = smooth_nematic_vectors(out[mask], nidx, n_iter=iterations)
         out[mask] = smoothed.astype(np.float32)
     return out
 
@@ -247,7 +247,7 @@ class BundlesAligner:
 
         # Resolve chirality
         if override_chirality is not None:
-            chirality = _prepare_per_lens(override_chirality, N, 'chirality')
+            chirality = broadcast_1d(override_chirality, N, 'chirality')
         else:
             chirality = (eye_sign * hemisphere_sign).astype(np.float32)
 
@@ -261,6 +261,7 @@ class BundlesAligner:
             diagonal_strength=self.diagonal_strength,
             diagonal_angle_deg=self.diagonal_angle_deg,
         )
+
         if self.alignment_smoothing_iterations > 0:
             zone_labels = (
                 (eye_sign > 0).astype(np.int32) * 2 + (hemisphere_sign > 0).astype(np.int32)
@@ -285,7 +286,7 @@ class BundlesAligner:
 
         # Bundle yaw chi from the major axis direction in each tangent frame
         if override_chi is not None:
-            chi = _prepare_per_lens(override_chi, N, 'chi').astype(np.float32)
+            chi = broadcast_1d(override_chi, N, 'chi')
         else:
             major_angle = np.arctan2(
                 np.sum(major * model._local_up, axis=1),
@@ -358,10 +359,6 @@ def trivial_orientation(N: int) -> OrientationResult:
     )
 
 
-def _prepare_per_lens(value: ArrayLike, N: int, name: str) -> np.ndarray:
-    return broadcast_1d(value, N, name)
-
-
 def apply_chirality(
     model: 'CompoundEyeModel',
     chi: ArrayLike,
@@ -378,8 +375,8 @@ def apply_chirality(
     """
 
     N = model._lens_directions.shape[0]
-    chi = _prepare_per_lens(chi, N, 'chi').astype(np.float32)
-    chirality = _prepare_per_lens(chirality, N, 'chirality').astype(np.float32)
+    chi = broadcast_1d(chi, N, 'chi')
+    chirality = broadcast_1d(chirality, N, 'chirality')
 
     main_rad = float(model._bundle.main_axis_rad)
     effective_main = np.where(chirality > 0, main_rad, np.pi - main_rad).astype(np.float32)

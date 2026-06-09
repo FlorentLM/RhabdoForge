@@ -1,12 +1,11 @@
 import numpy as np
 
-from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
 from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.geometry.meshes import CUBE_VERTICES, CUBE_INDICES
-from insectvision.compound_eyes import CompoundEyeModel, VisualOutput
+from insectvision.engine.meshes import CUBE_VERTICES, CUBE_INDICES
+from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.renderers import Rasterizer, Raytracer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
-from insectvision.utils import RandomnessMode
+from insectvision.utils.shared import RandomnessMode
 
 
 def main():

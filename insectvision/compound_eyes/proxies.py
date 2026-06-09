@@ -41,18 +41,19 @@ BundlesAligner, trivial_orientation, apply_chirality, OrientationResult
 )
 from insectvision.compound_eyes.acceptance import (
     AcceptanceModel, LensOptics, ReceptorOptics,
-    SnyderAcceptance, SamplingAcceptance, ExplicitAcceptance, report_acceptance,
+    SnyderAcceptance, SamplingAcceptance, ExplicitAcceptance, print_acceptance,
 )
 from insectvision.engine.world_utils import WORLD_UP, WORLD_FORWARD
-from insectvision.utils.fields import neighbour_smooth
-from insectvision.utils.geodesic import icosphere, fibonacci_sphere
-from insectvision.utils.math import norm_l2, tangent_frames, local_to_world
-from insectvision.utils.knns import knn, angle_to_chord, chord_to_angle, within_angle, lookat_topk
-from insectvision.utils.hexatic import hexatic_phasor, hexatic_axis_angle, hexatic_order, smooth_tilt
-from insectvision.compound_eyes.lattice import facet_diameters
+from insectvision.engine.meshes import icosphere, fibonacci_sphere
+from insectvision.geometry.linalg import tangent_frames, local_to_world
+from insectvision.utils.shared import norm_l2
+from insectvision.geometry.neighbours import knn, smooth_scalars, smooth_phasors
+from insectvision.compound_eye.lattice import lookat_topk
+from insectvision.utils.hexatic import hexatic_axis_angle, hexatic_order
+from insectvision.compound_eyes.lenses import facet_diameters
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
-from insectvision.utils.projections import cartesian_to_spherical, spherical_gradients
-from insectvision.utils.circular import wrap_angle, weighted_circ_mean
+from insectvision.geometry.spherical import cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle
+from insectvision.geometry.circular import resultant, wrap_angle, circ_mean
 
 logger = logging.getLogger(__name__)
 
@@ -2730,7 +2731,7 @@ class CompoundEyeModel:
                 threshold_rad = np.radians(angle_threshold_deg)
 
             # Find if any other eye has a lens within the angular threshold
-            indices = within_angle(other_tree, my_dirs, threshold_rad)
+            indices = other_tree.query_ball_point(my_dirs, r=angle_to_chord(threshold_rad))
 
             eye_binoc_mask = np.array([len(hits) > 0 for hits in indices])
             is_binocular[eye.lens_indices] = eye_binoc_mask
@@ -2799,8 +2800,8 @@ class CompoundEyeModel:
 
             eye_mask = mask[gi] if mask is not None else None
 
-            out[gi] = neighbour_smooth(
-                out[gi], nn_local, mask=eye_mask, n_iter=n_iter, method=method
+            out[gi] = smooth_scalars(
+                out[gi], nn_local, n_iter=n_iter, mask=eye_mask, method=method
             )
 
         return out
@@ -3127,7 +3128,7 @@ class CompoundEyeModel:
 
                 # This is essentially Procrustes rotation
                 weights = np.hypot(raw_dx[valid], raw_dy[valid])
-                mean_error = weighted_circ_mean(angle_errors, weights)
+                mean_error = circ_mean(angle_errors, weights)
 
                 delta = wrap_angle(mean_error - self._bundle_orientation[i])
 
@@ -3397,16 +3398,16 @@ class CompoundEyeModel:
             )
         return np.ascontiguousarray(acc.reshape(N * R, 2), dtype=np.float32)
 
-    def acceptance_report(self, reference_ratio: Optional[float] = None) -> str:
-        N, R = self.lens_count, self.receptors_per_lens
-        acc = self._buffer.rcpt_static_data['rest_acc'].reshape(N, R, 2)
-        return report_acceptance(
-            acc, self._lens_optics(),
+    def acceptance_report(self) -> str:
+
+        return print_acceptance(
+            self._buffer.rcpt_static_data['rest_acc'].reshape(self.lens_count, self.receptors_per_lens, 2),
+            self._lens_optics(),
             peripheral_indices=self._bundle.peripheral_indices,
             narrowing_ratio=self._bundle.extra_narrowing_ratio,
-            reference_ratio=reference_ratio,
         )
 
+    # TODO: Move this to a print_superposition in a superposition.py submodule (along with the other wiring-related functions)
     def cartridges_report(self, exclude_edges: bool = False, verbose: bool = True):
         """How tightly do the co-wired receptors in each cartridge agree on a viewing direction?"""
 
@@ -3588,7 +3589,8 @@ class CompoundEyeModel:
             bearings = np.arctan2(proj_y, proj_x)
 
             # Hexatic order over the first ring
-            z_avg = hexatic_phasor(bearings, weights=is_immediate, axis=1)
+            z_avg = resultant(angles=bearings, weights=is_immediate, axis=1, fold=6)
+
             e_tilts = hexatic_axis_angle(z_avg).astype(np.float32)
             e_psi6_mag = hexatic_order(z_avg).astype(np.float32)
 
@@ -3629,7 +3631,10 @@ class CompoundEyeModel:
             g2l = np.full(N, -1, dtype=np.intp)
             g2l[this_eye_lens_ids] = np.arange(n)
             nb_local = np.where(is_immediate, g2l[neighbours.indices], -1)
-            e_tilts = smooth_tilt(e_tilts, nb_local, weights=e_psi6_mag, iterations=2).astype(np.float32)
+
+            e_tilts_z6 = np.exp(6j * np.asarray(e_tilts, dtype=np.float64))
+            e_tilts_z6_smoothed = smooth_phasors(e_tilts_z6, neighbours=nb_local, n_iter=2, weights=e_psi6_mag)
+            e_tilts = hexatic_axis_angle(e_tilts_z6_smoothed)   # put angles back in (-pi/6, pi/6]
 
             ioa_minor[this_eye_lens_ids] = e_ioa_minor
             ioa_major[this_eye_lens_ids] = e_ioa_major

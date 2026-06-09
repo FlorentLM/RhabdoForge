@@ -2,8 +2,7 @@ import warnings
 from typing import Optional, Tuple, Union
 import numpy as np
 from numpy.typing import ArrayLike
-from insectvision.utils.math import broadcast_1d
-
+from insectvision.utils.shared import broadcast_1d
 
 RHAB_COLOURS = [
     '#ffad13',  # R1

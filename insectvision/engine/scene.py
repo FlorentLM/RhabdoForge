@@ -15,7 +15,7 @@ from .lights import Sun, Light, DirectionalLight, PointLight, AreaLight
 from .movement import TransformMixin
 from .resources import ShaderProgram
 
-from insectvision.geometry.meshes import CUBE_VERTICES, CUBE_INDICES
+from insectvision.engine.meshes import CUBE_VERTICES, CUBE_INDICES
 
 
 def load_cubemap(folder_path):

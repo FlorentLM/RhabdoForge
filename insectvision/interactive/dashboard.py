@@ -4,7 +4,7 @@ import collections
 from pyglm import glm
 
 from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
-from insectvision.utils import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode
+from insectvision.utils.shared import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode
 
 
 class Dashboard:

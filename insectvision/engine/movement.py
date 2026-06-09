@@ -5,7 +5,7 @@ from numpy.typing import ArrayLike
 from pyglm import glm
 
 from .world_utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
-from insectvision.utils.math import tangent_frames
+from insectvision.geometry.linalg import tangent_frames
 
 
 class TransformMixin:

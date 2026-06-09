@@ -8,7 +8,7 @@ from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
-from insectvision.utils import DisplayMode, RandomnessMode, SamplingMode
+from insectvision.utils.shared import DisplayMode, RandomnessMode, SamplingMode
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene, AssetType, Asset
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE

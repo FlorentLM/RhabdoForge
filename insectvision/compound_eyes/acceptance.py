@@ -4,19 +4,17 @@ Acceptance models: pluggable providers of the per-receptor rest Δρ field.
 An 'AcceptanceModel' is any callable that, given per-lens optics and
 per-receptor anatomy, returns the (N, R, 2) rest half-widths (minor, major) in radians.
 
-    - SnyderAcceptance   consumes focal length + aperture (physical Δρ)
-    - SamplingAcceptance consumes the lattice IOA and a dimensionless ratio (eye parameter p)
-                         Δρ = p · Δφ
-    - ExplicitAcceptance consumes a supplied array directly
-    - MatchedAcceptance  derives p from the optics, then samples with it
+    - SnyderAcceptance: consumes focal length + aperture (physical Δρ)
+    - SamplingAcceptance: consumes the lattice IOA and a dimensionless ratio (eye parameter p):  Δρ = p · Δφ
+    - ExplicitAcceptance: consumes a supplied array directly
+    - MatchedAcceptance: derives p from the optics, then samples with it
 """
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Optional, Protocol, Sequence, runtime_checkable
-
 import numpy as np
 from numpy.typing import ArrayLike
+
+from insectvision.utils.shared import broadcast_to_shape
 
 
 # Inputs an acceptance model may read
@@ -63,7 +61,8 @@ class AcceptanceModel(Protocol):
 
 @dataclass(frozen=True)
 class SnyderAcceptance:
-    """Δρ from diffraction + geometric blur (Snyder optics).
+    """
+    Δρ from diffraction + geometric blur (Snyder optics).
 
         rho_geom = arctan(d_rhab / f)
         rho_diff = lambda / D
@@ -93,7 +92,8 @@ class SnyderAcceptance:
 
 @dataclass(frozen=True)
 class SamplingAcceptance:
-    """Anatomical convention Δρ = p · Δφ against the local sampling lattice.
+    """
+    Anatomical convention Δρ = p · Δφ against the local sampling lattice.
 
     ratio (eye parameter p = Δρ/Δφ) is the single source for the anatomical ratio.
 
@@ -115,9 +115,10 @@ class SamplingAcceptance:
         return np.stack([amin, amaj], axis=-1).astype(np.float32)
 
 
-@dataclass(frozen=True, eq=False)    # eq=False because the field is an ndarray and array equality is not scalar
+@dataclass(frozen=True, eq=False)  # eq=False because the field is an ndarray and array equality is not scalar
 class ExplicitAcceptance:
-    """Use a supplied array of half-widths verbatim.
+    """
+    Use a supplied array of half-widths verbatim.
     Accepts (R,), (N, R), or (N, R, 2), broadcast to (N, R, 2).
     """
     values_rad: np.ndarray
@@ -127,14 +128,22 @@ class ExplicitAcceptance:
                            np.asarray(self.values_rad, dtype=np.float32))
 
     def __call__(self, lens: LensOptics, rcpt: ReceptorOptics) -> np.ndarray:
-        return broadcast_to_nr2(self.values_rad, lens.n_lenses, rcpt.n_receptors)
+        n, r = lens.n_lenses, rcpt.n_receptors
+        return broadcast_to_shape(
+            values=self.values_rad,
+            shape=(n, r, 2),
+            accepted=[((r,), (1,)), ((n, r), (0, 1)), ((n, r, 2), (0, 1, 2))],
+            name='acceptance',
+            dtype=np.float32
+        )
 
 
 @dataclass(frozen=True)
 class MatchedAcceptance:
-    """Derive p from the optics, then apply it sampling-style.
+    """
+    Derive p from the optics, then apply it sampling-style.
 
-    Computes the Snyder Δρ, reads out a single ``p = Δρ/Δφ`` from the median lens,
+    Computes the Snyder Δρ, reads out a single 'p = Δρ/Δφ' from the median lens,
     then returns Δρ = p · Δφ everywhere. This is an example of *deriving* one
     parameter from others.
 
@@ -152,64 +161,45 @@ class MatchedAcceptance:
         return SamplingAcceptance(ratio=p)(lens, rcpt)
 
 
-# Helpers
 
-# TODO: Make this a more general broadcast_to(value, n, name) helper and use it elsewere
-def broadcast_to_nr2(values: ArrayLike, n_lenses: int, n_receptors: int) -> np.ndarray:
-    """Broadcast (R,), (N, R), or (N, R, 2) to a contiguous (N, R, 2) float32 array."""
-    arr = np.asarray(values, dtype=np.float32)
-    N, R = n_lenses, n_receptors
+# Diagnostic helper
 
-    if arr.shape == (R,):
-        out = np.broadcast_to(arr[None, :, None], (N, R, 2))
-    elif arr.shape == (N, R):
-        out = np.broadcast_to(arr[..., None], (N, R, 2))
-    elif arr.shape == (N, R, 2):
-        out = arr
-    else:
-        raise ValueError(
-            f"acceptance values must be shape ({R},), ({N}, {R}), or ({N}, {R}, 2); "
-            f"got {arr.shape}"
-        )
-    return np.ascontiguousarray(out, dtype=np.float32)
-
-
-def report_acceptance(
+def print_acceptance(
     acc: ArrayLike,
     lens: LensOptics,
-    *,
     peripheral_indices: Optional[Sequence[int]] = None,
     narrowing_ratio: float = 1.0,
-    reference_ratio: Optional[float] = None,
 ) -> str:
-    """Human-readable diagnostic for any acceptance result. Model-agnostic.
+    """
+    Human-readable diagnostic for an acceptance result. Model-agnostic.
 
     Reports the resting Δρ (minor axis), its narrowed/moved value, and the
-    *measured* sampling ratio p = Δρ/Δφ for the peripheral and full receptor
-    pools. p here is an output, not an input -- compare it to whatever reference
-    you pass.
+    measured sampling ratio p = Δρ/Δφ for the peripheral and full receptor
+    pools.
 
     Args:
         - acc: (N, R, 2) half-widths in radians (the model's output).
-        - lens: the LensOptics used to produce ``acc`` (for ioa_minor).
+        - lens: the LensOptics used to produce 'acc' (for ioa_minor).
         - peripheral_indices: receptor indices for the peripheral pool, if any.
         - narrowing_ratio: full-drive narrowing factor, for the moved Δρ line.
         - reference_ratio: an anatomical p to print alongside, if desired.
     """
+
     acc = np.asarray(acc, dtype=np.float32)
-    rho = acc[..., 0]                              # minor half-width, (N, R)
+    rho = acc[..., 0]  # minor half-width (N, R)
     ioa_minor = np.asarray(lens.ioa_minor, dtype=np.float32)
 
     with np.errstate(divide="ignore", invalid="ignore"):
+
         inv_ioa = 1.0 / np.where(ioa_minor > 1e-9, ioa_minor, np.nan)
         p_all = rho.mean(axis=1) * inv_ioa
+
         if peripheral_indices is not None and len(peripheral_indices):
             p_periph = rho[:, list(peripheral_indices)].mean(axis=1) * inv_ioa
         else:
             p_periph = p_all
 
     def _med(a: np.ndarray) -> float:
-        a = np.asarray(a)
         return float(np.nanmedian(a)) if np.isfinite(a).any() else float("nan")
 
     rho_deg = np.degrees(rho)
@@ -222,7 +212,6 @@ def report_acceptance(
         f"    measured p = Δρ/Δφ : peripheral median {_med(p_periph):.2f}, "
         f"all-cell median {_med(p_all):.2f}",
     ]
-    if reference_ratio is not None:
-        lines.append(f"    (reference anatomical p ~ {reference_ratio:.2f})")
+
     return "\n".join(lines)
 

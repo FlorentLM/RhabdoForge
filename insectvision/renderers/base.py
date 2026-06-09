@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple, Sequence
 import numpy as np
 from pyglm import glm
 
-from insectvision.utils import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode
-from insectvision.geometry.meshes import CONE_VERTICES, SPHERE_VERTICES
+from insectvision.utils.shared import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, \
+    SamplingMode
+from insectvision.engine.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
 from insectvision.engine.resources import ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry

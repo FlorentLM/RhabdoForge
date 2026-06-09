@@ -9,11 +9,10 @@ from matplotlib.gridspec import GridSpec
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.compound_eyes import CompoundEyeModel
 from insectvision.renderers import Raytracer
-from insectvision.utils import Colormap
+from insectvision.utils.shared import Colormap, norm_minmax
 from insectvision.geometry import plane_geom
-from insectvision.geometry.materials_utils import checkerboard_texture
+from insectvision.engine.materials_utils import checkerboard_texture
 from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD, GradientFlowDetector
-from insectvision.utils.math import norm_minmax
 
 # Configuration
 

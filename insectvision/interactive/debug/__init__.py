@@ -33,6 +33,7 @@ Examples:
 """
 
 from typing import Optional
+from insectvision.utils.shared import DisplayMode
 
 from .debug_renderer import DebugRenderer
 from .drawables import (
@@ -103,7 +104,6 @@ class DebugOverlay:
             if hasattr(context_or_pov, 'view_mode'):
 
                 ctx = context_or_pov
-                from ...utils import DisplayMode
                 if ctx.display_mode == DisplayMode.Third_person and ctx.observer is not None:
                     ctx.observer.ratio = ctx.window_size[0] / ctx.window_size[1]
                     ctx.observer.update()
