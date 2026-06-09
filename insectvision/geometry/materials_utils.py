@@ -121,6 +121,7 @@ def aces_tonemap(x):
 
 
 def exr_to_cubemap(input_path, output_size: Optional[int] = None, exposure=1.0, contrast=1.05, fmt='jpg'):
+    """For stuff from https://polyhaven.com/hdris"""
 
     from pathlib import Path
     import os
