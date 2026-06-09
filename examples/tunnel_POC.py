@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
+
+import matplotlib
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
@@ -15,11 +17,11 @@ from insectvision.utils.math import norm_minmax
 
 # Configuration
 
-COL_YAW = '#E3BE6B'
-COL_STRAFE = '#3DB1A6'
+COL_YAW = '#c2a5cf'
+COL_STRAFE = '#a6dba0'
 
-COL_LEFT = '#DB4C77'
-COL_RIGHT = '#10559a'
+COL_LEFT = '#EA5E00'
+COL_RIGHT = '#0094D6'
 
 MODE_YAW = 'yaw'
 MODE_STRAFE = 'strafe'
@@ -52,8 +54,7 @@ class Configuration:
 
     # Flight / control
     flight_speed: float = 0.5          # m/s base forward speed
-    control_authority: float = 0.15    # k: lateral correction at full error, as a fraction of flight_speed
-    heading_tau: float = 0.30          # s: yaw inner-loop heading time constant (yaw mode only)
+    control_authority: float = 1.5     # k: lateral correction at full error, as a fraction of flight_speed
     speed_modulation: float = 0.5      # slow forward speed when steering hard (0 = off, 1 = full)
     motor_noise_frac: float = 0.30     # motor noise sd as a fraction of full-scale correction
     motor_noise: bool = True
@@ -67,8 +68,7 @@ class Configuration:
     seed: Optional[int] = 0
 
     # Plotting
-    heading_quiver_gain: float = 1.0    # visual exaggeration of yaw quivers
-    n_quivers: int = 20                 # quiver samples per trajectory
+    n_quivers: int = 10                 # quiver samples per trajectory
 
 
 # Logging
@@ -197,8 +197,8 @@ def run_trial(cfg: Configuration, context: Context, scene: Scene, renderer: Rayt
         summ = abs(right_estim) + abs(left_estim) + 1e-6
         error = diff / summ
 
-        k = cfg.control_authority
-        u = -k * error
+        k = cfg.control_authority * 10.0
+        u = k * error
 
         if cfg.motor_noise:
             u += rng.normal(0.0, cfg.motor_noise_frac * k)
@@ -207,13 +207,14 @@ def run_trial(cfg: Configuration, context: Context, scene: Scene, renderer: Rayt
         v_fwd = cfg.flight_speed * (1.0 - cfg.speed_modulation * min(abs(error), 1.0))
 
         if mode == MODE_YAW:
-            psi_cmd = -1.0 * np.degrees(np.arcsin(np.clip(u, -1.0, 1.0)))
-            turn_rate = (psi_cmd - agent.yaw) / cfg.heading_tau
+            psi_cmd = np.arcsin(np.clip(u, -1.0, 1.0))
+            turn_rate = np.degrees(psi_cmd - agent.yaw)
 
             agent.rotate(yaw=turn_rate * dt).translate(agent.forward * v_fwd * dt)
 
         elif mode == MODE_STRAFE:
-            agent.translate((agent.forward * v_fwd + agent.right * u * cfg.flight_speed) * dt)
+            strafe_adjust = -0.01    # strafe needs to be scaled down and sign corrected to be in the same range as yaw
+            agent.translate((agent.forward * v_fwd + agent.right * strafe_adjust * u * cfg.flight_speed) * dt)
 
         else:
             raise ValueError(f'Unknown mode {mode!r}')
@@ -276,15 +277,14 @@ def run_all_trials(cfg: Configuration) -> Results:
             randomness_mode='Halton', enable_shadows=False
         )
 
-        # Fix textures once per wall condition, so every model/mode sees the same scene
-        randomise_wall_textures(scene, cfg, wall_condition, renderer)
-
         for model_name in (MODEL_HRC, MODEL_GRADIENT):
 
             rng = np.random.default_rng(cfg.seed)
 
             for mode in (MODE_YAW, MODE_STRAFE):
                 runs: List[RunLog] = []
+
+                randomise_wall_textures(scene, cfg, wall_condition, renderer)
 
                 for t in range(cfg.n_trials):
                     print(f'  {wall_condition:11s} / {MODEL_LABEL[model_name]:22s} / '
@@ -345,25 +345,31 @@ def _trajectory_panel(
         if d.size < 2:
             continue
 
-        samples = np.linspace(d.min(), d.max(), cfg.n_quivers)
+        offset = 0 if mode == MODE_YAW else 3
+        samples = np.linspace(d.min(), d.max(), cfg.n_quivers + offset)
         idx = np.clip(np.searchsorted(d, samples), 0, d.size - 1)
 
-        dx = ax.get_xlim()
-        span = abs(dx[1] - dx[0])
-        ticklength = 0.02 * span
-
         for i in idx:
-            ax.plot(d[i], x[i], 'o', color=colour, ms=2.6, zorder=6)
+            ax.plot(d[i], x[i],
+                    marker='o',
+                    markersize=8,
+                    markerfacecolor=colour,
+                    markeredgewidth=1.5,
+                    markeredgecolor='white',
+                    zorder=6)
 
             yw = rep.arr('yaw')[i]
-            yw = np.deg2rad(yw)
-            yw *= cfg.heading_quiver_gain
 
-            ax.plot([d[i], d[i] + np.cos(yw) * ticklength],
-                    [x[i], x[i] - np.sin(yw) * ticklength],
-                    color=colour, lw=1.1, zorder=6)
+            t = matplotlib.markers.MarkerStyle(marker='_')
+            t._transform = t.get_transform().translate(0.5, 0.0).rotate_deg(np.degrees(yw))
 
-        ax.plot([], [], color=colour, label=mode, lw=1.1, zorder=6)
+            ax.plot(d[i], x[i],
+                    marker=t,
+                    markersize=10,
+                    color=colour,
+                    zorder=7)
+
+        ax.plot([], [], color=colour, label=mode, lw=1.1, zorder=0)
 
     half_width = cfg.width / 2
     lim = half_width * 1.25

@@ -803,13 +803,13 @@ class EyeViewer:
 
         # Local rhabdomere bundle
         offsets = receptor_tip_offsets(self.model)[target_idx]
-        tip_scale = (self.r_sphere * 0.05) / np.max(np.linalg.norm(offsets, axis=1))
+        tip_scale = (self.r_sphere * 0.05) / np.max(np.linalg.norm(offsets, axis=1)) * 0.2
         bundle_origin = self.p[target_idx] + (self.d[target_idx] * d_rad * 0.1)
 
         for r_type in range(self.R):
             tip_pos = bundle_origin + offsets[r_type] * tip_scale
             self.actors_debugger.append(self.plotter.add_mesh(
-                pv.Sphere(radius=d_rad * 0.15, center=tip_pos),
+                pv.Sphere(radius=d_rad * 0.075, center=tip_pos),
                 color=RHAB_COLOURS[r_type], lighting=True
             ))
 
