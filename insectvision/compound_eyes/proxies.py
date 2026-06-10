@@ -48,7 +48,7 @@ from insectvision.engine.meshes import icosphere, fibonacci_sphere
 from insectvision.geometry.linalg import tangent_frames, local_to_world
 from insectvision.utils.shared import norm_l2
 from insectvision.geometry.neighbours import knn, smooth_scalars, smooth_phasors
-from insectvision.utils.hexatic import hexatic_axis_angle, hexatic_order
+from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.compound_eyes.lenses import facet_diameters
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
 from insectvision.geometry.spherical import cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle
@@ -61,8 +61,8 @@ logger = logging.getLogger(__name__)
 
 
 def _lookat_top_k(
-        pos: np.ndarray,
-        dirs: np.ndarray,
+        positions: np.ndarray,
+        directions: np.ndarray,
         targets: np.ndarray,
         k: int,
         conflict_mask: Optional[np.ndarray] = None,
@@ -74,9 +74,9 @@ def _lookat_top_k(
     that lens to the target. Columns are ordered best-first. 'conflict_mask' (a
     boolean over the lenses) excludes conflicted lenses from selection.
     """
-    desired = targets[:, None, :] - pos[None, :, :]
+    desired = targets[:, None, :] - positions[None, :, :]
     desired = norm_l2(desired, axis=-1)
-    dots = np.einsum('jk,ijk->ij', dirs, desired)
+    dots = np.einsum('jk,ijk->ij', directions, desired)
 
     if conflict_mask is not None:
         dots[:, conflict_mask] = -np.inf
@@ -998,7 +998,7 @@ class Eye:
 
     def neighbours(self,
         lens_indices: Optional[ArrayLike] = None,
-        points: Optional[ArrayLike] = None,
+        positions: Optional[ArrayLike] = None,
         k: int = 6,
         immediate_only: bool = False,
         neighbour_dist_factor: float = 1.25,
@@ -1009,7 +1009,7 @@ class Eye:
         Args:
             - lens_indices: global lens query indices (only lenses in this eye are
                 queried, others are masked out).
-            - points: (Q, 3) world-space query points.
+            - positions: (Q, 3) world-space query points.
             - k: number of neighbours per query.
             - immediate_only: if True, return only first lattice ring neighbours.
                 The result's 'is_immediate' field is all True.
@@ -1021,8 +1021,8 @@ class Eye:
         Returns a NeighbourResult.
         """
 
-        if (lens_indices is None) == (points is None):
-            raise ValueError("Provide either 'lens_indices' or 'points' (but not both)")
+        if (lens_indices is None) == (positions is None):
+            raise ValueError("Provide either 'lens_indices' or 'positions' (but not both)")
 
         # Build per-eye local positions and a lookup global->local to allow mapping results back to global indices
         local_to_global = self._lens_indices
@@ -1069,7 +1069,7 @@ class Eye:
             return result
 
         # Points path
-        pts = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+        pts = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
         tree = self._ensure_position_tree()
         distances, local_nidx = knn(tree, pts, k, drop_self=False)
         global_nidx = local_to_global[local_nidx]
@@ -1146,10 +1146,10 @@ class Eye:
         return view, distances
 
     def query_lookat(self,
-         targets: ArrayLike,
-         k: int = 1,
-         avoid_conflicts: bool = False
-         ) -> 'LensView':
+        target_positions: ArrayLike,
+        k: int = 1,
+        avoid_conflicts: bool = False
+        ) -> 'LensView':
         """
         Find the k lenses best looking at world-space target points.
 
@@ -1162,7 +1162,8 @@ class Eye:
         """
         if k < 1:
             raise ValueError("k must be >= 1")
-        q = np.asarray(targets, dtype=np.float32).reshape(-1, 3)
+
+        q = np.asarray(target_positions, dtype=np.float32).reshape(-1, 3)
         if len(self._lens_indices) == 0:
             return LensView(self._model, np.empty(0, dtype=np.intp))
 
@@ -2805,36 +2806,43 @@ class CompoundEyeModel:
             n_iter: int = 2,
             mask: Optional[np.ndarray] = None,
             method: str = 'mean',
-            metric: str = 'angular'
+            metric: str = 'angular',
     ) -> np.ndarray:
-        """Smooth a per-lens scalar field, independently within each eye."""
+        """
+        Smooth a per-lens scalar field, independently within each eye.
 
+        Reuses each eye's cached KD-tree (the direction tree for metric='angular',
+        otherwise the cached lattice neighbour graph).
+        """
         out = np.asarray(values).copy()
         if n_iter <= 0:
             return out
 
+        groups, graphs = [], []
         for eye in self._eyes:
             gi = eye.lens_indices
-            n_e = gi.size
-            if n_e < 3:
+            if gi.size < 3:
                 continue
 
-            actual_k = min(k, n_e - 1)
-
-            # Use cached KD-trees on the eye!
+            actual_k = min(k, gi.size - 1)
             if metric == 'angular':
                 tree = eye._ensure_direction_tree()
                 _, nn_local = knn(tree, self._lens_directions[gi], actual_k)
             else:
                 nn_local = eye._ensure_neighbour_graph(actual_k)
 
-            eye_mask = mask[gi] if mask is not None else None
+            groups.append(gi)
+            graphs.append(nn_local)
 
-            out[gi] = smooth_scalars(
-                out[gi], nn_local, n_iter=n_iter, mask=eye_mask, method=method
-            )
-
-        return out
+        return smooth_field_by_partition(
+            out,
+            kind='scalar',
+            groups=groups,
+            neighbours=graphs,
+            n_iter=n_iter,
+            mask=mask,
+            method=method,
+        )
 
     # Cartridges (neural-superposition wiring)
 
@@ -3282,7 +3290,7 @@ class CompoundEyeModel:
 
         median_edge = float(np.median(dists))
         if median_edge <= 0.0:
-            # Degenerate: all points coincident, return a single island
+            # Degenerate: all points coincide, return a single island
             return np.zeros(N, dtype=np.uint32)
         threshold = distance_multiplier * median_edge
 

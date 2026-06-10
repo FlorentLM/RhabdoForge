@@ -5,10 +5,12 @@ from scipy.interpolate import RBFInterpolator
 from scipy.optimize import minimize
 from scipy.spatial import ConvexHull, Voronoi, cKDTree
 
-from insectvision.utils.hexatic import hexatic_rest_vectors
-from insectvision.geometry.polygons import polygon_area, clip_polygon, Polygon2D
-from insectvision.geometry.neighbours import local_spacing, delaunay_edges
 from insectvision.geometry.linalg import tangent_frames
+from insectvision.geometry.hexatic import hexatic_rest_vectors
+from insectvision.geometry.neighbours import local_spacing, delaunay_edges
+from insectvision.geometry.polygons import (
+    Polygon2D, polygon_area, weighted_polygon_centroids, voronoi_cells, mirror_across_hull, order_polygon_ccw
+)
 
 
 # TODO: Might benefit from a bit of cleaning here too
@@ -21,8 +23,8 @@ class OmmatidiaSpacing2D:
 
     One thin-plate-spline RBF is fit over normalised local spacing
 
-    spacing(pts) -> target local spacing (spring_relaxation, density_warp)
-    density(pts) -> point number density (lloyd_relaxation)
+    spacing(points2d) -> target local spacing (spring_relaxation, density_warp)
+    density(points2d) -> point number density (lloyd_relaxation)
     density_scale: rescales the target lattice (>1 packs more lenses)
 
     In 2D density ~1/spacing**2, so spacing shrinks by sqrt(density_scale)
@@ -30,22 +32,22 @@ class OmmatidiaSpacing2D:
 
     def __init__(
             self,
-            pts_2d: np.ndarray,
+            points2d: np.ndarray,
             smoothing: float = 0.1,
-            k_neighbours: int = 7,
+            k: int = 7,
             density_scale: float = 1.0,
             clip_norm: Tuple[float, float] = (0.1, 5.0),
             density_exponent: float = 2.0,
     ):
 
-        pts_2d = np.asarray(pts_2d, dtype=float)
+        points2d = np.asarray(points2d, dtype=float)
 
         self.density_scale = float(density_scale)
         self.density_exponent = float(density_exponent)
         self._clip_lo, self._clip_hi = clip_norm
 
-        tree = cKDTree(pts_2d)
-        spacing = local_spacing(tree, pts_2d, k=k_neighbours - 1)
+        tree = cKDTree(points2d)
+        spacing = local_spacing(tree, points2d, k=k - 1)
 
         # Reference scale: mean over the inner 80% so that boundary points (inflated spacing, incomplete rings)
         # don't pull the value up
@@ -57,25 +59,25 @@ class OmmatidiaSpacing2D:
 
         # TPS is linear in the fitted values so density_scale can be applied at query time
         self._rbf = RBFInterpolator(
-            pts_2d, spacing / self.mean_spacing,
+            points2d, spacing / self.mean_spacing,
             kernel='thin_plate_spline', smoothing=smoothing,
         )
 
-    def _norm_spacing(self, pts: np.ndarray) -> np.ndarray:
+    def _norm_spacing(self, points2d: np.ndarray) -> np.ndarray:
         """Normalised (mean_spacing = 1), density-scaled, clamped spacing."""
 
-        pts = np.atleast_2d(np.asarray(pts, dtype=float))
-        s = self._rbf(pts).ravel() / np.sqrt(self.density_scale)
+        points2d = np.atleast_2d(np.asarray(points2d, dtype=float))
+        s = self._rbf(points2d).ravel() / np.sqrt(self.density_scale)
         # Clamp bc TPS extrapolates wildly outside the hull
         return np.clip(s, self._clip_lo, self._clip_hi)
 
-    def spacing(self, pts: np.ndarray) -> np.ndarray:
-        """Target local spacing at 'pts', in input units. Pass as spacing_fn."""
-        return self._norm_spacing(pts) * self.mean_spacing
+    def spacing(self, points2d: np.ndarray) -> np.ndarray:
+        """Target local spacing at 'points2d', in input units. Pass as spacing_fn."""
+        return self._norm_spacing(points2d) * self.mean_spacing
 
-    def density(self, pts: np.ndarray) -> np.ndarray:
-        """Point number density at 'pts' (~ 1 / spacing**exponent). Pass as density_fn."""
-        return 1.0 / self._norm_spacing(pts) ** self.density_exponent
+    def density(self, points2d: np.ndarray) -> np.ndarray:
+        """Point number density at 'points2d' (~ 1 / spacing**exponent). Pass as density_fn."""
+        return 1.0 / self._norm_spacing(points2d) ** self.density_exponent
 
 
 
@@ -93,13 +95,13 @@ def hexagonal_grid(spacing: float, angle: float, extent: float) -> np.ndarray:
     return grid
 
 
-def align_grid(grid: np.ndarray, pts_2d: np.ndarray) -> np.ndarray:
+def align_grid(grid: np.ndarray, points2d: np.ndarray) -> np.ndarray:
     """
     Align a hex grid (rigid transform) to match a point cloud.
     """
 
-    tree_raw = cKDTree(pts_2d)
-    domain = Polygon2D.from_points(pts_2d)
+    tree_raw = cKDTree(points2d)
+    domain = Polygon2D.from_points(points2d)
 
     def loss(p):
         pos, rot = p[:2], p[2]
@@ -108,7 +110,7 @@ def align_grid(grid: np.ndarray, pts_2d: np.ndarray) -> np.ndarray:
         t = grid @ mat.T + pos
 
         t_tree = cKDTree(t)
-        d_fwd, _ = t_tree.query(pts_2d)
+        d_fwd, _ = t_tree.query(points2d)
         mask = domain.inside(t)
 
         if np.any(mask):
@@ -135,90 +137,8 @@ def align_grid(grid: np.ndarray, pts_2d: np.ndarray) -> np.ndarray:
     return aligned
 
 
-# TODO: Make this a bit more generic and move to polygons.py
-def _weighted_centroids(points, voronoi, n_real, boundary_equations, density_fn):
-    """
-    Density-weighted centroids of the (clipped) Voronoi cells of points[:n_real].
-    """
-
-    out = points[:n_real].copy()
-    poly_mean = np.full((n_real, 2), np.nan)  # fallback per valid but zero-weight cell
-
-    centroids_all, areas_all, owner_all = [], [], []
-    for i in range(n_real):
-        region = voronoi.regions[voronoi.point_region[i]]
-        if not region or -1 in region:
-            continue
-        cell = voronoi.vertices[region]
-        if len(cell) < 3:
-            continue
-        poly = clip_polygon(cell, boundary_equations)
-        if len(poly) < 3:
-            continue
-        poly_mean[i] = poly.mean(axis=0)
-
-        v0 = poly[0]
-        e1, e2 = poly[1:-1] - v0, poly[2:] - v0
-        areas = 0.5 * np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0])
-        cents = (v0 + poly[1:-1] + poly[2:]) / 3.0
-        keep = areas > 1e-14
-
-        if keep.any():
-            centroids_all.append(cents[keep])
-            areas_all.append(areas[keep])
-            owner_all.append(np.full(int(keep.sum()), i))
-
-    has_cell = np.isfinite(poly_mean[:, 0])
-    out[has_cell] = poly_mean[has_cell]   # Default = polygon centroid
-    if not centroids_all:
-        return out
-
-    C = np.vstack(centroids_all)
-    owner = np.concatenate(owner_all)
-    w = np.concatenate(areas_all) * np.asarray(density_fn(C)).ravel()
-
-    den = np.bincount(owner, weights=w, minlength=n_real)
-    num = np.stack([np.bincount(owner, weights=w * C[:, 0], minlength=n_real),
-                    np.bincount(owner, weights=w * C[:, 1], minlength=n_real)], axis=1)
-    good = den > 1e-16
-    out[good] = num[good] / den[good, None]   # override with weighted centroid
-
-    return out
-
-
-# TODO: Maybe also move this to polygons.py
-def _mirror_across_hull(points: np.ndarray, equations: np.ndarray, depth: float) -> np.ndarray:
-    """
-    Mirror points close to the hull edges to the outside.
-    This creates a symmetric Voronoi pressure that prevents edge points
-    from squashing against the boundary.
-    """
-    mirrored = []
-    for eq in equations:
-        normal, offset = eq[:2], eq[2]
-
-        # ConvexHull convention: normals point outward
-        dist = points @ normal + offset
-
-        mask = (dist > -depth) & (dist <= 0)    # points inside the hull and within 'depth' of the edge
-        if not np.any(mask):
-            continue
-
-        close_pts = points[mask]
-        dist_close = dist[mask]
-
-        # Reflect across edge
-        mirrored_pts = close_pts - 2.0 * dist_close[:, None] * normal[None, :]
-        mirrored.append(mirrored_pts)
-
-    if mirrored:
-        return np.vstack(mirrored)
-
-    return np.zeros((0, 2))
-
-
 def lloyd_relaxation(
-        points: np.ndarray,
+        points2d: np.ndarray,
         density_fn: Callable,
         boundary: ConvexHull,
         max_iter: int = 20,
@@ -230,7 +150,7 @@ def lloyd_relaxation(
     Voronoi relaxation (Lloyd's algorithm, 10.1109/TIT.1982.1056489).
 
     Args:
-        points: (N, 2)
+        points2d: (N, 2)
         density_fn: (M, 2) -> (M,)
         boundary: ConvexHull of the target domain
         max_iter: int
@@ -241,8 +161,8 @@ def lloyd_relaxation(
         verbose: Print info
     """
 
-    points = points.copy()
-    n_real = len(points)
+    points2d = points2d.copy()
+    n_real = len(points2d)
 
     # get data domain (to place the ghost ring fallback)
     domain_center = np.mean(boundary.points[boundary.vertices], axis=0)
@@ -253,8 +173,8 @@ def lloyd_relaxation(
     ghosts_points = domain_center + np.column_stack([np.cos(angles), np.sin(angles)]) * r
 
     # estim initial spacing to define mirror depth and boundary expansion
-    tree = cKDTree(points)
-    d, _ = tree.query(points, k=2)
+    tree = cKDTree(points2d)
+    d, _ = tree.query(points2d, k=2)
     mean_nn = float(np.mean(d[:, 1]))
 
     mirror_depth = mean_nn * 3.0
@@ -265,10 +185,10 @@ def lloyd_relaxation(
     expanded_equations[:, 2] -= mean_nn * 1.5
 
     for it in range(max_iter):
-        mirrored_ghosts = _mirror_across_hull(points, boundary.equations, mirror_depth)
+        mirrored_ghosts = mirror_across_hull(points2d, boundary.equations, mirror_depth)
         ghosts = mirrored_ghosts if len(mirrored_ghosts) > 0 else ghosts_points
 
-        all_pts = np.vstack([points, ghosts])
+        all_pts = np.vstack([points2d, ghosts])
         try:
             vor = Voronoi(all_pts)
         except Exception as exc:
@@ -276,32 +196,36 @@ def lloyd_relaxation(
                 print(f"  Lloyd iter {it}: Voronoi failed ({exc}), stopping.")
             break
 
-        # Voronoi edges between a point and its reflection lie exactly on the true boundary
-        # so we don't want the hard clipper to interfere
-        new_pts = _weighted_centroids(
-            all_pts, vor, n_real, expanded_equations, density_fn
+        # Voronoi edges between a point and its reflection lie exactly on the true
+        # boundary, so we don't want the hard clipper to interfere.
+        new_pts = weighted_polygon_centroids(
+            voronoi_cells(vor, n_real),
+            fallback=points2d,
+            weight_fn=density_fn,
+            clip_equations=expanded_equations,
         )
+        # TODO: Could use the polygon_centroid function instead
 
-        step = new_pts - points
-        points_next = points + relaxation_factor * step
+        step = new_pts - points2d
+        points_next = points2d + relaxation_factor * step
 
         disp = np.linalg.norm(relaxation_factor * step, axis=1)
 
         if verbose:
             print(f"  Lloyd iter {it:3d}:  mean d = {disp.mean():.6f}, max d = {disp.max():.6f}")
 
-        points = points_next
+        points2d = points_next
 
         if disp.mean() < convergence_tol:
             if verbose:
                 print(f"  Converged at iteration {it}.")
             break
 
-    return points
+    return points2d
 
 
 def density_warp(
-        points: np.ndarray,
+        points2d: np.ndarray,
         spacing_fn: Callable,
         reference_spacing: float,
         exponent: float = 1.0,
@@ -310,12 +234,12 @@ def density_warp(
     Warp a point set so that local spacing matches a target density field.
 
     Args:
-        points: (N, 2)
+        points2d: (N, 2)
         spacing_fn: (M, 2) -> (M,) Target local spacing at each point
         reference_spacing (float): The spacing of the uniform input grid
         exponent (float): Warp strength. Lower values keep more points at the boundary
     """
-    pts = points.copy()
+    pts = points2d.copy()
 
     s = spacing_fn(pts)     # centre of compression
     weights = 1.0 / np.maximum(s, 1e-12)
@@ -330,11 +254,11 @@ def density_warp(
 
 
 def spring_relaxation(
-        points,
+        points2d,
         spacing_fn,
         theta_fn=None,
         confidence_fn=None,
-        n_iterations=120,
+        max_iter=120,
         retriangulate_every=0,
         max_length_factor=1.8,
         force_cap=2.0,
@@ -356,7 +280,7 @@ def spring_relaxation(
     With an orientation field, topology must follow it (T1 transitions), so set retriangulate_every nedds to be >0.
 
     Args:
-        points: (N, 2) initial positions (a roughly hex grid)
+        points2d: (N, 2) initial positions (a roughly hex grid)
         spacing_fn: (M, 2) -> (M,) target local spacing
         theta_fn: (M, 2) -> (M,) local hexatic-axis angle [rad], or None
         retriangulate_every: recompute Delaunay edges every k iters (0 = never)
@@ -364,10 +288,10 @@ def spring_relaxation(
         convergence_tol: relative early-stop (fraction of local spacing)
         verbose: print progress
     """
-    pts = points.copy()
+    pts = points2d.copy()
     edges = delaunay_edges(pts, max_length_factor=max_length_factor)
 
-    for it in range(n_iterations):
+    for it in range(max_iter):
         if retriangulate_every and it > 0 and it % retriangulate_every == 0:
             edges = delaunay_edges(pts, max_length_factor=max_length_factor)
 
@@ -411,7 +335,7 @@ def spring_relaxation(
         mean_disp = float(np.linalg.norm(applied, axis=1).mean())
         ref = float(np.median(node_scale))
 
-        if verbose and (it % 10 == 0 or it == n_iterations - 1):
+        if verbose and (it % 10 == 0 or it == max_iter - 1):
             print(f"  spring iter {it:3d}:  mean |disp|/spacing = {mean_disp / max(ref, 1e-12):.5f}")
 
         if mean_disp < convergence_tol * ref:
@@ -427,7 +351,7 @@ def facet_diameters(
         directions,
         k=18,
         packing=1.0,
-        smooth_iter=1,
+        n_iter=1,
         shell_factor=1.5,
         min_ring=4,
         fill_sweeps=6
@@ -446,7 +370,7 @@ def facet_diameters(
         directions: (N, 3) lens optical axes (unit, the local surface normal).
         k: neighbours used to bound each local cell (>= ~12 so the first ring is enclosed).
         packing: scale on the hex flat-to-flat diameter (1.0 = facets tile edge-to-edge).
-        smooth_iter: neighbour-median smoothing passes applied to the result.
+        n_iter: neighbour-median smoothing passes applied to the result.
     """
     positions = np.asarray(positions, dtype=float)
     directions = np.asarray(directions, dtype=float)
@@ -476,16 +400,14 @@ def facet_diameters(
         nb = idx[i, 1:]
         u, v = right_b[i], up_b[i]
         rel = positions[nb] - positions[i]
-        pts2d = np.vstack([[0.0, 0.0], np.column_stack([rel @ u, rel @ v])])
+        pts = np.vstack([[0.0, 0.0], np.column_stack([rel @ u, rel @ v])])
         fb = packing * ref[i]
 
         try:
-            vor = Voronoi(pts2d)
+            vor = Voronoi(pts)
             region = vor.regions[vor.point_region[0]]
             if region and (-1 not in region):
-                poly = vor.vertices[region]
-                c = poly.mean(axis=0)
-                poly = poly[np.argsort(np.arctan2(poly[:, 1] - c[1], poly[:, 0] - c[0]))]
+                poly = order_polygon_ccw(vor.vertices[region])
                 area = polygon_area(poly)
                 dv = packing * np.sqrt(2.0 * area / np.sqrt(3.0))
                 if 0.6 * fb < dv < 1.5 * fb:
@@ -506,7 +428,7 @@ def facet_diameters(
 
     D = np.where(np.isfinite(D), D, packing * ref)  # last resort
 
-    for _ in range(int(smooth_iter)):
+    for _ in range(int(n_iter)):
         D = np.median(np.concatenate([D[:, None], D[ring_idx]], axis=1), axis=1)
 
     return D.astype(np.float32)

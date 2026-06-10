@@ -94,8 +94,8 @@ class RhabdomereBundle:
         self.offsets_um = np.atleast_2d(np.asarray(offsets_um, dtype=np.float32)).reshape(-1, 2)
         R = self.offsets_um.shape[0]
 
-        self.diameters_um = self._broadcast_to_R(diameters_um, R, 'diameters_um')
-        self.wavelengths_nm = self._broadcast_to_R(wavelengths_nm, R, 'wavelengths_nm')
+        self.diameters_um = broadcast_1d(diameters_um, R, 'diameters_um')
+        self.wavelengths_nm = broadcast_1d(wavelengths_nm, R, 'wavelengths_nm')
         self.sensitivity = self._resolve_sensitivity(sensitivity, R)
 
         # Validation
@@ -121,10 +121,6 @@ class RhabdomereBundle:
             )
 
     # Construction helpers
-
-    @staticmethod
-    def _broadcast_to_R(value: Union[float, ArrayLike], R: int, name: str) -> np.ndarray:
-        return broadcast_1d(value, R, name)
 
     @staticmethod
     def _resolve_sensitivity(sensitivity: Union[float, ArrayLike], R: int) -> np.ndarray:

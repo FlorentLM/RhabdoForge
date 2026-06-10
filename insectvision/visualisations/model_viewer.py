@@ -9,7 +9,7 @@ from insectvision.compound_eyes.buffers import get_metadata_field
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, RHAB_COLOURS
 from insectvision.compound_eyes.orientation import BundlesAligner
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
-from insectvision.geometry.spherical import stereo_proj
+from insectvision.geometry.spherical import sphere_to_stereo
 from insectvision.utils.shared import norm_l2
 
 CHIRALITY_NEG_COLOR = '#B95D21'
@@ -74,7 +74,7 @@ def make_eye_mesh(model) -> pv.PolyData:
 
         eye_dirs = norm_l2(eye_pos)
         try:
-            pts_2d, _, _, _ = stereo_proj(eye_dirs)
+            pts_2d, _, _, _ = sphere_to_stereo(eye_dirs)
             tri = Delaunay(pts_2d)
             simplices = tri.simplices
 
@@ -753,7 +753,7 @@ class EyeViewer:
 
         k_nb = min(40, len(self.model.eye(self.model.lenses[target_idx].eye_index[0])))
         result = self.model.eye(self.model.lenses[target_idx].eye_index[0]).neighbours(
-            points=self.p[target_idx][None, :], k=k_nb)
+            positions=self.p[target_idx][None, :], k=k_nb)
         nb_indices = result.indices[0]
         partners = self.model.cartridges[target_idx].sources
 

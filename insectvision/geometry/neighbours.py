@@ -1,13 +1,13 @@
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Sequence
 import numpy as np
 from scipy.spatial import cKDTree, Delaunay
 
 
 # 2D neighbours stuff
 
-def _delaunay_pairs(pts_2d: np.ndarray) -> set:
+def _delaunay_pairs(points2d: np.ndarray) -> set:
     """Unique undirected (i, j) Delaunay edges (i < j)."""
-    tri = Delaunay(pts_2d)
+    tri = Delaunay(points2d)
     pairs = set()
     for sx in tri.simplices:
         for i in range(3):
@@ -16,43 +16,43 @@ def _delaunay_pairs(pts_2d: np.ndarray) -> set:
     return pairs
 
 
-def delaunay_neighbours(pts_2d: np.ndarray, max_length_factor: float = 0.0) -> List[np.ndarray]:
+def delaunay_neighbours(points2d: np.ndarray, max_length_factor: float = 0.0) -> List[np.ndarray]:
     """
     One-ring neighbour lists from a 2D Delaunay triangulation.
 
     If max_length_factor > 0, drop edges longer than that times local spacing
     (removes boundary-bearing corruption).
     """
-    pts_2d = np.asarray(pts_2d)
-    neighbours = [set() for _ in range(len(pts_2d))]
+    points2d = np.asarray(points2d)
+    neighbour_lists = [set() for _ in range(len(points2d))]
 
-    for a, b in _delaunay_pairs(pts_2d):
-        neighbours[a].add(b)
-        neighbours[b].add(a)
+    for a, b in _delaunay_pairs(points2d):
+        neighbour_lists[a].add(b)
+        neighbour_lists[b].add(a)
 
-    neighbours = [np.fromiter(s, dtype=np.intp, count=len(s)) for s in neighbours]
+    neighbour_lists = [np.fromiter(s, dtype=np.intp, count=len(s)) for s in neighbour_lists]
 
     if max_length_factor > 0:
-        loc = local_spacing(cKDTree(pts_2d), pts_2d, k=min(6, max(1, len(pts_2d) - 1)))
-        neighbours = [nb[np.linalg.norm(pts_2d[nb] - pts_2d[i], axis=1) < max_length_factor * loc[i]]
-               for i, nb in enumerate(neighbours)]
-    return neighbours
+        loc = local_spacing(cKDTree(points2d), points2d, k=min(6, max(1, len(points2d) - 1)))
+        neighbour_lists = [nb[np.linalg.norm(points2d[nb] - points2d[i], axis=1) < max_length_factor * loc[i]]
+               for i, nb in enumerate(neighbour_lists)]
+    return neighbour_lists
 
 
-def delaunay_edges(pts_2d: np.ndarray, max_length_factor: float = 0.0) -> np.ndarray:
+def delaunay_edges(points2d: np.ndarray, max_length_factor: float = 0.0) -> np.ndarray:
     """
     Delaunay edges in the plane.
 
     Optionally prunes edges longer than max_length_factor * local spacing
     (convex-hull boundary edges, not real neighbours). Disabled if <= 0.
     """
-    pts_2d = np.asarray(pts_2d)
-    pairs = _delaunay_pairs(pts_2d)
+    points2d = np.asarray(points2d)
+    pairs = _delaunay_pairs(points2d)
     edges = np.array(sorted(pairs)) if pairs else np.zeros((0, 2), dtype=int)
 
     if max_length_factor > 0 and len(edges):
-        loc = local_spacing(cKDTree(pts_2d), pts_2d, k=min(6, max(1, len(pts_2d) - 1)))
-        lengths = np.linalg.norm(pts_2d[edges[:, 0]] - pts_2d[edges[:, 1]], axis=1)
+        loc = local_spacing(cKDTree(points2d), points2d, k=min(6, max(1, len(points2d) - 1)))
+        lengths = np.linalg.norm(points2d[edges[:, 0]] - points2d[edges[:, 1]], axis=1)
         mean_local = 0.5 * (loc[edges[:, 0]] + loc[edges[:, 1]])
         edges = edges[lengths < mean_local * max_length_factor]
 
@@ -137,8 +137,6 @@ def _masked_neighbours(neighbours: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return valid, safe
 
 
-# TODO: unify these three functions?
-
 def smooth_scalars(
         values: np.ndarray,
         neighbours: np.ndarray,
@@ -152,8 +150,8 @@ def smooth_scalars(
     Args:
         values: (N,) values to smooth
         neighbours: (N, k) neighbour indices, entries < 0 are ignored (padding)
-        mask: (N,) bool. If given, only True entries are updated
         n_iter: smoothing passes
+        mask: (N,) bool. If given, only True entries are updated
         method: 'mean' (half-self half-neighbours) or 'median' (self + neighbours)
     """
     out = np.asarray(values, dtype=np.float64).copy()
@@ -194,14 +192,13 @@ def smooth_phasors(
     Smooth a per-point complex phasor over a precomputed neighbour graph.
 
     Args:
-        values: (N,) complex phasors (need not be unit). For a hexatic field these are
-            exp(6i*theta), for a nematic field, exp(2i*theta), etc.
+        values: (N,) complex phasors (need not be unit). For a hexatic field these
+            are exp(6i*theta), for a nematic field exp(2i*theta), etc.
         neighbours: (N, k) int neighbour indices, entries < 0 are ignored (padding).
-        weights: (N,) per-point confidence (e.g. |Psi|), None -> uniform.
         n_iter: smoothing passes.
+        weights: (N,) per-point confidence (e.g. |Psi|), None -> uniform.
         include_self: keep each point's own phasor in its average.
     """
-
     z = np.asarray(values, dtype=np.complex128).copy()
     w = np.ones(z.shape[0]) if weights is None else np.asarray(weights, dtype=np.float64)
 
@@ -225,7 +222,7 @@ def smooth_nematic_vectors(
         values: np.ndarray,
         neighbours: np.ndarray,
         n_iter: int = 10,
-        include_self: bool = True
+        include_self: bool = True,
 ) -> np.ndarray:
     """
     Smooth sign-ambiguous (nematic) unit vectors over a precomputed neighbour graph.
@@ -235,15 +232,12 @@ def smooth_nematic_vectors(
     director-like fields (e.g. bundle / saccade axes) where orientation matters
     but sign does not.
 
-    Unlike 'smooth_phasors' / 'smooth_scalars', this expects a *dense* (M, k)
-    neighbour array with no padding (every entry a valid index), e.g. straight
-    from a cKDTree query with self dropped.
-
     Args:
         values: (M, D) unit vectors
-        neighbours: (M, k) neighbour indices into 'vectors'
+        neighbours: (M, k) neighbour indices, entries < 0 are ignored (padding).
+            A dense knn() output (self dropped) is the typical input.
         n_iter: smoothing passes
-        include_self: keep each vecrtor's own phasor in its average
+        include_self: keep each vector's own value in its average
     """
     out = np.asarray(values, dtype=np.float64).copy()
     if n_iter <= 0:
@@ -259,7 +253,7 @@ def smooth_nematic_vectors(
         dots = np.einsum('id,ikd->ik', base, neigh)
         neigh = np.where(dots[..., None] < 0, -neigh, neigh)
 
-        # Zero out invalid padded neighbours
+        # Zero invalid padded neighbours
         neigh = np.where(valid_nb[..., None], neigh, 0.0)
 
         sum_vecs = neigh.sum(axis=1)
@@ -274,5 +268,107 @@ def smooth_nematic_vectors(
 
         # Re-normalise, falling back to previous vector if magnitude is destroyed
         out = np.where(norms > 1e-8, avg / np.clip(norms, 1e-8, None), base)
+
+    return out
+
+
+def smooth_field_partitioned(
+        values: np.ndarray,
+        *,
+        kind: str = 'scalar',
+        partition: Optional[np.ndarray] = None,
+        positions: Optional[np.ndarray] = None,
+        groups: Optional[Sequence[np.ndarray]] = None,
+        neighbours: Optional[Sequence[np.ndarray]] = None,
+        k: int = 8,
+        n_iter: int = 2,
+        min_group: int = 2,
+        weights: Optional[np.ndarray] = None,
+        mask: Optional[np.ndarray] = None,
+        method: str = 'mean',
+        include_self: bool = True,
+) -> np.ndarray:
+    """
+    Smooth a per-element field independently within disjoint groups.
+    Groups smaller than 'min_group' pass through untouched.
+
+    Two ways to supply the groups and their neighbour graphs:
+
+      1. Label mode (transient trees built here):
+            partition: (N,) group label per element (np.unique-able)
+            positions: (N, D) coordinates, a cKDTree is built per group and
+                       queried for k neighbours (self dropped).
+         Use when you only have positions and a labelling.
+
+      2. Precomputed mode (caller owns the graphs, e.g. cached KD-trees or a non-Euclidean metric):
+            groups:     sequence of global-index arrays, one per group
+            neighbours: matching sequence of (n_g, k) *group-local* neighbour
+                        index arrays (e.g. straight from knn(), -1 padding ok).
+
+    Args:
+        kind: which kernel to run, 'scalar' | 'phasor' | 'nematic'.
+        k: neighbours per element (label mode only, clamped to group size).
+        n_iter: smoothing passes per group.
+        weights: (N,) per-element confidence, sliced per group ('phasor' only).
+        mask: (N,) bool update mask, sliced per group ('scalar' only).
+        method: 'mean' | 'median' ('scalar' only).
+        include_self: keep each element's own value in its average
+            ('phasor' / 'nematic' only).
+
+    Returns:
+        Smoothed field, same shape and dtype as 'values'.
+    """
+    if kind not in ('scalar', 'phasor', 'nematic'):
+        raise ValueError(f"Unknown kind {kind!r}, expected 'scalar', 'phasor' or 'nematic'")
+
+    label_mode = partition is not None
+    precomp_mode = groups is not None
+
+    if label_mode == precomp_mode:
+        raise ValueError("Provide exactly one of 'partition' or 'groups'")
+    if label_mode and positions is None:
+        raise ValueError("'partition' mode requires 'positions'")
+    if precomp_mode and neighbours is None:
+        raise ValueError("'groups' mode requires a matching 'neighbours' sequence")
+
+    out = np.asarray(values).copy()
+    if n_iter <= 0:
+        return out
+
+    floor = max(int(min_group), 2)  # a group needs >= 2 members to have a neighbour
+
+    # Build work list of (group_global_idx, group_local_neighbours).
+    if label_mode:
+        positions = np.asarray(positions, dtype=float)
+        work = []
+        for label in np.unique(partition):
+            gi = np.flatnonzero(partition == label)
+            if gi.size < floor:
+                continue
+            _, nb_local = knn(cKDTree(positions[gi]), positions[gi], k)
+            work.append((gi, nb_local))
+    else:
+        if len(groups) != len(neighbours):
+            raise ValueError("'groups' and 'neighbours' must have the same length")
+        work = [(np.asarray(gi, dtype=np.intp), nb)
+                for gi, nb in zip(groups, neighbours)
+                if np.asarray(gi).size >= floor]
+
+    for gi, nb_local in work:
+        vals = out[gi]
+        if kind == 'scalar':
+            sm = smooth_scalars(
+                vals, nb_local, n_iter=n_iter,
+                mask=None if mask is None else mask[gi], method=method,
+            )
+        elif kind == 'phasor':
+            sm = smooth_phasors(
+                vals, nb_local, n_iter=n_iter,
+                weights=None if weights is None else weights[gi], include_self=include_self,
+            )
+        else:  # nematic
+            sm = smooth_nematic_vectors(vals, nb_local, n_iter=n_iter, include_self=include_self)
+
+        out[gi] = sm.astype(out.dtype, copy=False)
 
     return out

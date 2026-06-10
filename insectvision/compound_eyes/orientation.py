@@ -2,11 +2,10 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, TYPE_CHECKING
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.spatial import cKDTree
 
-from insectvision.geometry.linalg import tangent_frames, rotate_in_tangent_plane, local_to_world
 from insectvision.utils.shared import norm_l2, broadcast_1d
-from insectvision.geometry.neighbours import knn, smooth_nematic_vectors
+from insectvision.geometry.linalg import tangent_frames, rotate_in_tangent_plane, local_to_world
+from insectvision.geometry.neighbours import smooth_field_partitioned
 from insectvision.geometry.circular import wrap_angle
 
 if TYPE_CHECKING:
@@ -33,7 +32,8 @@ class OrientationResult:
 
 
 
-# TODO: Clarify the boundary between these Compound eye-aware helpers and the pure smoothers in neighbours.py
+# TODO: Maybe this helper can be absorbed by more generic pure functions
+
 def _alignment_phasor_field(
     lens_directions: np.ndarray,
     e_x: np.ndarray,
@@ -97,81 +97,6 @@ def _alignment_phasor_field(
     return (combed / norms).astype(np.float32)
 
 
-def _major_axis_field(
-        alignment_phasor: np.ndarray,
-        lens_directions: np.ndarray,
-        base_rotation_rad: float,
-        eye_sign: np.ndarray,
-        hemisphere_sign: np.ndarray,
-) -> np.ndarray:
-    """
-    Bundle main axis: per-eye rotation of the alignment phasor in each
-    tangent plane ('base_rotation_rad * eye_sign'), then hemisphere-aware
-    disambiguation.
-    """
-    angles = (base_rotation_rad * eye_sign).astype(np.float32)
-    rotated = rotate_in_tangent_plane(alignment_phasor, lens_directions, angles, normalize=False)
-
-    # Equatorial flip: bundle point up dorsally, and down ventrally
-    ref = -hemisphere_sign[:, None] * alignment_phasor
-    dot_check = np.einsum('ij,ij->i', rotated, ref)
-    rotated[dot_check < 0] *= -1.0
-
-    return norm_l2(rotated).astype(np.float32)
-
-
-def _saccade_phasor_field(
-    major_axis: np.ndarray,
-    lens_directions: np.ndarray,
-    base_rotation_rad: float,
-    chirality: np.ndarray,
-) -> np.ndarray:
-    """
-    Saccade phasor: rotate the major axis by 'base_rotation_rad * chirality' in each tangent plane.
-    The result is nematic (direction locally ambiguous).
-    Smoothing, then polarisation, then give global coherence.
-    """
-    angles = (base_rotation_rad * chirality).astype(np.float32)
-    sacc = rotate_in_tangent_plane(major_axis, lens_directions, angles, normalize=True)
-    return sacc.astype(np.float32)
-
-
-def _smooth_phasor_field(
-    field: np.ndarray,
-    partition: np.ndarray,
-    positions: np.ndarray,
-    n_neighbours: int = 8,
-    iterations: int = 10,
-) -> np.ndarray:
-    """
-    Per-zone nematic phasor smoothing: each neighbour is flipped to align with the centre vector before averaging.
-
-    Args:
-        - 'partition' per-lens label (any hashable).
-            Lenses with same label smooth together, lenses with different labels don't.
-            For "smooth within each eye": pass eye_id-per-lens
-            For "smooth within each (eye, hemisphere) quadrant": pass a 4-value label
-    """
-    if iterations <= 0:
-        return field
-
-    out = field.copy()
-    for label in np.unique(partition):
-        mask = np.flatnonzero(partition == label)
-        n = mask.size
-        if n < 2:
-            continue
-
-        positions_zone = positions[mask]
-        k = min(n_neighbours, n - 1)
-        tree = cKDTree(positions_zone)
-        _, nidx = knn(tree, positions_zone, k)  # transient tree
-
-        smoothed = smooth_nematic_vectors(out[mask], nidx, n_iter=iterations)
-        out[mask] = smoothed.astype(np.float32)
-    return out
-
-
 class BundlesAligner:
     """
     Computes per-lens bundle orientation (chi, chirality, saccade phasor)
@@ -218,10 +143,10 @@ class BundlesAligner:
         self.strength = float(strength)
 
     def compute(self,
-                model: 'CompoundEyeModel',
-                override_chi: Optional[ArrayLike] = None,
-                override_chirality: Optional[ArrayLike] = None,
-                ) -> OrientationResult:
+        model: 'CompoundEyeModel',
+        override_chi: Optional[ArrayLike] = None,
+        override_chirality: Optional[ArrayLike] = None,
+        ) -> OrientationResult:
         """
         Compute the orientation field for the CompoundEyeModel's lens geometry.
         'override_chi' or 'override_chirality' can be supplied to bypass the corresponding pipeline step.
@@ -264,59 +189,66 @@ class BundlesAligner:
 
         if self.alignment_smoothing_iterations > 0:
             zone_labels = (
-                (eye_sign > 0).astype(np.int32) * 2 + (hemisphere_sign > 0).astype(np.int32)
+                    (eye_sign > 0).astype(np.int32) * 2 + (hemisphere_sign > 0).astype(np.int32)
             )
-            alignment = _smooth_phasor_field(
-                field=alignment,
+            alignment = smooth_field_partitioned(
+                alignment,
+                kind='nematic',
                 partition=zone_labels,
                 positions=lens_positions,
-                n_neighbours=8,
-                iterations=self.alignment_smoothing_iterations,
-            )
+                k=8,
+                n_iter=self.alignment_smoothing_iterations,
+            ).astype(np.float32)
 
         # Major axis: alignment rotated by +/- flow_axis_deg, per eye
-        base_flow_rot = float(np.radians(bundle.flow_axis_deg))
-        major = _major_axis_field(
-            alignment_phasor=alignment,
-            lens_directions=lens_directions,
-            base_rotation_rad=base_flow_rot,
-            eye_sign=eye_sign,
-            hemisphere_sign=hemisphere_sign,
+        rotated = rotate_in_tangent_plane(
+            vectors=alignment,
+            normals=lens_directions,
+            angles=np.deg2rad(bundle.flow_axis_deg) * eye_sign,
+            normalize=False
         )
 
-        # Bundle yaw chi from the major axis direction in each tangent frame
+        # Equatorial flip: bundle point up dorsally, and down ventrally
+        ref = -hemisphere_sign[:, None] * alignment
+        dot_check = np.einsum('ij,ij->i', rotated, ref)
+        rotated[dot_check < 0] *= -1.0
+
+        major_axis = norm_l2(rotated).astype(np.float32)
+
+        # Bundle yaw (chi) from the major axis direction in each tangent frame
         if override_chi is not None:
             chi = broadcast_1d(override_chi, N, 'chi')
         else:
             major_angle = np.arctan2(
-                np.sum(major * model._local_up, axis=1),
-                np.sum(major * model._local_right, axis=1),
+                np.sum(major_axis * model._local_up, axis=1),
+                np.sum(major_axis * model._local_right, axis=1),
             )
             effective_main = np.where(
                 chirality > 0,
-                float(bundle.main_axis_rad) + np.pi,
-                -float(bundle.main_axis_rad),
+                bundle.main_axis_rad + np.pi,
+                -bundle.main_axis_rad,
             ).astype(np.float32)
-            chi = (major_angle - effective_main).astype(np.float32)
-            chi = wrap_angle(chi)
 
-        # Saccade phasor: major axis rotated by base_sacc * chirality (4 zones), smoothed, and polarised
-        base_sacc_rot = -float(np.radians(bundle.saccade_offset_deg))
-        sacc = _saccade_phasor_field(
-            major_axis=major,
-            lens_directions=lens_directions,
-            base_rotation_rad=base_sacc_rot,
-            chirality=chirality,
+            chi = wrap_angle(major_angle - effective_main).astype(np.float32)
+
+        # Saccade phasor: major axis rotated by base saccade offset * chirality (4 zones), smoothed, and polarised
+        sacc = rotate_in_tangent_plane(
+            vectors=major_axis,
+            normals=lens_directions,
+            angles=-np.deg2rad(bundle.saccade_offset_deg) * chirality,
+            normalize=True
         )
+
         if self.saccade_smoothing_iterations > 0:
-            # Per-eye smoothing: partition by eye_id
-            sacc = _smooth_phasor_field(
-                field=sacc,
+            sacc = smooth_field_partitioned(
+                sacc,
+                kind='nematic',
                 partition=model._lens_eye_index,
                 positions=lens_positions,
-                n_neighbours=8,
-                iterations=self.saccade_smoothing_iterations,
-            )
+                k=8,
+                n_iter=self.saccade_smoothing_iterations,
+            ).astype(np.float32)
+
         # Polarise: saccade phasor consistently 'up' in the flow frame
         sacc[sacc @ e_z < 0] *= -1.0
 
@@ -325,7 +257,7 @@ class BundlesAligner:
             chirality=chirality.astype(np.float32),
             saccade_phasor=sacc.astype(np.float32),
             alignment_phasor=alignment,
-            major_axis=major,
+            major_axis=major_axis,
             eye_sign=eye_sign,
             hemisphere_sign=hemisphere_sign,
             flow_frame=(e_x, e_y, e_z),
@@ -386,9 +318,11 @@ def apply_chirality(
         model._local_right, model._local_up,
     )
 
-    base_sacc_rot = -float(np.radians(model._bundle.saccade_offset_deg))
-    angles = (base_sacc_rot * chirality).astype(np.float32)
-    sacc = rotate_in_tangent_plane(major, model._lens_directions, angles, normalize=True)
-    sacc = sacc.astype(np.float32)
+    sacc = rotate_in_tangent_plane(
+        vectors=major,
+        normals=model._lens_directions,
+        angles=-np.radians(model._bundle.saccade_offset_deg) * chirality,
+        normalize=True
+    )
 
     return OrientationResult(chi=chi, chirality=chirality, saccade_phasor=sacc, major_axis=major)

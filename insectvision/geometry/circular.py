@@ -22,9 +22,7 @@ def resultant(angles, weights=None, axis=None, fold=1, degrees: bool = False):
     num = (w * z).sum(axis=axis)
     den = w.sum(axis=axis)
 
-    res = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
-
-    return np.rad2deg(res) if degrees else res
+    return np.divide(num, den, out=np.zeros_like(num), where=den > 0)
 
 
 def wrap_angle(angles: ArrayLike, degrees: bool = False) -> np.ndarray:
@@ -43,9 +41,11 @@ def circ_mean(
         degrees: bool = False
     ) -> np.ndarray:
     """
-    Circular mean of angles (rad), optionally weighted
+    Circular mean of angles, optionally weighted
     """
-    return np.angle(resultant(angles=angles, weights=weights, axis=axis, degrees=degrees))
+    a = np.deg2rad(angles) if degrees else np.asarray(angles)
+    m = np.angle(resultant(angles=a, weights=weights, axis=axis, degrees=False))
+    return np.rad2deg(m) if degrees else m
 
 
 def circ_std(
@@ -55,9 +55,9 @@ def circ_std(
         degrees: bool = False
     ) -> np.ndarray:
     """
-    Circular standard deviation (rad), optionally weighted
+    Circular standard deviation, optionally weighted
     0 = perfectly concentrated, grows with spread
     """
     a = np.deg2rad(angles) if degrees else angles
-    R = np.clip(np.abs(resultant(angles=a, weights=weights, axis=axis, degrees=False)), 1e-9, 1.0)
-    return np.sqrt(-2.0 * np.log(R))
+    r = np.clip(np.abs(resultant(angles=a, weights=weights, axis=axis, degrees=False)), 1e-9, 1.0)
+    return np.sqrt(-2.0 * np.log(np.deg2rad(r) if degrees else r))

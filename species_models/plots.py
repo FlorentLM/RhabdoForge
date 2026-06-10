@@ -5,7 +5,7 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from scipy.spatial import cKDTree
 
 from insectvision.compound_eyes.lattice import spacing_from_adjacency, delaunay_edges
-from insectvision.utils.hexatic import hexatic_order, phasor_from_points
+from insectvision.geometry.hexatic import hexatic_order, phasor_from_points
 from insectvision.utils.math import project_to_stereo
 
 def plot_fitted_comparison(

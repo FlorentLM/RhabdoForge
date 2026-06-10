@@ -9,7 +9,9 @@ from insectvision.utils.shared import norm_l2
 # Spherical <-> Cartesian
 
 def cartesian_to_spherical(directions: ArrayLike, degrees: bool = False) -> Tuple[np.ndarray, np.ndarray]:
-    """(N, 3) Cartesian -> (azimuth, elevation)."""
+    """
+    (N, 3) Cartesian -> (azimuth, elevation).
+    """
     d = np.asarray(directions)
     az = np.arctan2(d[..., 0], -d[..., 2])
     el = np.arcsin(np.clip(d[..., 1], -1.0, 1.0))
@@ -20,15 +22,14 @@ def cartesian_to_spherical(directions: ArrayLike, degrees: bool = False) -> Tupl
 
 def spherical_to_cartesian(azimuth: ArrayLike, elevation: ArrayLike, radius: float = 1.0, degrees: bool = False) -> np.ndarray:
     """
-    (azimuth, elevation) -> (3, N) Cartesian, in the internal reference frame.
+    (azimuth, elevation) -> (N, 3) Cartesian.
     """
-
     az = np.radians(azimuth) if degrees else np.asarray(azimuth)
     el = np.radians(elevation) if degrees else np.asarray(elevation)
     x = radius * np.sin(az) * np.cos(el)
     y = radius * np.sin(el)
     z = -radius * np.cos(az) * np.cos(el)
-    return np.stack([x, y, z])
+    return np.stack([x, y, z], axis=-1)
 
 
 def spherical_gradients(azimuth: ArrayLike, elevation: ArrayLike, degrees: bool = False) -> Tuple[np.ndarray, np.ndarray]:
@@ -52,30 +53,30 @@ def spherical_gradients(azimuth: ArrayLike, elevation: ArrayLike, degrees: bool 
 
 # Stereographic projection
 
-def stereo_proj(dirs_3d: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def sphere_to_stereo(directions: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Stereographic projection of unit directions onto a tangent plane centred
     on the mean viewing direction.
 
     Returns:
-        pts_2d: (N, 2)
+        points2d: (N, 2)
         forward, right, up: (3,) orthonormal frame of the projection plane
     """
 
-    centre_dir = np.mean(dirs_3d, axis=0)
+    centre_dir = np.mean(directions, axis=0)
     forward = norm_l2(centre_dir)
     right, up = tangent_frames(forward)
 
-    denom = 1.0 + np.dot(dirs_3d, forward)
-    pts_2d = np.column_stack([
-        np.dot(dirs_3d, right) / denom,
-        np.dot(dirs_3d, up) / denom,
+    denom = 1.0 + np.dot(directions, forward)
+    points2d = np.column_stack([
+        np.dot(directions, right) / denom,
+        np.dot(directions, up) / denom,
     ])
-    return pts_2d, forward, right, up
+    return points2d, forward, right, up
 
 
 def stereo_to_sphere(
-        pts_2d: np.ndarray,
+        points2d: np.ndarray,
         forward: np.ndarray,
         right: np.ndarray,
         up: np.ndarray,
@@ -84,7 +85,7 @@ def stereo_to_sphere(
     Inverse stereographic projection (2D plane -> unit sphere).
     """
 
-    x, y = pts_2d[:, 0], pts_2d[:, 1]
+    x, y = points2d[:, 0], points2d[:, 1]
     r2 = x ** 2 + y ** 2
     denom = 1.0 + r2
 

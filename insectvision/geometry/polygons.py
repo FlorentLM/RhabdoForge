@@ -1,15 +1,16 @@
+from typing import Tuple, Optional, Sequence, Callable
 import numpy as np
-from scipy.spatial import ConvexHull, Delaunay, cKDTree
+from scipy.spatial import ConvexHull, Delaunay, cKDTree, Voronoi
 
 
-def polygon_area(polygon, signed: bool = False) -> float:
+def polygon_area(points2d, signed: bool = False) -> float:
     """
     Shoelace area of a 2D polygon whose vertices are given in order.
 
     Absolute area unless 'signed' is True (positive for CCW winding).
     Degenerate polygons (< 3 vertices) have zero area.
     """
-    p = np.asarray(polygon, dtype=np.float64)
+    p = np.asarray(points2d, dtype=np.float64)
     if p.shape[0] < 3:
         return 0.0
     x, y = p[:, 0], p[:, 1]
@@ -17,7 +18,60 @@ def polygon_area(polygon, signed: bool = False) -> float:
     return float(a) if signed else float(abs(a))
 
 
-def clip_polygon(vertices: np.ndarray, hull_equations: np.ndarray) -> np.ndarray:
+def fan_decompose(points2d: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Triangle-fan decomposition of an ordered simple polygon.
+
+    Fans from vertex 0, returns the (centroid, area) of each fan triangle.
+    Degenerate polygons (< 3 vertices) give empty arrays.
+
+    Returns:
+        centroids: (T, 2), triangle centroids, T = len(poly) - 2
+        areas: (T,), triangle areas
+    """
+    p = np.asarray(points2d, dtype=np.float64)
+    if p.shape[0] < 3:
+        return np.zeros((0, 2)), np.zeros(0)
+
+    v0 = p[0]
+    e1, e2 = p[1:-1] - v0, p[2:] - v0
+    areas = 0.5 * np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0])
+    centroids = (v0 + p[1:-1] + p[2:]) / 3.0
+    return centroids, areas
+
+
+def polygon_centroid(points2d: np.ndarray) -> np.ndarray:
+    """
+    Area-weighted centroid of an ordered simple polygon
+    (true centre of mass, not the vertex mean).
+
+    Falls back to the vertex mean for a zero-area or degenerate polygon.
+    """
+    centroids, areas = fan_decompose(points2d)
+    total = float(areas.sum())
+    if total <= 1e-14:
+        p = np.asarray(points2d, dtype=np.float64)
+        return p.mean(axis=0) if p.shape[0] else np.full(2, np.nan)
+    return (centroids * areas[:, None]).sum(axis=0) / total
+
+
+def order_polygon_ccw(points2d: np.ndarray) -> np.ndarray:
+    """
+    Order polygon vertices counter-clockwise about their centroid.
+
+    For already-ordered input (e.g. a scipy Voronoi region) this only changes the
+    starting vertex, use it to make a raw vertex set safe for the shoelace / fan
+    routines, which assume ordered vertices.
+    """
+    p = np.asarray(points2d, dtype=np.float64)
+    if p.shape[0] < 3:
+        return p
+    c = p.mean(axis=0)
+    order = np.argsort(np.arctan2(p[:, 1] - c[1], p[:, 0] - c[0]))
+    return p[order]
+
+
+def clip_polygon(points2d: np.ndarray, hull_equations: np.ndarray) -> np.ndarray:
     """
     Clip a convex polygon against a convex region (Sutherland-Hodgman).
 
@@ -25,7 +79,7 @@ def clip_polygon(vertices: np.ndarray, hull_equations: np.ndarray) -> np.ndarray
     a point is interior where (normal . x + offset) <= 0.
     https://en.wikipedia.org/wiki/Sutherland%E2%80%93Hodgman_algorithm#Pseudocode
     """
-    out = list(vertices)
+    out = list(points2d)
 
     for eq in hull_equations:
         normal, offset = eq[:2], eq[2]
@@ -55,8 +109,123 @@ def clip_polygon(vertices: np.ndarray, hull_equations: np.ndarray) -> np.ndarray
     return np.array(out) if out else np.zeros((0, 2))
 
 
+# Voronoi / hull routines
+
+def mirror_across_hull(points2d: np.ndarray, equations: np.ndarray, depth: float) -> np.ndarray:
+    """
+    Mirror points lying within 'depth' of the hull edges to the outside.
+
+    Creates a symmetric Voronoi pressure that stops edge points from squashing
+    against the boundary. 'equations' are scipy ConvexHull half-plane rows
+    [nx, ny, offset] with outward-pointing normals.
+    """
+    mirrored = []
+    for eq in equations:
+        normal, offset = eq[:2], eq[2]
+
+        # ConvexHull convention: normals point outward
+        dist = points2d @ normal + offset
+
+        mask = (dist > -depth) & (dist <= 0)  # inside the hull and within 'depth' of the edge
+        if not np.any(mask):
+            continue
+
+        close_pts = points2d[mask]
+        dist_close = dist[mask]
+
+        # Reflect across the edge
+        mirrored_pts = close_pts - 2.0 * dist_close[:, None] * normal[None, :]
+        mirrored.append(mirrored_pts)
+
+    if mirrored:
+        return np.vstack(mirrored)
+    return np.zeros((0, 2))
+
+
+def voronoi_cells(vor: Voronoi, n_cells: Optional[int] = None) -> list:
+    """
+    Ordered vertex arrays for the first 'n_cells' input points of a scipy Voronoi
+    (all of them if None). Unbounded or empty cells become None.
+    """
+    n = vor.point_region.shape[0] if n_cells is None else int(n_cells)
+    cells = []
+    for i in range(n):
+        region = vor.regions[vor.point_region[i]]
+        if not region or -1 in region:
+            cells.append(None)
+        else:
+            cells.append(vor.vertices[region])
+    return cells
+
+
+def weighted_polygon_centroids(
+        cells: Sequence[Optional[np.ndarray]],
+        fallback: np.ndarray,
+        weight_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+        clip_equations: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Weighted centroids of a set of (optionally clipped) ordered polygons.
+
+    Each cell is fan-decomposed, each fan triangle is weighted by its area times
+    'weight_fn' (evaluated at the triangle centroid), and the cell's result is the
+    weighted mean of those centroids.
+
+    Fallback per cell i: weighted centroid -> (if zero weight) polygon vertex mean -> (if no usable polygon) fallback[i]
+
+    Args:
+        cells: length-N sequence of (n_i, 2) ordered vertex arrays
+        fallback: (N, 2) default position per cell (e.g. the current points)
+        weight_fn: (M, 2) -> (M,) weights at query points
+            None -> area only (= geometric centroid)
+        clip_equations: Optional, half-plane rows, each cell is clipped against
+            them (Sutherland-Hodgman) before decomposition.
+    """
+    fallback = np.asarray(fallback, dtype=np.float64)
+    n = len(cells)
+    if fallback.shape[0] != n:
+        raise ValueError(f"fallback has {fallback.shape[0]} rows but there are {n} cells")
+
+    out = fallback.copy()
+    poly_mean = np.full((n, 2), np.nan)  # per valid-but-zero-weight cell
+
+    centroids_all, areas_all, owner_all = [], [], []
+    for i, cell in enumerate(cells):
+        if cell is None or len(cell) < 3:
+            continue
+        poly = cell if clip_equations is None else clip_polygon(cell, clip_equations)
+        if len(poly) < 3:
+            continue
+        poly_mean[i] = np.asarray(poly, dtype=np.float64).mean(axis=0)
+
+        cents, areas = fan_decompose(poly)
+        keep = areas > 1e-14
+        if keep.any():
+            centroids_all.append(cents[keep])
+            areas_all.append(areas[keep])
+            owner_all.append(np.full(int(keep.sum()), i))
+
+    has_cell = np.isfinite(poly_mean[:, 0])
+    out[has_cell] = poly_mean[has_cell]  # default = polygon vertex mean
+    if not centroids_all:
+        return out
+
+    C = np.vstack(centroids_all)
+    owner = np.concatenate(owner_all)
+    w = np.concatenate(areas_all)
+    if weight_fn is not None:
+        w = w * np.asarray(weight_fn(C)).ravel()
+
+    den = np.bincount(owner, weights=w, minlength=n)
+    num = np.stack([np.bincount(owner, weights=w * C[:, 0], minlength=n),
+                    np.bincount(owner, weights=w * C[:, 1], minlength=n)], axis=1)
+    good = den > 1e-16
+    out[good] = num[good] / den[good, None]  # override with weighted centroid
+    return out
+
+
 def smooth_hull(
-        pts_2d: np.ndarray,
+        points2d: np.ndarray,
         hull: ConvexHull = None,
         n: int = 300,
         smoothing: float = 0.0,
@@ -68,11 +237,11 @@ def smooth_hull(
     """
     from scipy.interpolate import splprep, splev
 
-    pts_2d = np.asarray(pts_2d, dtype=float)
+    points2d = np.asarray(points2d, dtype=float)
     if hull is None:
-        hull = ConvexHull(pts_2d)
+        hull = ConvexHull(points2d)
 
-    coords = pts_2d[hull.vertices]
+    coords = points2d[hull.vertices]
     coords = np.vstack([coords, coords[0]])   # Close the ring
     tck, _ = splprep([coords[:, 0], coords[:, 1]], s=smoothing, per=True)
     u = np.linspace(0.0, 1.0, n)
@@ -91,35 +260,34 @@ class Polygon2D:
     - Area
     """
 
-    def __init__(self, boundary_pts: np.ndarray, raw_pts: np.ndarray, hull: ConvexHull):
-        self.boundary = np.asarray(boundary_pts, dtype=float)   # (M, 2) ordered polyline
+    def __init__(self, boundary_points2d: np.ndarray, raw_points2d: np.ndarray, hull: ConvexHull):
+        self.boundary = np.asarray(boundary_points2d, dtype=float)   # (M, 2) ordered polyline
         self.hull = hull   # scipy ConvexHull (for Lloyd)
         self.area = polygon_area(self.boundary)
         self._delaunay = Delaunay(self.boundary)
-        self._tree = cKDTree(np.asarray(raw_pts, dtype=float))
+        self._tree = cKDTree(np.asarray(raw_points2d, dtype=float))
 
     @classmethod
-    def from_points(cls, pts_2d: np.ndarray, smooth: bool = False,
-                    n_boundary: int = 300) -> 'Polygon2D':
+    def from_points(cls, points2d: np.ndarray, smooth: bool = False, n_boundary: int = 300) -> 'Polygon2D':
 
-        pts_2d = np.asarray(pts_2d, dtype=float)
-        hull = ConvexHull(pts_2d)
+        points2d = np.asarray(points2d, dtype=float)
+        hull = ConvexHull(points2d)
 
         if smooth:
-            boundary = smooth_hull(pts_2d, hull, n=n_boundary)
+            boundary = smooth_hull(points2d, hull, n=n_boundary)
             hull = ConvexHull(boundary)  # hull of the smoothed ring -> Lloyd ghosts/equations
         else:
-            boundary = pts_2d[hull.vertices]
+            boundary = points2d[hull.vertices]
 
-        return cls(boundary, pts_2d, hull)
+        return cls(boundary, points2d, hull)
 
-    def inside(self, points: np.ndarray, buffer: float = 0.0) -> np.ndarray:
+    def inside(self, points2d: np.ndarray, buffer: float = 0.0) -> np.ndarray:
 
-        points = np.atleast_2d(np.asarray(points, dtype=float))
-        inside = self._delaunay.find_simplex(points) >= 0
+        points2d = np.atleast_2d(np.asarray(points2d, dtype=float))
+        inside = self._delaunay.find_simplex(points2d) >= 0
         if buffer > 0:
             out = np.where(~inside)[0]
             if len(out):
-                d, _ = self._tree.query(points[out])
+                d, _ = self._tree.query(points2d[out])
                 inside[out] = d < buffer
         return inside

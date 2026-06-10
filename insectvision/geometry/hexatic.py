@@ -17,7 +17,7 @@ def hexatic_order(z6) -> np.ndarray:
     return np.abs(z6).astype(np.float32)
 
 
-def phasor_from_points(pts_2d: np.ndarray, neighbours: Sequence[int]) -> np.ndarray:
+def phasor_from_points(points2d: np.ndarray, neighbours: Sequence[int]) -> np.ndarray:
     """
     Per-point 6-fold phasor from a 2D cloud + neighbour lists.
 
@@ -25,14 +25,14 @@ def phasor_from_points(pts_2d: np.ndarray, neighbours: Sequence[int]) -> np.ndar
     Points with < 2 neighbours get 0+0j.
     """
 
-    pts_2d = np.asarray(pts_2d, dtype=np.float64)
-    z6 = np.zeros(len(pts_2d), dtype=np.complex128)
+    points2d = np.asarray(points2d, dtype=np.float64)
+    z6 = np.zeros(len(points2d), dtype=np.complex128)
 
     for i, nb in enumerate(neighbours):
         nb = np.asarray(nb, dtype=np.intp)
         if nb.size < 2:
             continue
-        d = pts_2d[nb] - pts_2d[i]
+        d = points2d[nb] - points2d[i]
         z6[i] = resultant(angles=np.arctan2(d[:, 1], d[:, 0]), axis=-1, fold=6)
 
     return z6
@@ -68,7 +68,7 @@ def hexatic_rest_vectors(edge_vec: np.ndarray, theta, length) -> np.ndarray:
     return rest
 
 
-def hexatic_axis_field(pts_2d, neighbours=None, smoothing=0.5, min_order=0.5,
+def hexatic_axis_field(points2d, neighbours=None, smoothing=0.5, min_order=0.5,
                        max_length_factor=1.8, return_confidence=False):
     """
     Continuous local hexatic-axis interpolant.
@@ -76,20 +76,20 @@ def hexatic_axis_field(pts_2d, neighbours=None, smoothing=0.5, min_order=0.5,
     Points with |Psi6| < min_order (incomplete rings at the boundary) are excluded from the fit,
     so the boundary inherits the smooth interior field instead of defining its own noisy one.
     """
-    pts_2d = np.asarray(pts_2d, dtype=np.float64)
+    points2d = np.asarray(points2d, dtype=np.float64)
 
     if neighbours is None:
-        neighbours = delaunay_neighbours(pts_2d, max_length_factor=max_length_factor)
+        neighbours = delaunay_neighbours(points2d, max_length_factor=max_length_factor)
 
-    z6 = phasor_from_points(pts_2d, neighbours)
+    z6 = phasor_from_points(points2d, neighbours)
     order = hexatic_order(z6)
 
     keep = order >= min_order
     if keep.sum() < 4:  # safety: nothing trusted
-        keep = np.ones(len(pts_2d), dtype=bool)
+        keep = np.ones(len(points2d), dtype=bool)
 
-    rbf_re = RBFInterpolator(pts_2d[keep], z6[keep].real, kernel='thin_plate_spline', smoothing=smoothing)
-    rbf_im = RBFInterpolator(pts_2d[keep], z6[keep].imag, kernel='thin_plate_spline', smoothing=smoothing)
+    rbf_re = RBFInterpolator(points2d[keep], z6[keep].real, kernel='thin_plate_spline', smoothing=smoothing)
+    rbf_im = RBFInterpolator(points2d[keep], z6[keep].imag, kernel='thin_plate_spline', smoothing=smoothing)
 
     def theta_fn(q):
         q = np.atleast_2d(np.asarray(q, dtype=np.float64))
@@ -97,7 +97,7 @@ def hexatic_axis_field(pts_2d, neighbours=None, smoothing=0.5, min_order=0.5,
 
     if not return_confidence:
         return theta_fn
-    rbf_c = RBFInterpolator(pts_2d[keep], order[keep], kernel='thin_plate_spline', smoothing=smoothing)
+    rbf_c = RBFInterpolator(points2d[keep], order[keep], kernel='thin_plate_spline', smoothing=smoothing)
 
     def conf_fn(q):
         q = np.atleast_2d(np.asarray(q, dtype=np.float64))

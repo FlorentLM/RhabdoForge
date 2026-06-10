@@ -83,8 +83,8 @@ def rotate_in_tangent_plane(
 
     rotated = v * np.cos(a) + np.cross(n, v) * np.sin(a)
     if normalize:
-        rotated = norm_l2(rotated)
-    return rotated
+        rotated = norm_l2(rotated).astype(np.float32)
+    return rotated.astype(np.float32)
 
 
 def rotate_vectors(
