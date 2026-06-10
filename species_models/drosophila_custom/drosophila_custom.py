@@ -15,13 +15,12 @@ import numpy as np
 import xml.etree.ElementTree as ET
 from svg.path import parse_path, Line, Close
 
-from insectvision.compound_eyes.lattice import fit_lattice, facet_diameters
+from insectvision.compound_eyes.lenses import facet_diameters
 
 from species_models.drosophila_custom.plots_droso_custom import plot_buchner_3d
 from species_models.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d, plot_lens_diameters_3d
 
 # TODO: The SVG parsing needs to be made more generic
-
 
 
 # Defaults
@@ -190,27 +189,18 @@ def normals_to_ellipsoid(directions: np.ndarray, rx: float, ry: float, rz: float
 
 
 
-
-def build_eye(
+def reconstruct_directions(
         svg_path: Path,
-        density_scale: float = DENSITY_SCALE,
-        lattice_angle_deg: float = LATTICE_ANGLE_DEG,
         regularize: bool = REGULARISATION,
-        n_lloyd_iterations: int = 20,
-        show_plots: bool = SHOW_DEBUG_PLOTS,
-        return_raw_data: bool = False,
+        show_plots: bool = False
 ) -> np.ndarray:
     """
     Build Drosophila ommatidial directions from a Buchner SVG file.
 
     Args:
         svg_path : Path to digitised SVG
-        density_scale : 1.0 = match Buchner data, 2.0 = twice as dense
-        lattice_angle_deg : hex basis angle (60° = regular)
         regularize : apply Buchner's forward-marker correction
-        n_lloyd_iterations : Lloyd's relaxation iterations
         show_plots : debug visualisations
-        return_raw_data : return raw digitised directions (skip lattice generation)
     """
 
     data = parse_drosophila_svg(svg_path)
@@ -236,25 +226,7 @@ def build_eye(
             title="Drosophila ommatidia viewing directions (Buchner, 1971)",
         )
 
-    if return_raw_data:
-        return raw_dirs
-
-    lattice_dirs = fit_lattice(
-        raw_dirs,
-        density_scale=density_scale,
-        lattice_angle=np.radians(lattice_angle_deg),
-        relaxation_max_iter=n_lloyd_iterations,
-        verbose=show_plots,
-        show_plots=show_plots,
-    )
-
-    lattice_dirs /= np.linalg.norm(lattice_dirs, axis=1, keepdims=True)
-
-    print(f"Generated {len(lattice_dirs)} ommatidia "
-          f"(density_scale={density_scale:.2f}x, "
-          f"lattice_angle={lattice_angle_deg:.1f}°)")
-
-    return lattice_dirs
+    return raw_dirs
 
 
 if __name__ == "__main__":
@@ -276,13 +248,25 @@ if __name__ == "__main__":
     EL *= PHYS_SCALE
     ED *= PHYS_SCALE
 
-    L_dirs = build_eye(
+    L_dirs = reconstruct_directions(
         svg_file,
-        density_scale=DENSITY_SCALE,
-        lattice_angle_deg=LATTICE_ANGLE_DEG,
         regularize=REGULARISATION,
         show_plots=PLOT,
     )
+
+    lattice_dirs = fit_lattice(
+        L_dirs,
+        density_scale=DENSITY_SCALE,
+        lattice_angle=np.radians(LATTICE_ANGLE_DEG),
+        relaxation_max_iter=20,
+        verbose=True,
+        show_plots=PLOT,
+    )
+
+    lattice_dirs /= np.linalg.norm(lattice_dirs, axis=1, keepdims=True)
+
+    print(f"Generated {len(lattice_dirs)} ommatidia")
+
 
     target_width = (HW - FW) / 2.0
     ry = EL / 2.0
@@ -322,7 +306,7 @@ if __name__ == "__main__":
         directions=all_directions,
         positions=all_positions,
         eye_id=eye_ids,
-        lens_diameter_um=all_diameters,
+        aperture_um=all_diameters,
     )
 
     if PLOT:

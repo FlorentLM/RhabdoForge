@@ -23,7 +23,7 @@ from insectvision.utils.shared import broadcast_to_shape
 class LensOptics:
     """Per-lens quantities available to an acceptance model. All shape (N,)."""
     focal_um: np.ndarray          # per-lens focal length (already facet-scaled)
-    lens_diameter_um: np.ndarray  # per-lens aperture
+    aperture_um: np.ndarray       # per-lens aperture
     ioa_minor: np.ndarray         # interommatidial angle, minor axis (rad)
     ioa_major: np.ndarray         # interommatidial angle, major axis (rad)
 
@@ -75,12 +75,12 @@ class SnyderAcceptance:
 
     Isotropic: minor == major; per-axis RF anisotropy comes from the lattice.
 
-    Consumes: focal_um, lens_diameter_um, rhab_diameter_um, wavelength_um
+    Consumes: focal_um, aperture_um, rhab_diameter_um, wavelength_um
     """
 
     def __call__(self, lens: LensOptics, rcpt: ReceptorOptics) -> np.ndarray:
         f = np.clip(lens.focal_um, 1e-6, None)[:, None]
-        D = np.clip(lens.lens_diameter_um, 1e-6, None)[:, None]
+        D = np.clip(lens.aperture_um, 1e-6, None)[:, None]
         d = rcpt.rhab_diameter_um[None, :]
         lam = rcpt.wavelength_um[None, :]
 

@@ -23,7 +23,7 @@ LENS_STATIC_DTYPE = np.dtype([
     ('ioa_tilt',          np.float32),      #  4 bytes: local hexatic lattice rotation (rad)
     ('ioa_axes',          np.float32, 2),   #  8 bytes: (minor, major) interommatidial angles (rad)
     ('focal_um', np.float32),               #  4 bytes: focal length, lens-to-rhabdomere lever arm (μm)
-    ('lens_diameter_um',  np.float32),      #  4 bytes: aperture (μm) (used for diffraction)
+    ('aperture_um',  np.float32),           #  4 bytes: aperture (μm) (used for diffraction)
     ('tau_rise',          np.float32),      #  4 bytes: mechanical rise time (s)
     ('tau_relax',         np.float32),      #  4 bytes: mechanical relaxation time (s)
     ('tau_fast',          np.float32),      #  4 bytes: fast adaptation EMA (s, ~PIP2)

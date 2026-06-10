@@ -114,7 +114,7 @@ void main() {
 
         // Optical narrowing from the axial move (diffraction term is unchanged by the
         // saccade, only the geometric blur recedes with d_eff)
-        float rho_diff  = rs.wavelength_um / max(ls.lens_diameter_um, 1e-3);
+        float rho_diff  = rs.wavelength_um / max(ls.aperture_um, 1e-3);
         float geom_rest = atan(rs.rhab_diameter_um / max(d_rest, 1e-3));
         float geom_eff  = atan(rs.rhab_diameter_um / max(d_eff,  1e-3));
         float opt_rest  = sqrt(geom_rest*geom_rest + rho_diff*rho_diff);

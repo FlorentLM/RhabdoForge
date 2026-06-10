@@ -31,7 +31,7 @@ struct LensStatic {
     float ioa_tilt;
     vec2  ioa_axes;
     float focal_um;
-    float lens_diameter_um;
+    float aperture_um;
     float tau_rise;
     float tau_relax;
     float tau_fast;
@@ -191,7 +191,7 @@ float airy_psf(float a_min, float a_maj, float D, float lambda) {
 
 float get_sensitivity(int mode, float angle_min, float angle_maj,
                       ReceptorStatic rs, ReceptorDynamic rd, LensStatic ls) {
-    float D = ls.lens_diameter_um, lambda = rs.wavelength_um;
+    float D = ls.aperture_um, lambda = rs.wavelength_um;
 
     if (mode == MODE_AIRY) {  // Airy (x) rhabdomere acceptance
         float rho_diff = lambda / D;

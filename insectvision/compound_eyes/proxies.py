@@ -258,14 +258,14 @@ class LensView:
         self._mark_dirty()
 
     @property
-    def diameter_um(self) -> np.ndarray:
+    def aperture_um(self) -> np.ndarray:
         """(M,) lens apertures (μm)."""
-        return self._model.lens_static_data['lens_diameter_um'][self._gi].copy()
+        return self._model.lens_static_data['aperture_um'][self._gi].copy()
 
-    @diameter_um.setter
-    def diameter_um(self, value: ArrayLike):
+    @aperture_um.setter
+    def aperture_um(self, value: ArrayLike):
         self._validate_write()
-        self._model.lens_static_data['lens_diameter_um'][self._gi] = value
+        self._model.lens_static_data['aperture_um'][self._gi] = value
         self._mark_dirty()
 
     @property
@@ -1908,7 +1908,7 @@ class CompoundEyeModel:
         - bundle: RhabdomereBundle (optional), Per-species bundle model. Defaults to a single panchromatic receptor.
         - eye_index: (N,) array_like of uint (optional), Eye membership for each lens (0-7).
             If None, splits in two eyes on x: x < 0 -> 0 (left), x ≥ 0 -> 1 (right).
-        - lens_diameter_um: float or (N,) array_like or None, Lens aperture (μm).
+        - aperture_um: float or (N,) array_like or None, Lens aperture (μm).
             If None (default), auto-derived per-lens from the local lattice spacing.
         - interommatidial_angles_rad: (2,), (N, 2), or None, Per-lens (minor, major) IOA.
             If None, computed from the local lattice (sorted mean over first ring,
@@ -1934,7 +1934,7 @@ class CompoundEyeModel:
                  positions: ArrayLike,
                  bundle: Optional['RhabdomereBundle'] = None,
                  eye_indices: Optional[ArrayLike] = None,
-                 lens_diameter_um: Optional[Union[float, ArrayLike]] = None,
+                 aperture_um: Optional[Union[float, ArrayLike]] = None,
                  interommatidial_angles_rad: Optional[ArrayLike] = None,
                  acceptance: Optional['AcceptanceModel'] = None,
                  bundle_orientations: Optional[ArrayLike] = None,
@@ -2015,7 +2015,7 @@ class CompoundEyeModel:
             self._buffer.lens_static_data['ioa_axes'] = ioa_axes
             self._buffer.lens_static_data['ioa_tilt'] = ioa_tilts
 
-            if lens_diameter_um is None:
+            if aperture_um is None:
                 spacing_est = (self.HEX_PACKING_FACTOR * lens_spacing).astype(np.float32)
                 spacing_est = np.where(spacing_est > 0, spacing_est, np.float32(20.0))
                 lens_diameters = spacing_est.copy()
@@ -2032,18 +2032,18 @@ class CompoundEyeModel:
                             pass  # fall through to denoised spacing estimate
 
                 # Voronoi estimator unavailable: denoise the single-edge readout
-                self._buffer.lens_static_data['lens_diameter_um'] = self._smooth_lens_field(
+                self._buffer.lens_static_data['aperture_um'] = self._smooth_lens_field(
                     lens_diameters, k=6, n_iter=2, method='median', metric='angular'
                 ).astype(np.float32)
 
             else:
-                ld = np.atleast_1d(np.asarray(lens_diameter_um, dtype=np.float32))
+                ld = np.atleast_1d(np.asarray(aperture_um, dtype=np.float32))
                 if ld.size == 1:
-                    self._buffer.lens_static_data['lens_diameter_um'] = ld.item()
+                    self._buffer.lens_static_data['aperture_um'] = ld.item()
                 elif ld.size == N:
-                    self._buffer.lens_static_data['lens_diameter_um'] = ld
+                    self._buffer.lens_static_data['aperture_um'] = ld
                 else:
-                    raise ValueError(f"lens_diameter_um size {ld.size} must be 1 or N={N}")
+                    raise ValueError(f"aperture_um size {ld.size} must be 1 or N={N}")
 
             # Per-lens focal length scales with facet diameter at a constant F-number,
             # so larger facets focus longer and see narrower RFs.
@@ -2051,7 +2051,7 @@ class CompoundEyeModel:
             # Note: this feeds both the Snyder acceptance model and the microsaccade lever arm,
             # so it is computed whenever focal_um is available, no matter of which acceptance model is used
             if bundle.focal_um is not None:
-                D = self._buffer.lens_static_data['lens_diameter_um'].astype(np.float32)
+                D = self._buffer.lens_static_data['aperture_um'].astype(np.float32)
                 pos_D = D[D > 0]
                 D_med = float(np.median(pos_D)) if pos_D.size else 1.0
 
@@ -2228,7 +2228,7 @@ class CompoundEyeModel:
         Optional fields (used when present, otherwise defaults apply):
             - eye_indices: 'eye_indices', 'eye_ids', 'eye_id', 'eye_idx', 'eye_index'
             - left / right: (N,) bool, fallback if no eye_indices
-            - lens_diameter_um: 'lens_diameter_um', 'lens_diameter', 'aperture_um'
+            - aperture_um: 'lens_aperture_um', 'lens_diameter', 'aperture_um'
             - interommatidial_angles_rad: 'interommatidial_angles_rad', 'ioa', 'ioa_axes'
             - acceptance (rest half-widths): 'acceptance_angles', 'acceptance', 'rho'
             - bundle_orientations: 'bundle_orientations', 'chi'
@@ -2272,7 +2272,7 @@ class CompoundEyeModel:
 
             # Optional geometry fields: only set if not overridden in kwargs.
             optional_field_aliases = {
-                'lens_diameter_um': ['lens_diameter_um', 'lens_diameter', 'aperture_um'],
+                'aperture_um': ['lens_aperture_um', 'lens_aperture', 'lens_diameter_um', 'lens_diameter', 'aperture_um'],
                 'interommatidial_angles_rad': ['interommatidial_angles_rad', 'interommatidial_angles', 'ioa', 'ioa_axes'],
                 'bundle_orientations': ['bundle_orientations', 'chi'],
                 'chiralities': ['chiralities', 'chirality'],
@@ -3416,7 +3416,7 @@ class CompoundEyeModel:
         ioa = s['ioa_axes'].astype(np.float32)
         return LensOptics(
             focal_um=s['focal_um'].astype(np.float32),
-            lens_diameter_um=s['lens_diameter_um'].astype(np.float32),
+            aperture_um=s['aperture_um'].astype(np.float32),
             ioa_minor=ioa[:, 0],
             ioa_major=ioa[:, 1],
         )
