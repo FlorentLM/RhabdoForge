@@ -7,7 +7,7 @@ from scipy.spatial import ConvexHull, Voronoi, cKDTree
 
 from insectvision.geometry.linalg import tangent_frames
 from insectvision.geometry.hexatic import hexatic_rest_vectors
-from insectvision.geometry.neighbours import local_spacing, delaunay_edges
+from insectvision.geometry.neighbours import mean_neighbour_distance, delaunay_edges
 from insectvision.geometry.polygons import (
     Polygon2D, polygon_area, weighted_polygon_centroids, voronoi_cells, mirror_across_hull, order_polygon_ccw
 )
@@ -34,7 +34,7 @@ class OmmatidiaSpacing2D:
             self,
             points2d: np.ndarray,
             smoothing: float = 0.1,
-            k: int = 7,
+            k: int = 6,
             density_scale: float = 1.0,
             clip_norm: Tuple[float, float] = (0.1, 5.0),
             density_exponent: float = 2.0,
@@ -47,7 +47,7 @@ class OmmatidiaSpacing2D:
         self._clip_lo, self._clip_hi = clip_norm
 
         tree = cKDTree(points2d)
-        spacing = local_spacing(tree, points2d, k=k - 1)
+        spacing = mean_neighbour_distance(tree, points2d, k=k)
 
         # Reference scale: mean over the inner 80% so that boundary points (inflated spacing, incomplete rings)
         # don't pull the value up

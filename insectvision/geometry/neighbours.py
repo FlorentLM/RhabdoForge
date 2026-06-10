@@ -3,7 +3,7 @@ import numpy as np
 from scipy.spatial import cKDTree, Delaunay
 
 
-# 2D neighbours stuff
+# 2D neighbour graphs
 
 def _delaunay_pairs(points2d: np.ndarray) -> set:
     """Unique undirected (i, j) Delaunay edges (i < j)."""
@@ -16,52 +16,61 @@ def _delaunay_pairs(points2d: np.ndarray) -> set:
     return pairs
 
 
-def delaunay_neighbours(points2d: np.ndarray, max_length_factor: float = 0.0) -> List[np.ndarray]:
+def _prune_long_edges(points2d: np.ndarray, edges: np.ndarray, max_length_factor: float) -> np.ndarray:
     """
-    One-ring neighbour lists from a 2D Delaunay triangulation.
+    Boolean keep-mask for edges shorter than max_length_factor x local spacing.
 
-    If max_length_factor > 0, drop edges longer than that times local spacing
-    (removes boundary-bearing corruption).
+    Local spacing is the kNN mean distance at each endpoint; an edge survives iff
+    its length is below max_length_factor times the *mean* of its two endpoints'
+    spacing. The criterion is symmetric, so the surviving graph is symmetric too
+    (edge i-j is kept for both i and j, or for neither).
     """
-    points2d = np.asarray(points2d)
-    neighbour_lists = [set() for _ in range(len(points2d))]
-
-    for a, b in _delaunay_pairs(points2d):
-        neighbour_lists[a].add(b)
-        neighbour_lists[b].add(a)
-
-    neighbour_lists = [np.fromiter(s, dtype=np.intp, count=len(s)) for s in neighbour_lists]
-
-    if max_length_factor > 0:
-        loc = local_spacing(cKDTree(points2d), points2d, k=min(6, max(1, len(points2d) - 1)))
-        neighbour_lists = [nb[np.linalg.norm(points2d[nb] - points2d[i], axis=1) < max_length_factor * loc[i]]
-               for i, nb in enumerate(neighbour_lists)]
-    return neighbour_lists
+    spacing = mean_neighbour_distance(
+        cKDTree(points2d), points2d, k=min(6, max(1, len(points2d) - 1))
+    )
+    lengths = np.linalg.norm(points2d[edges[:, 0]] - points2d[edges[:, 1]], axis=1)
+    mean_local = 0.5 * (spacing[edges[:, 0]] + spacing[edges[:, 1]])
+    return lengths < mean_local * max_length_factor
 
 
 def delaunay_edges(points2d: np.ndarray, max_length_factor: float = 0.0) -> np.ndarray:
     """
-    Delaunay edges in the plane.
+    Unique undirected Delaunay edges in the plane, as a sorted (E, 2) int array.
 
-    Optionally prunes edges longer than max_length_factor * local spacing
-    (convex-hull boundary edges, not real neighbours). Disabled if <= 0.
+    If max_length_factor > 0, prunes edges longer than max_length_factor x local
+    spacing (convex-hull boundary edges, not real neighbours). Disabled if <= 0.
     """
     points2d = np.asarray(points2d)
     pairs = _delaunay_pairs(points2d)
     edges = np.array(sorted(pairs)) if pairs else np.zeros((0, 2), dtype=int)
 
     if max_length_factor > 0 and len(edges):
-        loc = local_spacing(cKDTree(points2d), points2d, k=min(6, max(1, len(points2d) - 1)))
-        lengths = np.linalg.norm(points2d[edges[:, 0]] - points2d[edges[:, 1]], axis=1)
-        mean_local = 0.5 * (loc[edges[:, 0]] + loc[edges[:, 1]])
-        edges = edges[lengths < mean_local * max_length_factor]
+        edges = edges[_prune_long_edges(points2d, edges, max_length_factor)]
 
     return edges
 
 
-# 3D neighbours stuff
+def delaunay_neighbours(points2d: np.ndarray, max_length_factor: float = 0.0) -> List[np.ndarray]:
+    """
+    One-ring neighbour lists from a 2D Delaunay triangulation.
 
-# TODO: rename?
+    This is the adjacency-list view of delaunay_edges, so the optional
+    max_length_factor pruning uses the exact same (symmetric) criterion: an edge
+    is kept for both endpoints or for neither.
+    """
+    points2d = np.asarray(points2d)
+    neighbour_lists: List[list] = [[] for _ in range(len(points2d))]
+
+    for a, b in delaunay_edges(points2d, max_length_factor=max_length_factor):
+        a, b = int(a), int(b)
+        neighbour_lists[a].append(b)
+        neighbour_lists[b].append(a)
+
+    return [np.array(s, dtype=np.intp) for s in neighbour_lists]
+
+
+# knn queries against a prebuilt KD-tree
+
 def knn(
         tree: cKDTree,
         query_pts: np.ndarray,
@@ -105,15 +114,17 @@ def knn(
     return dist, idx.astype(np.intp)
 
 
-# TODO: rename?
-def local_spacing(
+def mean_neighbour_distance(
         tree: cKDTree,
         query_pts: Optional[np.ndarray] = None,
         k: int = 6,
 ) -> np.ndarray:
     """
-    Mean distance from each query point to the k nearest other points.
-    If 'query_pts' is None the tree's own data is used (i.e. "mean spacing of this cloud").
+    Per-point mean distance to its k nearest neighbours (the local point-spacing
+    scale).
+
+    If 'query_pts' is None the tree's own data is used (i.e. the mean spacing of
+    this cloud).
     Returns NaN for points with no available neighbours.
     """
     pts = tree.data if query_pts is None else query_pts

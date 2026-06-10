@@ -44,8 +44,8 @@ def tangent_frames(
 
 
 def tangent_bearing(
-        target_dirs: ArrayLike,
-        home_dirs: ArrayLike,
+        target_directions: ArrayLike,
+        home_directions: ArrayLike,
         right: ArrayLike,
         up: ArrayLike,
         degrees: bool = False,
@@ -54,7 +54,7 @@ def tangent_bearing(
     Project (target - home) onto a (right, up) tangent plane and return the bearing.
     """
 
-    delta = np.asarray(target_dirs) - np.asarray(home_dirs)
+    delta = np.asarray(target_directions) - np.asarray(home_directions)
     u = np.sum(delta * np.asarray(right), axis=-1)
     v = np.sum(delta * np.asarray(up), axis=-1)
     bearing = np.arctan2(v, u)
