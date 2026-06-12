@@ -61,7 +61,7 @@ class BaseView:
 
     @property
     def _buffer(self) -> 'Buffer':
-        return self.model._buffer_object
+        return self.model._buf
 
     @property
     def bundle(self) -> 'RhabdomereBundle':
