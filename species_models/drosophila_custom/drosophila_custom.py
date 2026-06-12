@@ -15,7 +15,7 @@ import numpy as np
 import xml.etree.ElementTree as ET
 from svg.path import parse_path, Line, Close
 
-from insectvision.compound_eyes.lenses import facet_diameters
+from insectvision.compound_eyes.helpers.ommatidia_lattice import voronoi_estimation
 
 from species_models.drosophila_custom.plots_droso_custom import plot_buchner_3d
 from species_models.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d, plot_lens_diameters_3d
@@ -292,8 +292,8 @@ if __name__ == "__main__":
     eye_ids = np.concatenate([np.zeros(len(L_positions)), np.ones(len(R_positions))])
 
     # Facet diameter per lens, from the Voronoi cell (the dual of the lattice)
-    L_diam = facet_diameters(L_positions, L_dirs)
-    R_diam = facet_diameters(R_positions, R_dirs)
+    L_diam = voronoi_estimation(L_positions, L_dirs)
+    R_diam = voronoi_estimation(R_positions, R_dirs)
     all_diameters = np.concatenate([L_diam, R_diam]).astype(np.float32)
     print(f"Facet diameter: median {np.median(all_diameters):.2f} µm  "
           f"IQR {np.percentile(all_diameters, 25):.2f}-{np.percentile(all_diameters, 75):.2f}  "

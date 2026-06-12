@@ -686,7 +686,7 @@ class Raytracer(BaseRenderer):
                     self._scene_uniforms.apply(shader)
                     self._lights_uniforms.apply(shader)
 
-                    N = self._model.total_receptors
+                    N = self._model.size
                     total_work = N * self._samples_per_rcpt
                     work_groups = (total_work + 63) // 64
 

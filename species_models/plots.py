@@ -4,9 +4,10 @@ from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from scipy.spatial import cKDTree
 
-from insectvision.compound_eyes.lattice import spacing_from_adjacency, delaunay_edges
+from insectvision.geometry.neighbours import delaunay_edges
 from insectvision.geometry.hexatic import hexatic_order, phasor_from_points
-from insectvision.utils.math import project_to_stereo
+from insectvision.geometry.spherical import stereo_proj
+
 
 def plot_fitted_comparison(
         pts_2d_raw: np.ndarray,
@@ -102,7 +103,7 @@ def plot_lattice_3d(
     fig = plt.figure(figsize=(9, 8))
     ax = fig.add_subplot(111, projection='3d')
 
-    pts_2d, fwd, rgt, up = project_to_stereo(dirs_3d)
+    pts_2d, _, _, _ = stereo_proj(dirs_3d)
 
     edges = None
     adj = None
@@ -117,7 +118,13 @@ def plot_lattice_3d(
     c_label = None
 
     if color_by == 'spacing' and adj is not None:
-        c_values = spacing_from_adjacency(pts_2d, adj)
+        N = len(pts_2d)
+        c_values = np.zeros(N)
+        for i in range(N):
+            nb = adj[i]
+            if not nb:
+                continue
+            c_values[i] = np.linalg.norm(pts_2d[nb] - pts_2d[i], axis=1).mean()
         c_label = 'Local spacing (stereo)'
 
     elif color_by == 'psi6' and adj is not None:
@@ -332,7 +339,7 @@ def plot_density_3d(positions, directions, title="Ommatidia density"):
                     c=angular_spacing_deg, cmap='plasma_r', s=20, alpha=0.8)
 
     cbar = fig.colorbar(sc, ax=ax, shrink=0.5, aspect=10)
-    cbar.set_label('Inter-ommatidial angle $\Delta\phi$ [degrees]')
+    cbar.set_label('Inter-ommatidial angle (degrees)')
 
     ax.set_xlabel('Lateral (X)')
     ax.set_ylabel('Anterior-Posterior (Z)')

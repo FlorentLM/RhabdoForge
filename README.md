@@ -32,11 +32,11 @@ source .venv/bin/activate  # on Windows: .venv\Scripts\activate
 The following snippet demonstrates loading a specific species model and configuring its biological parameters.
 
 ```python
-from insectvision.compound_eyes import CompoundEyeModel
+from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.kernel import drosophila_kernel
 
 # Load a Drosophila model with a custom rhabdomere kernel
-model = CompoundEyeModel.from_file(
+model = Model.from_file(
     'species_models/drosophila_custom.npz',
     kernel=drosophila_kernel()
 )
@@ -46,8 +46,8 @@ model.scale(1e-6)
 
 # Configure photomechanical gains
 with model.unlock(lenses=True):
-    model.lenses.ampl_lat_um = 1.5  # Lateral displacement in microns
-    model.lenses.ampl_ax_um = 8.0  # Axial contraction
+    model.ommatidia.ampl_lat_um = 1.5  # Lateral displacement in microns
+    model.ommatidia.ampl_ax_um = 8.0  # Axial contraction
 ```
 
 ### 2. Setting up a Raytraced Scene

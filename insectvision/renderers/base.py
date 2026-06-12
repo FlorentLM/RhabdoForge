@@ -8,17 +8,17 @@ from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple, Sequence
 import numpy as np
 from pyglm import glm
 
-from insectvision.utils.shared import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, \
-    SamplingMode
+from insectvision.utils.shared import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode
 from insectvision.engine.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
 from insectvision.engine.resources import ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry
-from insectvision.compound_eyes.buffers import LENS_STATIC_DTYPE, LENS_DYNAMIC_DTYPE, RCPT_STATIC_DTYPE, \
-    RCPT_DYNAMIC_DTYPE
+from insectvision.renderers.helpers import VisualOutput
+
+from insectvision.compound_eyes.buffers import OMM_STATIC_DTYPE, OMM_DYNAMIC_DTYPE, RCPT_STATIC_DTYPE, RCPT_DYNAMIC_DTYPE
 
 if TYPE_CHECKING:
-    from insectvision.compound_eyes import CompoundEyeModel, Eye
+    from insectvision.compound_eyes import Model, Eye
     from insectvision.engine.context import Context
 
 
@@ -115,14 +115,14 @@ class BaseRenderer(ABC):
     """
 
     def __init__(self,
-                 model: 'CompoundEyeModel',
+                 model: 'Model',
                  agent: 'Agent',
                  time_dithering: bool = True,
                  nb_samples: int = 256,
                  randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
                  sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
                  batch_size: int = 1,
-                 enable_actuation: bool = False,     # TODO: might rename this
+                 enable_actuation: bool = False,  # TODO: might rename this
                  resource_manager: Optional[GPUResourceManager] = None,
                  context: Optional['Context'] = None
                  ):
@@ -131,12 +131,12 @@ class BaseRenderer(ABC):
         if context is not None:
             self.attach_context(context)
 
-        self._model: 'CompoundEyeModel' = model
+        self._model: 'Model' = model
         self.agent: 'Agent' = agent
         self.scene: 'Scene'
 
-        N = self._model.total_receptors
-        nb_lenses = self._model.lens_count
+        N = self._model.size
+        nb_lenses = self._model.nb_facets
 
         self._samples_per_rcpt = 1
         self._samples_per_px = 1
@@ -192,9 +192,9 @@ class BaseRenderer(ABC):
                                   data=self._model.buffer.rcpt_static_data,
                                   usage=GL_STATIC_DRAW)
         self.eye_buffers.allocate('lens_static',
-                                  dtype=LENS_STATIC_DTYPE,
+                                  dtype=OMM_STATIC_DTYPE,
                                   count=nb_lenses,
-                                  data=self._model.buffer.lens_static_data,
+                                  data=self._model.buffer.omm_static_data,
                                   usage=GL_STATIC_DRAW)
         self.eye_buffers.allocate('rcpt_dynamic',
                                   dtype=RCPT_DYNAMIC_DTYPE,
@@ -202,9 +202,9 @@ class BaseRenderer(ABC):
                                   data=self._model.buffer.rcpt_dynamic_data,
                                   usage=GL_DYNAMIC_DRAW)
         self.eye_buffers.allocate('lens_dynamic',
-                                  dtype=LENS_DYNAMIC_DTYPE,
+                                  dtype=OMM_DYNAMIC_DTYPE,
                                   count=nb_lenses,
-                                  data=self._model.buffer.lens_dynamic_data,
+                                  data=self._model.buffer.omm_dynamic_data,
                                   usage=GL_DYNAMIC_DRAW)
         self.eye_buffers.allocate('ema_state',
                                   dtype=np.dtype((np.float32, 4)),
@@ -284,7 +284,7 @@ class BaseRenderer(ABC):
         self._screen_surface: Optional[TextureViewer] = None
 
         # Initialise uniforms registries
-        avg_lens_radius = np.mean(np.linalg.norm(self._model.rcpt_static_data['position'][:, :3], axis=1))
+        avg_lens_radius = np.mean(np.linalg.norm(self._model.receptors.position[:, :3], axis=1))
 
         self.nb_samples = nb_samples    # via property to apply
 
@@ -292,10 +292,10 @@ class BaseRenderer(ABC):
             aspect_ratio=1.0,
 
             # Receptors and lenses (constants during runtime)
-            nb_lenses=self._model.lens_count,
-            nb_receptors=self._model.total_receptors,
+            nb_lenses=self._model.nb_facets,
+            nb_receptors=self._model.size,
             noise_threshold=self._noise_threshold,
-            receptors_per_lens=self._model.receptors_per_lens,
+            receptors_per_lens=self._model.rhab_per_omm,
 
             # Rhabdomere bundle params (constants during runtime)
             bundle_centre_idx=self._model.bundle.center_index,
@@ -464,7 +464,7 @@ class BaseRenderer(ABC):
 
                 self._eye_uniforms.apply(shader)
 
-                N = self._model.total_receptors
+                N = self._model.size
                 work_groups = (N + 63) // 64
                 glDispatchCompute(work_groups, 1, 1)
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
@@ -477,7 +477,7 @@ class BaseRenderer(ABC):
 
                     self._eye_uniforms.apply(shader)
 
-                    work_groups = (self._model.lens_count + 63) // 64
+                    work_groups = (self._model.nb_facets + 63) // 64
                     glDispatchCompute(work_groups, 1, 1)
                     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
@@ -487,7 +487,7 @@ class BaseRenderer(ABC):
         Returns the *previous* frame colours (and zeros on the first frame).
         """
 
-        N = self._model.total_receptors
+        N = self._model.size
         bytes_to_read = N * 16
 
         # Copy colour SSBO into current PBO
@@ -537,7 +537,7 @@ class BaseRenderer(ABC):
             # Highlight the center receptor of the selected lenses
             for i in range(10):
                 if shader_highlight_ids[i] != -1:
-                    shader_highlight_ids[i] *= self._model.receptors_per_lens
+                    shader_highlight_ids[i] *= self._model.rhab_per_omm
                     shader_highlight_ids[i] += self._model.bundle.center_index
 
         # Sampling changes
@@ -607,8 +607,8 @@ class BaseRenderer(ABC):
             if self.overlay_enabled:
                 to_bind.append('overlay')
             with self.eye_buffers.grouped_bind(to_bind):
-                N = self._model.total_receptors
-                nb_units = N if self.output_mode == EyeOutput.Raw else self._model.lens_count
+                N = self._model.size
+                nb_units = N if self.output_mode == EyeOutput.Raw else self._model.nb_facets
 
                 glBindVertexArray(self._cones_vao)
                 glDrawArraysInstanced(GL_TRIANGLES, 0, self.__cones_vertices, nb_units)
@@ -639,8 +639,8 @@ class BaseRenderer(ABC):
                 to_bind.append('overlay')
             with self.eye_buffers.grouped_bind(to_bind):
 
-                N = self._model.total_receptors
-                nb_units = N if self.output_mode == EyeOutput.Raw else self._model.lens_count
+                N = self._model.size
+                nb_units = N if self.output_mode == EyeOutput.Raw else self._model.nb_facets
 
                 if self.projection_mode == OmmatidiaProjection.Position:
                     glBindVertexArray(self._hemispheres_vao)
@@ -669,7 +669,7 @@ class BaseRenderer(ABC):
         glFinish()  # Block until all rendering commands are complete
 
         frames_to_read = int(self._frame_index)
-        N = self._model.total_receptors
+        N = self._model.size
 
         # Direct synchronous download is ok here
         with self.eye_buffers['colors'].bind():
@@ -687,21 +687,21 @@ class BaseRenderer(ABC):
         buf = self._model.buffer
 
         # Lenses
-        if buf.lens_dirty or force_all:
+        if buf.omm_dirty or force_all:
             if force_all:
-                self.eye_buffers['lens_static'].write(buf.lens_static_data)
-                self.eye_buffers['lens_dynamic'].write(buf.lens_dynamic_data)
+                self.eye_buffers['lens_static'].write(buf.omm_static_data)
+                self.eye_buffers['lens_dynamic'].write(buf.omm_dynamic_data)
             else:
-                dirty_idx = np.where(buf.lens_dirty_mask)[0]
+                dirty_idx = np.where(buf.omm_dirty_mask)[0]
                 if dirty_idx.size > 0:
                     jumps = np.where(np.diff(dirty_idx) != 1)[0] + 1
                     for block in np.split(dirty_idx, jumps):
                         start, nb = block[0], block.size
-                        self.eye_buffers['lens_static'].write(buf.lens_static_data[start:start + nb], start=start)
-                        self.eye_buffers['lens_dynamic'].write(buf.lens_dynamic_data[start:start + nb], start=start)
+                        self.eye_buffers['lens_static'].write(buf.omm_static_data[start:start + nb], start=start)
+                        self.eye_buffers['lens_dynamic'].write(buf.omm_dynamic_data[start:start + nb], start=start)
 
-            buf.lens_dirty = False
-            buf.lens_dirty_mask.fill(False)
+            buf.omm_dirty = False
+            buf.omm_dirty_mask.fill(False)
 
         # Receptors
         if buf.rcpt_dirty or force_all:
@@ -741,7 +741,6 @@ class BaseRenderer(ABC):
             readback: If False, skip the CPU readback. Only the colour download is skipped.
             The frame is still rendered and biological state still advances.
         """
-        from insectvision.compound_eyes import VisualOutput
 
         if self._context is None:
             raise RuntimeError("renderer.step() requires an attached Context.")
@@ -781,7 +780,7 @@ class BaseRenderer(ABC):
         return VisualOutput(out_array, self._model)
 
     def set_overlay(self,
-                    values: Optional[Union[Dict['Eye', np.array], np.array]] = None,
+                    values: Optional[Union[Dict['EyeView', np.array], np.array]] = None,
                     range: Optional[Tuple[float, float]] = None,
                     colormap: 'Colormap' = Colormap.Thermal,
                     compression: float = 0.5,
@@ -799,7 +798,7 @@ class BaseRenderer(ABC):
                          1.0 = linear, 0.5 = sqrt, lower = brings out detail
         """
 
-        N = self._model.total_receptors
+        N = self._model.size
 
         if 'overlay' not in self.eye_buffers:
             self.eye_buffers.allocate('overlay',
@@ -823,7 +822,7 @@ class BaseRenderer(ABC):
 
             for eye, data in values.items():
                 if len(data) == len(eye):
-                    data = np.repeat(data, self._model.receptors_per_lens)
+                    data = np.repeat(data, self._model.rhab_per_omm)
                 merged[eye.receptors.global_indices] = data
             values = merged
 
@@ -896,7 +895,7 @@ class BaseRenderer(ABC):
 
     @nb_samples.setter
     def nb_samples(self, value):
-        N = self._model.total_receptors
+        N = self._model.size
 
         max_tot_samples = self._max_ssbo_bytes // 16
         max_per_r = max(1, max_tot_samples // N)

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from insectvision.engine import Context, Agent, Scene
 from insectvision.engine.movement import Curve, Trajectory, extract_obj_curves
-from insectvision.compound_eyes import CompoundEyeModel
+from insectvision.compound_eyes import Model
 from insectvision.renderers import Raytracer
 
 
@@ -19,7 +19,7 @@ def main():
     # eye_model = CompoundEyeModel(n=1962, force_isotropic=True)
     # eye_model = CompoundEyeModel.from_file('species_models/drosophila_custom.npz', eye_parameter=1.5)
     # eye_model = CompoundEyeModel.from_file('species_models/drosophila_Kemppainen.npz', eye_parameter=1.5)
-    eye_model = CompoundEyeModel.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
+    eye_model = Model.from_file('species_models/bee_Sturzl.npz', eye_parameter=1.1)
 
     eye_model.scale(1e-6)
 

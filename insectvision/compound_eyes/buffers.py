@@ -1,391 +1,278 @@
 """
 Packed data container for compound-eye buffers.
-
-EyesBuffer is a Data Transfer Object (DTO) holding the four packed structured arrays
-that are passed to the GPU, plus the cartridge mapping.
-
-It only knows how to allocate itself, serialize to / from disk, and bitpack the
-receptor metadata field.
 """
-from contextlib import contextmanager
-from typing import Optional
+from typing import Tuple
 import numpy as np
 
+# TODO: Old names, kept for information while updating the rest of codebase
+# OMM_STATIC_DTYPE = np.dtype([
+#     ('right',             np.float32, 3),   # 12 bytes: tangent right
+#     ('sacc_x',            np.float32),      #  4 bytes: saccade local dx
+#     ('up',                np.float32, 3),   # 12 bytes: tangent up
+#     ('sacc_y',            np.float32),      #  4 bytes: saccade local dy
+#     ('forward',           np.float32, 3),   # 12 bytes: optical axis
+#     ('ioa_tilt',          np.float32),      #  4 bytes: local hexatic lattice rotation (rad)
+#     ('ioa_axes',          np.float32, 2),   #  8 bytes: (minor, major) interommatidial angles (rad)
+#     ('focal_um',          np.float32),      #  4 bytes: focal length, lens-to-rhabdomere lever arm (μm)
+#     ('aperture_um',       np.float32),      #  4 bytes: aperture (μm) (used for diffraction)
+#     ('tau_rise',          np.float32),      #  4 bytes: mechanical rise time (s)
+#     ('tau_relax',         np.float32),      #  4 bytes: mechanical relaxation time (s)
+#     ('tau_fast',          np.float32),      #  4 bytes: fast adaptation EMA (s, ~PIP2)
+#     ('tau_adapt',         np.float32),      #  4 bytes: slow adaptation EMA (s, ~Ca²+)
+#     ('ampl_lat_um',       np.float32),      #  4 bytes: max lateral displacement at full drive (μm)
+#     ('ampl_ax_um',        np.float32),      #  4 bytes: max axial contraction at full drive (μm)
+#     ('retina_x',          np.float32),      #  4 bytes: muscle-driven retinal shift local dx
+#     ('retina_y',          np.float32),      #  4 bytes: muscle-driven retinal shift local dy
+# ])  # 96 bytes
 
-# Per-lens data
+# Per-ommatidium data
 
-LENS_STATIC_DTYPE = np.dtype([
-    ('right',             np.float32, 3),   # 12 bytes: tangent right
-    ('sacc_x',            np.float32),      #  4 bytes: saccade local dx
-    ('up',                np.float32, 3),   # 12 bytes: tangent up
-    ('sacc_y',            np.float32),      #  4 bytes: saccade local dy
-    ('forward',           np.float32, 3),   # 12 bytes: optical axis
-    ('ioa_tilt',          np.float32),      #  4 bytes: local hexatic lattice rotation (rad)
-    ('ioa_axes',          np.float32, 2),   #  8 bytes: (minor, major) interommatidial angles (rad)
-    ('focal_um', np.float32),               #  4 bytes: focal length, lens-to-rhabdomere lever arm (μm)
-    ('aperture_um',  np.float32),           #  4 bytes: aperture (μm) (used for diffraction)
-    ('tau_rise',          np.float32),      #  4 bytes: mechanical rise time (s)
-    ('tau_relax',         np.float32),      #  4 bytes: mechanical relaxation time (s)
-    ('tau_fast',          np.float32),      #  4 bytes: fast adaptation EMA (s, ~PIP2)
-    ('tau_adapt',         np.float32),      #  4 bytes: slow adaptation EMA (s, ~Ca²+)
-    ('ampl_lat_um',       np.float32),      #  4 bytes: max lateral displacement at full drive (μm)
-    ('ampl_ax_um',        np.float32),      #  4 bytes: max axial contraction at full drive (μm)
-    ('retina_x',          np.float32),      #  4 bytes: muscle-driven retinal shift local dx
-    ('retina_y',          np.float32),      #  4 bytes: muscle-driven retinal shift local dy
-])  # 96 bytes
-# TODO: This struct would benefit from a reorganisation
+OMM_STATIC_DTYPE = np.dtype([
+
+    # 16 bytes: ommatidium's position xyz and chi
+    ('position',    np.float32, 3),         ('chi',         np.float32),
+
+    # 16 bytes x 3: Frame of ref (12 bytes) + other 4 bytes things float4-align
+
+    # Ommatidium's frame of ref (in world)
+    ('forward', np.float32, 3),              ('focal_um',    np.float32),   # focal length (μm) (lens-to-rhabdomere lever arm)
+    ('right',   np.float32, 3),              ('aperture_um', np.float32),   # lens aperture (μm) (used for diffraction)
+    ('up',      np.float32, 3),              ('ioa_tilt',    np.float32),   # local hexatic lattice angle (rad)
+
+    # 16 bytes: saccade dx and dy, lateral amplitude, axial amplitude
+    ('saccade_dxdy',  np.float32, 2), ('ampl_lateral', np.float32), ('ampl_axial', np.float32),
+
+    # 16 bytes: Temporal values:            # TODO: use ms instead?
+    ('tau_rise',        np.float32),        # mechanical rise time (s)
+    ('tau_relax',       np.float32),        # mechanical relaxation time (s)
+    ('tau_adapt_fast',  np.float32),        # fast adaptation EMA (s)
+    ('tau_adapt_slow',  np.float32),        # slow adaptation EMA (s)
+
+    # 16 bytes: The two remaining 8 bytes things
+    ('ioa_angles',      np.float32, 2),     # (minor, major) interommatidial angles (rad)
+    ('retina_dxdy',     np.float32, 2),     # retinal shift local dy and dx
+])  # 112 bytes
 
 
-LENS_DYNAMIC_DTYPE = np.dtype([
-    ('adapted_lum',  np.float32),           # 4 bytes: slow luminance baseline (~50 ms EMA)
-    ('fast_lum',     np.float32),           # 4 bytes: fast luminance tracker (~5 ms EMA), saccade drive
-    ('lateral_um',   np.float32),           # 4 bytes: current focal-plane displacement (μm)
-    ('axial_um',     np.float32),           # 4 bytes: current axial contraction (μm)
+OMM_DYNAMIC_DTYPE = np.dtype([
+    ('curr_lum_fast',       np.float32),    # 4 bytes: fast luminance tracker (EMA), for saccade drive
+    ('curr_lum_slow',       np.float32),    # 4 bytes: slow luminance baseline (EMA)
+    ('curr_lateral_disp',   np.float32),    # 4 bytes: current lateral displacement (μm)
+    ('curr_axial_disp',     np.float32),    # 4 bytes: current axial contraction (μm)
 ])  # 16 bytes
 
 
-# Per-receptor data
+# Per-rhabdomere data
 
 RCPT_STATIC_DTYPE = np.dtype([
-    ('position',         np.float32, 3),   # 12 bytes: world position (= parent lens's position)
-    ('metadata',         np.uint32),       #  4 bytes: bit-packed, see _BIT_LAYOUT below
-    ('rest_acc',         np.float32, 2),   #  8 bytes: acceptance angles (minor, major) at rest (rad)
-    ('rot_offset',       np.float32, 2),   #  8 bytes: focal-plane offset behind lens (μm), post chi/chirality
-    ('sensitivity',      np.float32, 3),   # 12 bytes: (UV, G, B) channel multipliers
-    ('acc_tilt',         np.float32),      #  4 bytes: acceptance ellipse tilt (rad)
-    ('tau_membrane',     np.float32),      #  4 bytes: photoreceptor membrane RC (s)
-    ('cartridge_src',    np.uint32),       #  4 bytes: global receptor index of the neural-superposition source
-    ('rhab_diameter_um', np.float32),      #  4 bytes: rhabdomere diameter (μm)
-    ('wavelength_um',    np.float32),      #  4 bytes: peak wavelength (μm)
-])  # 64 bytes
+    # 16 bytes: 12 bytes (UV, G, B) channel sensitivity multipliers, and 4 bytes peak wavelength (μm)
+    ('sensitivity',     np.float32, 3),     ('wavelength_um',   np.float32),
+
+    # 16 bytes: Rest position and acceptance angles
+    ('rest_acc_angles', np.float32, 2),     # 8 bytes: acceptance angles (minor, major) at rest (rad)
+    ('rest_offset',     np.float32, 2),     # 8 bytes: offset (at rest) from the ommatidium optical axis (μm), post chi/chirality
+
+    # 16 bytes: the 3 remaining 4 bytes fields, and the packed metadata
+    ('tau_membrane',    np.float32),        # 4 bytes: Rhabdomere membrane RC (s)
+    ('cartridge_src',   np.uint32),         # 4 bytes: Rhabdomere index (global) of the neural-superposition source
+    ('diameter_um',     np.float32),        # 4 bytes: Rhabdomere diameter (μm)
+    ('metadata',        np.uint32)          # 4 bytes: bit-packed, see _BIT_LAYOUT below
+])  # 48 bytes
 
 
 RCPT_DYNAMIC_DTYPE = np.dtype([
-    ('direction',        np.float32, 3),   # 12 bytes: current (actuated) viewing direction
-    ('adaptation_state', np.float32),      #  4 bytes: neural/biochem adaptation level
-    ('acc_axes',         np.float32, 2),   #  8 bytes: current (actuated) acceptance axes (rad)
-    ('_pad',             np.float32, 2),   #  8 bytes: pad to 32 bytes
+    ('curr_direction',  np.float32, 3),     # 12 bytes: current (actuated) viewing direction
+    ('curr_adaptation', np.float32),        #  4 bytes: current adaptation state
+    ('curr_acc_angles', np.float32, 2),     #  8 bytes: current (actuated) acceptance angles (rad)
+    ('_pad',            np.float32, 2),     #  8 bytes: pad to 32 bytes
 ])  # 32 bytes
 
+# TODO: Move most metadata to per-ommatidium ?? Only rhab_R, chirality and is_wired are per-rhabdomere
 
 # Metadata bitfield
 #
 #   Bits    Field            Width    Notes
 #   ------------------------------------------------------------------------------------
-#   0-2     eye_id           3        Up to 8 distinct eyes (main L/R, DRA, ocelli...)
-#   3-6     rcpt_type        4        Receptor type within bundle (R1=0, R2=1, ...)
-#   7-10    neighbour_count  4        Number of immediate lattice neighbours
-#   11-26   lens_id          16       Parent ommatidium index (up to 65535)
-#   27      chirality_neg    1        0 = +1 chirality (normal), 1 = -1 (mirrored)
-#   28-31                    4        pad
+#   0-3     eye_id           4        Up to 16 distinct eyes (main L/R, DRA, ocelli...)
+#   4-7     rhab_R           4        Rhabdomere type within bundle (R1=0, R2=1, ...)
+#   8-11    neighbour_count  4        Number of immediate lattice neighbours
+#   12-27   omm_id           16       Parent ommatidium index (up to 65535)
+#   28      chirality_neg    1        0 = +1 chirality (normal), 1 = -1 (mirrored)
+#   29      is_binocular     1        Whether the rhabdomere is in an ommatidium of the binocular area
+#   30      is_wired         1        Whether the rhabdomere is correctly wired in the superposition
+#   31      is_edge          1        Whether the rhabdomere is in an ommatidium that is at the edge of the eye
 
 _BIT_LAYOUT = {
-    'eye_id':          (0,  3),
-    'rcpt_type':       (3,  4),
-    'neighbour_count': (7,  4),
-    'lens_id':         (11, 16),
-    'chirality_neg':   (27, 1),
-    'binocular_area':  (28, 1),
-    'is_wired':        (29, 1),
+    'eye_id':           (0,  4),
+    'rhab_R':           (4,  4),
+    'neighbour_count':  (8,  4),
+    'omm_id':           (12, 16),
+    'chirality_neg':    (28,  1),
+    'is_binocular':     (29,  1),
+    'is_wired':         (30,  1),
+    'is_edge':          (31,  1),
 }
 
-
-# Some convenience functions
-
-def _mask(bits: int) -> np.uint32:
-    return np.uint32((1 << bits) - 1)
+OMM_PROPS = set(OMM_STATIC_DTYPE.names).union(set(OMM_DYNAMIC_DTYPE.names))
+RHAB_PROPS = set(RCPT_STATIC_DTYPE.names).union(set(RCPT_DYNAMIC_DTYPE.names))
+STATIC_PROPS = set(OMM_STATIC_DTYPE.names).union(set(RCPT_STATIC_DTYPE.names))
+DYNAM_PROPS = set(OMM_DYNAMIC_DTYPE.names).union(set(RCPT_DYNAMIC_DTYPE.names))
 
 
 def get_metadata_field(metadata: np.ndarray, field: str) -> np.ndarray:
-    """
-    Extracts one field (returned as uint32).
-    """
-
+    """Extract one bit-packed field (returned as uint32)."""
     shift, bits = _BIT_LAYOUT[field]
-    return (metadata >> np.uint32(shift)) & _mask(bits)
+    return (np.asarray(metadata) >> np.uint32(shift)) & np.uint32((1 << bits) - 1)
 
 
 def set_metadata_field(metadata: np.ndarray, field: str, value) -> np.ndarray:
-    """
-    Returns 'metadata' with 'field' replaced by 'value' (out-of-range values truncate).
-    """
+    """Return 'metadata' with 'field' replaced by 'value' (out-of-range values truncate)."""
     shift, bits = _BIT_LAYOUT[field]
-    mask = _mask(bits)
+    mask = np.uint32((1 << bits) - 1)
     clear = np.uint32(~(mask << np.uint32(shift)) & np.uint32(0xFFFFFFFF))
     v = (np.asarray(value, dtype=np.uint32) & mask) << np.uint32(shift)
     return (metadata & clear) | v
 
 
-def pack_metadata(
-        eye_indices,
-        receptor_types,
-        neighbour_counts,
-        lens_indices,
-        chirality_neg,
-        binocular_area=0,
-        is_wired=1
-    ) -> np.ndarray:
-    """
-    Packs the six fields into a uint32 metadata array, broadcasting as needed.
-    """
-
-    ei = np.asarray(eye_indices, dtype=np.uint32)
-    rt = np.asarray(receptor_types, dtype=np.uint32)
-    nc = np.asarray(neighbour_counts, dtype=np.uint32)
-    li = np.asarray(lens_indices, dtype=np.uint32)
-    ch = np.asarray(chirality_neg, dtype=np.uint32)
-    bi = np.asarray(binocular_area, dtype=np.uint32)
-    iw = np.asarray(is_wired, dtype=np.uint32)
-
-    ei, rt, nc, li, ch, bi, iw = np.broadcast_arrays(ei, rt, nc, li, ch, bi, iw)
-
-    out = np.zeros(ei.shape, dtype=np.uint32)
-    out = set_metadata_field(out, 'eye_id',          ei)
-    out = set_metadata_field(out, 'rcpt_type',       rt)
-    out = set_metadata_field(out, 'neighbour_count', nc)
-    out = set_metadata_field(out, 'lens_id',         li)
-    out = set_metadata_field(out, 'chirality_neg',   ch)
-    out = set_metadata_field(out, 'binocular_area',  bi)
-    out = set_metadata_field(out, 'is_wired',        iw)
-    return out
-
-
-# Back-compat clear masks
-# TODO: Remove these
-
-_CLEAR_EYE_ID        = np.uint32(~(_mask(_BIT_LAYOUT['eye_id'][1])        << _BIT_LAYOUT['eye_id'][0])        & 0xFFFFFFFF)
-_CLEAR_RECEPTOR_TYPE = np.uint32(~(_mask(_BIT_LAYOUT['rcpt_type'][1])     << _BIT_LAYOUT['rcpt_type'][0])     & 0xFFFFFFFF)
-_CLEAR_NEIGHBOURS    = np.uint32(~(_mask(_BIT_LAYOUT['neighbour_count'][1])      << _BIT_LAYOUT['neighbour_count'][0])      & 0xFFFFFFFF)
-_CLEAR_LENS_INDEX    = np.uint32(~(_mask(_BIT_LAYOUT['lens_id'][1])       << _BIT_LAYOUT['lens_id'][0])       & 0xFFFFFFFF)
-_CLEAR_CHIRALITY     = np.uint32(~(_mask(_BIT_LAYOUT['chirality_neg'][1]) << _BIT_LAYOUT['chirality_neg'][0]) & 0xFFFFFFFF)
-
-
-class EyesBuffer:
+class Buffer:
     """
     GPU-ready packed buffers for a compound eye.
-
-    Four numpy structured arrays:
-        - lens_static_data:  (N,)   per-lens static fields
-        - lens_dynamic_data: (N,)   per-lens dynamic state
-        - rcpt_static_data:  (N*R,) per-receptor static fields
-        - rcpt_dynamic_data: (N*R,) per-receptor dynamic state
-
-    Plus an (N, R) cartridge mapping table and a 'lens_dirty' flag
-    that downstream GPU upload code can read/clear.
     """
 
-    def __init__(self, n_lenses: int, receptors_per_lens: int):
+    def __init__(self, shape: Tuple[int, int] = (1, 1)):
 
-        if n_lenses < 1:
-            raise ValueError(f"n_lenses must be >= 1, got {n_lenses}")
-        if receptors_per_lens < 1:
-            raise ValueError(f"receptors_per_lens must be >= 1, got {receptors_per_lens}")
+        N, R = shape
 
-        self._n_lenses = int(n_lenses)
-        self._receptors_per_lens = int(receptors_per_lens)
-        total_rcpt = n_lenses * receptors_per_lens
+        if N < 1:
+            raise ValueError('Number of ommatidia must be >= 1')
 
-        self.lens_static_data = np.zeros(n_lenses, dtype=LENS_STATIC_DTYPE)
-        self.lens_dynamic_data = np.zeros(n_lenses, dtype=LENS_DYNAMIC_DTYPE)
-        self.rcpt_static_data = np.zeros(n_lenses * receptors_per_lens, dtype=RCPT_STATIC_DTYPE)
-        self.rcpt_dynamic_data = np.zeros(n_lenses * receptors_per_lens, dtype=RCPT_DYNAMIC_DTYPE)
+        if R < 1:
+            raise ValueError('Number of rhabdomeres per ommatidium must be >= 1')
 
-        # Cartridge mapping: (N, R)
-        # Entry (i, r) is the global lens index whose r-th rhabdomere feeds the cartridge centered at lens i.
-        # Identity by default
-        self.cartridge_map = np.tile(
-            np.arange(n_lenses, dtype=np.intp)[:, None],
-            (1, receptors_per_lens),
-        )
-        self.cartridges_wired = False
+        self._shape = int(N), int(R)
 
-        # GPU upload tracking: whenever lens-level data is mutated it needs to be reuploaded.
-        # The renderer is expected to read and clear the flag
-        self.lens_dirty = True
-        self.rcpt_dirty = True
-        self.lens_dirty_mask = np.ones(self._n_lenses, dtype=bool)
-        self.rcpt_dirty_mask = np.ones(total_rcpt, dtype=bool)
+        # Mapping: property -> level
+        self.levels = {f: 'ommatidium' for f in OMM_PROPS}
+        self.levels.update({f: 'rhabdomere' for f in RHAB_PROPS})
 
-        self._allow_lens_writes = False
-        self._allow_rcpt_writes = False
+        # Mapping: property -> mutability
+        self.mutability = {f: 'static' for f in STATIC_PROPS}
+        self.mutability.update({f: 'dynamic' for f in DYNAM_PROPS})
 
-    @contextmanager
-    def unlock(self, lenses: Optional[bool] = None, receptors: Optional[bool] = None):
-        """
-        Context manager to temporarily allow CPU-side modifications to the buffers.
+        # Mapping: level -> structured arrays (+ GPU sync bookkeeping)
+        self.structured_arrays = {
+            'ommatidium': {
+                'static': np.zeros(self.shape[0], dtype=OMM_STATIC_DTYPE),
+                'dynamic': np.zeros(self.shape[0], dtype=OMM_DYNAMIC_DTYPE),
+                'reupload':  True,
+            },
+            'rhabdomere': {
+                'static': np.zeros(self.size, dtype=RCPT_STATIC_DTYPE),
+                'dynamic': np.zeros(self.size, dtype=RCPT_DYNAMIC_DTYPE),
+                'reupload': True,
+            },
+        }
 
-        If neither is specified, both are unlocked.
-        If one is specified, the other remains locked.
-        """
-
-        if lenses is None and receptors is None:
-            lenses = True
-            receptors = True
-        else:
-            lenses = lenses or False
-            receptors = receptors or False
-
-        prev_lens = self._allow_lens_writes
-        prev_rcpt = self._allow_rcpt_writes
-
-        self._allow_lens_writes = prev_lens or lenses
-        self._allow_rcpt_writes = prev_rcpt or receptors
-
-        try:
-            yield
-        finally:
-            self._allow_lens_writes = prev_lens
-            self._allow_rcpt_writes = prev_rcpt
-
-    # Sizes
+    # Sizes and repr
 
     @property
-    def n_lenses(self) -> int:
-        return self._n_lenses
+    def shape(self) -> Tuple[int, int]:
+        return self._shape
 
     @property
-    def receptors_per_lens(self) -> int:
-        return self._receptors_per_lens
-
-    @property
-    def total_receptors(self) -> int:
-        return self._n_lenses * self._receptors_per_lens
+    def size(self) -> int:
+        return self._shape[0] * self._shape[1]
 
     def __len__(self) -> int:
-        return self._n_lenses
+        return self._shape[0]
 
     def __repr__(self) -> str:
-        return (f"EyesBuffer(N={self._n_lenses}, R={self._receptors_per_lens}, "
-                f"cartridges_wired={self.cartridges_wired})")
+        return f'Buffer(shape=({self._shape[0]}x{self._shape[1]}))'
 
-    # Bitpacking helpers
-
-    def get_metadata(self, field: str) -> np.ndarray:
-        """
-        Extract one bitfield from rcpt_static_data['metadata'].
-
-        See datatypes._BIT_LAYOUT for available fields.
-        """
-        return get_metadata_field(self.rcpt_static_data['metadata'], field)
-
-    def set_metadata(self, field: str, value) -> None:
-        """
-        In-place update of one bitfield in rcpt_static_data['metadata'].
-        """
-        if not self._allow_rcpt_writes:
-            raise RuntimeError("CPU-side receptor writes are locked.")
-
-        self.rcpt_static_data['metadata'] = set_metadata_field(
-            self.rcpt_static_data['metadata'], field, value
-        )
-        self.rcpt_dirty = True
-        self.rcpt_dirty_mask.fill(True)
-
-    def pack_metadata(self,
-                      eye_indices,
-                      receptor_types,
-                      neighbour_counts,
-                      lens_indices,
-                      chirality_neg,
-                      binocular_area
-                      ) -> None:
-        """
-        Replace the entire rcpt_static_data['metadata'] with packed fields.
-        """
-        if not self._allow_rcpt_writes:
-            raise RuntimeError("CPU-side receptor writes are locked.")
-
-        self.rcpt_static_data['metadata'] = pack_metadata(
-            eye_indices=eye_indices,
-            receptor_types=receptor_types,
-            neighbour_counts=neighbour_counts,
-            lens_indices=lens_indices,
-            chirality_neg=chirality_neg,
-            binocular_area=binocular_area,
-        )
-        self.rcpt_dirty = True
-        self.rcpt_dirty_mask.fill(True)
-
-    # Cartridge-index view
+    # Public info methods
 
     @property
-    def cartridge_indices(self) -> np.ndarray:
+    def fields(self):
+        return sorted(OMM_PROPS.union(RHAB_PROPS).union(_BIT_LAYOUT.keys()) - {'_pad', 'metadata'})
+
+    def max_value(self, field: str) -> int:
         """
-        (N, R) global receptor indices grouped by cartridge mapping.
-
-        Raises RuntimeError if cartridges have not been wired.
+        Return the maximum possible value for a given metadata bit-field.
         """
-        if not self.cartridges_wired:
-            raise RuntimeError("Cartridges not wired")
-        return (self.cartridge_map * self._receptors_per_lens
-                + np.arange(self._receptors_per_lens, dtype=np.intp))
+        if field not in _BIT_LAYOUT:
+            raise KeyError(f"'{field}' is not a valid metadata field.")
+        _, bits = _BIT_LAYOUT[field]
+        return (1 << bits) - 1
 
-    # I/O
+    # Internal helpers
 
-    def to_file(self, path: str) -> None:
-        """
-        Serialize the entire buffer state to a .npz archive.
+    def _array_containing(self, field: str):
+        return self.structured_arrays[self.levels[field]][self.mutability[field]]
 
-        Writes the four structured arrays, the cartridge map, and the
-        cartridges_wired flag.
-        """
-        np.savez(
-            path,
-            lens_static_data=self.lens_static_data,
-            lens_dynamic_data=self.lens_dynamic_data,
-            rcpt_static_data=self.rcpt_static_data,
-            rcpt_dynamic_data=self.rcpt_dynamic_data,
-            cartridge_map=self.cartridge_map,
-            cartridges_wired=np.bool_(self.cartridges_wired),
-        )
+    # Access
 
-    @classmethod
-    def from_file(cls, path: str) -> 'EyesBuffer':
-        """
-        Restore a buffer from a .npz archive previously written by to_file().
+    def __getitem__(self, key):
+        field, idx = key if isinstance(key, tuple) else (key, slice(None))
 
-        Raises ValueError if the structured-array dtypes in the archive
-        do not match the current LENS_*_DTYPE / RCPT_*_DTYPE.
-        """
-        with np.load(path, allow_pickle=False) as data:
-            files = set(data.files)
-            required = {'lens_static_data', 'lens_dynamic_data',
-                        'rcpt_static_data', 'rcpt_dynamic_data',
-                        'cartridge_map'}
-            missing = required - files
-            if missing:
-                raise ValueError(f"{path}: missing required keys: {sorted(missing)}")
+        if field in _BIT_LAYOUT:
+            meta = self.structured_arrays['rhabdomere']['static']['metadata'][idx]
+            out = np.asarray(get_metadata_field(meta, field))
+            if idx == slice(None):  # only reshape if looking at the whole array
+                out = out.reshape(*self._shape)
+            out.flags.writeable = False     # unpacked copy, can be written via buf['field', idx] = v
+            return out
 
-            ls = data['lens_static_data']
-            ld = data['lens_dynamic_data']
-            rs = data['rcpt_static_data']
-            rd = data['rcpt_dynamic_data']
-            cm = data['cartridge_map']
+        level = self.levels[field]
+        arr = self._array_containing(field)[field]
 
-            if ls.dtype != LENS_STATIC_DTYPE:
-                raise ValueError(f"{path}: lens_static_data dtype mismatch")
-            if ld.dtype != LENS_DYNAMIC_DTYPE:
-                raise ValueError(f"{path}: lens_dynamic_data dtype mismatch")
-            if rs.dtype != RCPT_STATIC_DTYPE:
-                raise ValueError(f"{path}: rcpt_static_data dtype mismatch")
-            if rd.dtype != RCPT_DYNAMIC_DTYPE:
-                raise ValueError(f"{path}: rcpt_dynamic_data dtype mismatch")
+        if idx == slice(None):
+            logical_dims = (self.shape[0],) if level == 'ommatidium' else self.shape
+            target_shape = logical_dims + arr.shape[1:]
+            return arr.reshape(target_shape).squeeze()
 
-            n_lenses = int(ls.shape[0])
-            n_receptors = int(rs.shape[0])
-            if n_receptors % n_lenses != 0:
-                raise ValueError(
-                    f"{path}: receptor count {n_receptors} not divisible by lens count {n_lenses}"
-                )
-            R = n_receptors // n_lenses
+        return arr[idx]
 
-            buf = cls(n_lenses=n_lenses, receptors_per_lens=R)
-            buf.lens_static_data[:] = ls
-            buf.lens_dynamic_data[:] = ld
-            buf.rcpt_static_data[:] = rs
-            buf.rcpt_dynamic_data[:] = rd
-            buf.cartridge_map = np.asarray(cm, dtype=np.intp).reshape(n_lenses, R)
-            buf.cartridges_wired = bool(data['cartridges_wired']) if 'cartridges_wired' in files else False
-            buf.lens_dirty = True
+    def __setitem__(self, key, values):
+        field, idx = key if isinstance(key, tuple) else (key, slice(None))
+        values = np.asanyarray(values)
 
-        return buf
+        if field in _BIT_LAYOUT:
+            level = 'rhabdomere'
+            meta = self.structured_arrays[level]['static']['metadata']
+
+            if idx == slice(None):
+                N, R = self._shape
+                if values.ndim == 0:
+                    grid = np.broadcast_to(values, (N, R))
+                elif values.shape == (N, R):
+                    grid = values
+                elif values.ndim == 1 and values.shape[0] == N:
+                    grid = np.broadcast_to(values[:, None], (N, R))
+                else:
+                    grid = np.broadcast_to(values, (N, R))
+                values = grid.reshape(-1)
+
+            meta[idx] = set_metadata_field(meta[idx], field, values)
+            self.structured_arrays[level]['reupload'] = True
+
+        else:
+            level = self.levels[field]
+            arr = self._array_containing(field)[field]
+
+            if idx == slice(None):
+                logical_dims = (self.shape[0],) if level == 'ommatidium' else self.shape
+                extra_dims = arr.shape[1:]
+                logical_shape = logical_dims + extra_dims
+
+                try:
+                    values = np.broadcast_to(values, logical_shape)
+                except ValueError as e:
+                    raise ValueError(
+                        f"could not broadcast input array from shape {values.shape} "
+                        f"into logical shape {logical_shape} for field '{field}'"
+                    ) from e
+                values = values.reshape(-1, *extra_dims)
+
+            arr[idx] = values
+
+            self.structured_arrays[level]['reupload'] = True

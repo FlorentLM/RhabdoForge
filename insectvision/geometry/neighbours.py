@@ -69,44 +69,55 @@ def delaunay_neighbours(points2d: np.ndarray, max_length_factor: float = 0.0) ->
     return [np.array(s, dtype=np.intp) for s in neighbour_lists]
 
 
-# knn queries against a prebuilt KD-tree
+# knn queries
 
 def knn(
-        tree: cKDTree,
-        query_pts: np.ndarray,
-        k: int,
+        tree: Optional[cKDTree] = None,
+        query_points: Optional[np.ndarray] = None,
+        k: int = 6,
         drop_self: bool = True,
-) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    k-nearest-neighbour query against a prebuilt tree.
+    k-nearest-neighbour query against a prebuilt tree. Or not. Whatever.
 
     Args:
-        tree: a prebuilt cKDTree (owned/cached by the caller)
-        query_pts: (Q, D) query points
+        tree: Ideally, a prebuilt cKDTree (owned/cached by the caller).
+            If none passed, it warns and builds one over the query points.
+        query_points: Points to query (Q, D). If None, the tree's own data is used (i.e. mean spacing of this cloud).
         k: number of neighbours requested. Clamped to the tree size.
         drop_self: if True, query k+1 and drop the first (self) column. Use for
             self-queries (query points are tree members). Set False when querying
             external points, where the nearest match is not the point itself.
 
     Returns:
-        (distances, indices), both (Q, k_eff) with k_eff = min(k, n - 1) when drop_self else min(k, n)
-        When k_eff == 0, returns (Q, 0) arrays
+        (distances, indices), both (Q, k_eff) with k_eff = min(k, n - 1) when drop_self, or min(k, n) otherwise.
+        When k_eff == 0, returns (Q, 0) arrays.
     """
-    query_pts = np.atleast_2d(query_pts)
-    n = tree.n
-    max_k = (n - 1) if drop_self else n
-    k_eff = min(int(k), max_k)
 
-    if k_eff <= 0:
-        q = query_pts.shape[0]
+    if tree is None and query_points is None:
+        raise ValueError('You must pass either a tree or query_points.')
+
+    if query_points is None:
+        query_points = tree.data
+    query_points = np.atleast_2d(query_points)
+
+    if tree is None:
+        tree = cKDTree(query_points)
+
+    max_k = (tree.n - 1) if drop_self else tree.n
+    k_clipped = max(0, min(int(k), max_k))
+
+    if k_clipped <= 0:
+        q = query_points.shape[0]
         return np.empty((q, 0), dtype=float), np.empty((q, 0), dtype=np.intp)
 
-    kq = k_eff + 1 if drop_self else k_eff
-    dist, idx = tree.query(query_pts, k=kq)
+    kq = k_clipped + 1 if drop_self else k_clipped
+    dist, idx = tree.query(query_points, k=kq)
 
-    if idx.ndim == 1:  # kq == 1
+    if idx.ndim == 1:
         idx = idx.reshape(-1, 1)
         dist = dist.reshape(-1, 1)
+
     if drop_self:
         idx = idx[:, 1:]
         dist = dist[:, 1:]
@@ -116,21 +127,18 @@ def knn(
 
 def mean_neighbour_distance(
         tree: cKDTree,
-        query_pts: Optional[np.ndarray] = None,
+        query_points: Optional[np.ndarray] = None,
         k: int = 6,
 ) -> np.ndarray:
     """
-    Per-point mean distance to its k nearest neighbours (the local point-spacing
-    scale).
-
-    If 'query_pts' is None the tree's own data is used (i.e. the mean spacing of
-    this cloud).
+    Per-point mean distance to its k nearest neighbours (the local point-spacing scale).
+    If 'query_pts' is None the tree's own data is used (i.e. the mean spacing of this cloud).
     Returns NaN for points with no available neighbours.
     """
-    pts = tree.data if query_pts is None else query_pts
-    dist, _ = knn(tree, pts, k, drop_self=True)
+    dist, _ = knn(tree, query_points, k, drop_self=True)
     if dist.shape[1] == 0:
         return np.full(dist.shape[0], np.nan)
+
     return dist.mean(axis=1)
 
 

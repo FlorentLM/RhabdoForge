@@ -39,7 +39,7 @@ class Dashboard:
         dpg.setup_dearpygui()
 
         model = self.ctx.renderer._model
-        self.rec_data_buffers = [collections.deque(maxlen=self.plot_history_len) for _ in range(model.receptors_per_lens)]
+        self.rec_data_buffers = [collections.deque(maxlen=self.plot_history_len) for _ in range(model.rhab_per_omm)]
 
         with dpg.window(label='Inspector', width=650, height=950, no_close=True, no_move=True, tag='main_window'):
 
@@ -86,15 +86,15 @@ class Dashboard:
 
                     self.omm_selection_text = dpg.add_text("Selected Lenses: [0]")
                     self.omm_slider = dpg.add_slider_int(label="Primary Lens ID (or type)", default_value=0,
-                                                         max_value=model.lens_count - 1, callback=self._on_slider_change)
+                                                         max_value=model.nb_facets - 1, callback=self._on_slider_change)
                     dpg.add_button(label="Clear Selection", callback=lambda: self.toggle_lens_selection(None))
 
                     dpg.add_separator()
                     self.show_all_rec_toggle = dpg.add_checkbox(
-                        label=f'Show individual receptors (R1-R{model.receptors_per_lens})', default_value=False)
+                        label=f'Show individual receptors (R1-R{model.rhab_per_omm})', default_value=False)
                     self.rec_slider = dpg.add_slider_int(label='Probed Receptor ID', default_value=0,
-                                                         max_value=max(0, model.receptors_per_lens - 1),
-                                                         show=(model.receptors_per_lens > 1))
+                                                         max_value=max(0, model.rhab_per_omm - 1),
+                                                         show=(model.rhab_per_omm > 1))
 
                     self.rgb_toggle = dpg.add_checkbox(label='Show RGB channels', default_value=False)
                     self.instant_toggle = dpg.add_checkbox(label='Show instantaneous (Alpha)', default_value=False)
@@ -128,7 +128,7 @@ class Dashboard:
                         pool_item['ax'] = dpg.add_line_series([], [], label=f'Ax L{i}', parent='y_axis_2')
 
                         pool_item['receptors'] = []
-                        for r_idx in range(model.receptors_per_lens):
+                        for r_idx in range(model.rhab_per_omm):
                             tag = dpg.add_line_series([], [], label=f'R{r_idx + 1} L{i}', parent='y_axis_1')
                             pool_item['receptors'].append(tag)
 
@@ -148,27 +148,27 @@ class Dashboard:
 
                     dpg.add_slider_float(
                         label='Lateral Gain (um)',
-                        default_value=float(model.lenses.ampl_lat_um[0]),
+                        default_value=float(model.ommatidia.ampl_lat_um[0]),
                         min_value=0.0, max_value=5.0,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'ampl_lat_um', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'ampl_lat_um', a)
                     )
                     dpg.add_slider_float(
                         label='Axial Gain (um)',
-                        default_value=float(model.lenses.ampl_ax_um[0]),
+                        default_value=float(model.ommatidia.ampl_ax_um[0]),
                         min_value=0.0, max_value=5.0,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'ampl_ax_um', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'ampl_ax_um', a)
                     )
                     dpg.add_slider_float(
                         label='Tau Fast (s)',
-                        default_value=float(model.lenses.tau_fast[0]),
+                        default_value=float(model.ommatidia.tau_fast[0]),
                         min_value=0.001, max_value=0.1,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'tau_fast', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'tau_fast', a)
                     )
                     dpg.add_slider_float(
                         label='Tau Relaxation (s)',
-                        default_value=float(model.lenses.tau_relax[0]),
+                        default_value=float(model.ommatidia.tau_relax[0]),
                         min_value=0.01, max_value=0.5,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.lenses, 'tau_relax', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'tau_relax', a)
                     )
 
                     dpg.add_separator()
@@ -383,7 +383,7 @@ class Dashboard:
                     'lat': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
                     'ax': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
                     'receptors': [collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len) for _ in
-                                  range(model.receptors_per_lens)]
+                                  range(model.rhab_per_omm)]
                 }
 
         if dpg.does_item_exist(self.omm_selection_text):
@@ -499,7 +499,7 @@ class Dashboard:
         dpg.set_value('ui_sim_total_text', f'Total sim time: {self.ctx.total_time:7.3f} s')
 
         model = self.ctx.renderer._model
-        dpg.configure_item(self.rec_slider, max_value=max(0, model.receptors_per_lens - 1))
+        dpg.configure_item(self.rec_slider, max_value=max(0, model.rhab_per_omm - 1))
 
         # Modes
         view_str = self.ctx.display_mode.name.replace('_', ' ')
@@ -512,7 +512,7 @@ class Dashboard:
         dpg.set_value('ui_pos_text', f'Pos: [{pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}]')
 
         # Samples and ommatidia
-        nb_om = self.ctx.renderer._model.lens_count
+        nb_om = self.ctx.renderer._model.nb_facets
         nb_om_samples = getattr(self.ctx.renderer, 'nb_samples', 1)
         nb_px_samples = getattr(self.ctx.renderer, 'samples_per_pixel', 1)
 
@@ -571,8 +571,8 @@ class Dashboard:
 
                 # Update history data
                 if mode == EyeOutput.Raw:
-                    start = lid * model.receptors_per_lens
-                    group = visual_output.data[start: start + model.receptors_per_lens]
+                    start = lid * model.rhab_per_omm
+                    group = visual_output.data[start: start + model.rhab_per_omm]
                 elif mode == EyeOutput.Ommatidium:
                     group = visual_output.per_lens[lid]
                 else:
@@ -589,7 +589,7 @@ class Dashboard:
                 hist['lat'].append(float(dynamic_states[lid]['lateral_um']))
                 hist['ax'].append(float(dynamic_states[lid]['axial_um']))
 
-                for r_idx in range(model.receptors_per_lens):
+                for r_idx in range(model.rhab_per_omm):
                     hist['receptors'][r_idx].append(np.mean(group[r_idx, :3]))
 
                 # Refresh lines for this active slot
@@ -697,11 +697,11 @@ class Dashboard:
         shader_selection = np.full(10, -1, dtype=np.int32)
         if self.selected_lenses:
             for idx, l_id in enumerate(self.selected_lenses[:10]):
-                if l_id >= model.lens_count: continue
+                if l_id >= model.nb_facets: continue
 
                 if mode == EyeOutput.Raw:
                     rec_id = dpg.get_value(self.rec_slider)
-                    shader_selection[idx] = (l_id * model.receptors_per_lens) + rec_id
+                    shader_selection[idx] = (l_id * model.rhab_per_omm) + rec_id
                 else:
                     shader_selection[idx] = l_id
 

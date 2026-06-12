@@ -9,12 +9,12 @@ from insectvision.geometry.neighbours import smooth_field_partitioned
 from insectvision.geometry.circular import wrap_angle
 
 if TYPE_CHECKING:
-    from insectvision.compound_eyes import CompoundEyeModel
+    from insectvision.compound_eyes import Model
 
 
 
 @dataclass
-class OrientationResult:
+class AlignmentResult:
     """
     Output of BundlesAligner.compute().
     """
@@ -143,20 +143,15 @@ class BundlesAligner:
         self.strength = float(strength)
 
     def compute(self,
-        model: 'CompoundEyeModel',
-        override_chi: Optional[ArrayLike] = None,
-        override_chirality: Optional[ArrayLike] = None,
-        ) -> OrientationResult:
+                model: 'Model',
+                override_chi: Optional[ArrayLike] = None,
+                override_chirality: Optional[ArrayLike] = None,
+                ) -> AlignmentResult:
         """
         Compute the orientation field for the CompoundEyeModel's lens geometry.
         'override_chi' or 'override_chirality' can be supplied to bypass the corresponding pipeline step.
         The bypassed quantity is passed through to derive whatever depends on it.
         """
-
-        lens_directions = model._lens_directions
-        lens_positions = model._lens_positions
-        bundle = model._bundle
-        N = lens_directions.shape[0]
 
         e_x = self.flow_direction
         _rgt, _up = tangent_frames(e_x)
@@ -164,21 +159,20 @@ class BundlesAligner:
 
         # Eye / hemisphere signs (geometric)
         side_map = {e.eye_index: e.side_sign for e in model.eyes}
-        eye_sign = np.array([side_map[eid] for eid in model._lens_eye_index], dtype=np.float32)
+        eye_sign = np.array([side_map[eid] for eid in model.eye_membership], dtype=np.float32)
         eye_sign[eye_sign == 0] = 1.0   # midline -> left
 
-        hemisphere_sign = np.sign(lens_positions @ e_z).astype(np.float32)
+        hemisphere_sign = np.sign(model.positions @ e_z).astype(np.float32)
         hemisphere_sign[hemisphere_sign == 0] = 1.0   # equator -> dorsal
 
         # Resolve chirality
         if override_chirality is not None:
-            chirality = broadcast_1d(override_chirality, N, 'chirality')
+            chirality = broadcast_1d(override_chirality, model.shape[0], 'chirality')
         else:
             chirality = (eye_sign * hemisphere_sign).astype(np.float32)
 
-        # Alignment phasor field (with optional zoned smoothing)
         alignment = _alignment_phasor_field(
-            lens_directions=lens_directions,
+            lens_directions=model.directions,
             e_x=e_x, e_y=e_y, e_z=e_z,
             eye_sign=eye_sign, hemisphere_sign=hemisphere_sign,
             strength=self.strength,
@@ -195,7 +189,7 @@ class BundlesAligner:
                 alignment,
                 kind='nematic',
                 partition=zone_labels,
-                positions=lens_positions,
+                positions=model.positions,
                 k=8,
                 n_iter=self.alignment_smoothing_iterations,
             ).astype(np.float32)
@@ -203,8 +197,8 @@ class BundlesAligner:
         # Major axis: alignment rotated by +/- flow_axis_deg, per eye
         rotated = rotate_in_tangent_plane(
             vectors=alignment,
-            normals=lens_directions,
-            angles=np.deg2rad(bundle.flow_axis_deg) * eye_sign,
+            normals=model.directions,
+            angles=np.deg2rad(model.bundle.flow_axis_deg) * eye_sign,
             normalize=False
         )
 
@@ -217,16 +211,16 @@ class BundlesAligner:
 
         # Bundle yaw (chi) from the major axis direction in each tangent frame
         if override_chi is not None:
-            chi = broadcast_1d(override_chi, N, 'chi')
+            chi = broadcast_1d(override_chi, model.shape[0], 'chi')
         else:
             major_angle = np.arctan2(
-                np.sum(major_axis * model._local_up, axis=1),
-                np.sum(major_axis * model._local_right, axis=1),
+                np.sum(major_axis * model.up, axis=1),
+                np.sum(major_axis * model.right, axis=1),
             )
             effective_main = np.where(
                 chirality > 0,
-                bundle.main_axis_rad + np.pi,
-                -bundle.main_axis_rad,
+                model.bundle.main_axis_rad + np.pi,
+                -model.bundle.main_axis_rad,
             ).astype(np.float32)
 
             chi = wrap_angle(major_angle - effective_main).astype(np.float32)
@@ -234,8 +228,8 @@ class BundlesAligner:
         # Saccade phasor: major axis rotated by base saccade offset * chirality (4 zones), smoothed, and polarised
         sacc = rotate_in_tangent_plane(
             vectors=major_axis,
-            normals=lens_directions,
-            angles=-np.deg2rad(bundle.saccade_offset_deg) * chirality,
+            normals=model.directions,
+            angles=-np.deg2rad(model.bundle.saccade_offset_deg) * chirality,
             normalize=True
         )
 
@@ -243,8 +237,8 @@ class BundlesAligner:
             sacc = smooth_field_partitioned(
                 sacc,
                 kind='nematic',
-                partition=model._lens_eye_index,
-                positions=lens_positions,
+                partition=model.eye_membership,
+                positions=model.positions,
                 k=8,
                 n_iter=self.saccade_smoothing_iterations,
             ).astype(np.float32)
@@ -252,7 +246,7 @@ class BundlesAligner:
         # Polarise: saccade phasor consistently 'up' in the flow frame
         sacc[sacc @ e_z < 0] *= -1.0
 
-        return OrientationResult(
+        return AlignmentResult(
             chi=chi.astype(np.float32),
             chirality=chirality.astype(np.float32),
             saccade_phasor=sacc.astype(np.float32),
@@ -264,27 +258,28 @@ class BundlesAligner:
         )
 
     def apply(self,
-              model: 'CompoundEyeModel',
+              model: 'Model',
               override_chi: Optional[ArrayLike] = None,
               override_chirality: Optional[ArrayLike] = None,
-              ) -> OrientationResult:
+              ) -> AlignmentResult:
         """
         Compute and write the result into the CompoundEyeModel (also return it).
         """
         result = self.compute(model, override_chi=override_chi, override_chirality=override_chirality)
-        model._apply_orientation(result)
+        model._bundle_orientation_backwrite(result)
         return result
 
 
 ##
 # Helpers for callers that only need simpler pipeline
 
+# TODO: Move these as class methods in BundlesAligner
 
-def trivial_orientation(N: int) -> OrientationResult:
+def trivial_alignment(N: int) -> AlignmentResult:
     """
     For R=1 bundles or any case with no bundle to orient.
     """
-    return OrientationResult(
+    return AlignmentResult(
         chi=np.zeros(N, dtype=np.float32),
         chirality=np.ones(N, dtype=np.float32),
         saccade_phasor=np.zeros((N, 3), dtype=np.float32),
@@ -292,10 +287,10 @@ def trivial_orientation(N: int) -> OrientationResult:
 
 
 def apply_chirality(
-    model: 'CompoundEyeModel',
+    model: 'Model',
     chi: ArrayLike,
     chirality: ArrayLike,
-) -> OrientationResult:
+) -> AlignmentResult:
     """
     Derive a OrientationResult when the user supplies chi and chirality directly
     (no flow direction available).
@@ -306,23 +301,23 @@ def apply_chirality(
     No smoothing (it is presumed the user knows what they want).
     """
 
-    N = model._lens_directions.shape[0]
+    N = model.directions.shape[0]
     chi = broadcast_1d(chi, N, 'chi')
     chirality = broadcast_1d(chirality, N, 'chirality')
 
-    main_rad = float(model._bundle.main_axis_rad)
+    main_rad = float(model.bundle.main_axis_rad)
     effective_main = np.where(chirality > 0, main_rad, np.pi - main_rad).astype(np.float32)
     major_angle = chi + effective_main
     major = local_to_world(
         np.stack([np.cos(major_angle), np.sin(major_angle)], axis=-1),
-        model._local_right, model._local_up,
+        model.right, model.up,
     )
 
     sacc = rotate_in_tangent_plane(
         vectors=major,
-        normals=model._lens_directions,
-        angles=-np.radians(model._bundle.saccade_offset_deg) * chirality,
+        normals=model.directions,
+        angles=-np.radians(model.bundle.saccade_offset_deg) * chirality,
         normalize=True
     )
 
-    return OrientationResult(chi=chi, chirality=chirality, saccade_phasor=sacc, major_axis=major)
+    return AlignmentResult(chi=chi, chirality=chirality, saccade_phasor=sacc, major_axis=major)

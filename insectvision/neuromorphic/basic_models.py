@@ -36,7 +36,7 @@ class HassensteinReichardtEMD:
         self.tau_hp = tau_highpass
 
         # Lens-level directed neighbours (eye-local indices)
-        self.targets, self.weights = eye.lenses.directed_neighbours(
+        self.targets, self.weights = eye.ommatidia.directed_neighbours(
             direction=direction, k=1, coordinate=coordinate, return_weights=True
         )
 
@@ -127,7 +127,7 @@ class GradientFlowDetector:
         self.eps = eps
         self.tau_smooth = tau_smooth
 
-        self.targets, self.weights = eye.lenses.directed_neighbours(
+        self.targets, self.weights = eye.ommatidia.directed_neighbours(
             direction=direction, k=1, coordinate=coordinate, return_weights=True
         )
 

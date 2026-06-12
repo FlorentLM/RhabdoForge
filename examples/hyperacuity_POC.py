@@ -11,30 +11,36 @@ Four per-rhabdomere actuation conditions on the same cartridge:
     lateral  - lateral move only -> RF shift, no narrowing
     full     - both
 
-Several bar separations run sequentially.
+The two sweep directions are kept separate (columns: Bar UP / Bar DOWN): the
+rise/relax asymmetry means the bar-up and bar-down profiles differ, and that
+direction-dependent signature is itself part of the hyperacuity code.
 
-Two regimes, switched by EXTRA_NARROWING:
-    1.0: pure optical (Kemppainen 2022, Table S6, 2 um axial move). This produces a narrowing of ~0.4 deg,
-        so 'axial'/'full' do NOT resolve below the optical Sparrow limit: pure optics + saccades are not hyperacute.
-    ~0.535: phenomenological. An exaggerated dynamic RF contraction standing in for the pupil /
-          transduction narrowing. 'axial'/'full' then resolve bars that 'none'/'lateral' cannot.
+Two narrowing regimes, each rebuilt and plotted in its own figure:
+    optical (r_xtra = 1.0): pure optical (Kemppainen 2022, ~2 um axial move).
+                            Narrowing ~0.4 deg, so 'axial'/'full' do NOT resolve
+                            the two bars below the optical Sparrow limit.
+    phenomenological (r_xtra ~ 0.535): exaggerated dynamic RF contraction standing in for
+                                       the pupil / transduction narrowing. 'axial'/'full'
+                                       then resolve bars that 'none'/'lateral' cannot.
+
+
 """
 import numpy as np
 import matplotlib.pyplot as plt
 
-from insectvision.compound_eyes.acceptance import SnyderAcceptance
+from insectvision.compound_eyes.helpers.acceptance import SnyderAcceptance
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, RHAB_COLOURS
-from insectvision.compound_eyes.orientation import BundlesAligner
+from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.compound_eyes import CompoundEyeModel
+from insectvision.compound_eyes import Model
 from insectvision.engine.world_utils import WORLD_FORWARD
 from insectvision.renderers import Raytracer
 from insectvision.geometry import plane_geom
-from insectvision.utils.math import norm_minmax
 
 # Config ----------------------------------------------------------
 
-BAR_SEPARATIONS = [0.0, 4.0]        # deg, centre-to-centre
+SEP_TEST_DEG    = 4.0               # deg, centre-to-centre of the two-bar stimulus
+BAR_SEPARATIONS = [0.0, SEP_TEST_DEG]   # 0 = single-bar control
 BAR_WIDTH_DEG   = 1.0               # deg
 DISTANCE        = 2.0               # m (bar plane at z = -DISTANCE)
 BAR_LENGTH      = 10.0              # m
@@ -42,10 +48,8 @@ BAR_LENGTH      = 10.0              # m
 SWEEP_SPEED_DEG = 40.0              # deg/s (angular sweep speed at the centre of the field)
 SWEEP_AMPLITUDE = 1.0               # m (travel is +/- this)
 
-SELECTED_LENS   = None              # the single analysed cartridge (forward-pointing)
-
-EXTRA_NARROWING = 1.0               # 1.0 = pure optical
-# EXTRA_NARROWING = 0.535             # ~0.535 = phenomenological (see header)
+# Narrowing regimes, each rebuilt and given its own figure
+REGIMES = {'optical': 1.0, 'phenomenological': 0.535}
 
 AMP_LAT  = 2.0                      # um, lateral microsaccade amplitude at full drive
 AMP_AX   = 2.0                      # um, axial microsaccade amplitude at full drive
@@ -61,11 +65,11 @@ TAU_RISE     = 0.015    # (10-15 ms / 0.010–0.015 s)
 TAU_RELAX    = 0.060    # (60-100 ms / 0.060–0.100 s)
 # TAU_RELAX    = 0.150    # (60-100 ms / 0.060–0.100 s)
 
-FOCUS_R_TYPE = 5    # Single receptor type to plot
+VIEW_HALFWIDTH = 0.30   # m, x-axis half-range around the bars
 
 SWEEP_SPEED    = DISTANCE * np.radians(SWEEP_SPEED_DEG)     # m/s
 SWEEP_DURATION = (2 * SWEEP_AMPLITUDE) / SWEEP_SPEED        # one-way sweep (s)
-CYCLE_DURATION = 2 * SWEEP_DURATION                        # up + down (s)
+CYCLE_DURATION = 2 * SWEEP_DURATION                         # up + down (s)
 COND_DURATION  = CYCLE_DURATION                            # one full cycle per condition
 CONDITIONS = [
     # name,     actuation,   ampl_lat_um,   ampl_ax_um
@@ -76,46 +80,52 @@ CONDITIONS = [
 ]
 RUN_DURATION   = COND_DURATION * len(CONDITIONS)           # per separation
 
-# Build the eye ----------------------------------------------------------
+COND_COLOR = {'none': '#4477aa', 'axial': '#228833', 'lateral': '#ee7733', 'full': '#cc3311'}
+
+R, CENTER = 7, 6                   # Drosophila: 7 rhabdomeres, R7/8 is the central (index 6)
+PERIPH = list(range(6))            # R1-R6, the motion / acuity cells
 
 context = Context()
 context.time_step = 1 / 1000.0  # 1 ms biological resolution
 context.mouse_captured = False
 
-bundle = drosophila_bundle()
-bundle.extra_narrowing_ratio = EXTRA_NARROWING
 
-head_ptich = np.deg2rad(10.1)
-optic_flow = np.array([0.0, np.sin(head_ptich), np.cos(head_ptich)])
+# Build the eye ----------------------------------------------------------
 
-aligner = BundlesAligner(
-    flow_direction=optic_flow,
-    diagonal_strength=1.0,
-    diagonal_angle_deg=45.0,
-    alignment_smoothing_iterations=4,
-    saccade_smoothing_iterations=15,
-)
+def build_eye(extra_narrowing):
+    """Build the Drosophila eye for a given phenomenological narrowing ratio."""
 
-model = CompoundEyeModel.from_file(
-    'species_models/drosophila_custom.npz',
-    bundle=bundle, orientation=aligner, acceptance=SnyderAcceptance(),
-)
-model.scale(1e-6)
+    bundle = drosophila_bundle()
+    bundle.extra_narrowing_ratio = extra_narrowing
+
+    head_pitch = np.deg2rad(10.1)
+    optic_flow = np.array([0.0, np.sin(head_pitch), np.cos(head_pitch)])
+
+    aligner = BundlesAligner(
+        flow_direction=optic_flow,
+        diagonal_strength=1.0,
+        diagonal_angle_deg=45.0,
+        alignment_smoothing_iterations=4,
+        saccade_smoothing_iterations=15,
+    )
+
+    model = Model.from_file(
+        'species_models/drosophila_custom.npz',
+        bundle=bundle, orientation=aligner, acceptance=SnyderAcceptance(),
+    )
+    model.scale(1e-6)
+
+    with model.unlock():
+        model.receptors.tau_membrane = TAU_MEMBRANE
+        model.ommatidia.tau_fast = TAU_FAST
+        model.ommatidia.tau_adapt = TAU_ADAPT
+        model.ommatidia.tau_rise = TAU_RISE
+        model.ommatidia.tau_relax = TAU_RELAX
+
+    return model
 
 
-with model.unlock(lenses=True, receptors=True):
-    model.receptors.tau_membrane = TAU_MEMBRANE
-    model.lenses.tau_fast = TAU_FAST
-    model.lenses.tau_adapt = TAU_ADAPT
-    model.lenses.tau_rise = TAU_RISE
-    model.lenses.tau_relax = TAU_RELAX
-
-# Helpers ------------------------------------------------------------------
-
-COND_COLOR = {'none': '#4477aa', 'axial': '#228833', 'lateral': '#ee7733', 'full': '#cc3311'}
-
-R, CENTER = 7, 6                   # Drosophila: 7 rhabdomeres, R7/8 is the central (index 6)
-PERIPH = list(range(6))            # R1-R6, the motion / acuity cells
+# Scene / sweep helpers ----------------------------------------------------
 
 def make_bars(sep_deg):
     """Build the white horizontal bar(s) for a given angular separation (deg)."""
@@ -137,20 +147,20 @@ def make_bars(sep_deg):
     return bars
 
 
-def apply_condition(renderer, actuation, ampl_lat, ampl_ax):
+def apply_condition(renderer, model, actuation, ampl_lat, ampl_ax):
     """Set actuation + microsaccade amplitudes and reset the per-lens dynamic state."""
 
     renderer.actuation = actuation
 
     with model.unlock(lenses=True):
-        model.lenses.ampl_lat_um = float(ampl_lat)
-        model.lenses.ampl_ax_um = float(ampl_ax)
-        model.lens_dynamic_data['lateral_um'] = 0.0
-        model.lens_dynamic_data['axial_um'] = 0.0
-        model.lens_dynamic_data['adapted_lum'] = 0.0
-        model.lens_dynamic_data['fast_lum'] = 0.0
+        model.ommatidia.ampl_lat_um = float(ampl_lat)
+        model.ommatidia.ampl_ax_um = float(ampl_ax)
+        model.omm_dynamic_data['lateral_um'] = 0.0
+        model.omm_dynamic_data['axial_um'] = 0.0
+        model.omm_dynamic_data['adapted_lum'] = 0.0
+        model.omm_dynamic_data['fast_lum'] = 0.0
 
-    model.buffer.lens_dirty = True
+    model.buffer.omm_dirty = True
 
 
 def sweep_position(elapsed):
@@ -163,15 +173,13 @@ def sweep_position(elapsed):
     return SWEEP_AMPLITUDE - ((t - SWEEP_DURATION) / SWEEP_DURATION) * 2 * SWEEP_AMPLITUDE, +1
 
 
-def simulate(sep_deg):
-    """Render the four conditions for one bar separation; return per-timestep arrays."""
+def simulate(model, sep_deg):
+    """Render the four actuation conditions for one bar separation; return per-timestep arrays."""
 
-    global SELECTED_LENS
     bars = make_bars(sep_deg)
 
     scene = Scene(background_color=(0.0, 0.0, 0.0))
     scene.sun.elevation, scene.sun.azimuth, scene.sun.color = 1.0, 0.0, (1.0, 1.0, 1.0)
-
     for b in bars:
         scene.add_instance(b)
 
@@ -183,18 +191,14 @@ def simulate(sep_deg):
         enable_actuation=True, enable_ambient=True, enable_direct=True, enable_shadows=False)
 
     renderer.ambient_intensity = 1.5
-    renderer.photon_concentration = 0.0
+    renderer.photon_concentration = 0.0    # c = 0: isolate RF geometry from the photon-concentration gain
 
-    if SELECTED_LENS is None:
-        cone = model.query_cone(WORLD_FORWARD, angle=10.0, degrees=True, avoid_conflicts=True)
-        if len(cone) == 0:
-            raise RuntimeError("No forward-facing ommatidia found.")
-        SELECTED_LENS = int(cone.indices[int(np.argmin(cone.azimuth_deg ** 2 + cone.elevation_deg ** 2))])
-
-    drho = np.degrees(model.rcpt_dynamic_data['acc_axes'][SELECTED_LENS * R + PERIPH[0], 0])
-    print(f"Cartridge {SELECTED_LENS}: R1 rest acceptance Δρ = {drho:.2f} deg, narrowed = {drho * EXTRA_NARROWING:.2f} deg (x{EXTRA_NARROWING})")
-
-    renderer.selected_lenses = [SELECTED_LENS]
+    # Single forward-pointing cartridge (closest optical axis to straight ahead)
+    cone = model.query_cone(WORLD_FORWARD, angle=10.0, degrees=True, avoid_conflicts=True)
+    if len(cone) == 0:
+        raise RuntimeError("No forward-facing ommatidia found.")
+    selected = int(cone.indices[int(np.argmin(cone.azimuth_deg ** 2 + cone.elevation_deg ** 2))])
+    renderer.selected_lenses = [selected]
 
     rec = {'agent_y': [], 'cond': [], 'mdir': [], 'cart': []}
 
@@ -210,7 +214,7 @@ def simulate(sep_deg):
         new_phase = min(int(elapsed // COND_DURATION), len(CONDITIONS) - 1)
         if new_phase != phase:
             phase = new_phase
-            apply_condition(renderer, *CONDITIONS[phase][1:])
+            apply_condition(renderer, model, *CONDITIONS[phase][1:])
 
         name = CONDITIONS[phase][0]
 
@@ -222,7 +226,7 @@ def simulate(sep_deg):
         rec['agent_y'].append(ay)
         rec['cond'].append(name)
         rec['mdir'].append(mdir)
-        rec['cart'].append(out.per_cartridge[SELECTED_LENS, :, :3].mean(axis=-1))
+        rec['cart'].append(out.per_cartridge[selected, :, :3].mean(axis=-1))
 
         context.draw(out)
         if elapsed >= RUN_DURATION:
@@ -239,85 +243,18 @@ def simulate(sep_deg):
     return {k: np.array(v) for k, v in rec.items()}
 
 
-# Plotting ------------------------------------------------------------------
+# Analysis ------------------------------------------------------------------
 
-def scatter_receptor(ax, agent_y, cond, mdir, signal, direction, bar_m, title):
-    """One receptor trace as a scatter"""
+def smooth(a, k=5):
+    """Light boxcar smoothing, to denoise binned profiles before dip detection."""
 
-    for name, color in COND_COLOR.items():
-        m = (cond == name) & (mdir == direction)
-        ax.scatter(agent_y[m], signal[m], s=3, alpha=0.5, color=color, label=name)
-
-    for xb in ([-bar_m / 2, +bar_m / 2] if bar_m > 0 else [0.0]):
-        ax.axvline(xb, color='k', ls=':', alpha=0.35)
-
-    ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-
-    ax.set_xlim([-0.75, 0.75])
+    if k <= 1:
+        return a
+    return np.convolve(a, np.ones(k) / k, mode='same')
 
 
-def line_individual_receptors(ax, agent_y, cond, mdir, cart, direction, bar_m, title):
-    """Individual rhabdomere traces as lines"""
-
-    m = (cond == 'full') & (mdir == direction)
-    order = np.argsort(agent_y[m])
-    ys = agent_y[m][order]
-
-    for i in range(R):
-        label = f'R{i + 1}' if i < CENTER else 'R7/8'
-        ax.plot(ys, cart[m][order, i], color=RHAB_COLOURS[i], lw=1.3, alpha=0.85, label=label)
-
-    for xb in ([-bar_m / 2, +bar_m / 2] if bar_m > 0 else [0.0]):
-        ax.axvline(xb, color='k', ls=':', alpha=0.35)
-
-    ax.legend(fontsize=8, loc='upper right')
-    ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-
-    ax.set_xlim([-0.75, 0.75])
-
-
-def plot_single_run(res, sep_deg, bars_m):
-    """Per-run figure: R7/8, R1-R6 pool, individual cells. Bar UP / Bar DOWN."""
-
-    ay, cond, mdir, cart = res['agent_y'], res['cond'], res['mdir'], res['cart']
-
-    # Rows
-    signals_to_plot = {
-        'R7/8 (central): ':         cart[:, CENTER],
-        f'R{FOCUS_R_TYPE + 1}: ':   cart[:, FOCUS_R_TYPE],
-        # 'R1-R6 (pool): ':           cart[:, PERIPH].sum(axis=1),
-    }
-    nrows = len(signals_to_plot) + 1
-    lastrow = nrows - 1
-
-    fig, axs = plt.subplots(nrows, 2, figsize=(11, 11), sharex=True)
-    for col, (direction, dlabel) in enumerate(((+1, 'Bar UP'), (-1, 'Bar DOWN'))):
-
-        for r, (row_label, row_data) in enumerate(signals_to_plot.items()):
-            scatter_receptor(axs[r, col], ay, cond, mdir, row_data, direction, bars_m, row_label + dlabel)
-
-        # The per-receptor line plot is always there in the last row
-        line_individual_receptors(axs[lastrow, col], ay, cond, mdir, cart, direction, bars_m, f"Individual cells, full: {dlabel}")
-
-    for r in range(nrows):
-        axs[r, 0].set_ylabel("signal intensity")
-
-    axs[lastrow, 0].set_xlabel("agent Y position (m)")
-    axs[lastrow, 1].set_xlabel("agent Y position (m)")
-    axs[1, 1].legend(loc='upper right', markerscale=4, fontsize=8)
-    axs[lastrow - 1, 1].legend(loc='upper right', fontsize=8)
-
-    title = ("one bar (control)" if sep_deg == 0 else f"two bars {sep_deg:.1f} deg apart")
-    fig.suptitle(f"{title}  |  phenom. narrowing = {EXTRA_NARROWING}  "
-                 f"(dotted = true bar positions)", y=1.0)
-
-    plt.tight_layout()
-
-
-def binned(y, sig, bins=200):
-    """Clean spatial binning for aligning different runs"""
+def binned(y, sig, bins=160):
+    """Spatial binning over the sweep, to align runs onto a common Y grid (then smoothed)."""
 
     edges = np.linspace(-SWEEP_AMPLITUDE, SWEEP_AMPLITUDE, bins + 1)
     grid = 0.5 * (edges[:-1] + edges[1:])
@@ -328,82 +265,169 @@ def binned(y, sig, bins=200):
     nz = cnt > 0
     out[nz] /= cnt[nz]
 
-    return grid, out
+    return grid, smooth(out)
 
 
-def plot_both_runs(res_1bar, res_2bar, sep_2bar):
-    """Both runs figure: 1-bar vs. 2-bar aligned across all conditions."""
+def trace(res, cond, direction, channel):
+    """Binned signal for one condition / sweep direction. channel = receptor index or 'pool'."""
 
-    fig, axs = plt.subplots(4, 2, figsize=(11, 12), sharex=True)
+    m = (res['cond'] == cond) & (res['mdir'] == direction)
+    sig = res['cart'][m][:, PERIPH].mean(axis=1) if channel == 'pool' else res['cart'][m][:, channel]
+    return binned(res['agent_y'][m], sig)
 
-    for row, (cname, _, _, _) in enumerate(CONDITIONS):
-        for col, (direction, dlabel) in enumerate(((+1, 'Bar UP'), (-1, 'Bar DOWN'))):
+
+def find_dip(grid, prof, sep_m, min_depth=0.02):
+    """Locate the central notch of a two-bar profile.
+
+    Finds the flanking maxima on either side of centre and the minimum between them.
+    Returns (x_dip, y_dip, depth) with depth in [0, 1], or None if no real dip
+    (i.e. the two bars fuse into a single peak).
+    """
+
+    half = sep_m / 2
+    left = np.where((grid >= -1.6 * half) & (grid <= 0.0))[0]
+    right = np.where((grid >= 0.0) & (grid <= 1.6 * half))[0]
+    if left.size < 2 or right.size < 2:
+        return None
+
+    il = left[int(np.argmax(prof[left]))]
+    ir = right[int(np.argmax(prof[right]))]
+    if ir <= il:
+        return None
+
+    iv = il + int(np.argmin(prof[il:ir + 1]))
+    peak = 0.5 * (prof[il] + prof[ir])
+    depth = (peak - prof[iv]) / (peak + 1e-9)
+
+    if depth < min_depth or iv == il or iv == ir:
+        return None
+
+    return grid[iv], prof[iv], float(depth)
+
+
+def updown_shape_divergence(grid, up, down):
+    """UP vs DOWN difference in profile SHAPE, after removing a pure spatial shift.
+
+    Neural superposition makes the pooled cartridge peak at a different agent-Y for
+    the two sweep directions (the leading neighbour is above the cartridge on the way
+    down, below it on the way up). That is an uninteresting translation along X. We
+    slide one profile against the other to the lag that best matches them, then report
+    the residual mismatch (range-normalised, in [0, 1]) the shift could not explain --
+    i.e. genuine changes in the shape of the response (as in 'lateral' / 'full')."""
+
+    mask = np.abs(grid) <= VIEW_HALFWIDTH
+    u = up[mask] - up[mask].min()
+    d = down[mask] - down[mask].min()
+    n = u.size
+    max_lag = n // 3
+
+    def overlap(k):                          # u against d shifted by k samples
+        a = u[k:] if k >= 0 else u[:n + k]
+        b = d[:n - k] if k >= 0 else d[-k:]
+        return a, b
+
+    k_best = min(range(-max_lag, max_lag + 1),
+                 key=lambda k: np.mean((np.subtract(*overlap(k))) ** 2))
+
+    a, b = overlap(k_best)
+    span = max(u.max(), d.max()) + 1e-9
+    return float(np.mean(np.abs(a - b)) / span)
+
+
+# Figure --------------------------------------------------------------------
+
+def make_figure(results, regime):
+    """One figure per regime: conditions (rows) x sweep direction (cols)."""
+
+    res2 = results[(regime, SEP_TEST_DEG)]    # two-bar
+    res1 = results[(regime, 0.0)]             # single-bar control
+    sep_m = 2.0 * DISTANCE * np.tan(np.radians(SEP_TEST_DEG) / 2.0)
+    cond_names = [c[0] for c in CONDITIONS]
+    cols = [(+1, 'Bar UP'), (-1, 'Bar DOWN')]
+
+    fig, axs = plt.subplots(len(cond_names), 2, figsize=(12, 14), sharex=True, sharey='row')
+
+    for row, cond in enumerate(cond_names):
+
+        # UP/DOWN divergence of the pooled two-bar response (one number per condition)
+        gu, up = trace(res2, cond, +1, 'pool')
+        gd, dn = trace(res2, cond, -1, 'pool')
+        asym = updown_shape_divergence(gu, up, dn)
+        pooled_dir = {+1: (gu, up), -1: (gd, dn)}
+
+        for col, (direction, dlabel) in enumerate(cols):
             ax = axs[row, col]
+            grid, pooled = pooled_dir[direction]
 
-            for res, is_2bar in [(res_1bar, False), (res_2bar, True)]:
-                m = (res['cond'] == cname) & (res['mdir'] == direction)
-                if not np.any(m):
-                    continue
+            # individual rhabdomeres (two-bar)
+            for i in range(R):
+                gi, ri = trace(res2, cond, direction, i)
+                label = (f'R{i + 1}' if i < CENTER else 'R7/8')
+                ax.plot(gi, ri, color=RHAB_COLOURS[i], lw=1.0, alpha=0.6, label=label)
 
-                ay, cart = res['agent_y'][m], res['cart'][m]
+            # single-bar control (dashed) and opposite sweep direction (dotted) for reference
+            gc, ctrl = trace(res1, cond, direction, 'pool')
+            ax.plot(gc, ctrl, color='#7f8fb0', lw=1.3, ls='--', alpha=0.8, label='1 bar (control)')
 
-                # Rows
-                signals_to_plot = {
-                    # 'R7/8 (central): ':         (cart[:, CENTER],               '#000000'),
-                    f'R{FOCUS_R_TYPE + 1}: ':   (cart[:, FOCUS_R_TYPE],         '#993A56'),
-                    'R1-R6 (pool): ':           (cart[:, PERIPH].sum(axis=1),   '#999933')
-                }
+            other = pooled_dir[-direction][1]
+            ax.plot(grid, other, color=COND_COLOR[cond], lw=1.2, ls=':', alpha=0.55, label='other dir')
 
-                for r, (row_label, row_data_and_col) in enumerate(signals_to_plot.items()):
-                    row_data, color = row_data_and_col
+            # pooled two-bar (thick) + dip marker
+            ax.plot(grid, pooled, color='k', lw=2.2, label='R1-R6 (2 bars)')
+            dip = find_dip(grid, pooled, sep_m)
+            if dip is not None:
+                xd, yd, depth = dip
+                ax.plot(xd, yd, marker='v', color='k', ms=9, zorder=7)
+                ax.annotate(f'dip {depth:.2f}', (xd, yd), textcoords='offset points',
+                            xytext=(5, 6), fontsize=8, fontweight='bold')
 
-                    grid, row_data_binned = binned(ay, row_data)
-                    ls, lw = ('-', 1.8) if is_2bar else ('--', 1.4)
+            for xb in (-sep_m / 2, +sep_m / 2):
+                ax.axvline(xb, color='r', ls=':', alpha=0.4)
 
-                    ax.plot(grid, norm_minmax(row_data_binned), color=color, lw=lw, ls=ls,
-                            label=row_label + f'{"2-bar" if is_2bar else "1-bar"}')
-
-            bar_m = 2.0 * DISTANCE * np.tan(np.radians(sep_2bar) / 2.0)
-            for xb in [-bar_m / 2, +bar_m / 2]:
-                ax.axvline(xb, color='r', ls=':', alpha=0.5)
-
-            ax.set_title(f"{cname} | {dlabel}")
+            ax.text(0.02, 0.96, f'UP/DOWN shape \u0394 = {asym:.2f}', transform=ax.transAxes,
+                    fontsize=8, va='top', color='grey')
+            ax.set_title(f'{cond}  |  {dlabel}')
+            ax.set_xlim(-VIEW_HALFWIDTH, VIEW_HALFWIDTH)
             ax.grid(True, alpha=0.3)
 
-            ax.set_xlim([-0.75, 0.75])
+        axs[row, 0].set_ylabel('signal intensity')
 
-    axs[0, 1].legend(fontsize=8, loc='upper right')
-    fig.suptitle(f"Single-bar vs. Two-bar ({sep_2bar:.1f} deg) | phenom. narrowing = {EXTRA_NARROWING}", y=1.0)
+    axs[-1, 0].set_xlabel('agent Y position (m)')
+    axs[-1, 1].set_xlabel('agent Y position (m)')
+    axs[0, 1].legend(fontsize=7, loc='upper right', ncol=2)
 
+    fig.suptitle(f'Microsaccadic hyperacuity \u2014 {regime} regime (r = {REGIMES[regime]})  '
+                 f'|  two bars {SEP_TEST_DEG:.1f}\u00b0 apart (red dotted)',
+                 fontsize=14, fontweight='bold')
     plt.tight_layout()
 
-# Run every separation ------------------------------------------------------------------
-
-all_results = {}
-
-for sep in BAR_SEPARATIONS:
-    label = "one bar" if sep == 0 else f"{sep:.1f} deg"
-
-    print(f"\nSimulating {label}...")
-
-    bars_m = 2.0 * DISTANCE * np.tan(np.radians(sep) / 2.0)
-
-    res = simulate(sep)
-    all_results[sep] = res
-
-    # Figure for current condition
-    plot_single_run(res, sep, bars_m)
-
-    plt.savefig(f"hyperacuity_{label.replace(' ', '-')}_run_narrow{EXTRA_NARROWING}.png")
+    return fig
 
 
-# Synthesis figure: 1-bar vs. 2-bar overlay (if both were run)
-controls = [s for s in BAR_SEPARATIONS if s == 0.0]
-tests = [s for s in BAR_SEPARATIONS if s > 0.0]
-if controls and tests:
-    plot_both_runs(all_results[controls[0]], all_results[tests[0]], tests[0])
+# Run -----------------------------------------------------------------------
 
-    plt.savefig(f"hyperacuity_both_runs_narrow{EXTRA_NARROWING}.png")
+if __name__ == '__main__':
 
+    for regime, r in REGIMES.items():
+        print(f'\n=== regime: {regime} (extra narrowing r = {r}) ===')
 
-plt.show()
+        model = build_eye(r)
+
+        results = {}
+        for sep in BAR_SEPARATIONS:
+            label = 'one bar' if sep == 0 else f'{sep:.1f} deg'
+            print(f'  simulating {label}...')
+            results[(regime, sep)] = simulate(model, sep)
+
+        free = getattr(model, 'free', None)
+        if callable(free):
+            try:
+                free()
+            except Exception:
+                pass
+
+        fig = make_figure(results, regime)
+        fig.savefig(f'hyperacuity_{regime}.png', dpi=200)
+        # fig.savefig(f'hyperacuity_{regime}.pdf')
+
+    plt.show()

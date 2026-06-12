@@ -19,7 +19,7 @@ from insectvision.interactive.dashboard import Dashboard
 
 if TYPE_CHECKING:
     from insectvision.renderers.base import BaseRenderer
-    from insectvision.compound_eyes import VisualOutput
+    from ..renderers.helpers import VisualOutput
 
 
 class Context:
@@ -352,7 +352,7 @@ class Context:
 
         model = self.renderer._model
         c_idx = model.bundle.center_index
-        rcpt_idx = np.arange(model.lens_count) * model.receptors_per_lens + c_idx
+        rcpt_idx = np.arange(model.nb_facets) * model.rhab_per_omm + c_idx
         p_local = model.rcpt_static_data['position'][rcpt_idx]
 
         if self.display_mode == DisplayMode.Compound:
@@ -375,7 +375,7 @@ class Context:
 
         elif self.display_mode == DisplayMode.Third_person:
             eye_to_world = np.array(glm.inverse(self.agent.view))
-            p_local_h = np.column_stack((p_local, np.ones(model.lens_count)))
+            p_local_h = np.column_stack((p_local, np.ones(model.nb_facets)))
             p_world_h = p_local_h @ eye_to_world
 
             view_mat = np.array(self.observer.view)

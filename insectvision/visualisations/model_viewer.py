@@ -4,10 +4,10 @@ import numpy as np
 import pyvista as pv
 from scipy.spatial import Delaunay
 
-from insectvision.compound_eyes import CompoundEyeModel
+from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.buffers import get_metadata_field
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, RHAB_COLOURS
-from insectvision.compound_eyes.orientation import BundlesAligner
+from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
 from insectvision.geometry.spherical import sphere_to_stereo
 from insectvision.utils.shared import norm_l2
@@ -34,8 +34,8 @@ _DISC_TEMPLATE = None
 # Helper functions
 
 def receptor_tip_offsets(model) -> np.ndarray:
-    N, R = model.lens_count, model.receptors_per_lens
-    d = model.lenses.direction
+    N, R = model.nb_facets, model.rhab_per_omm
+    d = model.ommatidia.direction
     rec_dirs = model.rcpt_dynamic_data['direction'].reshape(N, R, 3)
     axial = np.sum(rec_dirs * d[:, None, :], axis=2, keepdims=True)
     return -(rec_dirs - axial * d[:, None, :])
@@ -44,14 +44,14 @@ def receptor_tip_offsets(model) -> np.ndarray:
 def radii_from_lattice(model) -> np.ndarray:
     """Per-lens display radius = mean distance to the lens's immediate lattice neighbours."""
 
-    radii = np.zeros(model.lens_count, dtype=np.float32)
+    radii = np.zeros(model.nb_facets, dtype=np.float32)
     for eye in model.eyes:
         if len(eye) == 0:
             continue
-        result = eye.neighbours(lens_indices=eye.lens_indices, k=6, immediate_only=True)
+        result = eye.neighbours(query=eye.indices, k=6, immediate_only=True)
         if result.distances.size == 0:
             continue
-        radii[eye.lens_indices] = result.distances.mean(axis=1)
+        radii[eye.indices] = result.distances.mean(axis=1)
     radii[radii < 1e-9] = 0.001
     return radii
 
@@ -60,7 +60,7 @@ def make_eye_mesh(model) -> pv.PolyData:
     """
     Lens-indexed mesh: vertex i = lens i.
     """
-    positions = model.lenses.position
+    positions = model.ommatidia.position
     if positions.shape[0] == 0:
         return pv.PolyData()
 
@@ -69,7 +69,7 @@ def make_eye_mesh(model) -> pv.PolyData:
         if len(eye) < 3:
             continue
 
-        global_idx = np.asarray(eye.lens_indices, dtype=np.int_)
+        global_idx = np.asarray(eye.indices, dtype=np.int_)
         eye_pos = positions[global_idx]
 
         eye_dirs = norm_l2(eye_pos)
@@ -170,7 +170,7 @@ class EyeViewer:
 
     def __init__(
         self,
-        model: CompoundEyeModel,
+        model: Model,
         aligner: BundlesAligner = None,
         optic_flow_world=None,
         sparsity: float = 0.0,
@@ -179,8 +179,8 @@ class EyeViewer:
 
         self.model = model
         self.bundle = model.bundle
-        self.N = model.lens_count
-        self.R = model.receptors_per_lens
+        self.N = model.nb_facets
+        self.R = model.rhab_per_omm
         self.sparsity = float(sparsity)
 
         self.right = np.asarray(WORLD_RIGHT, dtype=np.float32)
@@ -208,8 +208,8 @@ class EyeViewer:
         self.result_raw = self.aligner_raw.compute(self.model)
 
         # Cache geometry
-        self.p = model.lenses.position
-        self.d = model.lenses.direction
+        self.p = model.ommatidia.position
+        self.d = model.ommatidia.direction
         self.r_sphere = float(np.mean(np.linalg.norm(self.p, axis=1)))
         self.arrow_len = self.r_sphere * 0.08
 
@@ -218,7 +218,7 @@ class EyeViewer:
         self.eye_boundary_lines = eye_boundary_line(self.lens_data_mesh)
 
         # Per-lens chirality
-        self.chirality = self.model.lenses.chirality.astype(np.float32)
+        self.chirality = self.model.ommatidia.chirality.astype(np.float32)
 
         # Per-lens lattice spacing
         self.disc_radii = radii_from_lattice(self.model) * 0.4
@@ -440,14 +440,25 @@ class EyeViewer:
         if self.lens_data_mesh.n_cells == 0 or self.R <= 1:
             return
 
-        chi = self.model.lenses.bundle_orientation
-        chirality = self.model.lenses.chirality
+
+        ## DEBUG
+
+        # Compute from the model
+        chi = self.model.ommatidia.bundle_orientation
+        chirality = self.model.ommatidia.chirality
         effective_main = np.where(chirality > 0, self.bundle.main_axis_rad, np.pi - self.bundle.main_axis_rad)
         major_angle = chi + effective_main
         major = (
-                np.cos(major_angle)[:, None] * self.model.lenses.right_local +
-                np.sin(major_angle)[:, None] * self.model.lenses.up_local
-        ).astype(np.float32)
+                np.cos(major_angle)[:, None] * self.model.ommatidia.right_local +
+                np.sin(major_angle)[:, None] * self.model.ommatidia.up_local
+        ).astype(np.float32)     # -> Arrows WRONG
+
+        # Get from the local result_smooth
+        major = self.result_smooth.major_axis.astype(np.float32)    # -> Arrows CORRECT
+
+
+        ## END DEBUG
+
 
         pos_mask = self.chirality > 0
         neg_mask = self.chirality < 0
@@ -519,7 +530,7 @@ class EyeViewer:
     def _add_ioa_panel(self) -> None:
         """Display the local Interommatidial Angle (sampling density)."""
 
-        ioa_deg = np.degrees(self.model.lenses.ioa_angles[:, 0]) # minor IOA only
+        ioa_deg = np.degrees(self.model.ommatidia.ioa_angles[:, 0]) # minor IOA only
 
         self._add_eye_surface(
             scalars=ioa_deg, cmap='plasma_r',
@@ -534,9 +545,9 @@ class EyeViewer:
 
         for eye in self.model.eyes:
             val = 1.0 if eye.side == 'left' else 2.0 if eye.side == 'right' else 0.0
-            side_field[eye.lens_indices] = val
+            side_field[eye.indices] = val
         try:
-            binoc_mask = self.model.lenses.is_binocular
+            binoc_mask = self.model.ommatidia.is_binocular
             side_field[binoc_mask] = 3.0
         except:
             pass
@@ -602,7 +613,7 @@ class EyeViewer:
         Visualises the 'neighbour_count' metadata field.
         """
 
-        R = self.model.receptors_per_lens
+        R = self.model.rhab_per_omm
 
         meta = self.model.rcpt_static_data['metadata'][::R]
         counts = get_metadata_field(meta, 'neighbour_count').astype(np.float32)
@@ -661,7 +672,7 @@ class EyeViewer:
             if max_off > 1e-8:
                 tip_scale = (self.r_sphere * 0.012) / max_off
                 tip_positions = self.p[:, None, :] + offsets * tip_scale
-                is_mirrored = self.model.lenses.chirality < 0
+                is_mirrored = self.model.ommatidia.chirality < 0
                 i1, i2 = self.bundle.main_axis_indices
 
                 groups = {
@@ -751,8 +762,8 @@ class EyeViewer:
         target_idx = next(self._debug_ids) if self._debug_ids else np.random.randint(0, self.N)
         print(f'Target idx: {target_idx}')
 
-        k_nb = min(40, len(self.model.eye(self.model.lenses[target_idx].eye_index[0])))
-        result = self.model.eye(self.model.lenses[target_idx].eye_index[0]).neighbours(
+        k_nb = min(40, len(self.model.eye(self.model.ommatidia[target_idx].eye_index[0])))
+        result = self.model.eye(self.model.ommatidia[target_idx].eye_index[0]).neighbours(
             positions=self.p[target_idx][None, :], k=k_nb)
         nb_indices = result.indices[0]
         partners = self.model.cartridges[target_idx].sources
@@ -996,7 +1007,7 @@ if __name__ == "__main__":
         saccade_smoothing_iterations=5
     )
 
-    model = CompoundEyeModel.from_file(
+    model = Model.from_file(
         'species_models/drosophila_custom.npz',
         bundle=drosophila_bundle(), orientation=aligner
     )
@@ -1005,7 +1016,7 @@ if __name__ == "__main__":
     #     n=1600, bundle=drosophila_bundle(), orientation=aligner
     # )
 
-    model.refine_bundle_alignment(max_nudge_deg=30.0)
-    model.cartridges_report()
+    # model.refine_bundle_alignment(max_nudge_deg=30.0)
+    # model.cartridges_report()
 
     EyeViewer(model, aligner=aligner).show()

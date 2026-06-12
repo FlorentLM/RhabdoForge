@@ -2,15 +2,14 @@ import numpy as np
 
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.engine.meshes import CUBE_VERTICES, CUBE_INDICES
-from insectvision.compound_eyes import CompoundEyeModel
-from insectvision.renderers import Rasterizer, Raytracer
+from insectvision.compound_eyes import Model
+from insectvision.renderers import Raytracer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
 from insectvision.utils.shared import RandomnessMode
 
 
 def main():
 
-    USE_RAYTRACER = True
     USE_POINT_CLOUD = True
 
     SAMPLES_PER_RECEPTOR = 64
@@ -51,7 +50,7 @@ def main():
     dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
 
     # Add a skybox
-    scene.add_skybox('assets/textures/bright_day_nosun')
+    scene.add_skybox('assets/textures/kloppenheim_05_4k')
 
     # Example debug objects (wireframes, grid etc)
     if SHOW_DEBUG_OBJECTS:
@@ -63,15 +62,16 @@ def main():
     # Setup eye model
 
 
-    model = CompoundEyeModel.from_file(
+    model = Model.from_file(
         'species_models/drosophila_custom.npz',
         # 'species_models/bee_Sturzl.npz',
         # 'species_models/drosophila_Kemppainen.npz'
     )
-    model.scale(1e-6)
+    with model.unlock():
+        model.scale(1e-6)
 
     # Example setting time adaptation
-    with model.unlock(receptors=True):      # temporarily allow writing from the CPU
+    with model.unlock():      # temporarily allow writing from the CPU
         model.receptors.tau_membrane = 0.012   # 12 ms is good for Drosophila
 
     # It is also possible to unlock CPU writes persistently
@@ -80,34 +80,20 @@ def main():
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))
 
-    # Setup Renderers
-    batch_size = BATCH_SIZE if (HEADLESS and USE_ASYNC_BATCHING) else 1
+    # Setup renderer
+    renderer = Raytracer(model=model, scene=scene, agent=agent, context=context,
+                             nb_samples=SAMPLES_PER_RECEPTOR,
+                             time_dithering=True,
+                             randomness_mode=RandomnessMode.Halton,
+                             enable_actuation=True,
+                             enable_direct=True,
+                             enable_shadows=True,
+                             enable_ambient=True)
 
-    if USE_RAYTRACER:
-        renderer = Raytracer(model=model, scene=scene, agent=agent, context=context,
-                                 nb_samples=SAMPLES_PER_RECEPTOR,
-                                 time_dithering=True,
-                                 randomness_mode=RandomnessMode.Halton,
-                                 enable_actuation=True,
-                                 enable_direct=True,
-                                 enable_shadows=True,
-                                 enable_ambient=True)
-
-        # The BVH can also be displayed in debug
-        if SHOW_DEBUG_OBJECTS:
-            for blas in renderer.BLASes:
-                context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
-
-    else:
-        renderer = Rasterizer(model=model, scene=scene, agent=agent, context=context,
-                                  nb_samples=SAMPLES_PER_RECEPTOR,
-                                  time_dithering=True,
-                                  batch_size=batch_size,
-                                  enable_actuation=False,
-                                  enable_direct=True,
-                                  enable_shadows=True,
-                                  enable_ambient=True)
-
+    # The BVH can also be displayed in debug
+    if SHOW_DEBUG_OBJECTS:
+        for blas in renderer.BLASes:
+            context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
 
 
     # Example custom key binding:

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.compound_eyes import CompoundEyeModel
+from insectvision.compound_eyes import Model
 from insectvision.renderers import Raytracer
 from insectvision.utils.shared import Colormap, norm_minmax
 from insectvision.geometry import plane_geom
@@ -254,7 +254,7 @@ def run_all_trials(cfg: Configuration) -> Results:
 
     context.time_step = cfg.time_step
 
-    model = CompoundEyeModel.from_file(cfg.eye_model_path)
+    model = Model.from_file(cfg.eye_model_path)
     model.scale(1e-6)
 
     with model.unlock(receptors=True):

@@ -1,11 +1,12 @@
 from .rhabdomeres import RhabdomereBundle
-from .proxies import Cartridge, Eye, VisualOutput, LensView, CompoundEyeModel
+from .model import Model
+from .views import OmmatidiumView, CartridgeView, EyeView
+from ..renderers.helpers import VisualOutput
 
 __all__ = [
     'RhabdomereBundle',
-    'CompoundEyeModel',
-    'LensView',
-    'Cartridge',
-    'Eye',
-    'VisualOutput'
+    'Model',
+    'OmmatidiumView',
+    'CartridgeView',
+    'EyeView'
 ]

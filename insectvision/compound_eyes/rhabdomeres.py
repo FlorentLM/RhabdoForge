@@ -59,7 +59,7 @@ class RhabdomereBundle:
                  focal_um: Optional[float] = 20.0,
                  sensitivity: Union[float, ArrayLike] = 1.0,
                  wavelengths_nm: Union[float, ArrayLike] = 540.0,
-                 tau_membrane: float = 0.012,
+                 tau_membrane: float = 0.0,
                  tau_rise: float = 0.015,
                  tau_relax: float = 0.060,
                  tau_fast: float = 0.005,
@@ -69,7 +69,7 @@ class RhabdomereBundle:
                  extra_narrowing_ratio: float = 1.0,
                  center_index: int = 0,
                  main_axis_indices: Tuple[int, int] = (0, 0),
-                 flow_axis_deg: float = -81.0,
+                 flow_axis_deg: float = 0.0,
                  saccade_offset_deg: float = 0.0,
                  ):
 

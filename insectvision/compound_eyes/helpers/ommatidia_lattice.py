@@ -13,10 +13,6 @@ from insectvision.geometry.polygons import (
 )
 
 
-# TODO: Might benefit from a bit of cleaning here too
-
-
-
 class OmmatidiaSpacing2D:
     """
     Local inter-ommatidial spacing field for a 2D cloud
@@ -104,10 +100,9 @@ def align_grid(grid: np.ndarray, points2d: np.ndarray) -> np.ndarray:
     domain = Polygon2D.from_points(points2d)
 
     def loss(p):
-        pos, rot = p[:2], p[2]
-        c, s = np.cos(rot), np.sin(rot)
-        mat = np.array([[c, -s], [s, c]])
-        t = grid @ mat.T + pos
+        cos, sin = np.cos(p[2]), np.sin(p[2])
+        mat = np.array([[cos, -sin], [sin, cos]])
+        t = grid @ mat.T + p[:2]
 
         t_tree = cKDTree(t)
         d_fwd, _ = t_tree.query(points2d)
@@ -131,8 +126,8 @@ def align_grid(grid: np.ndarray, points2d: np.ndarray) -> np.ndarray:
 
     pos, rot = res.x[:2], res.x[2]
     c, s = np.cos(rot), np.sin(rot)
-    mat = np.array([[c, -s], [s, c]])
-    aligned = grid @ mat.T + pos
+    R_mat = np.array([[c, -s], [s, c]])
+    aligned = grid @ R_mat.T + pos
 
     return aligned
 
@@ -346,7 +341,7 @@ def spring_relaxation(
     return pts
 
 
-def facet_diameters(
+def voronoi_estimation(
         positions,
         directions,
         k=18,
@@ -360,10 +355,9 @@ def facet_diameters(
     Per-ommatidium facet diameter from the local Voronoi cell area on the eye surface.
 
     First-ring spacing is taken over a *shell* (neighbours within shell_factor x the
-    nearest) rather than the kNN-6, so boundary/spur lenses aren't biased high by
-    second-ring points padding the count. Boundary lenses (< min_ring genuine
-    first-ring neighbours, or no bounded Voronoi cell) are filled from their interior
-    neighbours instead of trusting their own inflated fallback.
+    nearest) rather than the kNN-6, so boundary lenses aren't biased high by second-ring neighbours.
+
+    Boundary lenses are filled from their interior neighbours.
 
     Args:
         positions: (N, 3) lens world positions.
@@ -377,14 +371,14 @@ def facet_diameters(
     N = len(positions)
 
     tree = cKDTree(positions)
-    kq = min(k + 1, N)
-    dist, idx = tree.query(positions, k=kq)  # col 0 is self
+    kq = max(0, min(k + 1, N))
+    dist, idx = tree.query(positions, k=kq)
     nn = dist[:, 1:]
     ring_idx = idx[:, 1:min(7, kq)]
 
     shell = np.where(nn <= shell_factor * dist[:, 1:2], nn, np.nan)
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
+        warnings.simplefilter('ignore', RuntimeWarning)
         ref = np.nanmedian(shell, axis=1)
 
     ref = np.where(np.isfinite(ref), ref, dist[:, 1])
@@ -421,7 +415,7 @@ def facet_diameters(
     D[boundary] = np.nan  # Never trust boundary fallback
 
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
+        warnings.simplefilter('ignore', RuntimeWarning)
         for _ in range(fill_sweeps):  # propagate interior values outward
             med = np.nanmedian(np.concatenate([D[:, None], D[ring_idx]], axis=1), axis=1)
             D[boundary] = med[boundary]
