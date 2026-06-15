@@ -11,13 +11,9 @@ from insectvision.utils.shared import RandomnessMode
 def main():
 
     USE_POINT_CLOUD = True
-
-    SAMPLES_PER_RECEPTOR = 64
+    SAMPLES_PER_RHABDOMERE = 64
     HEADLESS = False
-
-    USE_ASYNC_BATCHING = True
     BATCH_SIZE = 1000
-
     SHOW_DEBUG_OBJECTS = False
 
     # -----------------------------------------------
@@ -67,12 +63,10 @@ def main():
         # 'species_models/bee_Sturzl.npz',
         # 'species_models/drosophila_Kemppainen.npz'
     )
-    with model.unlock():
-        model.scale(1e-6)
+    model.scale(1e-6)
 
     # Example setting time adaptation
-    with model.unlock():      # temporarily allow writing from the CPU
-        model.receptors.tau_membrane = 0.012   # 12 ms is good for Drosophila
+    model.tau_membrane = 0.012   # 12 ms is good for Drosophila
 
     # It is also possible to unlock CPU writes persistently
     # model.allow_receptor_writes = True
@@ -82,13 +76,11 @@ def main():
 
     # Setup renderer
     renderer = Raytracer(model=model, scene=scene, agent=agent, context=context,
-                             nb_samples=SAMPLES_PER_RECEPTOR,
-                             time_dithering=True,
-                             randomness_mode=RandomnessMode.Halton,
-                             enable_actuation=True,
-                             enable_direct=True,
-                             enable_shadows=True,
-                             enable_ambient=True)
+                         nb_samples=SAMPLES_PER_RHABDOMERE,
+                         time_dithering=True,
+                         randomness_mode=RandomnessMode.Halton,
+                         enable_microsaccades=True,
+                         enable_direct=True, enable_shadows=True, enable_ambient=True)
 
     # The BVH can also be displayed in debug
     if SHOW_DEBUG_OBJECTS:
@@ -141,11 +133,9 @@ def main():
     else:
         # Headless and batched mode
 
-        max_steps = 1000
+        print(f"Running headless simulation for {BATCH_SIZE} steps...")
 
-        print(f"Running headless simulation for {max_steps} steps...")
-
-        for i in range(max_steps):
+        for i in range(BATCH_SIZE):
 
             # Important: clock must be advanced manually in headless mode
             context.tick()
@@ -176,9 +166,8 @@ def main():
         full_dataset = np.concatenate(all_timesteps, axis=0)
         print(f"Final concatenated dataset shape: {full_dataset.shape}")
 
+
     # Cleanup
-    renderer.free()
-    scene.free()
     context.free()
 
 

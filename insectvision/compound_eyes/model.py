@@ -15,7 +15,7 @@ from insectvision.engine.world_utils import WORLD_FORWARD
 from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world
-from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned, top_k_facing
+from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned
 from insectvision.geometry.spherical import angle_to_chord
 
 from insectvision.compound_eyes.buffers import Buffer
@@ -25,7 +25,7 @@ from insectvision.compound_eyes.helpers.acceptance import AcceptanceModel, Snyde
 from insectvision.compound_eyes.helpers.ommatidia_lattice import voronoi_estimation
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner, AlignmentResult, apply_chirality, trivial_alignment
 
-from insectvision.compound_eyes.views import SpatialQueries, BaseView, logger, OmmatidiumView, EyeView
+from insectvision.compound_eyes.views import SpatialQueries, BaseView, logger, OmmatidiumView, EyeView, RhabdomereView
 
 
 class Model(SpatialQueries, BaseView):
@@ -380,12 +380,24 @@ class Model(SpatialQueries, BaseView):
         return self
 
     @property
+    def buffer(self) -> 'Buffer':
+        return self._buf
+
+    @property
     def omm_indices(self):
         return np.arange(self._N, dtype=np.intp)
 
     @property
     def rhab_indices(self):
         return np.arange(self._N * self._R, dtype=np.intp)
+
+    @property
+    def rhabdomeres(self):
+        return RhabdomereView(self, self.rhab_indices)
+
+    @property
+    def ommatidia(self):
+        return OmmatidiumView(self, self.omm_indices)
 
     # Private - Data management helpers
 
@@ -888,4 +900,4 @@ if __name__ == '__main__':
     print(f"  Bundle orientations (first 5): {model[:5].bundle_orientation}")
     print(f"  Chiralities (first 5): {model[:5].chirality}")
     print(f"  Neural superposition: {model.neural_superposition}")
-    print(f"  Cartridges[0] receptors: {model.cartridges[0].receptors}")
+    print(f"  Cartridges[0] receptors: {model.cartridges[0].rhabdomeres}")

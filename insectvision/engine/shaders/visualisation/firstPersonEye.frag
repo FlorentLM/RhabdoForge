@@ -19,7 +19,7 @@ layout (location = 1) in vec2 v_local_pos;
 layout (location = 2) flat in int v_instance_id;
 layout (location = 3) flat in float v_select_f;
 
-uniform int selected_lenses[10];
+uniform int selected_ommatidia[10];
 uniform bool false_colors;
 uniform bool uv_encoding;
 

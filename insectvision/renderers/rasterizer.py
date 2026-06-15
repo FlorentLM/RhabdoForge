@@ -16,7 +16,7 @@ from insectvision.engine.resources import ShaderProgram, GPUResourceManager
 from insectvision.renderers.base import BaseRenderer
 
 if TYPE_CHECKING:
-    from insectvision.compound_eyes import ReceptorArray
+    from insectvision.compound_eyes import Model
     from insectvision.engine.context import Context
 
 
@@ -433,7 +433,7 @@ class Rasterizer(BaseRenderer):
     SHADOW_TEX_UNIT = 1
 
     def __init__(self,
-                 model: 'ReceptorArray',
+                 model: 'Model',
                  scene: 'Scene',
                  agent: Agent,
                  context: Optional['Context'] = None,
@@ -443,7 +443,7 @@ class Rasterizer(BaseRenderer):
                  sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
                  cubemap_res: int = 512,
                  batch_size: int = 1,
-                 enable_actuation: bool = False,
+                 enable_microsaccades: bool = False,
                  enable_shadows: bool = True,
                  enable_ambient: bool = True,
                  enable_direct: bool = True,
@@ -451,7 +451,7 @@ class Rasterizer(BaseRenderer):
                  shadow_radius: float = 50.0
                  ):
 
-        self._ra = model
+        self._model = model
         self.scene = scene
 
         self.resource_manager = GPUResourceManager()
@@ -485,7 +485,7 @@ class Rasterizer(BaseRenderer):
             randomness_mode=randomness_mode,
             sampling_mode=sampling_mode,
             batch_size=batch_size,
-            enable_actuation=enable_actuation
+            enable_microsaccades=enable_microsaccades
         )
 
     # Various internal helpers
@@ -590,7 +590,7 @@ class Rasterizer(BaseRenderer):
             glUniformMatrix4fv(shader.get_loc("model"), 1, False, glm.value_ptr(inst.transform))
 
             # these toggles are only if drawing to the human screen
-            sim_insect = int(self.simulate_insect_vision and not self.uv_encoded_textures) if to_screen else 0
+            sim_insect = int(self.simulate_insect_colours and not self.uv_encoded_textures) if to_screen else 0
             uv_enc = int(self.uv_encoded_textures) if to_screen else 0
 
             glUniform1i(shader.get_loc('false_colors'), sim_insect)
@@ -731,8 +731,7 @@ class Rasterizer(BaseRenderer):
                 glUniform1f(shader.get_loc('dither_counter'), float(self._dither_counter))
 
                 # Dispatch: one thread per sample
-                N = len(self._ra)
-                total_work = N * self.nb_samples
+                total_work = self._model.size * self.nb_samples
                 work_groups = (total_work + 63) // 64
 
                 glDispatchCompute(work_groups, 1, 1)
@@ -756,14 +755,14 @@ class Rasterizer(BaseRenderer):
         elif view_mode == DisplayMode.Panoramic:
             self.screen_surface.draw(
                 self._cubemap_fbo.tex_id, is_cubemap=True,
-                simulate_insect_vision=self.simulate_insect_vision,
+                simulate_insect_vision=self.simulate_insect_colours,
                 uv_encoded_textures=self.uv_encoded_textures
             )
 
         elif view_mode == DisplayMode.Perspective or view_mode == DisplayMode.Third_person:
 
             if self._baker.scene.skybox is not None:
-                self._baker.scene.skybox.draw(point_of_view.projection, point_of_view.view, self.simulate_insect_vision, self.uv_encoded_textures)
+                self._baker.scene.skybox.draw(point_of_view.projection, point_of_view.view, self.simulate_insect_colours, self.uv_encoded_textures)
 
             for instance in self._baker.renderables:
                 self._render_instance(instance, point_of_view.view, point_of_view.projection, to_screen=True)

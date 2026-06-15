@@ -15,7 +15,7 @@ from insectvision.engine.scene import Scene
 from insectvision.engine.resources import ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry
 from insectvision.renderers.helpers import VisualOutput
 
-from insectvision.compound_eyes.buffers import OMM_STATIC_DTYPE, OMM_DYNAMIC_DTYPE, RCPT_STATIC_DTYPE, RCPT_DYNAMIC_DTYPE
+from insectvision.compound_eyes.buffers import OMM_STATIC_DTYPE, OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, RHAB_DYNAMIC_DTYPE
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import Model, Eye
@@ -122,7 +122,7 @@ class BaseRenderer(ABC):
                  randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
                  sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
                  batch_size: int = 1,
-                 enable_actuation: bool = False,  # TODO: might rename this
+                 enable_microsaccades: bool = False,
                  resource_manager: Optional[GPUResourceManager] = None,
                  context: Optional['Context'] = None
                  ):
@@ -135,10 +135,7 @@ class BaseRenderer(ABC):
         self.agent: 'Agent' = agent
         self.scene: 'Scene'
 
-        N = self._model.size
-        nb_lenses = self._model.nb_facets
-
-        self._samples_per_rcpt = 1
+        self._samples_per_rhab = 1
         self._samples_per_px = 1
         self._noise_threshold = 0.05
         self._use_hybrid_sampling = False
@@ -146,7 +143,7 @@ class BaseRenderer(ABC):
         self._sampling_mode = self._to_enum(sampling_mode, SamplingMode)
 
         # Estimate needed sizes and available memory
-        bytes_per_frame = N * 16  # 16 bytes per vec4 (RGBA float)
+        bytes_per_frame = self._model.size * 16  # 16 bytes per vec4 (RGBA float)
         avail_VRAM = _query_available_VRAM() * 0.9  # 90% for safety, in Mb
         req_batch_dim = (bytes_per_frame * max(1, batch_size)) / (1024 * 1024)  # in Mb
         other_VRAM_usage = self._estim_vram_use()
@@ -167,7 +164,7 @@ class BaseRenderer(ABC):
         # Ping-pong PBOs tracking
         self._pbo_index = 0
         self._fences = [0, 0]
-        self._colours_cpu_buffer = np.zeros((N, 4), dtype=np.float32)
+        self._colours_cpu_buffer = np.zeros((self._model.size, 4), dtype=np.float32)
 
         # Buffer registry
         self.resource_manager = resource_manager or GPUResourceManager()
@@ -186,39 +183,39 @@ class BaseRenderer(ABC):
                                   usage=GL_STREAM_READ)
 
         # SSBOs
-        self.eye_buffers.allocate('rcpt_static',
-                                  dtype=RCPT_STATIC_DTYPE,
-                                  count=N,
-                                  data=self._model.buffer.rcpt_static_data,
+        self.eye_buffers.allocate('rhab_static',
+                                  dtype=RHAB_STATIC_DTYPE,
+                                  count=self._model.size,
+                                  data=self._model.buffer.rhabdomere_static,
                                   usage=GL_STATIC_DRAW)
-        self.eye_buffers.allocate('lens_static',
+        self.eye_buffers.allocate('omm_static',
                                   dtype=OMM_STATIC_DTYPE,
-                                  count=nb_lenses,
-                                  data=self._model.buffer.omm_static_data,
+                                  count=self._model.N,
+                                  data=self._model.buffer.ommatidia_static,
                                   usage=GL_STATIC_DRAW)
-        self.eye_buffers.allocate('rcpt_dynamic',
-                                  dtype=RCPT_DYNAMIC_DTYPE,
-                                  count=N,
-                                  data=self._model.buffer.rcpt_dynamic_data,
+        self.eye_buffers.allocate('rhab_dynamic',
+                                  dtype=RHAB_DYNAMIC_DTYPE,
+                                  count=self._model.size,
+                                  data=self._model.buffer.rhabdomere_dynamic,
                                   usage=GL_DYNAMIC_DRAW)
-        self.eye_buffers.allocate('lens_dynamic',
+        self.eye_buffers.allocate('omm_dynamic',
                                   dtype=OMM_DYNAMIC_DTYPE,
-                                  count=nb_lenses,
-                                  data=self._model.buffer.omm_dynamic_data,
+                                  count=self._model.N,
+                                  data=self._model.buffer.ommatidia_dynamic,
                                   usage=GL_DYNAMIC_DRAW)
         self.eye_buffers.allocate('ema_state',
                                   dtype=np.dtype((np.float32, 4)),
-                                  count=N,
+                                  count=self._model.size,
                                   usage=GL_DYNAMIC_DRAW)
         self.eye_buffers.allocate('rays_intermediate',
                                   dtype=np.dtype((np.float32, 4)),
-                                  count=N * self._samples_per_rcpt,
+                                  count=self._model.size * self._samples_per_rhab,
                                   usage=GL_DYNAMIC_DRAW)
 
         # Async SSBO
         self.eye_buffers.allocate('colors',
                                   dtype=np.dtype((np.float32, 4)),
-                                  count=N * self._batch_size,
+                                  count=self._model.size * self._batch_size,
                                   usage=GL_DYNAMIC_DRAW,
                                   supports_async=True,
                                   _async_reader=self._colors_read_async)
@@ -246,20 +243,20 @@ class BaseRenderer(ABC):
         self.__tp_overlay_shader: Optional[ShaderProgram] = None   # 3rd person overlay mode
 
         # Geometry VAOs (lazy-loaded)
-        self.__lens_cones_vao: Optional[int] = None
-        self.__lens_hemisph_vao: Optional[int] = None
+        self.__cones_vao: Optional[int] = None
+        self.__hemisph_vao: Optional[int] = None
         self.__cones_vertices = 0
         self.__hemisph_vertices = 0
 
         # States flags and other things
         self._time_dithering: bool = time_dithering
-        self._gpu_actuation: bool = enable_actuation
+        self._microsaccades_enabled: bool = enable_microsaccades
         self._overlay_enabled: bool = False
 
         self._needs_warmup: bool = True
         self.runs_interactive: bool = False
         self.tiled_mode: bool = True
-        self.simulate_insect_vision: bool = False  # TODO: expose these (and generate UV-encoded assets for demo)
+        self.simulate_insect_colours: bool = False  # TODO: expose these (and generate UV-encoded assets for demo)
         self.uv_encoded_textures: bool = False
 
         # Time keeping
@@ -269,7 +266,7 @@ class BaseRenderer(ABC):
         # Visualisation stuff
         self.projection_mode = OmmatidiaProjection.Position
         self.output_mode = EyeOutput.Cartridge
-        self._selected_lens_ids = np.full(10, -1, dtype=np.int32)
+        self._selected_omm_indices = np.full(10, -1, dtype=np.int32)
 
         # Overlay parameters
         self._overlay_colormap = Colormap.Thermal
@@ -283,27 +280,24 @@ class BaseRenderer(ABC):
         # Fullscreen texture to draw to
         self._screen_surface: Optional[TextureViewer] = None
 
-        # Initialise uniforms registries
-        avg_lens_radius = np.mean(np.linalg.norm(self._model.receptors.position[:, :3], axis=1))
-
         self.nb_samples = nb_samples    # via property to apply
 
+        # Initialise uniforms registries
         self._eye_uniforms = UniformRegistry(
             aspect_ratio=1.0,
 
-            # Receptors and lenses (constants during runtime)
-            nb_lenses=self._model.nb_facets,
-            nb_receptors=self._model.size,
-            noise_threshold=self._noise_threshold,
-            receptors_per_lens=self._model.rhab_per_omm,
+            # Rhabdomeres and ommatidia (constants during runtime)
+            nb_ommatidia=self._model.N,
+            nb_rhabdomeres=self._model.size,
+            rhab_per_omm=self._model.R,
 
             # Rhabdomere bundle params (constants during runtime)
             bundle_centre_idx=self._model.bundle.center_index,
 
             # Various visualisation parameters (currently fixed and not modifiable)
             visualisation_eye_surface_albedo=1.0,
-            vis_rf_scale=0.5,
-            visualisation_lens_length=max(0.01, avg_lens_radius) * 0.3,
+            visualisation_rf_scale=0.5,
+            visualisation_omm_length=max(0.01, np.mean(self._model.ommatidia.aperture)) * 0.3,
             visualisation_eyes_scale=1.0,
             visualisation_saccade_scale=1.0,
 
@@ -311,7 +305,7 @@ class BaseRenderer(ABC):
             output_mode=self.output_mode,
             tiled_mode=self.tiled_mode,
             projection_mode=self.projection_mode,
-            false_colors=self.simulate_insect_vision and not self.uv_encoded_textures,
+            false_colors=self.simulate_insect_colours and not self.uv_encoded_textures,
             uv_encoding=self.uv_encoded_textures,
 
             # Sampling modes
@@ -320,7 +314,7 @@ class BaseRenderer(ABC):
             sampling_mode=self._sampling_mode,  # 0 = Gaussian, 1 = Airy
 
             # Visualisation defaults
-            selected_lenses=self._selected_lens_ids,
+            selected_ommatidia=self._selected_omm_indices,
             overlay_fallback=True,
             overlay_data_min=self._overlay_range[0],
             overlay_data_max=self._overlay_range[1],
@@ -332,11 +326,9 @@ class BaseRenderer(ABC):
             frame_offset=self._frame_index % self._batch_size,
             dither_counter=self._dither_counter,
 
-            # Retina movement
-            retina_pulls_um=self._model._retina_pulls,
-
-            # Receptors dynamics
-            enable_actuation=self._gpu_actuation,
+            # Rhabdomere dynamics
+            noise_threshold=self._noise_threshold,
+            enable_actuation=self._microsaccades_enabled,
             photon_concentration_factor=0.0,        # TODO: document this better
             lum_ref=self.lum_ref,
             extra_narrowing_ratio=float(self._model.bundle.extra_narrowing_ratio),
@@ -346,7 +338,7 @@ class BaseRenderer(ABC):
         loop_mode = 'Open-loop (batched)' if self._batch_size > 1 else 'Closed-loop / Interactive'
         return (f"<{self.__class__.__name__} | Mode: {loop_mode} | "
                 f"Batch size: {self._batch_size} | "
-                f"{self.nb_samples} samples/Receptor>")
+                f"{self.nb_samples} samples/rhabdomere>")
 
     # Internal properties for lazy loaded resources
 
@@ -358,7 +350,7 @@ class BaseRenderer(ABC):
 
     @property
     def _cones_vao(self):
-        if self.__lens_cones_vao is None:
+        if self.__cones_vao is None:
             v_data = CONE_VERTICES
 
             self.__cones_vertices = len(v_data) // 3
@@ -374,13 +366,13 @@ class BaseRenderer(ABC):
                 glEnableVertexAttribArray(0)
                 glVertexAttribPointer(0, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
                 glBindVertexArray(0)
-            self.__lens_cones_vao = vao
+            self.__cones_vao = vao
 
-        return self.__lens_cones_vao
+        return self.__cones_vao
 
     @property
     def _hemispheres_vao(self):
-        if self.__lens_hemisph_vao is None:
+        if self.__hemisph_vao is None:
             v_data = SPHERE_VERTICES
 
             self.__hemisph_vertices = len(v_data) // 3
@@ -396,9 +388,9 @@ class BaseRenderer(ABC):
                 glEnableVertexAttribArray(0)
                 glVertexAttribPointer(0, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
                 glBindVertexArray(0)
-            self.__lens_hemisph_vao = vao
+            self.__hemisph_vao = vao
 
-        return self.__lens_hemisph_vao
+        return self.__hemisph_vao
 
     @property
     def _tp_colour_shader(self):
@@ -460,26 +452,24 @@ class BaseRenderer(ABC):
     def _reduction(self):
 
         with self.reduction_shader as shader:
-            with self.eye_buffers.grouped_bind(['rays_intermediate', 'rcpt_static', 'colors', 'ema_state', 'rcpt_dynamic']):
+            with self.eye_buffers.grouped_bind(['rays_intermediate', 'rhab_static', 'colors', 'ema_state', 'rhab_dynamic']):
 
                 self._eye_uniforms.apply(shader)
 
-                N = self._model.size
-                work_groups = (N + 63) // 64
+                work_groups = (self._model.size + 63) // 64
                 glDispatchCompute(work_groups, 1, 1)
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     def _eye_dynamics(self):
 
-        if self._model.bundle.focal_um is not None:
-            with self.dynamics_shader as shader:
-                with self.eye_buffers.grouped_bind(['rcpt_static', 'lens_static', 'colors', 'ema_state', 'rcpt_dynamic', 'lens_dynamic']):
+        with self.dynamics_shader as shader:
+            with self.eye_buffers.grouped_bind(['rhab_static', 'omm_static', 'colors', 'ema_state', 'rhab_dynamic', 'omm_dynamic']):
 
-                    self._eye_uniforms.apply(shader)
+                self._eye_uniforms.apply(shader)
 
-                    work_groups = (self._model.nb_facets + 63) // 64
-                    glDispatchCompute(work_groups, 1, 1)
-                    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
+                work_groups = (self._model.N + 63) // 64
+                glDispatchCompute(work_groups, 1, 1)
+                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     def _colors_read_async(self) -> np.ndarray:
         """
@@ -530,14 +520,14 @@ class BaseRenderer(ABC):
             dither_counter=self._dither_counter
         )
 
-        # If output is 'Raw', the shader needs Receptor IDs. Otherwise, it needs Lens IDs
-        shader_highlight_ids = self._selected_lens_ids.copy()
+        # If output is 'Raw', the shader needs rhabdomeres IDs. Otherwise, it needs ommatidia IDs
+        shader_highlight_ids = self._selected_omm_indices.copy()
 
         if self.output_mode == EyeOutput.Raw:
-            # Highlight the center receptor of the selected lenses
+            # Highlight the center rhabdomere of the selected ommatidia
             for i in range(10):
                 if shader_highlight_ids[i] != -1:
-                    shader_highlight_ids[i] *= self._model.rhab_per_omm
+                    shader_highlight_ids[i] *= self._model.R
                     shader_highlight_ids[i] += self._model.bundle.center_index
 
         # Sampling changes
@@ -555,18 +545,13 @@ class BaseRenderer(ABC):
             output_mode=self.output_mode,
             tiled_mode=self.tiled_mode,
             randomness_mode=self._randomness_mode,
-            enable_actuation=self._gpu_actuation,
+            enable_actuation=self._microsaccades_enabled,
             selected_lenses=shader_highlight_ids,
         )
 
         # Process eventual luminosity ref change
         self._eye_uniforms.update(
             lum_ref=self.lum_ref
-        )
-
-        # Process CPU-side commands
-        self._eye_uniforms.update(
-            retina_pulls_um=self._model._retina_pulls
         )
 
     def _main_render(self):
@@ -603,12 +588,12 @@ class BaseRenderer(ABC):
 
             self._eye_uniforms.apply(shader)
 
-            to_bind = ['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', 'colors']
+            to_bind = ['rhab_static', 'omm_static', 'rhab_dynamic', 'omm_dynamic', 'colors']
             if self.overlay_enabled:
                 to_bind.append('overlay')
             with self.eye_buffers.grouped_bind(to_bind):
                 N = self._model.size
-                nb_units = N if self.output_mode == EyeOutput.Raw else self._model.nb_facets
+                nb_units = N if self.output_mode == EyeOutput.Raw else self._model.N
 
                 glBindVertexArray(self._cones_vao)
                 glDrawArraysInstanced(GL_TRIANGLES, 0, self.__cones_vertices, nb_units)
@@ -634,13 +619,13 @@ class BaseRenderer(ABC):
 
             self._eye_uniforms.apply(shader)
 
-            to_bind = ['rcpt_static', 'lens_static', 'rcpt_dynamic', 'lens_dynamic', 'colors']
+            to_bind = ['rhab_static', 'omm_static', 'rhab_dynamic', 'omm_dynamic', 'colors']
             if self.overlay_enabled:
                 to_bind.append('overlay')
+
             with self.eye_buffers.grouped_bind(to_bind):
 
-                N = self._model.size
-                nb_units = N if self.output_mode == EyeOutput.Raw else self._model.nb_facets
+                nb_units = self._model.size if self.output_mode == EyeOutput.Raw else self._model.N
 
                 if self.projection_mode == OmmatidiaProjection.Position:
                     glBindVertexArray(self._hemispheres_vao)
@@ -669,12 +654,11 @@ class BaseRenderer(ABC):
         glFinish()  # Block until all rendering commands are complete
 
         frames_to_read = int(self._frame_index)
-        N = self._model.size
 
         # Direct synchronous download is ok here
         with self.eye_buffers['colors'].bind():
-            data_bytes = glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, N * 16 * frames_to_read)
-            data_np = np.frombuffer(data_bytes, dtype=np.float32).reshape(frames_to_read, N, 4)
+            data_bytes = glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self._model.size * 16 * frames_to_read)
+            data_np = np.frombuffer(data_bytes, dtype=np.float32).reshape(frames_to_read, self._model.size, 4)
 
         self._frame_index = 0
         return data_np.copy()       # TODO: Should return a timeseries VisualOutput
@@ -686,36 +670,36 @@ class BaseRenderer(ABC):
         """
         buf = self._model.buffer
 
-        # Lenses
+        # Ommatidia
         if buf.omm_dirty or force_all:
             if force_all:
-                self.eye_buffers['lens_static'].write(buf.omm_static_data)
-                self.eye_buffers['lens_dynamic'].write(buf.omm_dynamic_data)
+                self.eye_buffers['omm_static'].write(buf.ommatidia_static)
+                self.eye_buffers['omm_dynamic'].write(buf.ommatidia_dynamic)
             else:
                 dirty_idx = np.where(buf.omm_dirty_mask)[0]
                 if dirty_idx.size > 0:
                     jumps = np.where(np.diff(dirty_idx) != 1)[0] + 1
                     for block in np.split(dirty_idx, jumps):
                         start, nb = block[0], block.size
-                        self.eye_buffers['lens_static'].write(buf.omm_static_data[start:start + nb], start=start)
-                        self.eye_buffers['lens_dynamic'].write(buf.omm_dynamic_data[start:start + nb], start=start)
+                        self.eye_buffers['omm_static'].write(buf.ommatidia_static[start:start + nb], start=start)
+                        self.eye_buffers['omm_dynamic'].write(buf.ommatidia_dynamic[start:start + nb], start=start)
 
             buf.omm_dirty = False
             buf.omm_dirty_mask.fill(False)
 
-        # Receptors
+        # Rhabdomeres
         if buf.rcpt_dirty or force_all:
             if force_all:
-                self.eye_buffers['rcpt_static'].write(buf.rcpt_static_data)
-                self.eye_buffers['rcpt_dynamic'].write(buf.rcpt_dynamic_data)
+                self.eye_buffers['rhab_static'].write(buf.rhabdomere_static)
+                self.eye_buffers['rhab_dynamic'].write(buf.rhabdomere_dynamic)
             else:
                 dirty_idx = np.where(buf.rcpt_dirty_mask)[0]
                 if dirty_idx.size > 0:
                     jumps = np.where(np.diff(dirty_idx) != 1)[0] + 1
                     for block in np.split(dirty_idx, jumps):
                         start, nb = block[0], block.size
-                        self.eye_buffers['rcpt_static'].write(buf.rcpt_static_data[start:start + nb], start=start)
-                        self.eye_buffers['rcpt_dynamic'].write(buf.rcpt_dynamic_data[start:start + nb], start=start)
+                        self.eye_buffers['rhab_static'].write(buf.rhabdomere_static[start:start + nb], start=start)
+                        self.eye_buffers['rhab_dynamic'].write(buf.rhabdomere_dynamic[start:start + nb], start=start)
 
             buf.rcpt_dirty = False
             buf.rcpt_dirty_mask.fill(False)
@@ -746,7 +730,7 @@ class BaseRenderer(ABC):
             raise RuntimeError("renderer.step() requires an attached Context.")
 
         # Sync any CPU-side changes to the eye model
-        self.sync_cpu()
+        # self.sync_cpu()       # TODO: rewrite this !!!!!!!
 
         # Advance dithering for Monte-Carlo noise decorrelation
         if self._time_dithering:
@@ -790,20 +774,19 @@ class BaseRenderer(ABC):
         Upload data for overlay visualisation.
 
         Args:
-            values: Either a flat array in global order (total_receptors,)
-                    or a dict mapping Eye -> per-eye array
+            values: Either a flat array in global order (total_rhabdomeres,) or a dict mapping Eye -> per-eye array
             range: (min, max) bounds for the colourmap. None = auto
             colormap: Which colourmap to use (Colormap enum)
             compression: Power exponent for dynamic range compression
                          1.0 = linear, 0.5 = sqrt, lower = brings out detail
         """
 
-        N = self._model.size
+        siz = self._model.size
 
         if 'overlay' not in self.eye_buffers:
             self.eye_buffers.allocate('overlay',
                                       dtype=np.float32,
-                                      count=N,
+                                      count=siz,
                                       usage=GL_DYNAMIC_DRAW)
 
         if values is None:
@@ -818,22 +801,22 @@ class BaseRenderer(ABC):
             return
 
         if isinstance(values, dict):
-            merged = np.zeros(N, dtype=np.float32)
+            merged = np.zeros(siz, dtype=np.float32)
 
             for eye, data in values.items():
                 if len(data) == len(eye):
-                    data = np.repeat(data, self._model.rhab_per_omm)
-                merged[eye.receptors.global_indices] = data
+                    data = np.repeat(data, self._model.R)
+                merged[eye.rhabdomeres.indices] = data
             values = merged
 
         buf = np.ascontiguousarray(values, dtype=np.float32).ravel()
         buf_size = len(buf)
 
-        if buf_size != N:
-            raise ValueError(f"scalar_data has {buf_size} elements, expected {N}.")
+        if buf_size != siz:
+            raise ValueError(f"scalar_data has {buf_size} elements, expected {siz}.")
 
-        elif self.eye_buffers['overlay'].count != N:
-            self.eye_buffers['overlay'].resize(N)
+        elif self.eye_buffers['overlay'].count != siz:
+            self.eye_buffers['overlay'].resize(siz)
 
         self.eye_buffers['overlay'].write(buf)
 
@@ -891,27 +874,26 @@ class BaseRenderer(ABC):
 
     @property
     def nb_samples(self):
-        return self._samples_per_rcpt
+        return self._samples_per_rhab
 
     @nb_samples.setter
     def nb_samples(self, value):
-        N = self._model.size
 
         max_tot_samples = self._max_ssbo_bytes // 16
-        max_per_r = max(1, max_tot_samples // N)
+        max_per_r = max(1, max_tot_samples // self._model.size)
         value_clamped = int(np.clip(value, 1, max_per_r))
 
-        if value_clamped == self._samples_per_rcpt:
+        if value_clamped == self._samples_per_rhab:
             return
 
         if value_clamped != value:
-            print(f"Warning: Clamped samples per receptor to {value_clamped} (HW limit is {max_per_r}).")
+            print(f"Warning: Clamped samples per rhabdomere to {value_clamped} (HW limit is {max_per_r}).")
 
-        self._samples_per_rcpt = value_clamped
+        self._samples_per_rhab = value_clamped
 
-        self.eye_buffers['rays_intermediate'].resize(N * self._samples_per_rcpt)
+        self.eye_buffers['rays_intermediate'].resize(self._model.size * self._samples_per_rhab)
 
-        mc_noise = 0.65 / np.sqrt(max(1, self._samples_per_rcpt))
+        mc_noise = 0.65 / np.sqrt(max(1, self._samples_per_rhab))
         self._noise_threshold = max(0.05, mc_noise)
 
     @property
@@ -983,13 +965,13 @@ class BaseRenderer(ABC):
             self.set_overlay()
 
     @property
-    def selected_lenses(self) -> Optional[list]:
-        active = [int(x) for x in self._selected_lens_ids if x != -1]
+    def selected_ommatidia(self) -> Optional[list]:
+        active = [int(x) for x in self._selected_omm_indices if x != -1]
         return active if active else None
 
-    @selected_lenses.setter
-    def selected_lenses(self, values: Optional[Union[int, Sequence[int], np.ndarray]]):
-        self._selected_lens_ids.fill(-1)
+    @selected_ommatidia.setter
+    def selected_ommatidia(self, values: Optional[Union[int, Sequence[int], np.ndarray]]):
+        self._selected_omm_indices.fill(-1)
 
         if values is None:
             return
@@ -997,26 +979,25 @@ class BaseRenderer(ABC):
         if isinstance(values, np.ndarray):
             vals = values.ravel()
             count = min(len(vals), 10)
-            self._selected_lens_ids[:count] = vals[:count].astype(np.int32)
+            self._selected_omm_indices[:count] = vals[:count].astype(np.int32)
             return
 
         if isinstance(values, int):
-            self._selected_lens_ids[0] = values
+            self._selected_omm_indices[0] = values
             return
 
         for i, val in enumerate(list(values)[:10]):
-            self._selected_lens_ids[i] = int(val)
+            self._selected_omm_indices[i] = int(val)
 
     # TODO: These should be renamed
     @property
-    def actuation(self):
-        return self._gpu_actuation
+    def microsaccades_enabled(self):
+        return self._microsaccades_enabled
 
-    @actuation.setter
-    def actuation(self, value: bool):
-        self._gpu_actuation = bool(value)
-        # print(f"Rhabdomere actuation: {'Enabled' if self._gpu_actuation else 'Disabled'}.")
-        self._eye_uniforms.update(enable_actuation=self._gpu_actuation)
+    @microsaccades_enabled.setter
+    def microsaccades_enabled(self, value: bool):
+        self._microsaccades_enabled = bool(value)
+        self._eye_uniforms.update(enable_actuation=self._microsaccades_enabled)
 
     def dither(self):
         """Dither once (reshuffle the dither counter)"""
@@ -1044,8 +1025,8 @@ class BaseRenderer(ABC):
         self.eye_buffers.free()
 
         for vao in (
-            self.__lens_cones_vao,
-            self.__lens_hemisph_vao
+            self.__cones_vao,
+            self.__hemisph_vao
         ):
             if vao:
                 glDeleteVertexArrays(1, [vao])

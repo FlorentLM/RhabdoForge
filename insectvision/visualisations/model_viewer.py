@@ -36,7 +36,7 @@ _DISC_TEMPLATE = None
 def receptor_tip_offsets(model) -> np.ndarray:
     N, R = model.shape
     d = model.ommatidia.direction
-    rec_dirs = model.rcpt_dynamic_data['direction'].reshape(N, R, 3)
+    rec_dirs = model.rhabdomere_dynamic['direction'].reshape(N, R, 3)
     axial = np.sum(rec_dirs * d[:, None, :], axis=2, keepdims=True)
     return -(rec_dirs - axial * d[:, None, :])
 

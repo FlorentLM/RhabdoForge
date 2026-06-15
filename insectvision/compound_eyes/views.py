@@ -5,8 +5,8 @@ Views:
   BaseView      : Abstract base defining the ViewField descriptor properties
   SpatialQueries: Mixin, shared spatial-queries (trees, graphs, knn)
   OmmatidiumView: Indexes the Ommatidia axis
-  CartridgeView : Like OmmatidiumView, but receptors follow neural superposition
-  ReceptorView  : Indexes the Rhabdomeres axis
+  CartridgeView : Like OmmatidiumView, but rhabdomeres follow neural superposition
+  RhabdomereView  : Indexes the Rhabdomeres axis
   EyeView       : An OmmatidiumView over one eye
 """
 import logging
@@ -168,6 +168,18 @@ class BaseView:
 
         return self
 
+    @property
+    def azimuth(self):
+        az, _ = cartesian_to_spherical(self.directions)
+        return az
+
+    @property
+    def elevation(self):
+        _, el = cartesian_to_spherical(self.directions)
+        return el
+
+    # TODO: Add per-rhabdomere azimuth / elevation properties?
+
     # Lattice properties
 
     interommatidial_angles = ViewField('ioa_angles', 'ommatidia')
@@ -285,7 +297,7 @@ class BaseView:
 
     @property
     def cartridge_indices(self) -> np.ndarray:
-        """(N, R) global donor receptor index per slot (= the gather table)."""
+        """(N, R) global donor rhabdomere index per slot (= the gather table)."""
         return self._buffer['cartridge_src', self.omm_indices].reshape(self.N, self.R)
 
     @property
@@ -352,8 +364,8 @@ class NeighbourResult:
         return OmmatidiumView(self.view.model, self.indices.ravel())
 
     @property
-    def receptors(self) -> 'ReceptorView':
-        return self.ommatidia.receptors
+    def rhabdomeres(self) -> 'RhabdomereView':
+        return self.ommatidia.rhabdomeres
 
 
 class SpatialQueries:
@@ -821,12 +833,12 @@ class OmmatidiumView(SpatialQueries, BaseView):
             yield OmmatidiumView(self._model, np.array([i], dtype=np.intp))
 
     @property
-    def receptors(self) -> 'ReceptorView':
-        return ReceptorView(self._model, self.rhab_indices)
+    def rhabdomeres(self) -> 'RhabdomereView':
+        return RhabdomereView(self._model, self.rhab_indices)
 
 
 class CartridgeView(OmmatidiumView):
-    """Ommatidium-anchored, but .receptors follow the neural-superposition wiring map."""
+    """Ommatidium-anchored, but .rhabdomeres follow the neural-superposition wiring map."""
     __slots__ = ()
 
     @property
@@ -834,7 +846,7 @@ class CartridgeView(OmmatidiumView):
         return self._buffer['cartridge_src', self._omm_indices].reshape(-1)
 
 
-class ReceptorView(BaseView):
+class RhabdomereView(BaseView):
     """Selection indexes the rhabdomeres axis."""
 
     __slots__ = ('_model', '_rhab_indices')
@@ -845,7 +857,7 @@ class ReceptorView(BaseView):
 
     @property
     def shape(self) -> Tuple[int, ...]:
-        """The logical shape of this view (1D for receptors)."""
+        """The logical shape of this view (1D for rhabdomeres)."""
         return (len(self),)
 
     @property
@@ -870,13 +882,13 @@ class ReceptorView(BaseView):
         return np.unique(self._rhab_indices // self.R)
 
     def __getitem__(self, key):
-        return ReceptorView(self._model, self._rhab_indices[..., key])
+        return RhabdomereView(self._model, self._rhab_indices[..., key])
 
     def __repr__(self):
-        return f'ReceptorView(receptors={self._rhab_indices.shape})'
+        return f'RhabdomereView(rhabdomeres={self._rhab_indices.shape})'
 
     def __eq__(self, other):
-        if not isinstance(other, ReceptorView):
+        if not isinstance(other, RhabdomereView):
             return False
         return self._buffer is other._buffer and np.array_equal(self.rhab_indices, other.rhab_indices)
 

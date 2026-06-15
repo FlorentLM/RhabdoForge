@@ -21,9 +21,9 @@ class Dashboard:
 
         self.frame_data = collections.deque(maxlen=self.plot_history_len)
 
-        self.selected_lenses = []
+        self.selected_ommatidia = []
         self.max_selected = 10
-        self.lens_histories = {}
+        self.omm_histories = {}
 
         self.current_frame = 0
         self.history_intervals = [[0, None, 'Ommatidium']]
@@ -39,7 +39,7 @@ class Dashboard:
         dpg.setup_dearpygui()
 
         model = self.ctx.renderer._model
-        self.rec_data_buffers = [collections.deque(maxlen=self.plot_history_len) for _ in range(model.rhab_per_omm)]
+        self.rec_data_buffers = [collections.deque(maxlen=self.plot_history_len) for _ in range(model.R)]
 
         with dpg.window(label='Inspector', width=650, height=950, no_close=True, no_move=True, tag='main_window'):
 
@@ -80,21 +80,21 @@ class Dashboard:
                 with dpg.tab(label='Plots', tag='tab_plots'):
 
                     dpg.add_spacer(height=5)
-                    dpg.add_text('Ommatidium / Receptor Selection', color=[100, 255, 100])
+                    dpg.add_text('Ommatidium / Rhabdomere Selection', color=[100, 255, 100])
                     dpg.add_text('Click in viewport (when mouse free) to pick. Shift+click for multi.',
                                  color=[200, 200, 200])
 
-                    self.omm_selection_text = dpg.add_text("Selected Lenses: [0]")
-                    self.omm_slider = dpg.add_slider_int(label="Primary Lens ID (or type)", default_value=0,
-                                                         max_value=model.nb_facets - 1, callback=self._on_slider_change)
-                    dpg.add_button(label="Clear Selection", callback=lambda: self.toggle_lens_selection(None))
+                    self.omm_selection_text = dpg.add_text("Selected ommatidia: [0]")
+                    self.omm_slider = dpg.add_slider_int(label="Primary Ommatidium ID (or type)", default_value=0,
+                                                         max_value=model.N - 1, callback=self._on_slider_change)
+                    dpg.add_button(label="Clear Selection", callback=lambda: self.toggle_omm_selection(None))
 
                     dpg.add_separator()
                     self.show_all_rec_toggle = dpg.add_checkbox(
-                        label=f'Show individual receptors (R1-R{model.rhab_per_omm})', default_value=False)
-                    self.rec_slider = dpg.add_slider_int(label='Probed Receptor ID', default_value=0,
-                                                         max_value=max(0, model.rhab_per_omm - 1),
-                                                         show=(model.rhab_per_omm > 1))
+                        label=f'Show individual rhabdomeres (R1-R{model.R})', default_value=False)
+                    self.rec_slider = dpg.add_slider_int(label='Probed Rhabdomere ID', default_value=0,
+                                                         max_value=max(0, model.R - 1),
+                                                         show=(model.R > 1))
 
                     self.rgb_toggle = dpg.add_checkbox(label='Show RGB channels', default_value=False)
                     self.instant_toggle = dpg.add_checkbox(label='Show instantaneous (Alpha)', default_value=False)
@@ -127,10 +127,10 @@ class Dashboard:
                         pool_item['lat'] = dpg.add_line_series([], [], label=f'Lat L{i}', parent='y_axis_2')
                         pool_item['ax'] = dpg.add_line_series([], [], label=f'Ax L{i}', parent='y_axis_2')
 
-                        pool_item['receptors'] = []
-                        for r_idx in range(model.rhab_per_omm):
+                        pool_item['rhabdomeres'] = []
+                        for r_idx in range(model.R):
                             tag = dpg.add_line_series([], [], label=f'R{r_idx + 1} L{i}', parent='y_axis_1')
-                            pool_item['receptors'].append(tag)
+                            pool_item['rhabdomeres'].append(tag)
 
                         self.series_pool.append(pool_item)
 
@@ -140,7 +140,7 @@ class Dashboard:
                     dpg.add_text('Photomechanical Response', color=[255, 150, 100])
 
                     dpg.add_checkbox(label='Enable Rhabdomeres Actuation',
-                                     default_value=self.ctx.renderer.actuation,
+                                     default_value=self.ctx.renderer.microsaccades_enabled,
                                      callback=lambda s, a: setattr(self.ctx.renderer, 'actuation', a))
 
                     dpg.add_separator()
@@ -148,21 +148,21 @@ class Dashboard:
 
                     dpg.add_slider_float(
                         label='Lateral Gain (um)',
-                        default_value=float(model.ommatidia.ampl_lat_um[0]),
+                        default_value=float(model.ommatidia.lateral_amplitude[0]),
                         min_value=0.0, max_value=5.0,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'ampl_lat_um', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'lateral_amplitude', a)
                     )
                     dpg.add_slider_float(
                         label='Axial Gain (um)',
-                        default_value=float(model.ommatidia.ampl_ax_um[0]),
+                        default_value=float(model.ommatidia.axial_amplitude[0]),
                         min_value=0.0, max_value=5.0,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'ampl_ax_um', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'axial_amplitude', a)
                     )
                     dpg.add_slider_float(
                         label='Tau Fast (s)',
-                        default_value=float(model.ommatidia.tau_fast[0]),
+                        default_value=float(model.ommatidia.tau_adapt_fast[0]),
                         min_value=0.001, max_value=0.1,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'tau_fast', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'tau_adapt_fast', a)
                     )
                     dpg.add_slider_float(
                         label='Tau Relaxation (s)',
@@ -176,7 +176,7 @@ class Dashboard:
                     if dpg.add_button(label='Reset GPU States', width=-1):
                         self._main_thread_queue.append(
                         self.ctx.renderer.eye_buffers['ema_state'].reset)
-                        self._main_thread_queue.append(self.ctx.renderer.eye_buffers['lens_dynamic'].reset)
+                        self._main_thread_queue.append(self.ctx.renderer.eye_buffers['omm_dynamic'].reset)
 
                 # Tab 3: Rendering
                 with dpg.tab(label='Rendering'):
@@ -246,7 +246,7 @@ class Dashboard:
                     dpg.add_text('Sampling & Noise', color=[100, 200, 255])
 
                     self.ui_tags['samples'] = dpg.add_slider_int(
-                        label='Samples per Receptor',
+                        label='Samples per Rhabdomere',
                         default_value=self.ctx.renderer.nb_samples,
                         min_value=1, max_value=1024,
                         callback=self._update_nb_samples
@@ -354,27 +354,27 @@ class Dashboard:
 
         self._initialised = True
 
-    def toggle_lens_selection(self, lens_id, multi=False):
-        """Toggle selection. If lens_id is None, clears all."""
-        if lens_id is None:
-            self.selected_lenses = []
+    def toggle_omm_selection(self, omm_idx, multi=False):
+        """Toggle selection. If omm_idx is None, clears all."""
+        if omm_idx is None:
+            self.selected_ommatidia = []
             # reset the slider to 0 if cleared
             if dpg.does_item_exist(self.omm_slider):
                 dpg.set_value(self.omm_slider, 0)
         elif not multi:
-            self.selected_lenses = [lens_id]
+            self.selected_ommatidia = [omm_idx]
         else:
-            if lens_id in self.selected_lenses:
-                self.selected_lenses.remove(lens_id)
+            if omm_idx in self.selected_ommatidia:
+                self.selected_ommatidia.remove(omm_idx)
             else:
-                if len(self.selected_lenses) < self.max_selected:
-                    self.selected_lenses.append(lens_id)
+                if len(self.selected_ommatidia) < self.max_selected:
+                    self.selected_ommatidia.append(omm_idx)
 
         model = self.ctx.renderer._model
         pad_len = len(self.frame_data)
-        for lid in self.selected_lenses:
-            if lid not in self.lens_histories:
-                self.lens_histories[lid] = {
+        for lid in self.selected_ommatidia:
+            if lid not in self.omm_histories:
+                self.omm_histories[lid] = {
                     'mean': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
                     'instant': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
                     'r': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
@@ -382,18 +382,18 @@ class Dashboard:
                     'b': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
                     'lat': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
                     'ax': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
-                    'receptors': [collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len) for _ in
-                                  range(model.rhab_per_omm)]
+                    'rhabdomeres': [collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len) for _ in
+                                  range(model.R)]
                 }
 
         if dpg.does_item_exist(self.omm_selection_text):
-            val = self.selected_lenses if self.selected_lenses else "None"
-            dpg.set_value(self.omm_selection_text, f"Selected Lenses: {val}")
-        if self.selected_lenses and dpg.does_item_exist(self.omm_slider):
-            dpg.set_value(self.omm_slider, self.selected_lenses[-1])
+            val = self.selected_ommatidia if self.selected_ommatidia else "None"
+            dpg.set_value(self.omm_selection_text, f"Selected ommatidia: {val}")
+        if self.selected_ommatidia and dpg.does_item_exist(self.omm_slider):
+            dpg.set_value(self.omm_slider, self.selected_ommatidia[-1])
 
     def _on_slider_change(self, sender, app_data):
-        self.toggle_lens_selection(app_data, multi=False)
+        self.toggle_omm_selection(app_data, multi=False)
 
     def _apply_styles(self):
         LENS_PALETTE = [
@@ -427,7 +427,7 @@ class Dashboard:
                         dpg.add_theme_color(dpg.mvPlotCol_Line, c, category=dpg.mvThemeCat_Plots)
                 dpg.bind_item_theme(pool_item[key], t)
 
-            for r_idx, rec_series in enumerate(pool_item['receptors']):
+            for r_idx, rec_series in enumerate(pool_item['rhabdomeres']):
                 rec_color = RHAB_COLOURS[r_idx % len(RHAB_COLOURS)]
                 with dpg.theme() as t:
                     with dpg.theme_component(dpg.mvLineSeries):
@@ -499,7 +499,7 @@ class Dashboard:
         dpg.set_value('ui_sim_total_text', f'Total sim time: {self.ctx.total_time:7.3f} s')
 
         model = self.ctx.renderer._model
-        dpg.configure_item(self.rec_slider, max_value=max(0, model.rhab_per_omm - 1))
+        dpg.configure_item(self.rec_slider, max_value=max(0, model.R - 1))
 
         # Modes
         view_str = self.ctx.display_mode.name.replace('_', ' ')
@@ -512,7 +512,7 @@ class Dashboard:
         dpg.set_value('ui_pos_text', f'Pos: [{pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}]')
 
         # Samples and ommatidia
-        nb_om = self.ctx.renderer._model.nb_facets
+        nb_om = self.ctx.renderer._model.N
         nb_om_samples = getattr(self.ctx.renderer, 'nb_samples', 1)
         nb_px_samples = getattr(self.ctx.renderer, 'samples_per_pixel', 1)
 
@@ -562,23 +562,24 @@ class Dashboard:
         self.frame_data.append(self.current_frame)
         x = list(self.frame_data)
 
-        dynamic_states = self.ctx.renderer.eye_buffers['lens_dynamic'].read()
+        dynamic_states = self.ctx.renderer.eye_buffers['omm_dynamic'].read()
 
         for i, pool in enumerate(self.series_pool):
-            # Check a lens is selected for this slot
-            if i < len(self.selected_lenses):
-                lid = self.selected_lenses[i]
+
+            # Check if an ommatidium is selected for this slot
+            if i < len(self.selected_ommatidia):
+                om_id = self.selected_ommatidia[i]
 
                 # Update history data
                 if mode == EyeOutput.Raw:
-                    start = lid * model.rhab_per_omm
-                    group = visual_output.data[start: start + model.rhab_per_omm]
+                    start = om_id * model.R
+                    group = visual_output.data[start: start + model.R]
                 elif mode == EyeOutput.Ommatidium:
-                    group = visual_output.per_lens[lid]
+                    group = visual_output.per_ommatidium[om_id]
                 else:
-                    group = visual_output.per_cartridge[lid]
+                    group = visual_output.per_cartridge[om_id]
 
-                hist = self.lens_histories[lid]
+                hist = self.omm_histories[om_id]
                 avg_pixel = np.mean(group, axis=0)
 
                 hist['mean'].append(np.mean(avg_pixel[:3]))
@@ -586,14 +587,14 @@ class Dashboard:
                 hist['g'].append(avg_pixel[1])
                 hist['b'].append(avg_pixel[2])
                 hist['instant'].append(avg_pixel[3])
-                hist['lat'].append(float(dynamic_states[lid]['lateral_um']))
-                hist['ax'].append(float(dynamic_states[lid]['axial_um']))
+                hist['lat'].append(float(dynamic_states[om_id]['curr_lateral_disp']))
+                hist['ax'].append(float(dynamic_states[om_id]['curr_axial_disp']))
 
-                for r_idx in range(model.rhab_per_omm):
-                    hist['receptors'][r_idx].append(np.mean(group[r_idx, :3]))
+                for r_idx in range(model.R):
+                    hist['rhabdomeres'][r_idx].append(np.mean(group[r_idx, :3]))
 
                 # Refresh lines for this active slot
-                self._refresh_series(pool, lid, hist, x, visible=True)
+                self._refresh_series(pool, om_id, hist, x, visible=True)
             else:
                 # This slot is unused: hide all lines
                 self._refresh_series(pool, None, None, None, visible=False)
@@ -606,7 +607,7 @@ class Dashboard:
         if not visible:
             # Hide everything and return
             for key, tag in pool.items():
-                if key == 'receptors':
+                if key == 'rhabdomeres':
                     for r_tag in tag: dpg.configure_item(r_tag, show=False)
                 else:
                     dpg.configure_item(tag, show=False)
@@ -617,7 +618,7 @@ class Dashboard:
         show_rgb = dpg.get_value(self.rgb_toggle)
         show_instant = dpg.get_value(self.instant_toggle)
 
-        # Mean is only shown if individual Receptors and RGB are both off
+        # Mean is only shown if individual Rhabdomeres and RGB are both off
         show_mean = not show_all_rec and not show_rgb
         dpg.configure_item(pool['mean'], label=f'Mean L{lid}', show=show_mean)
         dpg.set_value(pool['mean'], [x, list(hist['mean'])])
@@ -626,19 +627,19 @@ class Dashboard:
         dpg.configure_item(pool['instant'], label=f'Inst L{lid}', show=show_instant)
         dpg.set_value(pool['instant'], [x, list(hist['instant'])])
 
-        # RGB lines shown if RGB is on and individual Receptors is off
+        # RGB lines shown if RGB is on and individual Rhabdomeres is off
         for key in ['r', 'g', 'b']:
             dpg.configure_item(pool[key], label=f'{key.upper()} L{lid}',
                                show=show_rgb and not show_all_rec)
             dpg.set_value(pool[key], [x, list(hist[key])])
 
-        # Individual Receptor lines
-        for r_idx, r_tag in enumerate(pool['receptors']):
+        # Individual Rhabdomere lines
+        for r_idx, r_tag in enumerate(pool['rhabdomeres']):
             dpg.configure_item(r_tag, label=f'R{r_idx + 1} L{lid}', show=show_all_rec)
             if show_all_rec:
-                dpg.set_value(r_tag, [x, list(hist['receptors'][r_idx])])
+                dpg.set_value(r_tag, [x, list(hist['rhabdomeres'][r_idx])])
 
-        # Actuation plot (always show if lens selected)
+        # Actuation plot (always show if ommatidium selected)
         dpg.configure_item(pool['lat'], label=f'Lat L{lid}', show=True)
         dpg.set_value(pool['lat'], [x, list(hist['lat'])])
 
@@ -676,9 +677,9 @@ class Dashboard:
         if not self._initialised:
             self._setup_dpg()
             # Initial sync of selection from renderer to dashboard
-            initial = self.ctx.renderer.selected_lenses
+            initial = self.ctx.renderer.selected_ommatidia
             if initial:
-                for lid in initial: self.toggle_lens_selection(lid, multi=True)
+                for lid in initial: self.toggle_omm_selection(lid, multi=True)
 
         if not dpg.is_dearpygui_running():
             return False
@@ -695,18 +696,18 @@ class Dashboard:
 
         # maintain a mapping of what the shader needs to highlight
         shader_selection = np.full(10, -1, dtype=np.int32)
-        if self.selected_lenses:
-            for idx, l_id in enumerate(self.selected_lenses[:10]):
-                if l_id >= model.nb_facets: continue
+        if self.selected_ommatidia:
+            for idx, l_id in enumerate(self.selected_ommatidia[:10]):
+                if l_id >= model.N: continue
 
                 if mode == EyeOutput.Raw:
                     rec_id = dpg.get_value(self.rec_slider)
-                    shader_selection[idx] = (l_id * model.rhab_per_omm) + rec_id
+                    shader_selection[idx] = (l_id * model.R) + rec_id
                 else:
                     shader_selection[idx] = l_id
 
         # Push updated selection to renderer
-        self.ctx.renderer.selected_lenses = shader_selection
+        self.ctx.renderer.selected_ommatidia = shader_selection
 
         # Update plots (if tab is visible)
         if dpg.is_item_visible('tab_plots') and visual_output is not None:

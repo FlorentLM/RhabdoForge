@@ -3,14 +3,14 @@
 
 layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-layout(std430, binding = BINDING_RCPT_STATIC) readonly buffer RcptStaticBlock  { ReceptorStatic  rcpt_static[]; };
-layout(std430, binding = BINDING_RCPT_DYNAMIC) readonly buffer RcptDynamicBlock { ReceptorDynamic rcpt_dynamic[]; };
-layout(std430, binding = BINDING_LENS_STATIC) readonly buffer LensStaticBlock  { LensStatic      lens_static[]; };
+layout(std430, binding = BINDING_RHAB_STATIC) readonly buffer RhabStaticBlock  { RhabdomereStatic  rhab_static[]; };
+layout(std430, binding = BINDING_RHAB_DYNAMIC) readonly buffer RhabDynamicBlock { RhabdomereDynamic rhab_dynamic[]; };
+layout(std430, binding = BINDING_OMM_STATIC) readonly buffer OmmatidiumStaticBlock  { OmmatidiumStatic      omm_static[]; };
 layout(std430, binding = BINDING_RAYS_INTERMEDIATE) writeonly buffer RayResultBuffer { vec4 ray_results[]; };
 
 layout(binding = 0) uniform samplerCube scene_cubemap;
 
-uniform int nb_receptors;
+uniform int nb_rhabdomeres;
 uniform int nb_samples;
 uniform float dither_counter;
 uniform int randomness_mode;
@@ -19,34 +19,33 @@ uniform int  sampling_mode;
 
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
-    uint total_count = rcpt_static.length();
+    uint total_count = rhab_static.length();
 
     if (global_id >= (nb_samples * total_count)) return;    // stop if out of bounds
 
-    uint rcpt_idx = global_id / nb_samples;
+    uint rhab_idx = global_id / nb_samples;
     uint sample_idx = global_id % nb_samples;
 
-    ReceptorStatic rs = rcpt_static[rcpt_idx];
-    ReceptorDynamic rd = rcpt_dynamic[rcpt_idx];
+    RhabdomereStatic rs = rhab_static[rhab_idx];
+    RhabdomereDynamic rd = rhab_dynamic[rhab_idx];
 
-    // Lens data for this receptor
-    uint lens_idx = unpack_lens_id(rs.metadata);
-    LensStatic ls = lens_static[lens_idx];
+    // Ommatidium data for this rhabdomere
+    uint omm_idx = unpack_omm_id(rs.metadata);
+    OmmatidiumStatic os = omm_static[omm_idx];
 
-    // Reconstruct tangent frame from actuated direction
-    vec3 F = rd.direction;
-    vec3 up = abs(F.y) > 0.99 ? vec3(1,0,0) : vec3(0,1,0);
-    vec3 T = normalize(cross(up, F));
-    vec3 B = cross(F, T);
+    /// Reconstruct tangent frame
+    vec3 F = rd.curr_direction;
+    vec3 T = normalize(os.right - F * dot(os.right, F));
+    vec3 B = normalize(cross(F, T));
 
-    Sampler s = get_samples(randomness_mode, sample_idx, uint(nb_samples), rcpt_idx, uint(dither_counter));
+    Sampler s = get_samples(randomness_mode, sample_idx, uint(nb_samples), rhab_idx, uint(dither_counter));
 
     float ray_weight;
     vec3 sample_dir;
     if (use_hybrid_sampling) {
-        sample_dir = sampledir_hybrid(sampling_mode, rs, rd, ls, T, B, F, s.u1, s.u2, ray_weight);
+        sample_dir = sampledir_hybrid(sampling_mode, rs, rd, os, T, B, F, s.u1, s.u2, ray_weight);
     } else {
-        sample_dir = sampledir_importance(rs, rd, T, B, F, s.u1, s.u2, ray_weight);
+        direction = sampledir_importance(rs, rd, os, T, B, F, s.u1, s.u2, ray_weight);
     }
 
     vec3 color = texture(scene_cubemap, sample_dir).rgb;

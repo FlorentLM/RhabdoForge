@@ -19,7 +19,7 @@ from insectvision.engine.resources import (
 from insectvision.renderers.base import BaseRenderer
 
 if TYPE_CHECKING:
-    from insectvision.compound_eyes import ReceptorArray
+    from insectvision.compound_eyes import Model
     from insectvision.engine.context import Context
 
 RENDERABLE_INST_DTYPE = np.dtype([
@@ -456,7 +456,7 @@ class Raytracer(BaseRenderer):
 
     def __init__(
             self,
-            model: 'ReceptorArray',
+            model: 'Model',
             scene: 'Scene',
             agent: 'Agent',
             time_dithering: bool = True,
@@ -465,7 +465,7 @@ class Raytracer(BaseRenderer):
             sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
             pano_res: Optional[Tuple[int, int]] = (1024, 512),
             batch_size: int = 1,
-            enable_actuation: bool = False,
+            enable_microsaccades: bool = False,
             enable_direct: bool = True,
             enable_shadows: bool = True,
             enable_ambient: bool = True,
@@ -485,7 +485,7 @@ class Raytracer(BaseRenderer):
             randomness_mode=randomness_mode,
             sampling_mode=sampling_mode,
             batch_size=batch_size,
-            enable_actuation=enable_actuation,
+            enable_microsaccades=enable_microsaccades,
             resource_manager=self.resource_manager,
             context=context,
         )
@@ -687,7 +687,7 @@ class Raytracer(BaseRenderer):
                     self._lights_uniforms.apply(shader)
 
                     N = self._model.size
-                    total_work = N * self._samples_per_rcpt
+                    total_work = N * self._samples_per_rhab
                     work_groups = (total_work + 63) // 64
 
                     glDispatchCompute(work_groups, 1, 1)
@@ -714,7 +714,7 @@ class Raytracer(BaseRenderer):
             self.screen_surface.draw(
                 tex_id,
                 is_cubemap=False,
-                simulate_insect_vision=self.simulate_insect_vision,
+                simulate_insect_vision=self.simulate_insect_colours,
                 uv_encoded_textures=self.uv_encoded_textures
             )
 
@@ -756,7 +756,7 @@ class Pathtracer(Raytracer):
     """
 
     def __init__(self,
-                 model: 'ReceptorArray',
+                 model: 'Model',
                  scene: 'Scene',
                  agent: 'Agent',
                  time_dithering: bool = True,
@@ -765,7 +765,7 @@ class Pathtracer(Raytracer):
                  sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
                  pano_res: Tuple[int, int] = (1024, 512),
                  batch_size: int = 1,
-                 enable_actuation: bool = False,
+                 enable_microsaccades: bool = False,
                  enable_shadows: bool = True,
                  enable_ambient: bool = True,
                  enable_direct: bool = True,
@@ -786,7 +786,7 @@ class Pathtracer(Raytracer):
             sampling_mode=sampling_mode,
             pano_res=pano_res,
             batch_size=batch_size,
-            enable_actuation=enable_actuation,
+            enable_microsaccades=enable_microsaccades,
             enable_shadows=enable_shadows,
             enable_ambient=enable_ambient,
             enable_direct=enable_direct

@@ -99,7 +99,7 @@ class KeyboardMouse(Controls):
                     if picked_lens is not None:
                         if self.ctx.dashboard:
                             is_shift = (mods & glfw.MOD_SHIFT) != 0
-                            self.ctx.dashboard.toggle_lens_selection(picked_lens, multi=is_shift)
+                            self.ctx.dashboard.toggle_omm_selection(picked_lens, multi=is_shift)
 
     def _on_scroll(self, window, xoffset, yoffset):
 

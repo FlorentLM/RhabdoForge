@@ -150,15 +150,15 @@ def make_bars(sep_deg):
 def apply_condition(renderer, model, actuation, ampl_lat, ampl_ax):
     """Set actuation + microsaccade amplitudes and reset the per-lens dynamic state."""
 
-    renderer.actuation = actuation
+    renderer.microsaccades_enabled = actuation
 
     with model.unlock(lenses=True):
         model.ommatidia.ampl_lat_um = float(ampl_lat)
         model.ommatidia.ampl_ax_um = float(ampl_ax)
-        model.omm_dynamic_data['lateral_um'] = 0.0
-        model.omm_dynamic_data['axial_um'] = 0.0
-        model.omm_dynamic_data['adapted_lum'] = 0.0
-        model.omm_dynamic_data['fast_lum'] = 0.0
+        model.ommatidia_dynamic['lateral_um'] = 0.0
+        model.ommatidia_dynamic['axial_um'] = 0.0
+        model.ommatidia_dynamic['adapted_lum'] = 0.0
+        model.ommatidia_dynamic['fast_lum'] = 0.0
 
     model.buffer.omm_dirty = True
 
@@ -188,7 +188,7 @@ def simulate(model, sep_deg):
     renderer = Raytracer(
         model=model, scene=scene, agent=agent, context=context,
         nb_samples=512, time_dithering=True, randomness_mode='Halton',
-        enable_actuation=True, enable_ambient=True, enable_direct=True, enable_shadows=False)
+        enable_microsaccades=True, enable_ambient=True, enable_direct=True, enable_shadows=False)
 
     renderer.ambient_intensity = 1.5
     renderer.photon_concentration = 0.0    # c = 0: isolate RF geometry from the photon-concentration gain
@@ -198,7 +198,7 @@ def simulate(model, sep_deg):
     if len(cone) == 0:
         raise RuntimeError("No forward-facing ommatidia found.")
     selected = int(cone.indices[int(np.argmin(cone.azimuth_deg ** 2 + cone.elevation_deg ** 2))])
-    renderer.selected_lenses = [selected]
+    renderer.selected_ommatidia = [selected]
 
     rec = {'agent_y': [], 'cond': [], 'mdir': [], 'cart': []}
 

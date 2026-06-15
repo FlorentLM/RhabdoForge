@@ -32,7 +32,7 @@ layout (location = 4) flat in uint v_eye_id;
 layout (location = 5) in vec3 v_world_normal;
 
 uniform float visualisation_eye_surface_albedo;
-uniform int selected_lenses[10];
+uniform int selected_ommatidia[10];
 uniform bool false_colors;
 uniform bool uv_encoding;
 
@@ -66,7 +66,7 @@ void main() {
     // Highlight selected ommatidia
     float is_selected = 0.0;
     for (int j = 0; j < 10; j++) {
-        if (selected_lenses[j] == v_instance_id) {
+        if (selected_ommatidia[j] == v_instance_id) {
             is_selected = 1.0;
             break;
         }

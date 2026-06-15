@@ -21,64 +21,61 @@ struct Material {
     uint pad0, pad1;
 };
 
-// Lens static (read only)
-struct LensStatic {
-    vec3  right;
-    float sacc_local_x;
-    vec3  up;
-    float sacc_local_y;
+// Ommatidium static  (read only)
+struct OmmatidiumStatic {
+    vec3  position;
+    float chi;
     vec3  forward;
-    float ioa_tilt;
-    vec2  ioa_axes;
     float focal_um;
+    vec3  right;
     float aperture_um;
+    vec3  up;
+    float ioa_tilt;
+    vec2 saccade_dxdy;
+    float ampl_lateral;
+    float ampl_axial;
     float tau_rise;
     float tau_relax;
     float tau_fast;
     float tau_adapt;
-    float ampl_lat_um;
-    float ampl_ax_um;
-    float retina_x;
-    float retina_y;
-}; // 96 bytes
+    vec2  ioa_angles;
+    vec2  retina_dxdy;
+}; // 112 bytes
 
-// Lens dynamic
-struct LensDynamic {
-    float adapted_lum;
-    float fast_lum;
-    float lateral_um;
-    float axial_um;
+// Ommatidium dynamic
+struct OmmatidiumDynamic {
+    float curr_lum_fast;
+    float curr_lum_slow;
+    float curr_lateral_disp;
+    float curr_axial_disp;
 }; // 16 bytes
 
-// Receptor static (read only)
-struct ReceptorStatic {
-    vec3  position;
-    uint  metadata;
-    vec2  rest_acc;
-    vec2  rot_offset;
+// Rhabdomere static (read only)
+struct RhabdomereStatic {
     vec3  sensitivity;
-    float acc_tilt;
+    float wavelength_um;
+    vec2  rest_acc_angles;
+    vec2  rest_offset;
     float tau_membrane;
     uint  cartridge_src;
-    float rhab_diameter_um;
-    float wavelength_um;
-}; // 64 bytes
+    float diameter_um;
+    uint  metadata;
+}; // 48 bytes
 
-// Receptor dynamic
-struct ReceptorDynamic {
-    vec3  direction;
-    float adaptation_state;
-    vec2  acc_axes;
+// Rhabdomere dynamic
+struct RhabdomereDynamic {
+    vec3  curr_direction;
+    float curr_adaptation;
+    vec2  curr_acc_angles;
     float optical_scale;
     float pad;
 }; // 32 bytes
 
-const uint RECEPTOR_UNWIRED = 0xFFFFFFFFu;
 
 // Metadata Unpacking
 uint  unpack_eye_id(uint m)          { return m & 7u; }
-uint  unpack_receptor_type(uint m)   { return (m >> 3u) & 15u; }
-uint  unpack_lens_id(uint m)         { return (m >> 11u) & 65535u; }
+uint  unpack_rhab_type(uint m)       { return (m >> 3u) & 15u; }
+uint  unpack_omm_id(uint m)          { return (m >> 11u) & 65535u; }
 float unpack_chirality(uint m)       { return ((m >> 27u) & 1u) == 1u ? -1.0 : 1.0; }
 uint  unpack_neighbour_count(uint m) { return (m >> 7u) & 15u; }
 bool  unpack_binocularity(uint m)    { return ((m >> 28u) & 1u) == 1u; }
@@ -143,13 +140,13 @@ struct Sampler {
     float u2;
 };
 
-Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rcpt_idx, uint dither_counter) {
+Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rhab_idx, uint dither_counter) {
     Sampler s;
-    uint seed = pcg_hash(rcpt_idx * 1973u + dither_counter * 26699u + sample_idx * 749u);
+    uint seed = pcg_hash(rhab_idx * 1973u + dither_counter * 26699u + sample_idx * 749u);
 
     if (mode == RNG_HALTON) {
         uint halton_idx = dither_counter * nb_samples + sample_idx + 1u;
-        uint hash = pcg_hash(rcpt_idx * 1973u);
+        uint hash = pcg_hash(rhab_idx * 1973u);
         s.u1 = clamp(fract(halton_sequence(halton_idx, 2u) + float(hash & 0xFFFFu)/65535.0), 1e-6, 1.0);
         s.u2 = fract(halton_sequence(halton_idx, 3u) + float((hash >> 16u) & 0xFFFFu)/65535.0);
     }
@@ -190,13 +187,13 @@ float airy_psf(float a_min, float a_maj, float D, float lambda) {
 }
 
 float get_sensitivity(int mode, float angle_min, float angle_maj,
-                      ReceptorStatic rs, ReceptorDynamic rd, LensStatic ls) {
-    float D = ls.aperture_um, lambda = rs.wavelength_um;
+                      RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os) {
+    float D = os.aperture_um, lambda = rs.wavelength_um;
 
     if (mode == MODE_AIRY) {  // Airy (x) rhabdomere acceptance
         float rho_diff = lambda / D;
-        float rg_min = sqrt(max(rd.acc_axes.x*rd.acc_axes.x - rho_diff*rho_diff, 0.0));
-        float rg_maj = sqrt(max(rd.acc_axes.y*rd.acc_axes.y - rho_diff*rho_diff, 0.0));
+        float rg_min = sqrt(max(rd.curr_acc_angles.x*rd.curr_acc_angles.x - rho_diff*rho_diff, 0.0));
+        float rg_maj = sqrt(max(rd.curr_acc_angles.y*rd.curr_acc_angles.y - rho_diff*rho_diff, 0.0));
 
         if (rg_min < 1e-5 && rg_maj < 1e-5)  // diffraction-limited: nothing to convolve
             return airy_psf(angle_min, angle_maj, D, lambda);
@@ -218,33 +215,35 @@ float get_sensitivity(int mode, float angle_min, float angle_maj,
     }
     else { // MODE_GAUSSIAN
         // Snyder quadrature approximation of that same convolution
-        float g_min = angle_min / max(rd.acc_axes.x, 1e-15);
-        float g_maj = angle_maj / max(rd.acc_axes.y, 1e-15);
+        float g_min = angle_min / max(rd.curr_acc_angles.x, 1e-15);
+        float g_maj = angle_maj / max(rd.curr_acc_angles.y, 1e-15);
         return exp(-GAUSS_CONSTANT_K * (g_min*g_min + g_maj*g_maj));
     }
 }
 
-vec3 sampledir_importance(ReceptorStatic rs, ReceptorDynamic rd, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
+vec3 sampledir_importance(RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
+
     float phi = TWOPI * u2;
-    float angle_min = rd.acc_axes.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);
-    float angle_maj = rd.acc_axes.y * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    float angle_min = rd.curr_acc_angles.x * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+    float angle_maj = rd.curr_acc_angles.y * sqrt(-log(u1) / GAUSS_CONSTANT_K);
 
     vec2 p = vec2(tan(angle_min) * cos(phi), tan(angle_maj) * sin(phi));
-    float s = sin(rs.acc_tilt), c = cos(rs.acc_tilt);
+
+    float s = sin(os.ioa_tilt), c = cos(os.ioa_tilt);
     vec2 tp = mat2(c, -s, s, c) * p;
 
     weight = 1.0; // pure importance sampling: weight is uniform
     return normalize(mat3(T, B, F) * normalize(vec3(tp, 1.0)));
 }
 
-vec3 sampledir_hybrid(int mode, ReceptorStatic rs, ReceptorDynamic rd, LensStatic ls, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
+vec3 sampledir_hybrid(int mode, RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
     float phi = TWOPI * u2;
 
     // Sample a 'proposal' distribution that is wider than the actual acceptance
     // -> ensures it samples the tails / Airy rings, wide-angle lights, etc
     float spread_mult = 2.0;
-    float sample_sigma_min = rd.acc_axes.x * spread_mult;
-    float sample_sigma_maj = rd.acc_axes.y * spread_mult;
+    float sample_sigma_min = rd.curr_acc_angles.x * spread_mult;
+    float sample_sigma_maj = rd.curr_acc_angles.y * spread_mult;
 
     // These are the displacement angles to test (raw elliptical radii)
     float r_min = sample_sigma_min * sqrt(-log(u1) / GAUSS_CONSTANT_K);
@@ -254,8 +253,8 @@ vec3 sampledir_hybrid(int mode, ReceptorStatic rs, ReceptorDynamic rd, LensStati
     float dx = r_min * cos(phi);
     float dy = r_maj * sin(phi);
 
-    // Receptor sensitivity (at this specific sampled angle) -> 'Physical truth'
-    float rcpt_sensitivity = get_sensitivity(mode, dx, dy, rs, rd, ls);
+    // Rhabdomere sensitivity (at this specific sampled angle) -> 'Physical truth'
+    float rhab_sensitivity = get_sensitivity(mode, dx, dy, rs, rd, os);
 
     // Sampling probability Density (PDF) of the proposal distribution -> likelihood that this ray was picked
     float p_min = dx / sample_sigma_min;
@@ -263,11 +262,11 @@ vec3 sampledir_hybrid(int mode, ReceptorStatic rs, ReceptorDynamic rd, LensStati
     float pdf = exp(-GAUSS_CONSTANT_K * (p_min*p_min + p_maj*p_maj));
 
     // weight is truth / sampling
-    weight = rcpt_sensitivity / max(pdf, 1e-6);  // avoid /0 in the extreme tails
+    weight = rhab_sensitivity / max(pdf, 1e-6);  // avoid /0 in the extreme tails
 
     // and convert angles to direction vector
     vec2 p = vec2(tan(dx), tan(dy));
-    float s = sin(rs.acc_tilt), c = cos(rs.acc_tilt);
+    float s = sin(os.ioa_tilt), c = cos(os.ioa_tilt);
     vec2 tp = mat2(c, -s, s, c) * p;
 
     return normalize(mat3(T, B, F) * normalize(vec3(tp, 1.0)));

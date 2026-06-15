@@ -4,27 +4,6 @@ Packed data container for compound-eye buffers.
 from typing import Tuple
 import numpy as np
 
-# TODO: Old names, kept for information while updating the rest of codebase
-# OMM_STATIC_DTYPE = np.dtype([
-#     ('right',             np.float32, 3),   # 12 bytes: tangent right
-#     ('sacc_x',            np.float32),      #  4 bytes: saccade local dx
-#     ('up',                np.float32, 3),   # 12 bytes: tangent up
-#     ('sacc_y',            np.float32),      #  4 bytes: saccade local dy
-#     ('forward',           np.float32, 3),   # 12 bytes: optical axis
-#     ('ioa_tilt',          np.float32),      #  4 bytes: local hexatic lattice rotation (rad)
-#     ('ioa_axes',          np.float32, 2),   #  8 bytes: (minor, major) interommatidial angles (rad)
-#     ('focal_um',          np.float32),      #  4 bytes: focal length, lens-to-rhabdomere lever arm (μm)
-#     ('aperture_um',       np.float32),      #  4 bytes: aperture (μm) (used for diffraction)
-#     ('tau_rise',          np.float32),      #  4 bytes: mechanical rise time (s)
-#     ('tau_relax',         np.float32),      #  4 bytes: mechanical relaxation time (s)
-#     ('tau_fast',          np.float32),      #  4 bytes: fast adaptation EMA (s, ~PIP2)
-#     ('tau_adapt',         np.float32),      #  4 bytes: slow adaptation EMA (s, ~Ca²+)
-#     ('ampl_lat_um',       np.float32),      #  4 bytes: max lateral displacement at full drive (μm)
-#     ('ampl_ax_um',        np.float32),      #  4 bytes: max axial contraction at full drive (μm)
-#     ('retina_x',          np.float32),      #  4 bytes: muscle-driven retinal shift local dx
-#     ('retina_y',          np.float32),      #  4 bytes: muscle-driven retinal shift local dy
-# ])  # 96 bytes
-
 # Per-ommatidium data
 
 OMM_STATIC_DTYPE = np.dtype([
@@ -37,7 +16,7 @@ OMM_STATIC_DTYPE = np.dtype([
     # Ommatidium's frame of ref (in world)
     ('forward', np.float32, 3),              ('focal_um',    np.float32),   # focal length (μm) (lens-to-rhabdomere lever arm)
     ('right',   np.float32, 3),              ('aperture_um', np.float32),   # lens aperture (μm) (used for diffraction)
-    ('up',      np.float32, 3),              ('ioa_tilt',    np.float32),   # local hexatic lattice angle (rad)
+    ('up',      np.float32, 3),              ('ioa_tilt',    np.float32),   # local hexatic lattice angle (rad) = lens anisotropic distortion
 
     # 16 bytes: saccade dx and dy, lateral amplitude, axial amplitude
     ('saccade_dxdy',  np.float32, 2), ('ampl_lateral', np.float32), ('ampl_axial', np.float32),
@@ -64,7 +43,7 @@ OMM_DYNAMIC_DTYPE = np.dtype([
 
 # Per-rhabdomere data
 
-RCPT_STATIC_DTYPE = np.dtype([
+RHAB_STATIC_DTYPE = np.dtype([
     # 16 bytes: 12 bytes (UV, G, B) channel sensitivity multipliers, and 4 bytes peak wavelength (μm)
     ('sensitivity',     np.float32, 3),     ('wavelength_um',   np.float32),
 
@@ -80,11 +59,12 @@ RCPT_STATIC_DTYPE = np.dtype([
 ])  # 48 bytes
 
 
-RCPT_DYNAMIC_DTYPE = np.dtype([
+RHAB_DYNAMIC_DTYPE = np.dtype([
     ('curr_direction',  np.float32, 3),     # 12 bytes: current (actuated) viewing direction
     ('curr_adaptation', np.float32),        #  4 bytes: current adaptation state
     ('curr_acc_angles', np.float32, 2),     #  8 bytes: current (actuated) acceptance angles (rad)
-    ('_pad',            np.float32, 2),     #  8 bytes: pad to 32 bytes
+    ('optical_scale',   np.float32),        #  4 bytes # TODO: explain
+    ('_pad',            np.float32),        #  4 bytes: pad to 32 bytes
 ])  # 32 bytes
 
 # TODO: Move most metadata to per-ommatidium ?? Only rhab_R, chirality and is_wired are per-rhabdomere
@@ -114,9 +94,9 @@ _BIT_LAYOUT = {
 }
 
 OMM_PROPS = set(OMM_STATIC_DTYPE.names).union(set(OMM_DYNAMIC_DTYPE.names))
-RHAB_PROPS = set(RCPT_STATIC_DTYPE.names).union(set(RCPT_DYNAMIC_DTYPE.names))
-STATIC_PROPS = set(OMM_STATIC_DTYPE.names).union(set(RCPT_STATIC_DTYPE.names))
-DYNAM_PROPS = set(OMM_DYNAMIC_DTYPE.names).union(set(RCPT_DYNAMIC_DTYPE.names))
+RHAB_PROPS = set(RHAB_STATIC_DTYPE.names).union(set(RHAB_DYNAMIC_DTYPE.names))
+STATIC_PROPS = set(OMM_STATIC_DTYPE.names).union(set(RHAB_STATIC_DTYPE.names))
+DYNAM_PROPS = set(OMM_DYNAMIC_DTYPE.names).union(set(RHAB_DYNAMIC_DTYPE.names))
 
 
 def get_metadata_field(metadata: np.ndarray, field: str) -> np.ndarray:
@@ -167,8 +147,8 @@ class Buffer:
                 'reupload':  True,
             },
             'rhabdomere': {
-                'static': np.zeros(self.size, dtype=RCPT_STATIC_DTYPE),
-                'dynamic': np.zeros(self.size, dtype=RCPT_DYNAMIC_DTYPE),
+                'static': np.zeros(self.size, dtype=RHAB_STATIC_DTYPE),
+                'dynamic': np.zeros(self.size, dtype=RHAB_DYNAMIC_DTYPE),
                 'reupload': True,
             },
         }
@@ -276,3 +256,19 @@ class Buffer:
             arr[idx] = values
 
             self.structured_arrays[level]['reupload'] = True
+
+    @property
+    def ommatidia_static(self):
+        return self.structured_arrays['ommatidium']['static']
+
+    @property
+    def ommatidia_dynamic(self):
+        return self.structured_arrays['ommatidium']['dynamic']
+
+    @property
+    def rhabdomere_static(self):
+        return self.structured_arrays['rhabdomere']['static']
+
+    @property
+    def rhabdomere_dynamic(self):
+        return self.structured_arrays['rhabdomere']['dynamic']

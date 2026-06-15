@@ -19,7 +19,7 @@ from insectvision.interactive.dashboard import Dashboard
 
 if TYPE_CHECKING:
     from insectvision.renderers.base import BaseRenderer
-    from ..renderers.helpers import VisualOutput
+    from insectvision.renderers.helpers import VisualOutput
 
 
 class Context:
@@ -335,7 +335,7 @@ class Context:
 
     def toggle_saccades(self):
         if hasattr(self.renderer, 'actuation'):
-            self.renderer.actuation = not self.renderer.actuation
+            self.renderer.microsaccades_enabled = not self.renderer.microsaccades_enabled
 
     def reset_position(self):
         self.agent.position = (0.0, 0.0, 0.0)
@@ -351,9 +351,8 @@ class Context:
             return None
 
         model = self.renderer._model
-        c_idx = model.bundle.center_index
-        rcpt_idx = np.arange(model.nb_facets) * model.rhab_per_omm + c_idx
-        p_local = model.rcpt_static_data['position'][rcpt_idx]
+
+        p_local = model.positions
 
         if self.display_mode == DisplayMode.Compound:
             aspect_ratio = self.window_size[0] / self.window_size[1]
@@ -375,7 +374,7 @@ class Context:
 
         elif self.display_mode == DisplayMode.Third_person:
             eye_to_world = np.array(glm.inverse(self.agent.view))
-            p_local_h = np.column_stack((p_local, np.ones(model.nb_facets)))
+            p_local_h = np.column_stack((p_local, np.ones(model.N)))
             p_world_h = p_local_h @ eye_to_world
 
             view_mat = np.array(self.observer.view)
@@ -426,10 +425,6 @@ class Context:
             self.hud = HUD(self, font_size=18)
 
             if use_dashboard:
-                # Dashboard needs writes to be enabled
-                self.renderer._model.allow_lens_writes = True
-                self.renderer._model.allow_receptor_writes = True
-
                 self.dashboard = Dashboard(self)
                 self.hud.show = False  # default HUD to false dashboard is active
 
@@ -535,6 +530,10 @@ class Context:
             self.hud.free()
         if self.dashboard:
             self.dashboard.free()
+        if self.renderer:
+            self.renderer.free()
+        if self.scene:
+            self.scene.free()
         glfw.terminate()
 
     @property
