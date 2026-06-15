@@ -882,6 +882,9 @@ class OmmatidiumView(SpatialQueries, BaseView):
             return False
         return self._buffer is other._buffer and np.array_equal(self.omm_indices, other.omm_indices)
 
+    def __hash__(self):
+        return hash((id(self._buffer), self._omm_indices.tobytes()))
+
     def __iter__(self):
         for i in self._omm_indices.reshape(-1):
             yield OmmatidiumView(self._model, np.array([i], dtype=np.intp))
@@ -945,6 +948,9 @@ class RhabdomereView(BaseView):
         if not isinstance(other, RhabdomereView):
             return False
         return self._buffer is other._buffer and np.array_equal(self.rhab_indices, other.rhab_indices)
+
+    def __hash__(self):
+        return hash((id(self._buffer), self._rhab_indices.tobytes()))
 
     @property
     def ommatidia(self) -> OmmatidiumView:

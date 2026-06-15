@@ -1,7 +1,10 @@
+from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import ArrayLike
 
-from insectvision.compound_eyes import Eye
+if TYPE_CHECKING:
+    from insectvision.compound_eyes import EyeView
+    from insectvision.renderers.helpers import VisualOutput
 
 
 class HassensteinReichardtEMD:
@@ -16,27 +19,27 @@ class HassensteinReichardtEMD:
     - Output: Recombines T4 and T5 responses into a directionally selective motion vector.
 
     Args:
-        eye (Eye): The single eye to process.
+        eye (EyeView): The single eye to process.
         direction (ArrayLike): The motion direction to correlate against
 
         coordinate (str): 'spherical' or 'cartesian' for the direction parameter.
     """
 
     def __init__(self,
-                 eye: Eye,
+                 eye: 'EyeView',
                  direction: ArrayLike,
                  tau_delay: float = 0.020,      # 20 ms
                  tau_highpass: float = 0.08,    # 80 ms
                  coordinate='cartesian'
                  ):
         self.eye = eye
-        self.self_indices = eye.lens_indices
+        self.self_indices = eye.indices
 
         self.tau_delay = tau_delay
         self.tau_hp = tau_highpass
 
         # Lens-level directed neighbours (eye-local indices)
-        self.targets, self.weights = eye.ommatidia.directed_neighbours(
+        self.targets, self.weights = eye.directed_neighbours(
             direction=direction, k=1, coordinate=coordinate, return_weights=True
         )
 
@@ -114,7 +117,7 @@ class GradientFlowDetector:
     """
 
     def __init__(self,
-        eye: Eye,
+        eye: 'EyeView',
         direction: ArrayLike,
         coordinate: str = 'cartesian',
         eps: float = 1e-9,
@@ -122,12 +125,12 @@ class GradientFlowDetector:
         ):
 
         self.eye = eye
-        self.self_indices = eye.lens_indices
+        self.self_indices = eye.indices
 
         self.eps = eps
         self.tau_smooth = tau_smooth
 
-        self.targets, self.weights = eye.ommatidia.directed_neighbours(
+        self.targets, self.weights = eye.directed_neighbours(
             direction=direction, k=1, coordinate=coordinate, return_weights=True
         )
 

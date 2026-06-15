@@ -807,7 +807,7 @@ class BaseRenderer(ABC):
             for eye, data in values.items():
                 if len(data) == len(eye):
                     data = np.repeat(data, self._model.R)
-                merged[eye.rhabdomeres.indices] = data
+                merged[eye.indices] = data
             values = merged
 
         buf = np.ascontiguousarray(values, dtype=np.float32).ravel()

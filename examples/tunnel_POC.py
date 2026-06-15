@@ -6,11 +6,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.compound_eyes import Model
 from insectvision.renderers import Raytracer
+from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.utils.shared import Colormap, norm_minmax
-from insectvision.geometry import plane_geom
+from insectvision.engine.meshes import plane_geom
 from insectvision.engine.materials_utils import checkerboard_texture
 from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD, GradientFlowDetector
 
@@ -61,7 +61,7 @@ class Configuration:
     eye_model_path: str = 'species_models/drosophila_custom.npz'
 
     # Batch
-    n_trials: int = 25
+    n_trials: int = 1
     time_limit_s: float = 30.0          # per-trial time limit
     nb_samples: int = 256
     seed: Optional[int] = 0
@@ -257,8 +257,7 @@ def run_all_trials(cfg: Configuration) -> Results:
     model = Model.from_file(cfg.eye_model_path)
     model.scale(1e-6)
 
-    with model.unlock(receptors=True):
-        model.receptors.tau_membrane = 0.012
+    model.tau_membrane = 0.012
 
     left_eye, right_eye = model.eyes
     agent = Agent()

@@ -999,4 +999,6 @@ if __name__ == "__main__":
     # model.refine_bundle_alignment(max_nudge_deg=30.0)
     # model.cartridges_report()
 
-    EyeViewer(model, aligner=aligner).show()
+    viewer = EyeViewer(model, aligner=aligner)
+    viewer.show()
+
