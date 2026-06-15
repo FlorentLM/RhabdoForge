@@ -83,7 +83,7 @@ class KeyboardMouse(Controls):
 
         # Custom bindings
         binding = (key, action)
-        for callback in self.ctx._key_bindings.getter(binding, ()):
+        for callback in self.ctx._key_bindings.get(binding, ()):
             callback()
 
     def _on_mouse_button(self, window, button, action, mods):
