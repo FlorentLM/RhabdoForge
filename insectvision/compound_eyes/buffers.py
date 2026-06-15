@@ -144,12 +144,14 @@ class Buffer:
             'ommatidium': {
                 'static': np.zeros(self.shape[0], dtype=OMM_STATIC_DTYPE),
                 'dynamic': np.zeros(self.shape[0], dtype=OMM_DYNAMIC_DTYPE),
-                'reupload':  True,
+                'stale_mask': np.zeros(self.shape[0], dtype=bool),
+                'stale': False
             },
             'rhabdomere': {
                 'static': np.zeros(self.size, dtype=RHAB_STATIC_DTYPE),
                 'dynamic': np.zeros(self.size, dtype=RHAB_DYNAMIC_DTYPE),
-                'reupload': True,
+                'stale_mask': np.zeros(self.size, dtype=bool),
+                'stale': False
             },
         }
 
@@ -185,6 +187,11 @@ class Buffer:
         return (1 << bits) - 1
 
     # Internal helpers
+
+    def _mark_stale(self, level: str, idx) -> None:
+        """Flag the written rows of 'level' for re-upload."""
+        self.structured_arrays[level]['stale_mask'][idx] = True
+        self.structured_arrays[level]['stale'] = True
 
     def _array_containing(self, field: str):
         return self.structured_arrays[self.levels[field]][self.mutability[field]]
@@ -233,7 +240,7 @@ class Buffer:
                 values = grid.reshape(-1)
 
             meta[idx] = set_metadata_field(meta[idx], field, values)
-            self.structured_arrays[level]['reupload'] = True
+            self._mark_stale(level, idx)
 
         else:
             level = self.levels[field]
@@ -254,8 +261,7 @@ class Buffer:
                 values = values.reshape(-1, *extra_dims)
 
             arr[idx] = values
-
-            self.structured_arrays[level]['reupload'] = True
+            self._mark_stale(level, idx)
 
     @property
     def ommatidia_static(self):
@@ -272,3 +278,39 @@ class Buffer:
     @property
     def rhabdomere_dynamic(self):
         return self.structured_arrays['rhabdomere']['dynamic']
+
+    @property
+    def ommatidia_stale(self) -> bool:
+        return self.structured_arrays['ommatidium']['stale']
+
+    @ommatidia_stale.setter
+    def ommatidia_stale(self, value: bool):
+        value = bool(value)
+        self.structured_arrays['ommatidium']['stale_mask'][:] = value
+        self.structured_arrays['ommatidium']['stale'] = value
+
+    @property
+    def rhabdomeres_stale(self) -> bool:
+        return self.structured_arrays['rhabdomere']['stale']
+
+    @rhabdomeres_stale.setter
+    def rhabdomeres_stale(self, value: bool):
+        value = bool(value)
+        self.structured_arrays['rhabdomere']['stale_mask'][:] = value
+        self.structured_arrays['rhabdomere']['stale'] = value
+
+    @property
+    def ommatidia_stale_mask(self) -> np.ndarray:
+        return self.structured_arrays['ommatidium']['stale_mask']
+
+    @ommatidia_stale_mask.setter
+    def ommatidia_stale_mask(self, value: bool):
+        self.structured_arrays['ommatidium']['stale_mask'][:] = bool(value)
+
+    @property
+    def rhabdomeres_stale_mask(self) -> np.ndarray:
+        return self.structured_arrays['rhabdomere']['stale_mask']
+
+    @rhabdomeres_stale_mask.setter
+    def rhabdomeres_stale_mask(self, value: bool):
+        self.structured_arrays['rhabdomere']['stale_mask'][:] = bool(value)

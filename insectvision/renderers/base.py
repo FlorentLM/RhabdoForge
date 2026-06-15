@@ -15,7 +15,8 @@ from insectvision.engine.scene import Scene
 from insectvision.engine.resources import ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry
 from insectvision.renderers.helpers import VisualOutput
 
-from insectvision.compound_eyes.buffers import OMM_STATIC_DTYPE, OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, RHAB_DYNAMIC_DTYPE
+from insectvision.compound_eyes.buffers import OMM_STATIC_DTYPE, OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, \
+    RHAB_DYNAMIC_DTYPE, _BIT_LAYOUT
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import Model, Eye
@@ -671,12 +672,12 @@ class BaseRenderer(ABC):
         buf = self._model.buffer
 
         # Ommatidia
-        if buf.omm_dirty or force_all:
+        if buf.ommatidia_stale or force_all:
             if force_all:
                 self.eye_buffers['omm_static'].write(buf.ommatidia_static)
                 self.eye_buffers['omm_dynamic'].write(buf.ommatidia_dynamic)
             else:
-                dirty_idx = np.where(buf.omm_dirty_mask)[0]
+                dirty_idx = np.where(buf.ommatidia_stale_mask)[0]
                 if dirty_idx.size > 0:
                     jumps = np.where(np.diff(dirty_idx) != 1)[0] + 1
                     for block in np.split(dirty_idx, jumps):
@@ -684,16 +685,16 @@ class BaseRenderer(ABC):
                         self.eye_buffers['omm_static'].write(buf.ommatidia_static[start:start + nb], start=start)
                         self.eye_buffers['omm_dynamic'].write(buf.ommatidia_dynamic[start:start + nb], start=start)
 
-            buf.omm_dirty = False
-            buf.omm_dirty_mask.fill(False)
+            buf.ommatidia_stale = False
+            buf.ommatidia_stale_mask.fill(False)
 
         # Rhabdomeres
-        if buf.rcpt_dirty or force_all:
+        if buf.rhabdomeres_stale or force_all:
             if force_all:
                 self.eye_buffers['rhab_static'].write(buf.rhabdomere_static)
                 self.eye_buffers['rhab_dynamic'].write(buf.rhabdomere_dynamic)
             else:
-                dirty_idx = np.where(buf.rcpt_dirty_mask)[0]
+                dirty_idx = np.where(buf.rhabdomeres_stale_mask)[0]
                 if dirty_idx.size > 0:
                     jumps = np.where(np.diff(dirty_idx) != 1)[0] + 1
                     for block in np.split(dirty_idx, jumps):
@@ -701,8 +702,8 @@ class BaseRenderer(ABC):
                         self.eye_buffers['rhab_static'].write(buf.rhabdomere_static[start:start + nb], start=start)
                         self.eye_buffers['rhab_dynamic'].write(buf.rhabdomere_dynamic[start:start + nb], start=start)
 
-            buf.rcpt_dirty = False
-            buf.rcpt_dirty_mask.fill(False)
+            buf.rhabdomeres_stale = False
+            buf.rhabdomeres_stale_mask.fill(False)
 
     # Main public methods
 
@@ -730,7 +731,7 @@ class BaseRenderer(ABC):
             raise RuntimeError("renderer.step() requires an attached Context.")
 
         # Sync any CPU-side changes to the eye model
-        # self.sync_cpu()       # TODO: rewrite this !!!!!!!
+        self.sync_cpu()
 
         # Advance dithering for Monte-Carlo noise decorrelation
         if self._time_dithering:

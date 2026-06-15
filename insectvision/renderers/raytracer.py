@@ -677,7 +677,7 @@ class Raytracer(BaseRenderer):
         lights = self._baker.light_buffers
 
         with self.raytrace_shader as shader:
-            with bvh.grouped_bind(), lights.grouped_bind(), eye.grouped_bind(['rays_intermediate', 'rcpt_static', 'lens_static', 'rcpt_dynamic']):
+            with bvh.grouped_bind(), lights.grouped_bind(), eye.grouped_bind(['rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic']):
                 with self._baker.scene_textures.bind_all():
 
                     self._eye_uniforms.update(cam_to_world=glm.inverse(self.agent.view))

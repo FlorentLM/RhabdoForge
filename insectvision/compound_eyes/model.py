@@ -171,13 +171,15 @@ class Model(SpatialQueries, BaseView):
 
         # ============ Rhabdomere bundle orientation ============
 
-        need_aligner_object = (orientation is not None) or (flow_direction is not None) or (self._R > 1)
+        use_aligner = (orientation is not None) or (flow_direction is not None) or (self._R > 1)
 
         if bundle_orientations is not None and chiralities is not None:
             result = apply_chirality(self, bundle_orientations, chiralities)
 
-        elif need_aligner_object:
-            if flow_direction is not None:
+        elif use_aligner:
+            if orientation is not None:
+                aligner = orientation
+            elif flow_direction is not None:
                 aligner = BundlesAligner(flow_direction)
             else:
                 aligner = BundlesAligner(-WORLD_FORWARD)

@@ -43,12 +43,15 @@ class VisualOutput:
         else:
             self._shape = int(data.shape[-2] // model.shape[1]), int(model.shape[1])
 
+    @property
     def shape(self) -> Tuple[int, int] | Tuple[int, int, int]:
         return self._shape
 
+    @property
     def size(self) -> int:
         return int(np.prod(self._shape))
 
+    @property
     def ndim(self) -> int:
         return len(self._shape)
 
@@ -106,21 +109,15 @@ class VisualOutput:
         """Returns (..., N, R, 4) array of all receptor outputs, per ommatidium."""
         return self._data.reshape(*self.shape, 4)
 
-    # TODO: remove this one
-    @property
-    def per_lens(self) -> np.ndarray:
-        """Alias to per_ommatidium."""
-        return self.per_ommatidium
-
     @property
     def per_cartridge(self) -> np.ndarray:
         """Returns (..., N, R, 4) array of all receptor outputs, per cartridge."""
-        if not self._model.buffer.cartridges_wired:
+        if not self._model.neural_superposition:
             return self.per_ommatidium   # fallback for R=1 models
 
         if self._data.ndim == 2:
-            return self._data[self._model.buffer.cartridge_indices]
-        return self._data[:, self._model.buffer.cartridge_indices, :]
+            return self._data[self._model.cartridge_indices]
+        return self._data[:, self._model.cartridge_indices, :]
 
     # Level 2: type-based access
     def per_receptor(self, index: int) -> np.ndarray:

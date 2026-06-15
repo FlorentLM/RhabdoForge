@@ -232,18 +232,72 @@ class BaseView:
     bundle_orientation = chi
 
     @property
-    def saccade_field(self) -> np.ndarray:
-        """Per-ommatidium microsaccade actuation axis in world coordinates. Shape (N, 3)."""
-        saccade = self._buffer['saccade_dxdy', self.omm_indices]
-        r = self._buffer['right', self.omm_indices]
-        u = self._buffer['up', self.omm_indices]
-        return saccade[:, 0][:, None] * r + saccade[:, 1][:, None] * u
-
-    @property
     def chirality(self) -> np.ndarray:
         """Returns +1 or -1 for each ommatidium."""
-        neg = self._buffer['chirality_neg', self.rhab_indices]
+        neg = self._buffer['chirality_neg', self.omm_indices * self.R]
         return np.where(neg == 1, -1.0, 1.0).astype(np.float32)
+
+    def _local_to_world(self, vec2: ArrayLike) -> np.ndarray:
+        """Project (N, 2) tangent-plane vectors (in right/up coords) into world (N, 3)."""
+        r = self._buffer['right', self.omm_indices]
+        u = self._buffer['up', self.omm_indices]
+        vec2 = np.asarray(vec2, dtype=np.float32)
+        return vec2[:, 0:1] * r + vec2[:, 1:2] * u
+
+    def _focal_axis_local(self, theta) -> np.ndarray:
+        """
+        A focal-plane unit axis at angle 'theta' (rad, in the bundle's own frame),
+        expressed in each ommatidium's (right, up) tangent coords, shape (N, 2).
+        """
+        chi = self._buffer['chi', self.omm_indices]
+        vx = np.cos(theta) * self.chirality  # mirror x by chirality
+        vy = np.broadcast_to(np.float32(np.sin(theta)), chi.shape)
+        c, s = np.cos(chi), np.sin(chi)  # rotate by chi
+        lx = c * vx - s * vy
+        ly = s * vx + c * vy
+        return np.stack([lx, ly], axis=-1).astype(np.float32)
+
+    # Local (tangent-plane, 2D) axes
+
+    @property
+    def orientation_field_local(self) -> np.ndarray:
+        """Bundle local X-axis (chi) in (right, up) tangent coords. Shape (N, 2)."""
+        return self._focal_axis_local(self.bundle.flow_axis_rad)
+
+    @property
+    def main_axis_field_local(self) -> np.ndarray:
+        """Bundle main axis (e.g. R3-R6) in (right, up) tangent coords. Shape (N, 2)."""
+        return self._focal_axis_local(self.bundle.main_axis_rad)
+
+    @property
+    def saccade_field_local(self) -> np.ndarray:
+        """Microsaccade actuation axis in (right, up) tangent coords. Shape (N, 2)."""
+        return np.asarray(self._buffer['saccade_dxdy', self.omm_indices], dtype=np.float32)
+
+    # World-space axes
+
+    @property
+    def orientation_field(self) -> np.ndarray:
+        """Bundle local X-axis (chi) projected into world space. Shape (N, 3)."""
+        return self._local_to_world(self.orientation_field_local)
+
+    @property
+    def main_axis_field(self) -> np.ndarray:
+        """Bundle main axis (e.g. R3-R6) projected into world space. Shape (N, 3)."""
+        return self._local_to_world(self.main_axis_field_local)
+
+    @property
+    def saccade_field(self) -> np.ndarray:
+        """Microsaccade actuation axis in world coordinates. Shape (N, 3)."""
+        return self._local_to_world(self.saccade_field_local)
+
+    # @property
+    # def saccade_field(self) -> np.ndarray:
+    #     """Per-ommatidium microsaccade actuation axis in world coordinates. Shape (N, 3)."""
+    #     saccade = self._buffer['saccade_dxdy', self.omm_indices]
+    #     r = self._buffer['right', self.omm_indices]
+    #     u = self._buffer['up', self.omm_indices]
+    #     return saccade[:, 0][:, None] * r + saccade[:, 1][:, None] * u
 
     # retina_field = ViewField('retina_dxdy', 'ommatidia')      # TODO: disabled for now
 
@@ -895,6 +949,23 @@ class RhabdomereView(BaseView):
     @property
     def ommatidia(self) -> OmmatidiumView:
         return OmmatidiumView(self._model, self.omm_indices)
+
+    @property
+    def directions(self) -> np.ndarray:
+        """
+        Per-receptor rest viewing directions in world space, shape (M, 3).
+
+        Reconstructed from the parent ommatidium frame (forward/right/up, focal)
+        and the receptor's rest_offset.
+        """
+        omm = self.rhab_indices // self.R
+        fwd = self._buffer['forward', omm]
+        right = self._buffer['right', omm]
+        up = self._buffer['up', omm]
+        focal = np.asarray(self._buffer['focal_um', omm], dtype=np.float32)[:, None]
+        off = np.asarray(self._buffer['rest_offset', self.rhab_indices], dtype=np.float32)
+        d = fwd * focal + right * off[:, 0:1] + up * off[:, 1:2]
+        return norm_l2(d).astype(np.float32)
 
 
 class EyeView(OmmatidiumView):

@@ -73,13 +73,14 @@ struct RhabdomereDynamic {
 
 
 // Metadata Unpacking
-uint  unpack_eye_id(uint m)          { return m & 7u; }
-uint  unpack_rhab_type(uint m)       { return (m >> 3u) & 15u; }
-uint  unpack_omm_id(uint m)          { return (m >> 11u) & 65535u; }
-float unpack_chirality(uint m)       { return ((m >> 27u) & 1u) == 1u ? -1.0 : 1.0; }
-uint  unpack_neighbour_count(uint m) { return (m >> 7u) & 15u; }
-bool  unpack_binocularity(uint m)    { return ((m >> 28u) & 1u) == 1u; }
-bool  unpack_wiring_valid(uint m)    { return ((m >> 29u) & 1u) == 1u; }
+uint  unpack_eye_id(uint m)          { return m & 15u; }                          // bits 0-3
+uint  unpack_rhab_type(uint m)       { return (m >> 4u)  & 15u; }                 // bits 4-7
+uint  unpack_neighbour_count(uint m) { return (m >> 8u)  & 15u; }                 // bits 8-11
+uint  unpack_omm_id(uint m)          { return (m >> 12u) & 65535u; }              // bits 12-27
+float unpack_chirality(uint m)       { return ((m >> 28u) & 1u) == 1u ? -1.0 : 1.0; }  // bit 28
+bool  unpack_binocularity(uint m)    { return ((m >> 29u) & 1u) == 1u; }          // bit 29
+bool  unpack_wiring_valid(uint m)    { return ((m >> 30u) & 1u) == 1u; }          // bit 30
+bool  unpack_is_edge(uint m)         { return ((m >> 31u) & 1u) == 1u; }          // bit 31
 
 
 vec4 unpack_color(uint packed_color) {

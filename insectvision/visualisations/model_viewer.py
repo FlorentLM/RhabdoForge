@@ -34,9 +34,8 @@ _DISC_TEMPLATE = None
 # Helper functions
 
 def receptor_tip_offsets(model) -> np.ndarray:
-    N, R = model.shape
-    d = model.ommatidia.direction
-    rec_dirs = model.rhabdomere_dynamic['direction'].reshape(N, R, 3)
+    d = model.directions
+    rec_dirs = model.buffer['curr_direction']
     axial = np.sum(rec_dirs * d[:, None, :], axis=2, keepdims=True)
     return -(rec_dirs - axial * d[:, None, :])
 
@@ -60,7 +59,7 @@ def make_eye_mesh(model) -> pv.PolyData:
     """
     Lens-indexed mesh: vertex i = lens i.
     """
-    positions = model.ommatidia.position
+    positions = model.positions
     if positions.shape[0] == 0:
         return pv.PolyData()
 
@@ -207,8 +206,8 @@ class EyeViewer:
         self.result_raw = self.aligner_raw.compute(self.model)
 
         # Cache geometry
-        self.p = model.ommatidia.position
-        self.d = model.ommatidia.direction
+        self.p = model.positions
+        self.d = model.directions
         self.r_sphere = float(np.mean(np.linalg.norm(self.p, axis=1)))
         self.arrow_len = self.r_sphere * 0.08
 
@@ -217,7 +216,7 @@ class EyeViewer:
         self.eye_boundary_lines = eye_boundary_line(self.lens_data_mesh)
 
         # Per-lens chirality
-        self.chirality = self.model.ommatidia.chirality.astype(np.float32)
+        self.chirality = self.model.chirality.astype(np.float32)
 
         # Per-lens lattice spacing
         self.disc_radii = radii_from_lattice(self.model) * 0.4
@@ -226,7 +225,7 @@ class EyeViewer:
         self.collinearity = self._compute_collinearity()
         self.smoothness = self._compute_smoothness()
 
-        if self.R > 1 and getattr(self.model, '_cartridges_wired', False):
+        if self.R > 1 and self.model.neural_superposition:
             c_field = np.zeros(self.N, dtype=np.float32)
 
             # Unwired (voluntary edge drop / slack)
@@ -424,7 +423,7 @@ class EyeViewer:
             return
 
         m_smooth = self.lens_data_mesh.copy()
-        m_smooth.point_data['AlignmentSmooth'] = self.result_smooth.alignment_phasor.astype(np.float32)
+        m_smooth.point_data['AlignmentSmooth'] = self.model.orientation_field
         g_smooth = self._glyph_phasors(m_smooth, 'AlignmentSmooth')
         a_smooth = self.plotter.add_mesh(g_smooth, color='green', line_width=2)
         self.actors_alignment_smooth.append(a_smooth)
@@ -439,46 +438,25 @@ class EyeViewer:
         if self.lens_data_mesh.n_cells == 0 or self.R <= 1:
             return
 
-
-        ## DEBUG
-
-        # Compute from the model
-        chi = self.model.ommatidia.bundle_orientation
-        chirality = self.model.ommatidia.chirality
-        effective_main = np.where(chirality > 0, self.bundle.main_axis_rad, np.pi - self.bundle.main_axis_rad)
-        major_angle = chi + effective_main
-        major = (
-                np.cos(major_angle)[:, None] * self.model.ommatidia.right_local +
-                np.sin(major_angle)[:, None] * self.model.ommatidia.up_local
-        ).astype(np.float32)     # -> Arrows WRONG
-
-        # Get from the local result_smooth
-        major = self.result_smooth.major_axis.astype(np.float32)    # -> Arrows CORRECT
-
-
-        ## END DEBUG
-
-
-        pos_mask = self.chirality > 0
-        neg_mask = self.chirality < 0
-
-        for mask, color in [(neg_mask, CHIRALITY_NEG_COLOR),
-                            (pos_mask, CHIRALITY_POS_COLOR)]:
+        for mask, color in [
+            (self.chirality < 0, CHIRALITY_NEG_COLOR),
+            (self.chirality > 0, CHIRALITY_POS_COLOR)
+        ]:
             if not np.any(mask):
                 continue
+
             pd = pv.PolyData(self.p[mask].astype(np.float32))
-            pd.point_data['MajorAxis'] = major[mask]
-            arrows = pd.glyph(geom=_arrow_template(), orient='MajorAxis',
-                              factor=self.arrow_len, scale=False)
-            self.plotter.add_mesh(arrows, color=color,
-                                  ambient=0.4, diffuse=0.7, smooth_shading=True)
+            pd.point_data['MajorAxis'] = self.model.main_axis_field[mask]
+
+            arrows = pd.glyph(geom=_arrow_template(), orient='MajorAxis', factor=self.arrow_len, scale=False)
+            self.plotter.add_mesh(arrows, color=color, ambient=0.4, diffuse=0.7, smooth_shading=True)
 
     def _add_saccade_panel(self) -> None:
         if self.lens_data_mesh.n_cells == 0:
             return
 
         m_smooth = self.lens_data_mesh.copy()
-        m_smooth.point_data['SaccadeSmooth'] = self.model.saccade_field()
+        m_smooth.point_data['SaccadeSmooth'] = self.model.saccade_field
         g_smooth = self._glyph_arrows(m_smooth, 'SaccadeSmooth')
         a_smooth = self.plotter.add_mesh(g_smooth, color='red',
                                          ambient=0.4, diffuse=0.7, smooth_shading=True)
@@ -529,7 +507,7 @@ class EyeViewer:
     def _add_ioa_panel(self) -> None:
         """Display the local Interommatidial Angle (sampling density)."""
 
-        ioa_deg = np.degrees(self.model.ommatidia.ioa_angles[:, 0]) # minor IOA only
+        ioa_deg = np.degrees(self.model.interommatidial_angles[:, 0]) # minor IOA only
 
         self._add_eye_surface(
             scalars=ioa_deg, cmap='plasma_r',
@@ -546,7 +524,7 @@ class EyeViewer:
             val = 1.0 if eye.side == 'left' else 2.0 if eye.side == 'right' else 0.0
             side_field[eye.indices] = val
         try:
-            binoc_mask = self.model.ommatidia.is_binocular
+            binoc_mask = self.model.is_binocular
             side_field[binoc_mask] = 3.0
         except:
             pass
@@ -587,7 +565,7 @@ class EyeViewer:
 
         pd.point_data['vectors'] = self.d.astype(np.float32)
         pd.point_data['radius'] = self.disc_radii.astype(np.float32)
-        pd.point_data['edge_mask'] = (self.model.is_edge).astype(np.float32)
+        pd.point_data['edge_mask'] = self.model.is_edge.astype(np.float32)
 
         discs = pd.glyph(geom=_disc_template(), orient='vectors', scale='radius', factor=1.2)
 
@@ -614,8 +592,7 @@ class EyeViewer:
 
         R = self.model.shape[1]
 
-        meta = self.model.rcpt_static_data['metadata'][::R]
-        counts = get_metadata_field(meta, 'neighbour_count').astype(np.float32)
+        counts = self.model.buffer['neighbour_count'][:, 0].astype(np.float32)
 
         eps = float(np.median(self.disc_radii)) * 0.1
         positions = self.p + eps * self.d
@@ -671,7 +648,7 @@ class EyeViewer:
             if max_off > 1e-8:
                 tip_scale = (self.r_sphere * 0.012) / max_off
                 tip_positions = self.p[:, None, :] + offsets * tip_scale
-                is_mirrored = self.model.ommatidia.chirality < 0
+                is_mirrored = self.model.chirality < 0
                 i1, i2 = self.bundle.main_axis_indices
 
                 groups = {
@@ -755,26 +732,30 @@ class EyeViewer:
             self.plotter.remove_actor(act)
         self.actors_debugger.clear()
 
-        if not getattr(self.model, '_cartridges_wired', False) or self.R <= 1:
+        if not self.model.neural_superposition or self.R <= 1:
             return
 
         target_idx = next(self._debug_ids) if self._debug_ids else np.random.randint(0, self.N)
         print(f'Target idx: {target_idx}')
 
-        k_nb = min(40, len(self.model.eye(self.model.ommatidia[target_idx].eye_index[0])))
-        result = self.model.eye(self.model.ommatidia[target_idx].eye_index[0]).neighbours(
-            positions=self.p[target_idx][None, :], k=k_nb)
-        nb_indices = result.indices[0]
-        partners = self.model.cartridges[target_idx].sources
+        # Find the eye view containing the target ommatidium
+        target_eye_id = int(self.model.eye_index[target_idx])
+        target_eye = next(e for e in self.model.eyes if e.eye_index == target_eye_id)
+
+        k_nb = min(40, len(target_eye))
+        result = target_eye.neighbours(positions=self.p[target_idx][None, :], k=k_nb)
+        neighb_indices = result.indices[0]
+
+        partners = self.model.cartridge_map[target_idx]
 
         ioa_estimate = float(np.mean(result.distances[0][1:7])) if k_nb > 1 else 0.01
         d_rad = ioa_estimate * 0.45
 
         # Background lenses
-        bg_mask = ~np.isin(nb_indices, partners) & (nb_indices != target_idx)
+        bg_mask = ~np.isin(neighb_indices, partners) & (neighb_indices != target_idx)
         if np.any(bg_mask):
-            pd_bg = pv.PolyData(self.p[nb_indices[bg_mask]])
-            pd_bg.point_data['vec'] = self.d[nb_indices[bg_mask]]
+            pd_bg = pv.PolyData(self.p[neighb_indices[bg_mask]])
+            pd_bg.point_data['vec'] = self.d[neighb_indices[bg_mask]]
             self.actors_debugger.append(self.plotter.add_mesh(
                 pd_bg.glyph(geom=_disc_template(), orient='vec', factor=d_rad),
                 color='black', opacity=0.1
