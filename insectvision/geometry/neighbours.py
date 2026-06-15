@@ -26,7 +26,7 @@ def _prune_long_edges(points2d: np.ndarray, edges: np.ndarray, max_length_factor
     (edge i-j is kept for both i and j, or for neither).
     """
     spacing = mean_neighbour_distance(
-        cKDTree(points2d), points2d, k=min(6, max(1, len(points2d) - 1))
+        cKDTree(points2d), None, k=min(6, max(1, len(points2d) - 1))
     )
     lengths = np.linalg.norm(points2d[edges[:, 0]] - points2d[edges[:, 1]], axis=1)
     mean_local = 0.5 * (spacing[edges[:, 0]] + spacing[edges[:, 1]])
@@ -76,6 +76,7 @@ def knn(
         query_points: Optional[np.ndarray] = None,
         k: int = 6,
         drop_self: bool = True,
+        self_indices=None
     ) -> Tuple[np.ndarray, np.ndarray]:
     """
     k-nearest-neighbour query against a prebuilt tree. Or not. Whatever.
@@ -97,12 +98,16 @@ def knn(
     if tree is None and query_points is None:
         raise ValueError('You must pass either a tree or query_points.')
 
+    owns_data = False
+
     if query_points is None:
         query_points = tree.data
+        owns_data = True
     query_points = np.atleast_2d(query_points)
 
     if tree is None:
         tree = cKDTree(query_points)
+        owns_data = True
 
     max_k = (tree.n - 1) if drop_self else tree.n
     k_clipped = max(0, min(int(k), max_k))
@@ -119,8 +124,18 @@ def knn(
         dist = dist.reshape(-1, 1)
 
     if drop_self:
-        idx = idx[:, 1:]
-        dist = dist[:, 1:]
+        if self_indices is None and owns_data:
+            self_indices = np.arange(query_points.shape[0], dtype=np.intp)
+
+        if self_indices is None:  # External tree + explicit points
+            idx, dist = idx[:, 1:], dist[:, 1:]
+        else:
+            is_self = idx == self_indices[:, None]  # <=1 True per row
+            drop = is_self.copy()
+            drop[~is_self.any(axis=1), -1] = True  # no self found: drop farthest
+            keep = ~drop
+            idx = idx[keep].reshape(idx.shape[0], -1)
+            dist = dist[keep].reshape(dist.shape[0], -1)
 
     return dist, idx.astype(np.intp)
 
@@ -364,7 +379,7 @@ def smooth_field_partitioned(
             gi = np.flatnonzero(partition == label)
             if gi.size < floor:
                 continue
-            _, nb_local = knn(cKDTree(positions[gi]), positions[gi], k)
+            _, nb_local = knn(cKDTree(positions[gi]), None, k)
             work.append((gi, nb_local))
     else:
         if len(groups) != len(neighbours):

@@ -100,6 +100,8 @@ class Model(BaseView):
 
         # ============ First need to know Eye membership ============
 
+        self._spatial_version = 0
+
         if eye_indices is not None:
             arr = np.asarray(eye_indices, dtype=np.uint32).reshape(-1)
 
@@ -116,22 +118,6 @@ class Model(BaseView):
         self._buf['eye_id'] = eye_membership
 
         self._eyes = self._instantiate_eyes()
-
-        # ============ Fill ommatidia neighbourhood related stuff ============
-
-        self._buf['omm_id'] = self.omm_indices
-
-        # First-ring neighbour count per ommatidium
-        neighbour_count = np.zeros(self._N, dtype=np.uint32)
-        for eye in self._eyes:
-            res = eye.neighbours(query=eye.indices, k=6, neighbour_dist_factor=1.5)
-            neighbour_count[eye.indices] = np.sum(res.is_immediate, axis=1).astype(np.uint32)
-
-        self._buf['neighbour_count'] = neighbour_count
-
-        # Edge / binocular classification
-        self._buf['is_edge'] = self._identify_edge_ommatidia()
-        self._buf['is_binocular'] = self._identify_binocular_ommatidia()
 
         # ============ Ommatidia lattice properties ============
 
@@ -220,6 +206,22 @@ class Model(BaseView):
         self._buf['rest_acc_angles'] = acceptance_angles
         self._buf['curr_acc_angles'] = acceptance_angles
 
+        # ============ Fill other ommatidia neighbourhood related stuff ============
+
+        self._buf['omm_id'] = self.omm_indices
+
+        # First-ring neighbour count per ommatidium
+        neighbour_count = np.zeros(self._N, dtype=np.uint32)
+        for eye in self._eyes:
+            res = eye.neighbours(query=eye.indices, k=6, neighbour_dist_factor=1.5)
+            neighbour_count[eye.indices] = np.sum(res.is_immediate, axis=1).astype(np.uint32)
+
+        self._buf['neighbour_count'] = neighbour_count
+
+        # Edge / binocular classification
+        self._buf['is_edge'] = self._identify_edge_ommatidia()
+        self._buf['is_binocular'] = self._identify_binocular_ommatidia()
+
         # ============ Neural superposition ============
 
         if neural_superposition and self._R > 1:
@@ -302,7 +304,7 @@ class Model(BaseView):
             - eye_indices: 'eye_indices', 'eye_ids', 'eye_id', 'eye_idx', 'eye_index'
             - left / right: (N,) bool, fallback if no eye_indices
             - aperture_um: 'lens_aperture_um', 'lens_diameter', 'aperture_um'
-            - interommatidial_angles_rad: 'interommatidial_angles_rad', 'ioa', 'ioa_axes'
+            - interommatidial_angles_rad: 'interommatidial_angles_rad', 'ioa', 'ioa_angles', 'ioa_axes'
             - acceptance (rest half-widths): 'acceptance_angles', 'acceptance', 'rho'
             - bundle_orientations: 'bundle_orientations', 'chi'
             - chiralities: 'chiralities', 'chirality'
@@ -349,7 +351,7 @@ class Model(BaseView):
 
             aliases = {
                 'aperture_um': ['lens_aperture_um', 'lens_aperture', 'lens_diameter_um', 'lens_diameter', 'aperture_um'],
-                'interommatidial_angles_rad': ['interommatidial_angles_rad', 'interommatidial_angles', 'ioa', 'ioa_axes'],
+                'interommatidial_angles_rad': ['interommatidial_angles_rad', 'interommatidial_angles', 'ioa', 'ioa_angles', 'ioa_axes'],
                 'bundle_orientations': ['bundle_orientations', 'chi'],
                 'chiralities': ['chiralities', 'chirality']
             }
@@ -388,9 +390,8 @@ class Model(BaseView):
 
     # Private - Data management helpers
 
-    def _invalidate_spatial(self) -> None:
-        for eye in self._eyes:
-            eye._invalidate()
+    def _bump_spatial_ver(self) -> None:
+        self._spatial_version += 1
 
     # TODO: remove this, replace with the shared broadcast helper
     @staticmethod
@@ -510,22 +511,21 @@ class Model(BaseView):
         """
         is_binocular = np.zeros(self._N, dtype=bool)
 
-        for eye in self._eyes:
-            other_omm_indices = np.setdiff1d(self.omm_indices, eye.indices) # all ommatidia *not* in this eye
-            if other_omm_indices.size == 0:
-                continue
+        for eye in self.eyes:
+            other = np.setdiff1d(self.omm_indices, eye.indices) # all ommatidia *not* in this eye
 
-            # Temporary tree for the other eyes
-            other_tree = cKDTree(self._buf['forward'][other_omm_indices])    # TODO: This could be avoided
+            if other.size == 0:
+                continue
 
             # If threshold not provided use 1.1 local IOA
             if angle_threshold is None:
-                thresh_rad = np.mean(self._buf['ioa_axes'][eye.indices, 1]) * 1.1
+                thresh_rad = np.mean(self._buf['ioa_angles'][eye.indices, 1]) * 1.1
             else:
                 thresh_rad = np.deg2rad(angle_threshold) if degrees else angle_threshold
 
-            indices = other_tree.query_ball_point(self._buf['forward'][eye.indices], r=angle_to_chord(thresh_rad))
-            is_binocular[eye.indices] = np.array([len(hits) > 0 for hits in indices])
+            other_view = OmmatidiumView(self, other)
+            _, dist = other_view.query_directions(eye.directions, k=1)
+            is_binocular[eye.indices] = dist[:, 0] <= angle_to_chord(thresh_rad)
 
         return is_binocular
 
@@ -543,7 +543,7 @@ class Model(BaseView):
         is_candidate = neighb_count < n
 
         for eye in self._eyes:
-            neighbours_graph = eye._ensure_neighbour_graph(k=n)
+            neighbours_graph = eye._get_neighbour_graph(k=n)
             neighb_indices = neighbours_graph['neighbour_indices']
 
             eye_candidates = is_candidate[eye.indices]
@@ -585,7 +585,7 @@ class Model(BaseView):
                 distance <= neighbour_dist_factor * closest.
 
         Returns:
-            ioa_axes: (N, 2) (minor, major) in radians
+            ioa_angles: (N, 2) (minor, major) in radians
             ioa_tilts: (N,) lattice tilt in radians, in [-π/6, +π/6]
             spacing: (N,) median first-ring distance, world units
 
@@ -668,9 +668,9 @@ class Model(BaseView):
 
             logger.debug(f"Eye {eye.eye_index} lattice |Ψ6|: {float(np.mean(e_psi6_mag)):.3f}, median spacing: {float(np.median(e_spacing)):.3f}")
 
-        ioa_axes = np.stack([ioa_minor, ioa_major], axis=-1).astype(np.float32)
+        ioa_angles = np.stack([ioa_minor, ioa_major], axis=-1).astype(np.float32)
 
-        return ioa_axes, ioa_tilts, ioa_order, spacing
+        return ioa_angles, ioa_tilts, ioa_order, spacing
 
     def _estimate_apertures(self, ioa_spacing: np.ndarray, fallback_aperture: float = 20.0) -> np.ndarray:
         """
@@ -741,7 +741,7 @@ class Model(BaseView):
                     k
                 )
             else:
-                neighb_graph = eye._ensure_neighbour_graph(k)
+                neighb_graph = eye._get_neighbour_graph(k)
                 neighb_indices = neighb_graph['neighbour_indices']
 
             g.append(eye.indices)
@@ -859,8 +859,8 @@ class Model(BaseView):
         lens_optics = LensOptics(
             focal_um=self._buf['focal_um'],
             aperture_um=self._buf['aperture_um'],
-            ioa_minor=self._buf['ioa_axes'][:, 0],
-            ioa_major=self._buf['ioa_axes'][:, 1]
+            ioa_minor=self._buf['ioa_angles'][:, 0],
+            ioa_major=self._buf['ioa_angles'][:, 1]
         )
 
         rhab_optics = RhabdomereOptics(
@@ -1052,11 +1052,6 @@ class Model(BaseView):
         return CartridgeView(self, self.omm_indices)
 
     # Lattice properties
-
-    @property
-    def hexatic_order(self) -> np.ndarray:
-        """Per-ommatidium hexatic order |Ψ6| of the lens lattice (1 = perfect hex, 0 = isotropic)."""
-        return self._hexatic_order
 
     @property
     def max_gap(self) -> float:

@@ -217,7 +217,7 @@ class Buffer:
         if field in _BIT_LAYOUT:
             meta = self.structured_arrays['rhabdomere']['static']['metadata'][idx]
             out = np.asarray(get_metadata_field(meta, field))
-            if idx == slice(None):  # only reshape if looking at the whole array
+            if isinstance(idx, slice) and idx == slice(None):  # only reshape if looking at the whole array
                 out = out.reshape(*self._shape)
             out.flags.writeable = False     # unpacked copy, can be written via buf['field', idx] = v
             return out
@@ -225,7 +225,7 @@ class Buffer:
         level = self.levels[field]
         arr = self._array_containing(field)[field]
 
-        if idx == slice(None):
+        if isinstance(idx, slice) and idx == slice(None):
             logical_dims = (self.shape[0],) if level == 'ommatidium' else self.shape
             target_shape = logical_dims + arr.shape[1:]
             return arr.reshape(target_shape).squeeze()
@@ -240,7 +240,7 @@ class Buffer:
             level = 'rhabdomere'
             meta = self.structured_arrays[level]['static']['metadata']
 
-            if idx == slice(None):
+            if isinstance(idx, slice) and idx == slice(None):
                 N, R = self._shape
                 if values.ndim == 0:
                     grid = np.broadcast_to(values, (N, R))
@@ -259,7 +259,7 @@ class Buffer:
             level = self.levels[field]
             arr = self._array_containing(field)[field]
 
-            if idx == slice(None):
+            if isinstance(idx, slice) and idx == slice(None):
                 logical_dims = (self.shape[0],) if level == 'ommatidium' else self.shape
                 extra_dims = arr.shape[1:]
                 logical_shape = logical_dims + extra_dims
