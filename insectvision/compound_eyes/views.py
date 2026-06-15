@@ -15,9 +15,10 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
+from insectvision.compound_eyes.buffers import _BIT_LAYOUT
 from insectvision.compound_eyes.helpers.neural_superposition import UNWIRED_SRC
 from insectvision.geometry.linalg import tangent_frames
-from insectvision.geometry.neighbours import knn
+from insectvision.geometry.neighbours import knn, top_k_facing
 from insectvision.geometry.spherical import cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle
 from insectvision.geometry.circular import wrap_angle
 from insectvision.utils.shared import norm_l2
@@ -38,18 +39,21 @@ class ViewField:
     def __init__(self, field_name: str, level: str, doc: Optional[str] = None):
         self.field_name = field_name
         self.level = level      # 'ommatidia' or 'rhabdomere'
+        self.is_metadata = field_name in _BIT_LAYOUT    # TODO: can be removed when the per-ommatidium metadata is moved
         self.__doc__ = doc
 
-    def __get__(self, obj, objtype=None):
-        if obj is None:
-            return self
+    def _index(self, obj):
+        if self.level == 'rhabdomere':
+            return obj.rhab_indices
+        if self.is_metadata:  # per-ommatidia but stored per-rhab
+            return obj.omm_indices * obj.R  # slot 0 of each ommatidium
+        return obj.omm_indices
 
-        idx = obj.omm_indices if self.level == 'ommatidia' else obj.rhab_indices
-        return obj._buffer[self.field_name, idx]
+    def __get__(self, obj, objtype=None):
+        return self if obj is None else obj._buffer[self.field_name, self._index(obj)]
 
     def __set__(self, obj, value):
-        idx = obj.omm_indices if self.level == 'ommatidia' else obj.rhab_indices
-        obj._buffer[(self.field_name, idx)] = value
+        obj._buffer[(self.field_name, self._index(obj))] = value
 
 
 class BaseView:
@@ -127,6 +131,43 @@ class BaseView:
     right = ViewField('right', 'ommatidia')
     up = ViewField('up', 'ommatidia')
 
+    # Transformation methods
+
+    def translate(self, offset: ArrayLike) -> 'Model':
+        """
+        Translate all ommatidia (and rhabdomeres) positions by 'offset'.
+        """
+        self.positions = self.positions + np.asarray(offset, dtype=np.float32).reshape(3)
+        return self
+
+    def scale(self, factor: float) -> 'Model':
+        """
+        Scale all positions about the origin by 'factor'.
+        Note: only world-scale geometry scales. Ommatidum and rhabdomere
+        diameters (μm) and the focal length (μm) are at ommatidium
+        scale and are unchanged.
+        """
+        self.positions = self.positions * factor
+        return self
+
+    def rotate(self, R: ArrayLike) -> 'Model':
+        """
+        Rotate all positions, directions, and tangent frames by the 3x3
+        rotation matrix 'R'.
+        """
+        R_mat = np.asarray(R, dtype=np.float64)
+
+        if R_mat.shape != (3, 3):
+            raise ValueError(f'R must be 3x3, got {R_mat.shape}')
+
+        if not np.allclose(R_mat @ R_mat.T, np.eye(3), atol=1e-3):
+            logger.warning('rotate() called with non-orthonormal matrix, results may be off...')
+
+        self.positions = self.positions @ R_mat.T
+        self.directions = self.directions @ R_mat.T
+
+        return self
+
     # Lattice properties
 
     interommatidial_angles = ViewField('ioa_angles', 'ommatidia')
@@ -141,7 +182,7 @@ class BaseView:
 
     # Per-ommatidium neighbourhood-related properties
 
-    eye_membership = ViewField('eye_id', 'ommatidia')       # TODO: rename this one maybe
+    eye_index = ViewField('eye_id', 'ommatidia')
 
     is_edge = ViewField('is_edge', 'ommatidia',
         doc="Whether these ommatidia are at the boundary of the eye.")
@@ -164,7 +205,7 @@ class BaseView:
         mask = self.is_binocular
         return float(np.mean(mask)) if mask.size > 0 else 0.0
 
-    # Per-ommatidium specifics (optics
+    # Per-ommatidium specifics (optics)
 
     focal_length = ViewField('focal_um', 'ommatidia',
         doc="Per-ommatidium focal legnth (μm)")
@@ -234,16 +275,25 @@ class BaseView:
     # Neural superposition wiring properties
 
     @property
+    def cartridges(self) -> 'CartridgeView':
+        return CartridgeView(self.model, self.omm_indices)
+
+    @property
     def neural_superposition(self) -> bool:
         """Whether this model is superposition eyes."""
         return self.model._superposition_wired
+
+    @property
+    def cartridge_indices(self) -> np.ndarray:
+        """(N, R) global donor receptor index per slot (= the gather table)."""
+        return self._buffer['cartridge_src', self.omm_indices].reshape(self.N, self.R)
 
     @property
     def cartridge_map(self) -> np.ndarray:
         """(N, R) donor ommatidium per slot (-1 where unwired)."""
         if not self.neural_superposition:
             return np.full((self.N, self.R), -1, dtype=np.intp)
-        src = self.model.cartridge_indices[self.omm_indices]
+        src = self.cartridge_indices
         return np.where(src != UNWIRED_SRC, (src // self.R).astype(np.intp), -1)
 
     @property
@@ -587,7 +637,7 @@ class SpatialQueries:
             return self._empty()
 
         conflict = self.has_conflicts if avoid_conflicts else None
-        best = self.model._lookat_top_k(self.positions, self.directions, query, k, conflict)
+        best = top_k_facing(self.positions, self.directions, query, k, conflict)
 
         return OmmatidiumView(self.model, self.omm_indices[best].ravel())
 
@@ -727,17 +777,6 @@ class SpatialQueries:
             return indices, w.astype(np.float32)
 
         return indices
-
-    def max_gap(self) -> float:
-        """Largest angular gap between any ommatidium and its nearest neighbour (rad)."""
-
-        if len(self) <= 1:
-            return 0.0
-
-        tree = self._get_tree('directions')
-        chord_dists, _ = tree.query(self.directions, k=2)
-        return float(chord_to_angle(np.max(chord_dists[:, 1])))
-
 
 
 class OmmatidiumView(SpatialQueries, BaseView):

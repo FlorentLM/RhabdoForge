@@ -34,7 +34,7 @@ _DISC_TEMPLATE = None
 # Helper functions
 
 def receptor_tip_offsets(model) -> np.ndarray:
-    N, R = model.nb_facets, model.rhab_per_omm
+    N, R = model.shape
     d = model.ommatidia.direction
     rec_dirs = model.rcpt_dynamic_data['direction'].reshape(N, R, 3)
     axial = np.sum(rec_dirs * d[:, None, :], axis=2, keepdims=True)
@@ -44,7 +44,7 @@ def receptor_tip_offsets(model) -> np.ndarray:
 def radii_from_lattice(model) -> np.ndarray:
     """Per-lens display radius = mean distance to the lens's immediate lattice neighbours."""
 
-    radii = np.zeros(model.nb_facets, dtype=np.float32)
+    radii = np.zeros(model.shape[0], dtype=np.float32)
     for eye in model.eyes:
         if len(eye) == 0:
             continue
@@ -179,8 +179,7 @@ class EyeViewer:
 
         self.model = model
         self.bundle = model.bundle
-        self.N = model.nb_facets
-        self.R = model.rhab_per_omm
+        self.N, self.R = model.shape
         self.sparsity = float(sparsity)
 
         self.right = np.asarray(WORLD_RIGHT, dtype=np.float32)
@@ -613,7 +612,7 @@ class EyeViewer:
         Visualises the 'neighbour_count' metadata field.
         """
 
-        R = self.model.rhab_per_omm
+        R = self.model.shape[1]
 
         meta = self.model.rcpt_static_data['metadata'][::R]
         counts = get_metadata_field(meta, 'neighbour_count').astype(np.float32)

@@ -2,6 +2,8 @@ from typing import List, Optional, Tuple, Sequence
 import numpy as np
 from scipy.spatial import cKDTree, Delaunay
 
+from insectvision.utils.shared import norm_l2
+
 
 # 2D neighbour graphs
 
@@ -155,6 +157,39 @@ def mean_neighbour_distance(
         return np.full(dist.shape[0], np.nan)
 
     return dist.mean(axis=1)
+
+
+def top_k_facing(positions, directions, targets, k, exclude_mask=None):
+    """
+    For each target, the indices of the k directed points that best face it.
+
+    Each of the M sources has a position and a unit direction. A source is scored
+    against a target by the dot product of its direction with the unit vector from
+    the source to the target: +1 means it points straight at the target, -1 away.
+
+    Args:
+        positions:    (M, 3) source positions.
+        directions:   (M, 3) source unit directions.
+        targets:      (Q, 3) target positions.
+        k:            number of sources to return per target.
+        exclude_mask: optional (M,) bool, True entries are never selected.
+
+    Returns:
+        (Q, k_eff) int array of source indices, best-first per row,
+        with k_eff = min(k, number of selectable sources).
+    """
+    desired = targets[:, None, :] - positions[None, :, :]
+    desired = norm_l2(desired, axis=-1)
+    dots = np.einsum('jk,ijk->ij', directions, desired)
+
+    if exclude_mask is not None:
+        dots[:, exclude_mask] = -np.inf
+
+    k_clipped = max(0, min(k, dots.shape[1]))
+    part = np.argpartition(dots, -k_clipped, axis=1)[:, -k_clipped:]
+    top = np.take_along_axis(dots, part, axis=1)
+    order = np.argsort(top, axis=1)[:, ::-1]
+    return np.take_along_axis(part, order, axis=1)
 
 
 # Neighbourhood-based smoothing

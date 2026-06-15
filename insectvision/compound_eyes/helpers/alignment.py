@@ -159,7 +159,7 @@ class BundlesAligner:
 
         # Eye / hemisphere signs (geometric)
         side_map = {e.eye_index: e.side_sign for e in model.eyes}
-        eye_sign = np.array([side_map[eid] for eid in model.eye_membership], dtype=np.float32)
+        eye_sign = np.array([side_map[e] for e in model.eye_index], dtype=np.float32)
         eye_sign[eye_sign == 0] = 1.0   # midline -> left
 
         hemisphere_sign = np.sign(model.positions @ e_z).astype(np.float32)
@@ -237,7 +237,7 @@ class BundlesAligner:
             sacc = smooth_field_partitioned(
                 sacc,
                 kind='nematic',
-                partition=model.eye_membership,
+                partition=model.eye_index,
                 positions=model.positions,
                 k=8,
                 n_iter=self.saccade_smoothing_iterations,

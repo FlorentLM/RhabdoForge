@@ -8,16 +8,14 @@ from typing import Optional, Union, Tuple, List
 import numpy as np
 from numpy.typing import ArrayLike
 
-from scipy.spatial import cKDTree
-
-from insectvision.utils.shared import norm_l2
+from insectvision.utils.shared import norm_l2, broadcast_1d, broadcast_to_shape
 from insectvision.engine.meshes import icosphere, fibonacci_sphere
 from insectvision.engine.world_utils import WORLD_FORWARD
 
 from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world
-from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned
+from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned, top_k_facing
 from insectvision.geometry.spherical import angle_to_chord
 
 from insectvision.compound_eyes.buffers import Buffer
@@ -27,10 +25,10 @@ from insectvision.compound_eyes.helpers.acceptance import AcceptanceModel, Snyde
 from insectvision.compound_eyes.helpers.ommatidia_lattice import voronoi_estimation
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner, AlignmentResult, apply_chirality, trivial_alignment
 
-from insectvision.compound_eyes.views import BaseView, logger, OmmatidiumView, EyeView, CartridgeView
+from insectvision.compound_eyes.views import SpatialQueries, BaseView, logger, OmmatidiumView, EyeView
 
 
-class Model(BaseView):
+class Model(SpatialQueries, BaseView):
     """
     A (set of) compound eyes specified as N ommatidia positions / directions
     and a bundle of R rhabdomeres per ommatidium.
@@ -53,6 +51,8 @@ class Model(BaseView):
             flow_direction: Optional[ArrayLike] = None,
             neural_superposition: bool = False
         ):
+
+        self._spatial = {}
 
         # ============ Validate shapes ============
 
@@ -124,10 +124,15 @@ class Model(BaseView):
         # Lattice properties from the first-ring neighbour graph:
         # IOA (minor, major), tilt, hexatic order, and per-ommatidium spacing.
         ioa_angles, ioa_tilts, ioa_hexatic_order, ioa_spacing = self._compute_lattice_properties()
+
         self._hexatic_order = ioa_hexatic_order
 
         if interommatidial_angles_rad is not None:
-            ioa_angles, ioa_tilts = self._broadcast_ioa(interommatidial_angles_rad, N)
+            ioa_angles = broadcast_to_shape(
+                interommatidial_angles_rad, shape=(N, 2),
+                accepted=[((2,), (1,)), ((N, 2), (0, 1))],
+                name='interommatidial_angles_rad',
+            )
 
         self._buf['ioa_angles'] = ioa_angles
         self._buf['ioa_tilt'] = ioa_tilts
@@ -135,14 +140,7 @@ class Model(BaseView):
         # ============ Lens diameters (apertures) ============
 
         if aperture_um is not None:
-            aperture_um = np.atleast_1d(aperture_um).astype(np.float32)
-
-            if aperture_um.size == 1:
-                facet_apertures = aperture_um.item()
-            elif aperture_um.size == self._N:
-                facet_apertures = aperture_um
-            else:
-                raise ValueError(f"aperture_um size {aperture_um.size} must be 1 or N={self._N}")
+            facet_apertures = broadcast_1d(aperture_um, self._N, 'aperture_um')
         else:
             facet_apertures = self._estimate_apertures(ioa_spacing)
 
@@ -233,7 +231,7 @@ class Model(BaseView):
 
             self._superposition_wired = True
             self._conflicts_cache = get_conflict_masks(self.cartridge_map, self._bundle.peripheral_indices)
-            # TODO: self._conflicts_cache must be set to None by any thing that changes the bundles orientation
+            # Note: self._conflicts_cache must be set to None by any thing that changes the bundles orientation
 
         else:
             # No superposition: each receptor is its own source
@@ -368,13 +366,14 @@ class Model(BaseView):
 
     # Some basic properties
 
-    # TODO: __getitem__, __eq__, etc ?? Or in BaseView?
-
     def __repr__(self) -> str:
         return (
             f"CompoundEyeModel(N={self.shape[0]}, R={self.shape[1]}, "
             f"eyes={len(self._eyes)}, bundle={self._bundle.name!r})"
         )
+
+    def __getitem__(self, key):
+        return OmmatidiumView(self, self.omm_indices[key])
 
     @property
     def model(self) -> 'Model':
@@ -392,71 +391,6 @@ class Model(BaseView):
 
     def _bump_spatial_ver(self) -> None:
         self._spatial_version += 1
-
-    # TODO: remove this, replace with the shared broadcast helper
-    @staticmethod
-    def _broadcast_ioa(value: ArrayLike, n: int) -> Tuple[np.ndarray, np.ndarray]:
-
-        arr = np.asarray(value, dtype=np.float32)
-        if arr.shape == (2,):
-            return np.tile(arr, (n, 1)), np.zeros(n, dtype=np.float32)
-        elif arr.shape == (n, 2):
-            return arr.copy(), np.zeros(n, dtype=np.float32)
-        raise ValueError(f"interommatidial_angles_rad must be shape (2,) or ({n}, 2), got {arr.shape}")
-
-    # Private - queries aggregator helpers
-
-    # TODO: these two helpers annoy me
-
-    @staticmethod
-    def _lookat_top_k(
-            positions: np.ndarray,
-            directions: np.ndarray,
-            targets: np.ndarray,
-            k: int,
-            conflict_mask: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        """
-        Local indices (Q, k_eff) of the ommatidia best looking at each target.
-
-        Score is the dot product of each ommatidium's optical axis with the unit vector from
-        that ommatidium to the target. Columns are ordered best-first. 'conflict_mask' (a
-        boolean over the ommatidia) excludes conflicted ommatidia from selection.
-        """
-        desired = targets[:, None, :] - positions[None, :, :]
-        desired = norm_l2(desired, axis=-1)
-        dots = np.einsum('jk,ijk->ij', directions, desired)
-
-        if conflict_mask is not None:
-            dots[:, conflict_mask] = -np.inf
-
-        k_clipped = max(0, min(k, dots.shape[1]))
-        part = np.argpartition(dots, -k_clipped, axis=1)[:, -k_clipped:]
-        top = np.take_along_axis(dots, part, axis=1)
-        order = np.argsort(top, axis=1)[:, ::-1]
-        return np.take_along_axis(part, order, axis=1)
-
-    def _merge_top_k(self, per_eye_query, Q: int, k: int) -> Tuple['OmmatidiumView', np.ndarray]:
-        """
-        Merge per-eye (LensView, distances) results into a global top-k.
-        """
-        best_idx = np.full((Q, k), -1, dtype=np.intp)
-        best_dist = np.full((Q, k), np.inf, dtype=np.float32)
-        rows = np.arange(Q)[:, None]
-
-        for eye in self._eyes:
-            view, dist = per_eye_query(eye)
-            if len(view) == 0:
-                continue
-
-            combined_idx = np.concatenate([best_idx, view.indices.reshape(Q, -1)], axis=1)
-            combined_dist = np.concatenate([best_dist, dist], axis=1)
-
-            order = np.argsort(combined_dist, axis=1)[:, :k]
-            best_idx = combined_idx[rows, order]
-            best_dist = combined_dist[rows, order]
-
-        return OmmatidiumView(self._buf, best_idx.ravel(), self._R), best_dist
 
     # Private - Rhabdomere bundle orientation backwrite
 
@@ -486,7 +420,7 @@ class Model(BaseView):
             # Full model: actual rhabdomere bundle orientation
             self._buf['chi'] = chi
 
-        # TODO: store chirality in metadata
+        self._buf['chirality_neg'] = (chirality < 0).astype(np.uint32)
 
         # Rhabdomeres rest directions: unit vector from the positioned rhabdomere tip through the lens nodal point
         nodal_dist = self._bundle.focal_um or np.median(self._buf['focal_um'])
@@ -502,6 +436,8 @@ class Model(BaseView):
 
         # Initialise the actuated direction
         self._buf['curr_direction'] = norm_l2(-tip_world).astype(np.float32)
+
+        self._conflicts_cache = None
 
     # Private - Derived properties assignment
 
@@ -560,8 +496,7 @@ class Model(BaseView):
 
     # Private - Facets (lenses) lattice geometry helpers
 
-    def _compute_lattice_properties(
-            self,
+    def _compute_lattice_properties(self,
             k_search: int = 8,
             neighbour_dist_factor: float = 1.5,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -736,7 +671,7 @@ class Model(BaseView):
 
             if metric == 'angular':
                 _, neighb_indices = knn(
-                    eye._ensure_direction_tree(),
+                    eye._get_tree('direction'),
                     self._buf['forward'][eye.indices],
                     k
                 )
@@ -834,11 +769,12 @@ class Model(BaseView):
                 Eyes whose centroid_x is within this distance are classified as 'midline' (e.g. ocelli).
         """
 
-        nb_eyes = len(np.unique(self._buf['eye_id']))
+        eye_id = np.asarray(self._buf['eye_id']).reshape(self._N, self._R)[:, 0]
+        nb_eyes = len(np.unique(eye_id))
         eye_instances = np.zeros(nb_eyes, dtype=object)
 
         for e in range(nb_eyes):
-            omm_indices = np.flatnonzero(self._buf['eye_id'] == e).astype(np.intp)
+            omm_indices = np.flatnonzero(eye_id == e).astype(np.intp)
             centroid_x = self._buf['position'][omm_indices, 0].mean()
 
             if np.abs(centroid_x) <= midline_buffer:
@@ -854,7 +790,7 @@ class Model(BaseView):
 
     # Private - Acceptance angles helper
 
-    def _compute_acceptance(self, acceptance_model: AcceptanceModel) -> np.ndarray:
+    def _compute_acceptance(self, acceptance_model: 'AcceptanceModel') -> np.ndarray:
 
         lens_optics = LensOptics(
             focal_um=self._buf['focal_um'],
@@ -864,8 +800,8 @@ class Model(BaseView):
         )
 
         rhab_optics = RhabdomereOptics(
-            diameter_um=self._buf['rhab_diameter_um'],
-            wavelength_um=self._buf['wavelength_um']
+            diameter_um=np.atleast_1d(self._bundle.diameters_um).astype(np.float32),
+            wavelength_um=np.atleast_1d(self._bundle.wavelengths_nm).astype(np.float32) * 1e-3,
         )
 
         acceptance_angles = acceptance_model(lens_optics, rhab_optics)
@@ -875,131 +811,17 @@ class Model(BaseView):
 
         return acceptance_angles
 
-    # Public - Query methods (animal-level, aggregate the per-eye query methods)
+    # Disabling model-level neighbours queries
 
-    def query_directions(self,
-                         directions: ArrayLike,
-                         k: int = 1,
-                         avoid_conflicts: bool = False
-                         ) -> Tuple['OmmatidiumView', np.ndarray]:
-        """
-        Find the k ommatidia (across all eyes) whose optical axes lie closest to
-        each query direction.
-        """
-        dirs = np.asarray(directions, dtype=np.float32).reshape(-1, 3)
-        return self._merge_top_k(
-            lambda eye: eye.query_directions(dirs, k=k, avoid_conflicts=avoid_conflicts),
-            dirs.shape[0], k
-        )
+    # TODO: Should dispatch per-eye instead of raising
 
-    def query_positions(self,
-                        positions: ArrayLike,
-                        k: int = 1,
-                        avoid_conflicts: bool = False
-                        ) -> Tuple['OmmatidiumView', np.ndarray]:
-        """
-        Find the k ommatidia (across all eyes) closest in world-space position
-        to each query point.
-        """
+    def neighbours(self, *args, **kwargs):
+        raise NotImplementedError('Neighbours queries must be done per-eye.')
 
-        positions = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
-        return self._merge_top_k(
-            lambda eye: eye.query_positions(positions, k=k, avoid_conflicts=avoid_conflicts),
-            positions.shape[0], k
-        )
+    def directed_neighbours (self, *args, **kwargs):
+        raise NotImplementedError('Neighbours queries must be done per-eye.')
 
-    def query_lookat(self,
-                     targets: ArrayLike,
-                     k: int = 1,
-                     avoid_conflicts: bool = False
-                     ) -> 'OmmatidiumView':
-        """
-        Find the k ommatidia (across all eyes) best looking at each world-space
-        target point. See Eye.query_lookat for the scoring.
-        """
-
-        targets = np.asarray(targets, dtype=np.float32).reshape(-1, 3)
-
-        conflict = self.has_conflicts if avoid_conflicts else None
-        best = self._lookat_top_k(
-            self._buf['position'],
-            self._buf['forward'],
-            targets,
-            k,
-            conflict
-        )
-        return OmmatidiumView(self._buf, best.ravel().astype(np.intp), self._R)
-
-    def query_cone(self,
-                   center_direction: ArrayLike,
-                   angle: float,
-                   degrees: bool = True,
-                   avoid_conflicts: bool = False
-                   ) -> 'OmmatidiumView':
-        """
-        All ommatidia (across all eyes) whose optical axis lies within 'angle'
-        of 'center_direction'.
-        """
-        hits = [eye.query_cone(center_direction, angle, degrees, avoid_conflicts) for eye in self._eyes]
-        indices = np.concatenate([h.indices for h in hits]) if hits else np.empty(0, dtype=np.intp)
-        return OmmatidiumView(self._buf, indices, self._R)
-
-    def query_ball(self,
-                   center_position: ArrayLike,
-                   radius: float,
-                   avoid_conflicts: bool = False
-                   ) -> 'OmmatidiumView':
-        """
-        All ommatidia (across all eyes) whose world position lies within 'radius'
-        of 'center_position'.
-        """
-        hits = [eye.query_ball(center_position, radius, avoid_conflicts) for eye in self._eyes]
-        indices = np.concatenate([h.indices for h in hits]) if hits else np.empty(0, dtype=np.intp)
-        return OmmatidiumView(self._buf, indices, self._R)
-
-    # Public - Geometry transforms (on the whole array)
-
-    def translate(self, offset: ArrayLike) -> 'Model':
-        """
-        Translate all ommatidia (and rhabdomeres) positions by 'offset'.
-        """
-        # Using the property to trigger _invalidate_spatial
-        self.positions = self.positions + np.asarray(offset, dtype=np.float32).reshape(3)
-        return self
-
-    def scale(self, factor: float) -> 'Model':
-        """
-        Scale all positions about the origin by 'factor'.
-        Note: only world-scale geometry scales. Ommatidum and rhabdomere
-        diameters (μm) and the focal length (μm) are at ommatidium
-        scale and are unchanged.
-        """
-        # Using the property to trigger _invalidate_spatial
-        self.positions = self.positions * factor
-        return self
-
-    def rotate(self, R: ArrayLike) -> 'Model':
-        """
-        Rotate all positions, directions, and tangent frames by the 3x3
-        rotation matrix 'R'.
-        """
-        R_mat = np.asarray(R, dtype=np.float64)
-
-        if R_mat.shape != (3, 3):
-            raise ValueError(f'R must be 3x3, got {R_mat.shape}')
-
-        if not np.allclose(R_mat @ R_mat.T, np.eye(3), atol=1e-3):
-            logger.warning('rotate() called with non-orthonormal matrix, results may be off...')
-
-        # Using the propertis to trigger _invalidate_spatial
-        self.positions = self.positions @ R_mat.T
-        self.directions = self.directions @ R_mat.T
-
-        return self
-
-    # ========== Public properties ==========
-
-    # Eyes properties
+    # Quick groups getters
 
     @property
     def eyes(self) -> List['EyeView']:
@@ -1021,51 +843,24 @@ class Model(BaseView):
     def midline_eyes(self) -> List['EyeView']:
         return self.eyes_by_side('midline')
 
-    # Ommatidia groups getters
-
-    def ommatidia_by_side(self, side: str) -> OmmatidiumView:
+    def ommatidia_by_side(self, side: str) -> 'OmmatidiumView':
         """All ommatidia belonging to eyes on the given side."""
         eyes = self.eyes_by_side(side)
         if not eyes:
-            return OmmatidiumView(self._buf, np.empty(0, dtype=np.intp), self._R)
-        return OmmatidiumView(self._buf, np.concatenate([e.indices for e in eyes]), self._R)
+            return OmmatidiumView(self, np.empty(0, dtype=np.intp))
+        return OmmatidiumView(self, np.concatenate([e.indices for e in eyes]))
 
     @property
-    def left_ommatidia(self) -> OmmatidiumView:
+    def left_ommatidia(self) -> 'OmmatidiumView':
         return self.ommatidia_by_side('left')
 
     @property
-    def right_ommatidia(self) -> OmmatidiumView:
+    def right_ommatidia(self) -> 'OmmatidiumView':
         return self.ommatidia_by_side('right')
 
     @property
-    def midline_ommatidia(self) -> OmmatidiumView:
+    def midline_ommatidia(self) -> 'OmmatidiumView':
         return self.ommatidia_by_side('midline')
-
-    # Cartridges getter
-
-    @property
-    def cartridges(self) -> CartridgeView:
-        if not self._superposition_wired:
-            return CartridgeView(self, np.empty(0, dtype=np.intp))     # TODO: Return OmmatidiaView of itself instead
-
-        return CartridgeView(self, self.omm_indices)
-
-    # Lattice properties
-
-    @property
-    def max_gap(self) -> float:
-        """
-        Largest angular gap between any ommatidium and its nearest neighbour (rad).
-        """
-        return float(max((e.max_gap() for e in self._eyes), default=0.0))
-
-    # Neural superposition wiring properties
-
-    @property
-    def cartridge_indices(self) -> np.ndarray:
-        """(N, R) global donor receptor index per slot (= the gather table)."""
-        return np.asarray(self._buf['cartridge_src']).reshape(self._N, self._R)
 
 
 ##
@@ -1090,7 +885,7 @@ if __name__ == '__main__':
     )
     print(model)
 
-    # print(f"  Bundle orientations (first 5): {model[:5].bundle_orientation}")
-    # print(f"  Chiralities (first 5): {model[:5].chirality}")
+    print(f"  Bundle orientations (first 5): {model[:5].bundle_orientation}")
+    print(f"  Chiralities (first 5): {model[:5].chirality}")
     print(f"  Neural superposition: {model.neural_superposition}")
     print(f"  Cartridges[0] receptors: {model.cartridges[0].receptors}")
