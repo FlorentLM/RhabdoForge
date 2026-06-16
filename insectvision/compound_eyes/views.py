@@ -351,15 +351,19 @@ class BaseView:
 
     @property
     def cartridge_indices(self) -> np.ndarray:
-        """(N, R) global donor rhabdomere index per slot (= the gather table)."""
-        return self._buffer['cartridge_src', self.omm_indices].reshape(self.N, self.R)
+        """(N, R) global donor rhabdomere index per slot (= the gather table).
+        Unwired slots map to the home rhabdomere, so the table is always a valid gather."""
+        rhab = self.omm_indices[..., None] * self.R + np.arange(self.R, dtype=np.intp)
+        src = self._buffer['cartridge_src', rhab].reshape(self.N, self.R)
+        return np.where(src == UNWIRED_SRC, rhab, src.astype(np.intp))
 
     @property
     def cartridge_map(self) -> np.ndarray:
         """(N, R) donor ommatidium per slot (-1 where unwired)."""
         if not self.neural_superposition:
             return np.full((self.N, self.R), -1, dtype=np.intp)
-        src = self.cartridge_indices
+        rhab = self.omm_indices[..., None] * self.R + np.arange(self.R, dtype=np.intp)
+        src = self._buffer['cartridge_src', rhab].reshape(self.N, self.R)
         return np.where(src != UNWIRED_SRC, (src // self.R).astype(np.intp), -1)
 
     @property
@@ -432,7 +436,7 @@ class SpatialQueries:
     Subclasses must provide a _spatial (dict) slot.
     """
     __slots__ = ()
-    
+
     def _to_local(self, query: ArrayLike) -> Tuple[np.ndarray, np.ndarray]:
         """
         Map global ommatidium indices to local rows.
@@ -462,13 +466,13 @@ class SpatialQueries:
         return self._spatial
 
     # Lazy generation of trees
-    
+
     @property
     def _local_i_conflictfree(self) -> np.ndarray:
         """
         Local rows of ommatidia that are conflict-free and not self-wired.
         """
-    
+
         if 'conflictfree_local_i' not in self._spatial_store:
             self._spatial_store['conflictfree_local_i'] = np.flatnonzero(~self.has_conflicts & ~self.has_selfwires)
 
@@ -487,7 +491,7 @@ class SpatialQueries:
                 pts = pts[self._local_i_conflictfree]
 
             self._spatial_store[key] = cKDTree(pts) if pts.shape[0] else None
-    
+
         return self._spatial_store[key]
 
     # Lazy generation of graphs
@@ -652,15 +656,15 @@ class SpatialQueries:
         """
 
         points = np.asarray(query, dtype=np.float32).reshape(-1, 3)
-        
+
         tree = self._get_tree(space, avoid_conflicts)
         if tree is None:
             return self._empty(), np.empty((points.shape[0], 0), dtype=np.float32)
-        
+
         distances, local = knn(tree, points, k, drop_self=False)
         if avoid_conflicts:
             local = self._local_i_conflictfree[local]
-    
+
         return OmmatidiumView(self.model, self.omm_indices[local].ravel()), distances
 
     def query_directions(self,
@@ -717,7 +721,7 @@ class SpatialQueries:
         All ommatidia within 'radius' of 'center' in the given space.
         """
         centre = np.asarray(center, dtype=np.float32)
-    
+
         tree = self._get_tree(space, avoid_conflicts)
         if tree is None:
             return self._empty()
@@ -726,7 +730,7 @@ class SpatialQueries:
 
         if avoid_conflicts:
             hits = self._local_i_conflictfree[hits]
-        
+
         return OmmatidiumView(self.model, self.omm_indices[hits])
 
     def query_cone(self,
@@ -900,7 +904,9 @@ class CartridgeView(OmmatidiumView):
 
     @property
     def rhab_indices(self) -> np.ndarray:
-        return self._buffer['cartridge_src', self._omm_indices].reshape(-1)
+        phys = self._omm_indices[..., None] * self.R + np.arange(self.R, dtype=np.intp)
+        src = self._buffer['cartridge_src', phys].reshape(-1)
+        return np.where(src == UNWIRED_SRC, phys.reshape(-1), src.astype(np.intp))
 
 
 class RhabdomereView(BaseView):

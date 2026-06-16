@@ -244,7 +244,7 @@ class BundlesAligner:
             ).astype(np.float32)
 
         # Polarise: saccade phasor consistently 'up' in the flow frame
-        sacc[sacc @ e_z < 0] *= -1.0
+        sacc[dot_check >= 0] *= -1.0
 
         return AlignmentResult(
             chi=chi.astype(np.float32),

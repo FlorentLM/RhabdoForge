@@ -446,7 +446,7 @@ class EyeViewer:
                 continue
 
             pd = pv.PolyData(self.p[mask].astype(np.float32))
-            pd.point_data['MajorAxis'] = self.model.main_axis_field[mask]
+            pd.point_data['MajorAxis'] = -self.model.main_axis_field[mask]
 
             arrows = pd.glyph(geom=_arrow_template(), orient='MajorAxis', factor=self.arrow_len, scale=False)
             self.plotter.add_mesh(arrows, color=color, ambient=0.4, diffuse=0.7, smooth_shading=True)
@@ -989,11 +989,11 @@ if __name__ == "__main__":
 
     model = Model.from_file(
         'species_models/drosophila_custom.npz',
-        bundle=drosophila_bundle(), orientation=aligner
+        bundle=drosophila_bundle(), orientation=aligner, neural_superposition=True
     )
 
     # model = CompoundEyeModel.from_sphere(
-    #     n=1600, bundle=drosophila_bundle(), orientation=aligner
+    #     n=1600, bundle=drosophila_bundle(), orientation=aligner, neural_superposition=True
     # )
 
     # model.refine_bundle_alignment(max_nudge_deg=30.0)

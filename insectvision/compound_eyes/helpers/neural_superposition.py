@@ -111,9 +111,9 @@ def wire_neural_superposition(
     periph = model.bundle.peripheral_indices
 
     cartridge_map = np.full((N, R), -1, dtype=np.intp)
-    cartridge_map[:, center] = model._omm_indices       # TODO: this name might change
+    cartridge_map[:, center] = model.omm_indices       # TODO: this name might change
 
-    rot = model.buffer['rot_offset']
+    rot = model.buffer['rest_offset']
     rot_dx, rot_dy = rot[..., 0], rot[..., 1]
 
     k_scale = float(np.mean(np.linalg.norm(
