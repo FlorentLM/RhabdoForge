@@ -244,7 +244,12 @@ class BundlesAligner:
             ).astype(np.float32)
 
         # Polarise: saccade phasor consistently 'up' in the flow frame
-        sacc[dot_check >= 0] *= -1.0
+        sacc[hemisphere_sign < 0] *= -1.0
+
+        # Make sure the polarised field really points up globally
+        for eye in model.eyes:
+            if np.sum(sacc[eye.indices] @ e_z) < 0:
+                sacc[eye.indices] *= -1.0
 
         return AlignmentResult(
             chi=chi.astype(np.float32),
