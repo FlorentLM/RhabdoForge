@@ -373,7 +373,7 @@ class HUD:
 
         stats_lines = [
             f'Ommatidia: {nb_om:,}',
-            f'{sample_label}: {nb_om_samples}/om{samples_pp_str}',
+            f'{sample_label}: {nb_om_samples}/rhab{samples_pp_str}',
             f'Total {sample_label}: {nb_om * nb_om_samples:,}{total_pp}'
         ]
 

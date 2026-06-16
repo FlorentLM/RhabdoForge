@@ -456,9 +456,7 @@ class BaseRenderer(ABC):
             with self.eye_buffers.grouped_bind(['rays_intermediate', 'rhab_static', 'colors', 'ema_state', 'rhab_dynamic']):
 
                 self._eye_uniforms.apply(shader)
-
-                work_groups = (self._model.size + 63) // 64
-                glDispatchCompute(work_groups, 1, 1)
+                glDispatchCompute(self._model.size, 1, 1)
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     def _eye_dynamics(self):
@@ -498,7 +496,7 @@ class BaseRenderer(ABC):
 
         out_array = np.zeros_like(self._colours_cpu_buffer)
         if fence:
-            glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000)
+            # glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000)
 
             with self.eye_buffers[f'pbo_{next_pbo_index}'].bind(mode_override=GL_PIXEL_PACK_BUFFER):
                 ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
@@ -740,7 +738,7 @@ class BaseRenderer(ABC):
         # GPU dispatch
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         self._main_render()
-        glFinish()
+        # glFinish()
 
         self._frame_index += 1
 

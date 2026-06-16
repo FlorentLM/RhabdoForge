@@ -146,6 +146,7 @@ class Buffer:
                 'dynamic': np.zeros(self.shape[0], dtype=OMM_DYNAMIC_DTYPE),
                 'stale_mask': np.zeros(self.shape[0], dtype=bool),
                 'stale': False
+                # TODO: Maybe use a threshold to tell the renderer's sync_cpu whether to update all the buffer or not? ...or drop the surgical update and just always push all the data
             },
             'rhabdomere': {
                 'static': np.zeros(self.size, dtype=RHAB_STATIC_DTYPE),
