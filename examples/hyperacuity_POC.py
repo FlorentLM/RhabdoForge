@@ -22,20 +22,18 @@ Two narrowing regimes, each rebuilt and plotted in its own figure:
     phenomenological (r_xtra ~ 0.535): exaggerated dynamic RF contraction standing in for
                                        the pupil / transduction narrowing. 'axial'/'full'
                                        then resolve bars that 'none'/'lateral' cannot.
-
-
 """
 import numpy as np
 import matplotlib.pyplot as plt
 
+from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.helpers.acceptance import SnyderAcceptance
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, RHAB_COLOURS
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.compound_eyes import Model
+from insectvision.engine.meshes import plane_geom
 from insectvision.engine.world_utils import WORLD_FORWARD
 from insectvision.renderers import Raytracer
-from insectvision.geometry import plane_geom
 
 # Config ----------------------------------------------------------
 
@@ -112,15 +110,18 @@ def build_eye(extra_narrowing):
     model = Model.from_file(
         'species_models/drosophila_custom.npz',
         bundle=bundle, orientation=aligner, acceptance=SnyderAcceptance(),
+        neural_superposition=True
     )
+
+    model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
+
     model.scale(1e-6)
 
-    with model.unlock():
-        model.receptors.tau_membrane = TAU_MEMBRANE
-        model.ommatidia.tau_fast = TAU_FAST
-        model.ommatidia.tau_adapt = TAU_ADAPT
-        model.ommatidia.tau_rise = TAU_RISE
-        model.ommatidia.tau_relax = TAU_RELAX
+    model.rhabdomeres.tau_membrane = TAU_MEMBRANE
+    model.ommatidia.tau_adapt_fast = TAU_FAST
+    model.ommatidia.tau_adapt_slow = TAU_ADAPT
+    model.ommatidia.tau_rise = TAU_RISE
+    model.ommatidia.tau_relax = TAU_RELAX
 
     return model
 
@@ -152,15 +153,15 @@ def apply_condition(renderer, model, actuation, ampl_lat, ampl_ax):
 
     renderer.microsaccades_enabled = actuation
 
-    with model.unlock(lenses=True):
-        model.ommatidia.ampl_lat_um = float(ampl_lat)
-        model.ommatidia.ampl_ax_um = float(ampl_ax)
-        model.ommatidia_dynamic['lateral_um'] = 0.0
-        model.ommatidia_dynamic['axial_um'] = 0.0
-        model.ommatidia_dynamic['adapted_lum'] = 0.0
-        model.ommatidia_dynamic['fast_lum'] = 0.0
+    model.ommatidia.lateral_amplitude = ampl_lat
+    model.ommatidia.axial_amplitude = ampl_ax
 
-    model.buffer.omm_dirty = True
+    model.buffer.ommatidia_dynamic['curr_lateral_disp'] = 0.0
+    model.buffer.ommatidia_dynamic['curr_axial_disp'] = 0.0
+    model.buffer.ommatidia_dynamic['curr_lum_slow'] = 0.0
+    model.buffer.ommatidia_dynamic['curr_lum_fast'] = 0.0
+
+    model.buffer.ommatidia_stale = True
 
 
 def sweep_position(elapsed):
@@ -197,7 +198,10 @@ def simulate(model, sep_deg):
     cone = model.query_cone(WORLD_FORWARD, angle=10.0, degrees=True, avoid_conflicts=True)
     if len(cone) == 0:
         raise RuntimeError("No forward-facing ommatidia found.")
-    selected = int(cone.indices[int(np.argmin(cone.azimuth_deg ** 2 + cone.elevation_deg ** 2))])
+
+    az = np.rad2deg(cone.azimuth)
+    el = np.rad2deg(cone.elevation)
+    selected = int(cone.indices[int(np.argmin(az ** 2 + el ** 2))])
     renderer.selected_ommatidia = [selected]
 
     rec = {'agent_y': [], 'cond': [], 'mdir': [], 'cart': []}
@@ -388,6 +392,7 @@ def make_figure(results, regime):
                     fontsize=8, va='top', color='grey')
             ax.set_title(f'{cond}  |  {dlabel}')
             ax.set_xlim(-VIEW_HALFWIDTH, VIEW_HALFWIDTH)
+            # ax.set_ylim(bottom=-0.025)
             ax.grid(True, alpha=0.3)
 
         axs[row, 0].set_ylabel('signal intensity')

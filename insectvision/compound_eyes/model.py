@@ -20,7 +20,8 @@ from insectvision.geometry.spherical import angle_to_chord
 
 from insectvision.compound_eyes.buffers import Buffer
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
-from insectvision.compound_eyes.helpers.neural_superposition import wire_neural_superposition, get_conflict_masks, get_noconflict_masks
+from insectvision.compound_eyes.helpers.neural_superposition import wire_neural_superposition, get_conflict_masks, \
+    get_noconflict_masks, refine_chi
 from insectvision.compound_eyes.helpers.acceptance import AcceptanceModel, SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
 from insectvision.compound_eyes.helpers.ommatidia_lattice import voronoi_estimation
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner, AlignmentResult, apply_chirality, trivial_alignment
@@ -824,6 +825,37 @@ class Model(SpatialQueries, BaseView):
                 f'Acceptance model {type(acceptance_model).__name__} returned {acceptance_angles.shape}, expected {(self._N, self._R, 2)}')
 
         return acceptance_angles
+
+    # Public - Bundle alignment refinement (post-superposition)
+
+    def refine_superposition(self,
+        min_donors: int = 2,
+        smooth_iters: int = 0,
+        relax: float = 0.5,
+        max_nudge_deg: float = 20.0,
+        adjust_scale: bool = True
+    ) -> 'Model':
+        """
+        Refines the geometric layout of individual ommatidium bundles to best match
+        the topological neural-superposition wiring. Nudges bundle rotation (chi)
+        and scale to minimise angular disparity between ideal receptor lines of sight
+        and actual target lenses.
+
+        Args:
+            min_donors: int, min wired donors needed to trust an ommatidium
+            smooth_iters: int, passes to smooth the correction over the lattice
+            relax: float, under-relaxation parameter (1.0 = strict geometry solve)
+            max_nudge_deg: float, maximum rotation allowed (degrees)
+            adjust_scale: bool, whether to also dynamically stretch/shrink bundles
+        """
+        refine_chi(self,
+                   min_donors=min_donors,
+                   smooth_iters=smooth_iters,
+                   relax=relax,
+                   max_nudge_deg=max_nudge_deg,
+                   adjust_scale=adjust_scale
+                   )
+        return self
 
     # Disabling model-level neighbours queries
 

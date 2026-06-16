@@ -6,6 +6,9 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment, LinearConstraint, milp, Bounds
 from scipy.sparse import coo_matrix
 
+from insectvision.geometry.circular import wrap_angle
+from insectvision.geometry.neighbours import smooth_field_partitioned, knn
+
 if TYPE_CHECKING:
     from insectvision.compound_eyes.model import Model
 
@@ -337,3 +340,128 @@ def wire_neural_superposition(
     cartridge_src = np.where(unwired_mask, UNWIRED_SRC, cs_signed).astype(np.uint32)
 
     return cartridge_src, unwired_mask
+
+
+def refine_chi(
+        model: 'Model',
+        min_donors: int = 3,
+        smooth_iters: int = 3,
+        relax: float = 0.5,
+        max_nudge_deg: float = 15.0,
+        adjust_scale: bool = True
+):
+    """
+    Nudges individual ommatidium bundle yaw (chi) and radial scale to better
+    align the theoretical receptor lines of sight with the ommatidia
+    selected as donors by the neural superposition wiring solver.
+    """
+    if not model.neural_superposition or model.shape[1] <= 1:
+        return
+
+    N, R = model.shape
+    bundle = model.bundle
+    center = bundle.center_index
+    periph = bundle.peripheral_indices
+
+    chi = model.chi.copy()
+    chirality = model.chirality
+    cmap = model.cartridge_map
+    focal = model.focal_length
+
+    # Project donor directions into home focal plane
+    cmap_periph = cmap[:, periph]
+    valid_mask = cmap_periph >= 0
+    i_idx, r_idx = np.nonzero(valid_mask)
+    j_idx = cmap_periph[valid_mask]
+    p_idx = periph[r_idx]
+
+    donor_dirs = model.directions[j_idx]
+
+    u_act = np.einsum('ij,ij->i', donor_dirs, model.right[i_idx]) * focal[i_idx]
+    v_act = np.einsum('ij,ij->i', donor_dirs, model.up[i_idx]) * focal[i_idx]
+
+    # Actual angles and radii in the focal plane
+    act_ang = np.arctan2(v_act, u_act)
+    act_rad = np.hypot(u_act, v_act)
+
+    # Theoretical template positions at current chi
+    # Template UV is derived from chi and chirality
+    rot_dx, rot_dy = bundle.rotated_offsets(chi, chirality)
+    tdx = rot_dx - rot_dx[:, center:center + 1]
+    tdy = rot_dy - rot_dy[:, center:center + 1]
+
+    tpl_ang = np.arctan2(tdy, tdx)[i_idx, p_idx]
+    tpl_rad = np.hypot(tdx, tdy)[i_idx, p_idx]
+
+    #Per-lens rotation error and scale ratio
+    weights = tpl_rad
+
+    ang_err = wrap_angle(act_ang - tpl_ang)
+
+    sum_sin = np.bincount(i_idx, weights=np.sin(ang_err) * weights, minlength=N)
+    sum_cos = np.bincount(i_idx, weights=np.cos(ang_err) * weights, minlength=N)
+    lens_err = np.arctan2(sum_sin, sum_cos)
+
+    scale_ratios = act_rad / np.clip(tpl_rad, 1e-9, None)
+    sum_scale = np.bincount(i_idx, weights=scale_ratios * weights, minlength=N)
+    sum_w = np.bincount(i_idx, weights=weights, minlength=N)
+    lens_scale = np.where(sum_w > 0, sum_scale / sum_w, 1.0)
+
+    # Mask and smooth
+    measurable = np.bincount(i_idx, minlength=N) >= min_donors
+    lens_err[~measurable] = 0.0
+    lens_scale[~measurable] = 1.0
+
+    groups = [eye.indices for eye in model.eyes]
+    neighbours = []
+    for eye in model.eyes:
+        _, nb = knn(eye._get_tree('directions'), model.directions[eye.indices], k=6)
+        neighbours.append(nb)
+
+    smoothed_err = smooth_field_partitioned(
+        lens_err, kind='scalar', groups=groups, neighbours=neighbours,
+        n_iter=smooth_iters, mask=measurable
+    )
+
+    # Clamp the nudge to prevent flipping
+    lim = np.radians(max_nudge_deg)
+    smoothed_err = np.clip(smoothed_err * relax, -lim, lim)
+
+    if adjust_scale:
+        smoothed_scale = smooth_field_partitioned(
+            lens_scale, kind='scalar', groups=groups, neighbours=neighbours,
+            n_iter=smooth_iters, mask=measurable
+        )
+        final_scale = 1.0 + (smoothed_scale - 1.0) * relax
+        # Safety clamp for scale (+-20%)
+        final_scale = np.clip(final_scale, 0.8, 1.2)
+    else:
+        final_scale = 1.0
+
+    # Apply
+    model.chi = wrap_angle(chi + smoothed_err).astype(np.float32)
+
+    new_dx, new_dy = bundle.rotated_offsets(model.chi, chirality, scale=final_scale)
+    model.rest_offsets = np.stack([new_dx.ravel(), new_dy.ravel()], axis=-1).astype(np.float32)
+
+    # Update microsaccade vectors to stay aligned with the new chi
+    # TODO: Make this optional?
+    sacc_vecs = model.buffer['saccade_dxdy']
+    c, s = np.cos(smoothed_err), np.sin(smoothed_err)
+    new_sacc = np.empty_like(sacc_vecs)
+    new_sacc[:, 0] = c * sacc_vecs[:, 0] - s * sacc_vecs[:, 1]
+    new_sacc[:, 1] = s * sacc_vecs[:, 0] + c * sacc_vecs[:, 1]
+    model.buffer['saccade_dxdy'] = new_sacc.astype(np.float32)
+
+    tip_local = np.stack([new_dx, new_dy, np.broadcast_to(-focal[:, None], (N, R))], axis=-1)
+    new_dirs_world = (
+            tip_local[..., 0, None] * model.right[:, None, :] +
+            tip_local[..., 1, None] * model.up[:, None, :] +
+            tip_local[..., 2, None] * model.directions[:, None, :]
+    )
+
+    view_dirs = -new_dirs_world
+    view_dirs /= np.linalg.norm(view_dirs, axis=-1, keepdims=True)
+
+    model.buffer['curr_direction'] = view_dirs.astype(np.float32)
+    model._conflicts_cache = None
