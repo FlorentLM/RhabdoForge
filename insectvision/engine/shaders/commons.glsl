@@ -104,6 +104,8 @@ struct Point {
     float pad0, pad1;
 };
 
+uniform float airy_lut[256];
+
 // =====================================================================================================================
 
 // Simple RNG with temporal dithering
@@ -170,55 +172,23 @@ Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rhab_idx, u
 
 // =====================================================================================================================
 
-float airy_psf(float a_min, float a_maj, float D, float lambda) {
-    // pure lens diffraction at angular offset (a_min, a_maj)
-
-    float x_min = (PI * D * a_min) / max(lambda, 0.01);
-    float x_maj = (PI * D * a_maj) / max(lambda, 0.01);
-
-    float x = sqrt(x_min*x_min + x_maj*x_maj);
-
-    if (x < 0.001) return 1.0;
-
-    float j1 = (x < 3.75)
-        ? (x*0.5) - (pow(x,3.0)/16.0) + (pow(x,5.0)/384.0) - (pow(x,7.0)/18432.0)
-        : sqrt(0.636619/x) * cos(x - 0.785398);
-
-    return clamp(pow(2.0*j1/x, 2.0), 0.0, 1.0);
-}
-
-float get_sensitivity(int mode, float angle_min, float angle_maj,
+float get_sensitivity(int mode, float dx, float dy,
                       RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os) {
-    float D = os.aperture_um, lambda = rs.wavelength_um;
 
-    if (mode == MODE_AIRY) {  // Airy (x) rhabdomere acceptance
-        float rho_diff = lambda / D;
-        float rg_min = sqrt(max(rd.curr_acc_angles.x*rd.curr_acc_angles.x - rho_diff*rho_diff, 0.0));
-        float rg_maj = sqrt(max(rd.curr_acc_angles.y*rd.curr_acc_angles.y - rho_diff*rho_diff, 0.0));
+    // Radial distance in 'elliptical space' (to handle anisotropy)
+    float g_min = dx / max(rd.curr_acc_angles.x, 1e-15);
+    float g_maj = dy / max(rd.curr_acc_angles.y, 1e-15);
+    float radial_dist = sqrt(g_min*g_min + g_maj*g_maj);
 
-        if (rg_min < 1e-5 && rg_maj < 1e-5)  // diffraction-limited: nothing to convolve
-            return airy_psf(angle_min, angle_maj, D, lambda);
+     if (mode == MODE_AIRY) {
+        // The LUT goes from 0.0 to 4.0 FWHM
+        float lut_index = radial_dist * (255.0 / 4.0);
 
-        // numerical convolution with a Gaussian rhabdomere bundle (FWHM = rg)
-        const int   N    = 6;     // (2N+1)^2 taps (N ~3*rg/rho_diff for faithful rings)
-        const float SPAN = 2.2;   // bundle extent (in units of rg)
-
-        float acc = 0.0, wsum = 0.0;
-        for (int i = -N; i <= N; i++)
-        for (int j = -N; j <= N; j++) {
-            float ui = SPAN * float(i) / float(N);
-            float uj = SPAN * float(j) / float(N);
-            float kw = exp(-GAUSS_CONSTANT_K * (ui*ui + uj*uj));
-            acc  += kw * airy_psf(angle_min - ui*rg_min, angle_maj - uj*rg_maj, D, lambda);
-            wsum += kw;
-        }
-        return clamp(acc / max(wsum, 1e-6), 0.0, 1.0);
+        // Clamp and return
+        return airy_lut[int(clamp(lut_index, 0.0, 255.0))];
     }
     else { // MODE_GAUSSIAN
-        // Snyder quadrature approximation of that same convolution
-        float g_min = angle_min / max(rd.curr_acc_angles.x, 1e-15);
-        float g_maj = angle_maj / max(rd.curr_acc_angles.y, 1e-15);
-        return exp(-GAUSS_CONSTANT_K * (g_min*g_min + g_maj*g_maj));
+        return exp(-GAUSS_CONSTANT_K * (radial_dist * radial_dist));
     }
 }
 

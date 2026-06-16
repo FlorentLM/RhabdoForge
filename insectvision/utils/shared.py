@@ -54,6 +54,28 @@ class SamplingMode(IntEnum):
 # TODO: These below will live here for now...
 
 
+from scipy.special import j1
+
+def airy_sensitivity_lut(size=256):
+    # map x from 0.0 (centre) to 4.0 (deep in the tails)
+    # where x is normalised such that x=0.5 is the half-max
+
+    x_vals = np.linspace(0, 4.0, size)
+    lut_data = []
+
+    for x_norm in x_vals:
+        # scale for Airy FWHM logic
+        x = 3.232 * x_norm
+        if x < 1e-6:
+            val = 1.0
+        else:
+            val = (2.0 * j1(x) / x) ** 2
+        lut_data.append(float(val))
+
+    return np.array(lut_data, dtype=np.float32)
+# TODO: Other sensitivity profiles?
+
+
 def norm_minmax(
         array: ArrayLike,
         axis=None,

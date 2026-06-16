@@ -8,15 +8,15 @@ from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple, Sequence
 import numpy as np
 from pyglm import glm
 
-from insectvision.utils.shared import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode
+from insectvision.utils.shared import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, \
+    SamplingMode, airy_sensitivity_lut
 from insectvision.engine.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.agent import Agent
 from insectvision.engine.scene import Scene
 from insectvision.engine.resources import ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry
 from insectvision.renderers.helpers import VisualOutput
 
-from insectvision.compound_eyes.buffers import OMM_STATIC_DTYPE, OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, \
-    RHAB_DYNAMIC_DTYPE, _BIT_LAYOUT
+from insectvision.compound_eyes.buffers import OMM_STATIC_DTYPE, OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, RHAB_DYNAMIC_DTYPE
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes import Model, Eye
@@ -313,6 +313,7 @@ class BaseRenderer(ABC):
             nb_samples=self.nb_samples,
             use_hybrid_sampling=self._use_hybrid_sampling,
             sampling_mode=self._sampling_mode,  # 0 = Gaussian, 1 = Airy
+            airy_lut=airy_sensitivity_lut(),
 
             # Visualisation defaults
             selected_ommatidia=self._selected_omm_indices,
