@@ -41,11 +41,12 @@ void main() {
     uint rng_state = pcg_hash(base_seed + sample_idx * 749u);
 
     // Generate ray direction
+    mat3 eye_rot = mat3(cam_to_world);
 
-    // Reconstruct tangent frame
-    vec3 F = rd.curr_direction;
-    // Project anatomical 'right' onto the plane orthogonal to F
-    vec3 T = normalize(os.right - F * dot(os.right, F));
+    // Reconstruct tangent frame (in world space)
+    vec3 F = normalize(eye_rot * rd.curr_direction);
+    vec3 right_w = eye_rot * os.right;
+    vec3 T = normalize(right_w - F * dot(right_w, F));
     vec3 B = normalize(cross(F, T));
 
     vec3 P = (cam_to_world * vec4(os.position, 1.0)).xyz;

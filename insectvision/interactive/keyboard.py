@@ -172,7 +172,7 @@ class KeyboardMouse(Controls):
             sun = self.ctx.scene.sun
             new_azimuth = sun.azimuth + dx * self._sun_orbit_speed * -1
             new_elevation = sun.elevation - dy * self._sun_orbit_speed
-            new_elevation = max(1.0, min(89.0, new_elevation))
+            new_elevation = max(0.01, min(89.99, new_elevation))
 
             if abs(dx) > 0.1 or abs(dy) > 0.1:
                 sun.from_angles(new_azimuth, new_elevation)

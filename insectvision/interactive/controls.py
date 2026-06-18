@@ -57,7 +57,7 @@ class ActionRegistry:
             'Toggle tiled view',
             'Rendering',
             'Tiled Vornoi view',
-            self.ctx.toggle_voronoi,
+            self.ctx.toggle_tiled_mode,
             'V',
             'B / Circle'
         )

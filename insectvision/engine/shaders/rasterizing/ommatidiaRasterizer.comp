@@ -15,7 +15,7 @@ uniform int nb_samples;
 uniform float dither_counter;
 uniform int randomness_mode;
 uniform bool use_hybrid_sampling;
-uniform int  sampling_mode;
+uniform int sampling_mode;
 
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
@@ -45,7 +45,7 @@ void main() {
     if (use_hybrid_sampling) {
         sample_dir = sampledir_hybrid(sampling_mode, rs, rd, os, T, B, F, s.u1, s.u2, ray_weight);
     } else {
-        direction = sampledir_importance(rs, rd, os, T, B, F, s.u1, s.u2, ray_weight);
+        sample_dir = sampledir_importance(rs, rd, os, T, B, F, s.u1, s.u2, ray_weight);
     }
 
     vec3 color = texture(scene_cubemap, sample_dir).rgb;

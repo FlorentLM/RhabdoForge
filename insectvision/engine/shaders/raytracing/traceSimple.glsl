@@ -16,7 +16,7 @@ vec3 trace_simple(Ray r) {
 
     vec3 surface_color = get_surface_color(closest_hit);
     vec3 hit_pos = r.origin + direction * closest_hit.t;
-    vec3 normal = get_surface_normal(closest_hit, direction);
+    vec3 normal = get_surface_normal(closest_hit, direction, hit_pos);
 
     vec3 result = vec3(0.0);
 

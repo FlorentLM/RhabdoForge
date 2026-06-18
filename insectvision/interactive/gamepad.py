@@ -178,21 +178,21 @@ class Gamepad(Controls):
                 sun.from_angles(new_azimuth, new_elevation, sun.distance)
 
                 if abs(left_stick_yaw_delta) > 0:
-                    agent.rotate(yaw_delta=left_stick_yaw_delta, degrees=True)
+                    agent.rotate(yaw=left_stick_yaw_delta, degrees=True)
 
             elif ctx.display_mode == DisplayMode.Third_person:
                 ctx.observer.pan(
-                    azimuth_delta=-rx * self._look_x_dir * self.look_sensitivity * wall_dt,
-                    elevation_delta=ry * self._look_y_dir * self.look_sensitivity * wall_dt,
+                    azimuth=-rx * self._look_x_dir * self.look_sensitivity * wall_dt,
+                    elevation=ry * self._look_y_dir * self.look_sensitivity * wall_dt,
                     degrees=True
                 )
                 if abs(left_stick_yaw_delta) > 0:
-                    agent.rotate(yaw_delta=left_stick_yaw_delta, degrees=True)
+                    agent.rotate(yaw=left_stick_yaw_delta, degrees=True)
 
             else:
                 agent.rotate(
-                    yaw_delta=-rx * self._look_x_dir * self.look_sensitivity * wall_dt,
-                    pitch_delta=ry * self._look_y_dir * self.look_sensitivity * wall_dt,
+                    yaw=-rx * self._look_x_dir * self.look_sensitivity * wall_dt,
+                    pitch=ry * self._look_y_dir * self.look_sensitivity * wall_dt,
                     degrees=True
                 )
 
@@ -204,4 +204,4 @@ class Gamepad(Controls):
             roll -= 1.0
 
         if roll != 0.0:
-            agent.rotate(roll_delta=roll * self.look_sensitivity * wall_dt, degrees=True)
+            agent.rotate(roll=roll * self.look_sensitivity * wall_dt, degrees=True)

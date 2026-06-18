@@ -3,7 +3,7 @@ import numpy as np
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.engine.meshes import CUBE_VERTICES, CUBE_INDICES
 from insectvision.compound_eyes import Model
-from insectvision.renderers import Raytracer
+from insectvision.renderers import Raytracer, Pathtracer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
 from insectvision.utils.shared import RandomnessMode
 

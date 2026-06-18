@@ -256,17 +256,17 @@ vec3 get_surface_color(HitInfo hit) {
     }
 }
 
-vec3 get_surface_normal(HitInfo hit, vec3 ray_dir) {
+vec3 get_surface_normal(HitInfo hit, vec3 ray_dir, vec3 hit_pos) {
     InstanceInfo hit_inst = instances[hit.instance_id];
-    vec3 normal_obj;
+
+    vec3 normal_world;
 
     if (hit.is_point_hit) {
         uint point_id = hit_inst.vertex_or_point_offset + hit.primitive_idx;
         Point p = getPoint(point_id);
-        normal_obj = p.normal;
-        if (length(normal_obj) < 0.001) {
-            normal_obj = vec3(0.0, 1.0, 0.0);
-        }
+        vec3 center_world = (hit_inst.transform * vec4(p.position, 1.0)).xyz;
+        normal_world = normalize(hit_pos - center_world);   // sphere normal, world space
+
     } else {
         uint blas_prim_id = hit.primitive_idx;
         uint base_idx = hit_inst.index_offset + blas_prim_id * 3;
@@ -279,16 +279,13 @@ vec3 get_surface_normal(HitInfo hit, vec3 ray_dir) {
         vec3 v1 = getPos(base_vtx + i1);
         vec3 v2 = getPos(base_vtx + i2);
 
-        normal_obj = normalize(cross(v1 - v0, v2 - v0));
+        vec3 normal_obj = normalize(cross(v1 - v0, v2 - v0));
+        mat3 normal_matrix = mat3(hit_inst.transform);
+
+        normal_world = normalize(normal_matrix * normal_obj);
     }
 
-    mat3 normal_matrix = mat3(hit_inst.transform);
-    vec3 normal_world = normalize(normal_matrix * normal_obj);
-
-    if (dot(normal_world, ray_dir) > 0.0) {
-        normal_world = -normal_world;
-    }
-
+    if (dot(normal_world, ray_dir) > 0.0) normal_world = -normal_world; // no-op for near-side hit
     return normal_world;
 }
 

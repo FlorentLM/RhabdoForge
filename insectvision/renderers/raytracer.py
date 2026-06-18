@@ -9,8 +9,8 @@ from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from insectvision.utils.shared import DisplayMode, RandomnessMode, SamplingMode
-from insectvision.engine.agent import Agent
-from insectvision.engine.scene import Scene, AssetType, Asset
+
+from insectvision.engine.scene import AssetType
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
 from insectvision.engine.resources import (
     write_pytinybvh_preamble, ShaderProgram, GPUResourceManager,
@@ -19,8 +19,11 @@ from insectvision.engine.resources import (
 from insectvision.renderers.base import BaseRenderer
 
 if TYPE_CHECKING:
+    from insectvision.engine.agent import Agent, OrbitCamera
+    from insectvision.engine.scene import Scene, Asset
     from insectvision.compound_eyes import Model
     from insectvision.engine.context import Context
+
 
 RENDERABLE_INST_DTYPE = np.dtype([
     ('transform', np.float32, (4, 4)),
@@ -41,7 +44,7 @@ class RaytraceBaker:
     Manages BVH structures and GPU buffers for a Scene.
     """
 
-    def __init__(self, scene: Scene, resource_manager: GPUResourceManager):
+    def __init__(self, scene: 'Scene', resource_manager: 'GPUResourceManager'):
         self.scene = scene
 
         self._tlas: Optional[BVH] = None
@@ -661,6 +664,9 @@ class Raytracer(BaseRenderer):
         with self.raytrace_shader as shader:
             with bvh.grouped_bind(), lights.grouped_bind(), eye.grouped_bind(['rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic']):
                 with self._baker.scene_textures.bind_all():
+
+                    # Restore number of samples
+                    self._eye_uniforms.update(nb_samples=self._samples_per_rhab)
 
                     self._eye_uniforms.update(cam_to_world=glm.inverse(self.agent.view))
 

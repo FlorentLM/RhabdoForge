@@ -282,7 +282,7 @@ class Context:
         next_mode = (self.display_mode.value + 1) % len(DisplayMode)
         self.display_mode = DisplayMode(next_mode)
 
-    def toggle_voronoi(self):
+    def toggle_tiled_mode(self):
         self.renderer.tiled_mode = not self.renderer.tiled_mode
 
     def toggle_projection_mode(self):
