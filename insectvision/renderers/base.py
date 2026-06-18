@@ -715,7 +715,6 @@ class BaseRenderer(ABC):
         # GPU dispatch
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
         self._main_render()
-        # glFinish()
 
         self._frame_index += 1
 

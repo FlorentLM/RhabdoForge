@@ -685,8 +685,10 @@ class UniformRegistry:
     def _values_differ(self, old_val, new_val):
         if type(old_val) != type(new_val):
             return True
+
         if isinstance(new_val, np.ndarray):
             return not np.array_equal(old_val, new_val)
+
         return old_val != new_val
 
     def update(self, **kwargs):

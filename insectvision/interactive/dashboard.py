@@ -1,3 +1,4 @@
+from typing import TYPE_CHECKING, Optional
 import dearpygui.dearpygui as dpg
 import numpy as np
 import collections
@@ -5,6 +6,9 @@ from pyglm import glm
 
 from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
 from insectvision.utils.shared import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode
+
+if TYPE_CHECKING:
+    from insectvision.renderers.helpers import VisualOutput
 
 
 class Dashboard:
@@ -139,9 +143,9 @@ class Dashboard:
                     dpg.add_spacer(height=5)
                     dpg.add_text('Photomechanical Response', color=[255, 150, 100])
 
-                    dpg.add_checkbox(label='Enable Rhabdomeres Actuation',
+                    dpg.add_checkbox(label='Enable Rhabdomeres microsaccades',
                                      default_value=self.ctx.renderer.microsaccades_enabled,
-                                     callback=lambda s, a: setattr(self.ctx.renderer, 'actuation', a))
+                                     callback=lambda s, a: setattr(self.ctx.renderer, 'microsaccades_enabled', a))
 
                     dpg.add_separator()
                     dpg.add_text('Shader Parameters (EyeDynamics.comp)', color=[100, 200, 255])
@@ -354,21 +358,22 @@ class Dashboard:
 
         self._initialised = True
 
-    def toggle_omm_selection(self, omm_idx, multi=False):
-        """Toggle selection. If omm_idx is None, clears all."""
-        if omm_idx is None:
+    def toggle_omm_selection(self, ommatidia_indices, multi=False):
+        """Toggle selection. If ommatidia_indices is None, clears all."""
+
+        if ommatidia_indices is None:
             self.selected_ommatidia = []
             # reset the slider to 0 if cleared
             if dpg.does_item_exist(self.omm_slider):
                 dpg.set_value(self.omm_slider, 0)
         elif not multi:
-            self.selected_ommatidia = [omm_idx]
+            self.selected_ommatidia = [ommatidia_indices]
         else:
-            if omm_idx in self.selected_ommatidia:
-                self.selected_ommatidia.remove(omm_idx)
+            if ommatidia_indices in self.selected_ommatidia:
+                self.selected_ommatidia.remove(ommatidia_indices)
             else:
                 if len(self.selected_ommatidia) < self.max_selected:
-                    self.selected_ommatidia.append(omm_idx)
+                    self.selected_ommatidia.append(ommatidia_indices)
 
         model = self.ctx.renderer._model
         pad_len = len(self.frame_data)
@@ -673,7 +678,8 @@ class Dashboard:
             dpg.set_axis_limits('x_axis_2', x_min, x_max)
 
     # Main render
-    def render(self, visual_output: 'VisualOutput'):
+    def render(self, visual_output: Optional['VisualOutput'] = None):
+
         if not self._initialised:
             self._setup_dpg()
             # Initial sync of selection from renderer to dashboard
@@ -710,7 +716,7 @@ class Dashboard:
         self.ctx.renderer.selected_ommatidia = shader_selection
 
         # Update plots (if tab is visible)
-        if dpg.is_item_visible('tab_plots') and visual_output is not None:
+        if visual_output is not None and dpg.is_item_visible('tab_plots'):
             self._update_plot_data(visual_output, model, mode)
 
         dpg.render_dearpygui_frame()

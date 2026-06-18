@@ -45,11 +45,12 @@ class TransformMixin:
     @property
     def rotation(self):
         """Orientation as a unit quaternion."""
-        s = self.scale_vec
-        R = glm.mat3(
-            glm.vec3(self.transform[0]) / s.x,
-            glm.vec3(self.transform[1]) / s.y,
-            glm.vec3(self.transform[2]) / s.z,
+        s = self.scale
+        R = glm.mat4(
+            self.transform[0] / s.x,
+            self.transform[1] / s.y,
+            self.transform[2] / s.z,
+            glm.vec4(0, 0, 0, 1)
         )
         return glm.quat_cast(R)
 
@@ -73,7 +74,7 @@ class TransformMixin:
 
     @property
     def forward(self) -> glm.vec3:
-        return glm.normalize(glm.vec3(-self.transform[2]))
+        return glm.normalize(glm.vec3(self.transform * glm.vec4(WORLD_FORWARD, 0.0)))
 
     @property
     def backward(self) -> glm.vec3:
@@ -81,7 +82,7 @@ class TransformMixin:
 
     @property
     def right(self) -> glm.vec3:
-        return glm.normalize(glm.vec3(self.transform[0]))
+        return glm.normalize(glm.vec3(self.transform * glm.vec4(WORLD_RIGHT, 0.0)))
 
     @property
     def left(self) -> glm.vec3:
@@ -89,7 +90,7 @@ class TransformMixin:
 
     @property
     def up(self) -> glm.vec3:
-        return glm.normalize(glm.vec3(self.transform[1]))
+        return glm.normalize(glm.vec3(self.transform * glm.vec4(WORLD_UP, 0.0)))
 
     @property
     def down(self) -> glm.vec3:
@@ -162,7 +163,9 @@ class TransformMixin:
 
         pos = self.position
         self.transform[3] = glm.vec4(0, 0, 0, 1)
-        self.transform = glm.rotate(glm.mat4(1.0), a, rotation_axis) * self.transform
+
+        R = glm.mat4_cast(glm.angleAxis(a, rotation_axis))
+        self.transform = R * self.transform
         self.transform[3] = glm.vec4(pos, 1.0)
         return self
 

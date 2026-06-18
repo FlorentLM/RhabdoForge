@@ -298,7 +298,7 @@ class Context:
         if self.hud:
             self.hud.show = not self.hud.show
 
-    def toggle_heatmap(self):
+    def toggle_overlay(self):
         self.renderer.overlay_enabled = not self.renderer.overlay_enabled
 
     def toggle_sun_control(self):
@@ -322,19 +322,19 @@ class Context:
             self.renderer.nb_samples = max(1, self.renderer.nb_samples // 2)
 
     def increase_pixel_samples(self):
-        if hasattr(self.renderer, 'samples_per_pixel'):
+        if hasattr(self.renderer, 'pixel_samples'):
             self.renderer.samples_per_pixel *= 2
 
     def decrease_pixel_samples(self):
-        if hasattr(self.renderer, 'samples_per_pixel'):
-            self.renderer.samples_per_pixel = max(1, self.renderer.samples_per_pixel // 2)
+        if hasattr(self.renderer, 'pixel_samples'):
+            self.renderer.pixel_samples = max(1, self.renderer.pixel_samples // 2)
 
     def toggle_debug(self):
         if self.debug is not None:
             self.debug.enabled = not self.debug.enabled
 
-    def toggle_saccades(self):
-        if hasattr(self.renderer, 'actuation'):
+    def toggle_microsaccades(self):
+        if hasattr(self.renderer, 'microsaccades_enabled'):
             self.renderer.microsaccades_enabled = not self.renderer.microsaccades_enabled
 
     def reset_position(self):
@@ -479,8 +479,6 @@ class Context:
         if not self._interactive_initialised:
             return
 
-        glfw.make_context_current(self.window)
-
         if self.scene:
             # convert to linear (non gamma-corrected)
             linear_bg_color = tuple(pow(c, 2.2) for c in self.scene.background_color)
@@ -510,7 +508,6 @@ class Context:
             if not self.dashboard.render(view_data):
                 self.dashboard.free()
                 self.dashboard = None
-            glfw.make_context_current(self.window)
 
         # Update FPS throttling check
         if self._fps_limit > 0:

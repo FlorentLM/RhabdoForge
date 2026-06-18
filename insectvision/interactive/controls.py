@@ -75,7 +75,7 @@ class ActionRegistry:
             'Toggle Heatmap',
             'Rendering',
             'Enable heatmap overlay',
-            self.ctx.toggle_heatmap,
+            self.ctx.toggle_overlay,
             'H',
             ''
         )
@@ -155,7 +155,7 @@ class ActionRegistry:
             'Toggle Actuation',
             'Dynamics',
             'Rhabdomere saccades',
-            self.ctx.toggle_saccades,
+            self.ctx.toggle_microsaccades,
             'R',
             'D-Pad Right'
         )
