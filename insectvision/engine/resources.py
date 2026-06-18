@@ -663,89 +663,132 @@ class TextureRegistry:
 
 class UniformRegistry:
     """
-    A dictionary-like registry that stores uniform values and automatically
-    deduces the correct glUniform* call when applied to a shader.
+    A dictionary-like registry that stores uniform values.
     """
 
     def __init__(self, **kwargs):
         self._uniforms = {}
+        self._uniform_versions = {}  # name -> int (global version of the value)
+        self._shader_versions = {}   # shader_id -> {name: int} (what version the shader last saw)
+        self._dispatchers = {}       # (shader_id, name) -> fast lambda callable
         self.update(**kwargs)
 
     def __setitem__(self, name: str, value):
-        self._uniforms[name] = value
+        self.update(**{name: value})
 
     def __getitem__(self, name: str):
         return self._uniforms[name]
 
     def __repr__(self):
-        return f'<UniformRegistry({len(self._uniforms.keys())} uniforms)>'
+        return f'<UniformRegistry({len(self._uniforms)} uniforms)>'
+
+    def _values_differ(self, old_val, new_val):
+        if type(old_val) != type(new_val):
+            return True
+        if isinstance(new_val, np.ndarray):
+            return not np.array_equal(old_val, new_val)
+        return old_val != new_val
 
     def update(self, **kwargs):
-        """Update multiple uniforms at once."""
-        self._uniforms.update(kwargs)
+        """Update multiple uniforms at once (with changes tracking)."""
+        for name, value in kwargs.items():
+            old_val = self._uniforms.get(name, None)
+
+            if name in self._uniforms:
+                if not self._values_differ(old_val, value):
+                    continue  # value hasn't changed, do nothing
+
+                # If the underlying type or numpy shape changes, invalidate our cached dispatcher
+                if type(old_val) != type(value) or (isinstance(value, np.ndarray) and old_val.shape != value.shape):
+                    keys_to_del = [k for k in self._dispatchers if k[1] == name]
+                    for k in keys_to_del:
+                        del self._dispatchers[k]
+
+            self._uniforms[name] = value
+            self._uniform_versions[name] = self._uniform_versions.get(name, 0) + 1
+
+    def _build_dispatcher(self, loc, uniform_type, value):
+        """Inspect the type and build a fast execution lambda."""
+
+        # Bools and integers
+        if isinstance(value, (int, bool, np.integer)):
+            if uniform_type == GL_UNSIGNED_INT:
+                return lambda v: glUniform1ui(loc, int(v))
+            else:
+                return lambda v: glUniform1i(loc, int(v))
+
+        # Floats
+        elif isinstance(value, (float, np.floating)):
+            return lambda v: glUniform1f(loc, float(v))
+
+        # PyGLM vectors and mats
+        elif isinstance(value, (glm.vec2, glm.vec3, glm.vec4)):
+            l = len(value)
+            if l == 2: return lambda v: glUniform2f(loc, v.x, v.y)
+            elif l == 3: return lambda v: glUniform3f(loc, v.x, v.y, v.z)
+            elif l == 4: return lambda v: glUniform4f(loc, v.x, v.y, v.z, v.w)
+
+        elif isinstance(value, (glm.mat3, glm.mat4)):
+            l = len(value)
+            if l == 3: return lambda v: glUniformMatrix3fv(loc, 1, GL_FALSE, glm.value_ptr(v))
+            elif l == 4: return lambda v: glUniformMatrix4fv(loc, 1, GL_FALSE, glm.value_ptr(v))
+
+        # Tuples / Lists (assumed floats)
+        elif isinstance(value, (tuple, list)):
+            l = len(value)
+            if l == 2: return lambda v: glUniform2f(loc, *v)
+            elif l == 3: return lambda v: glUniform3f(loc, *v)
+            elif l == 4: return lambda v: glUniform4f(loc, *v)
+
+        # Numpy arrays
+        elif isinstance(value, np.ndarray):
+            shape = value.shape
+            size = value.size
+            dtype_kind = value.dtype.kind
+
+            if shape == (3, 3):
+                return lambda v: glUniformMatrix3fv(loc, 1, GL_TRUE, np.ascontiguousarray(v).flatten())
+            elif shape == (4, 4):
+                return lambda v: glUniformMatrix4fv(loc, 1, GL_TRUE, np.ascontiguousarray(v).flatten())
+
+            elif uniform_type in (GL_INT, GL_UNSIGNED_INT, GL_FLOAT, GL_BOOL):
+                if dtype_kind in ('i', 'u', 'b'):
+                    return lambda v: glUniform1iv(loc, v.size, np.ascontiguousarray(v).flatten())
+                else:
+                    return lambda v: glUniform1fv(loc, v.size, np.ascontiguousarray(v).flatten())
+
+            elif size == 2: return lambda v: glUniform2fv(loc, 1, np.ascontiguousarray(v).flatten())
+            elif size == 3: return lambda v: glUniform3fv(loc, 1, np.ascontiguousarray(v).flatten())
+            elif size == 4: return lambda v: glUniform4fv(loc, 1, np.ascontiguousarray(v).flatten())
+
+        raise TypeError(f"UniformRegistry doesn't know how to dispatch type: {type(value)} for uniform")
 
     def apply(self, shader: 'ShaderProgram'):
-        """
-        Applies all stored uniforms to the given shader.
-        Safely ignores uniforms that the shader doesn't actively use.
-        """
+        """Applies all dirty uniforms to the given shader."""
+        shader_id = shader.program_id
+
+        if shader_id not in self._shader_versions:
+            self._shader_versions[shader_id] = {}
+
+        shader_vers = self._shader_versions[shader_id]
+
         for name, value in self._uniforms.items():
-            loc = shader.get_loc(name)
-            if loc == -1:
-                continue  # Shader optimised this out or doesn't use it
+            cur_ver = self._uniform_versions[name]
 
-            uniform_type = shader.types.get(name)
+            # Only upload if the value has changed since this shader last saw it
+            if shader_vers.get(name, -1) == cur_ver:
+                continue
 
-            # Bools and integers
-            if isinstance(value, (int, bool, np.integer)):
-                if uniform_type == GL_UNSIGNED_INT:
-                    glUniform1ui(loc, int(value))
-                else:
-                    glUniform1i(loc, int(value))
+            cache_key = (shader_id, name)
+            if cache_key not in self._dispatchers:
+                loc = shader.get_loc(name)
+                if loc == -1:
+                    # Shader optimised this out. Mark up-to-date so it's ignored next time
+                    shader_vers[name] = cur_ver
+                    continue
 
-            # Floats
-            elif isinstance(value, (float, np.floating)):
-                glUniform1f(loc, float(value))
+                uniform_type = shader.types.get(name)
+                self._dispatchers[cache_key] = self._build_dispatcher(loc, uniform_type, value)
 
-            # PyGLM vectors and mats
-            elif isinstance(value, (glm.vec2, glm.vec3, glm.vec4)):
-                if len(value) == 2: glUniform2f(loc, value.x, value.y)
-                elif len(value) == 3: glUniform3f(loc, value.x, value.y, value.z)
-                elif len(value) == 4: glUniform4f(loc, value.x, value.y, value.z, value.w)
-
-
-            elif isinstance(value, (glm.mat3, glm.mat4)):
-                ptr = glm.value_ptr(value)
-                if len(value) == 3: glUniformMatrix3fv(loc, 1, GL_FALSE, ptr)
-                elif len(value) == 4: glUniformMatrix4fv(loc, 1, GL_FALSE, ptr)
-
-            # Tuples / Lists (assumed floats)
-            elif isinstance(value, (tuple, list)):
-                if len(value) == 2: glUniform2f(loc, *value)
-                elif len(value) == 3: glUniform3f(loc, *value)
-                elif len(value) == 4: glUniform4f(loc, *value)
-
-            # Numpy arrays
-            elif isinstance(value, np.ndarray):
-                val_flat = np.ascontiguousarray(value.flatten())
-                if value.shape == (3, 3):
-                    glUniformMatrix3fv(loc, 1, GL_TRUE, val_flat)  # True for row-major numpy
-                elif value.shape == (4, 4):
-                    glUniformMatrix4fv(loc, 1, GL_TRUE, val_flat)
-
-                # Check if the shader expects a scalar uniform (or array of scalars)
-                elif uniform_type in (GL_INT, GL_UNSIGNED_INT, GL_FLOAT, GL_BOOL):
-                    if value.dtype.kind in ('i', 'u', 'b'):
-                        glUniform1iv(loc, value.size, val_flat)
-                    else:
-                        glUniform1fv(loc, value.size, val_flat)
-
-                elif value.size == 2:
-                    glUniform2fv(loc, 1, val_flat)
-                elif value.size == 3:
-                    glUniform3fv(loc, 1, val_flat)
-                elif value.size == 4:
-                    glUniform4fv(loc, 1, val_flat)
-
-            else:
-                raise TypeError(f"UniformRegistry doesn't know how to dispatch type: {type(value)} for '{name}'")
+            self._dispatchers[cache_key](value)
+            shader_vers[name] = cur_ver

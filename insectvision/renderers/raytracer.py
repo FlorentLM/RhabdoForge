@@ -491,11 +491,11 @@ class Raytracer(BaseRenderer):
         )
 
         # Global lighting controls
-        self.enable_direct = enable_direct
-        self.enable_shadows = enable_shadows
-        self.enable_ambient = enable_ambient
-        self.ambient_intensity = 1.0
-        self.sky_intensity = 1.0
+        self._enable_direct = enable_direct
+        self._enable_shadows = enable_shadows
+        self._enable_ambient = enable_ambient
+        self._ambient_intensity = 1.0
+        self._sky_intensity = 1.0
 
         # Lazy resource handles
         self._active_defines: Dict[str, Any] = {}
@@ -519,14 +519,11 @@ class Raytracer(BaseRenderer):
             self._scene_uniforms.update(scene_textures=self._baker.scene_textures['materials'].unit)
 
         self._lights_uniforms = UniformRegistry(
-
-            enable_ambient=self.enable_ambient,
-            enable_direct=self.enable_direct,
-            enable_shadows=self.enable_shadows,
-
-            sky_intensity=self.sky_intensity,
-            ambient_intensity=self.ambient_intensity,
-
+            enable_ambient=self._enable_ambient,
+            enable_direct=self._enable_direct,
+            enable_shadows=self._enable_shadows,
+            sky_intensity=self._sky_intensity,
+            ambient_intensity=self._ambient_intensity,
             directional_lights_count=self._baker._nb_dir_lights,
             point_lights_count=self._baker._nb_point_lights,
             area_lights_count=self._baker._nb_area_lights
@@ -623,21 +620,6 @@ class Raytracer(BaseRenderer):
         if new_defines != self._active_defines:
             self._invalidate_shaders()
             self._active_defines = new_defines
-
-    def _update_uniforms(self):
-
-        self._lights_uniforms.update(
-            sky_intensity=self.sky_intensity,
-            ambient_intensity=self.ambient_intensity,
-            # directional_lights_count=self._baker._nb_dir_lights,
-            # point_lights_count=self._baker._nb_point_lights,
-            # area_lights_count=self._baker._nb_area_lights
-        )
-
-        # if 'materials' in self._baker.scene_textures:
-        #     self._scene_uniforms.update(scene_textures=self._baker.scene_textures['materials'].unit)
-
-        super()._update_uniforms()
 
     # Internal rendering logic and draw calls
 
@@ -744,6 +726,51 @@ class Raytracer(BaseRenderer):
     @property
     def BLASes(self) -> List[BVH]:
         return self._baker._blases
+
+    @property
+    def sky_intensity(self):
+        return self._sky_intensity
+
+    @sky_intensity.setter
+    def sky_intensity(self, value):
+        self._sky_intensity = float(value)
+        self._lights_uniforms.update(sky_intensity=self._sky_intensity)
+
+    @property
+    def ambient_intensity(self):
+        return self._ambient_intensity
+
+    @ambient_intensity.setter
+    def ambient_intensity(self, value):
+        self._ambient_intensity = float(value)
+        self._lights_uniforms.update(ambient_intensity=self._ambient_intensity)
+
+    @property
+    def enable_ambient(self):
+        return self._enable_ambient
+
+    @enable_ambient.setter
+    def enable_ambient(self, value):
+        self._enable_ambient = bool(value)
+        self._lights_uniforms.update(enable_ambient=self._enable_ambient)
+
+    @property
+    def enable_direct(self):
+        return self._enable_direct
+
+    @enable_direct.setter
+    def enable_direct(self, value):
+        self._enable_direct = bool(value)
+        self._lights_uniforms.update(enable_direct=self._enable_direct)
+
+    @property
+    def enable_shadows(self):
+        return self._enable_shadows
+
+    @enable_shadows.setter
+    def enable_shadows(self, value):
+        self._enable_shadows = bool(value)
+        self._lights_uniforms.update(enable_shadows=self._enable_shadows)
 
 
 ##

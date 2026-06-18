@@ -229,13 +229,11 @@ class BaseRenderer(ABC):
         self.dynamics_shader = ShaderProgram(comp_path='shaders/eyeDynamics.comp', defines=base_defines)
 
         # Shared lighting flags (subclasses may override defaults before calling super)
-        self.enable_direct = getattr(self, 'enable_direct', True)
-        self.enable_ambient = getattr(self, 'enable_ambient', True)
-        self.enable_shadows = getattr(self, 'enable_shadows', True)
-        self.ambient_intensity = getattr(self, 'ambient_intensity', 1.0)
-        self.sky_intensity = getattr(self, 'sky_intensity', 1.0)
-
-        self.lum_ref = 1.0  # target operating-point luminance (should be scene-dependant)
+        self._enable_direct = getattr(self, '_enable_direct', True)
+        self._enable_ambient = getattr(self, '_enable_ambient', True)
+        self._enable_shadows = getattr(self, '_enable_shadows', True)
+        self._ambient_intensity = getattr(self, '_ambient_intensity', 1.0)
+        self._sky_intensity = getattr(self, '_sky_intensity', 1.0)
 
         # Visualisation shaders (lazy-loaded)
         self.__fp_colour_shader: Optional[ShaderProgram] = None    # 1st person colour mode
@@ -256,7 +254,6 @@ class BaseRenderer(ABC):
 
         self._needs_warmup: bool = True
         self.runs_interactive: bool = False
-        self.tiled_mode: bool = True
         self.simulate_insect_colours: bool = False  # TODO: expose these (and generate UV-encoded assets for demo)
         self.uv_encoded_textures: bool = False
 
@@ -265,8 +262,11 @@ class BaseRenderer(ABC):
         self._frame_index: int = 0      # advanced at each new rendered frame
 
         # Visualisation stuff
-        self.projection_mode = OmmatidiaProjection.Position
-        self.output_mode = EyeOutput.Cartridge
+        self._projection_mode = OmmatidiaProjection.Position
+        self._output_mode = EyeOutput.Cartridge
+        self._tiled_mode = True
+        self._lum_ref = 1.0         # target operating-point luminance (scene-dependant)
+        self._noise_threshold = 0.05
         self._selected_omm_indices = np.full(10, -1, dtype=np.int32)
 
         # Overlay parameters
@@ -281,8 +281,6 @@ class BaseRenderer(ABC):
         # Fullscreen texture to draw to
         self._screen_surface: Optional[TextureViewer] = None
 
-        self.nb_samples = nb_samples    # via property to apply
-
         # Initialise uniforms registries
         self._eye_uniforms = UniformRegistry(
             aspect_ratio=1.0,
@@ -291,8 +289,6 @@ class BaseRenderer(ABC):
             nb_ommatidia=self._model.N,
             nb_rhabdomeres=self._model.size,
             rhab_per_omm=self._model.R,
-
-            # Rhabdomere bundle params (constants during runtime)
             bundle_centre_idx=self._model.bundle.center_index,
 
             # Various visualisation parameters (currently fixed and not modifiable)
@@ -302,21 +298,21 @@ class BaseRenderer(ABC):
             visualisation_eyes_scale=1.0,
             visualisation_saccade_scale=1.0,
 
-            # Mofidiable during runtime
-            output_mode=self.output_mode,
-            tiled_mode=self.tiled_mode,
-            projection_mode=self.projection_mode,
+            # States
+            output_mode=self._output_mode,
+            tiled_mode=self._tiled_mode,
+            projection_mode=self._projection_mode,
             false_colors=self.simulate_insect_colours and not self.uv_encoded_textures,
             uv_encoding=self.uv_encoded_textures,
 
             # Sampling modes
-            nb_samples=self.nb_samples,
+            nb_samples=self._samples_per_rhab,
             use_hybrid_sampling=self._use_hybrid_sampling,
-            sampling_mode=self._sampling_mode,  # 0 = Gaussian, 1 = Airy
+            sampling_mode=self._sampling_mode, # 0 = Gaussian, 1 = Airy
+            randomness_mode=self._randomness_mode,
             airy_lut=airy_sensitivity_lut(),
 
             # Visualisation defaults
-            selected_ommatidia=self._selected_omm_indices,
             overlay_fallback=True,
             overlay_data_min=self._overlay_range[0],
             overlay_data_max=self._overlay_range[1],
@@ -332,9 +328,13 @@ class BaseRenderer(ABC):
             noise_threshold=self._noise_threshold,
             enable_actuation=self._microsaccades_enabled,
             photon_concentration_factor=0.0,        # TODO: document this better
-            lum_ref=self.lum_ref,
+            lum_ref=self._lum_ref,
             extra_narrowing_ratio=float(self._model.bundle.extra_narrowing_ratio),
         )
+
+        # via property to apply
+        self.nb_samples = nb_samples
+        self._update_selected_ommatidia()
 
     def __repr__(self):
         loop_mode = 'Open-loop (batched)' if self._batch_size > 1 else 'Closed-loop / Interactive'
@@ -449,6 +449,17 @@ class BaseRenderer(ABC):
                 return list(enum_class)[0]
         return enum_class(val)
 
+    def _update_selected_ommatidia(self):
+        sel_omm_indices = self._selected_omm_indices.copy()
+
+        if self._output_mode == EyeOutput.Raw:
+            for i in range(10):
+                if sel_omm_indices[i] != -1:
+                    sel_omm_indices[i] *= self._model.R
+                    sel_omm_indices[i] += self._model.bundle.center_index
+
+        self._eye_uniforms.update(selected_ommatidia=sel_omm_indices)
+
     # Internal rendering logic and draw calls
 
     def _reduction(self):
@@ -512,46 +523,11 @@ class BaseRenderer(ABC):
         return out_array
 
     def _update_uniforms(self):
-
-        # Ticks
+        """Updates uniforms that change every frame."""
         self._eye_uniforms.update(
             dt=self._context.dt,
             frame_offset=self._frame_index % self._batch_size,
             dither_counter=self._dither_counter
-        )
-
-        # If output is 'Raw', the shader needs rhabdomeres IDs. Otherwise, it needs ommatidia IDs
-        shader_highlight_ids = self._selected_omm_indices.copy()
-
-        if self.output_mode == EyeOutput.Raw:
-            # Highlight the center rhabdomere of the selected ommatidia
-            for i in range(10):
-                if shader_highlight_ids[i] != -1:
-                    shader_highlight_ids[i] *= self._model.R
-                    shader_highlight_ids[i] += self._model.bundle.center_index
-
-        # Sampling changes
-        self._eye_uniforms.update(
-            nb_samples=self.nb_samples,
-            use_hybrid_sampling=self._use_hybrid_sampling,
-            randomness_mode=int(self._randomness_mode),
-            sampling_mode=int(self._sampling_mode),
-        )
-
-        # Process UI commands
-        self._eye_uniforms.update(
-            noise_threshold=self._noise_threshold,
-            projection_mode=self.projection_mode,
-            output_mode=self.output_mode,
-            tiled_mode=self.tiled_mode,
-            randomness_mode=self._randomness_mode,
-            enable_actuation=self._microsaccades_enabled,
-            selected_lenses=shader_highlight_ids,
-        )
-
-        # Process eventual luminosity ref change
-        self._eye_uniforms.update(
-            lum_ref=self.lum_ref
         )
 
     def _main_render(self):
@@ -896,6 +872,37 @@ class BaseRenderer(ABC):
         mc_noise = 0.65 / np.sqrt(max(1, self._samples_per_rhab))
         self._noise_threshold = max(0.05, mc_noise)
 
+        self._eye_uniforms.update(nb_samples=self._samples_per_rhab)
+        self._eye_uniforms.update(noise_threshold=self._noise_threshold)
+
+    @property
+    def output_mode(self):
+        return self._output_mode
+
+    @output_mode.setter
+    def output_mode(self, value):
+        self._output_mode = value
+        self._eye_uniforms.update(output_mode=self._output_mode)
+        self._update_selected_ommatidia()
+
+    @property
+    def projection_mode(self):
+        return self._projection_mode
+
+    @projection_mode.setter
+    def projection_mode(self, value):
+        self._projection_mode = value
+        self._eye_uniforms.update(projection_mode=self._projection_mode)
+
+    @property
+    def tiled_mode(self):
+        return self._tiled_mode
+
+    @tiled_mode.setter
+    def tiled_mode(self, value):
+        self._tiled_mode = bool(value)
+        self._eye_uniforms.update(tiled_mode=self._tiled_mode)
+
     @property
     def hybrid_sampling(self) -> bool:
         """Toggle between Importance Sampling (False) and Hybrid Weighted Sampling (True)."""
@@ -916,6 +923,24 @@ class BaseRenderer(ABC):
         self._sampling_mode = self._to_enum(value, SamplingMode)
         self._eye_uniforms.update(sampling_mode=int(self._sampling_mode))
         print(f"Sampling Mode: {self._sampling_mode.name}")
+
+    @property
+    def lum_ref(self):
+        return self._lum_ref
+
+    @lum_ref.setter
+    def lum_ref(self, value):
+        self._lum_ref = float(value)
+        self._eye_uniforms.update(lum_ref=self._lum_ref)
+
+    @property
+    def noise_threshold(self):
+        return self._noise_threshold
+
+    @noise_threshold.setter
+    def noise_threshold(self, value):
+        self._noise_threshold = float(value)
+        self._eye_uniforms.update(noise_threshold=self._noise_threshold)
 
     @property
     def time_dithering(self):
@@ -972,24 +997,18 @@ class BaseRenderer(ABC):
     @selected_ommatidia.setter
     def selected_ommatidia(self, values: Optional[Union[int, Sequence[int], np.ndarray]]):
         self._selected_omm_indices.fill(-1)
+        if values is not None:
+            if isinstance(values, np.ndarray):
+                vals = values.ravel()
+                count = min(len(vals), 10)
+                self._selected_omm_indices[:count] = vals[:count].astype(np.int32)
+            elif isinstance(values, int):
+                self._selected_omm_indices[0] = values
+            else:
+                for i, val in enumerate(list(values)[:10]):
+                    self._selected_omm_indices[i] = int(val)
+        self._update_selected_ommatidia()
 
-        if values is None:
-            return
-
-        if isinstance(values, np.ndarray):
-            vals = values.ravel()
-            count = min(len(vals), 10)
-            self._selected_omm_indices[:count] = vals[:count].astype(np.int32)
-            return
-
-        if isinstance(values, int):
-            self._selected_omm_indices[0] = values
-            return
-
-        for i, val in enumerate(list(values)[:10]):
-            self._selected_omm_indices[i] = int(val)
-
-    # TODO: These should be renamed
     @property
     def microsaccades_enabled(self):
         return self._microsaccades_enabled
