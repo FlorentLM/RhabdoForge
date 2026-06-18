@@ -221,7 +221,7 @@ vec3 get_ambient_light() {
     float luma = dot(ambient, vec3(0.2126, 0.7152, 0.0722));
     ambient = mix(vec3(luma), ambient, ambient_saturation);
 
-    return ambient * sky_intensity * ambient_intensity;
+    return ambient * ambient_intensity;
 }
 
 // ===================================== Surface data ==============================================
