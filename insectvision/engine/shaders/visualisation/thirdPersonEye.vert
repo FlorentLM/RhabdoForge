@@ -91,8 +91,16 @@ void main() {
         omm_idx = uint(i);
         uint c_idx = omm_idx * uint(rhab_per_omm) + uint(bundle_centre_idx);
         rs = rhab_static[c_idx]; rd = rhab_dynamic[c_idx];
+
         for (int r = 0; r < rhab_per_omm; r++) {
-            uint src = (output_mode == 2) ? rhab_static[omm_idx * rhab_per_omm + r].cartridge_src : (omm_idx * rhab_per_omm + r);
+
+            uint src;
+            if (output_mode == 2) {
+                src = rhab_static[omm_idx * rhab_per_omm + r].cartridge_src;
+            } else {
+                src = omm_idx * rhab_per_omm + r;
+            }
+
             #ifdef OVERLAY_MODE
             if (overlay_fallback) {
 //                value = color_data[base + i].w;
@@ -103,6 +111,7 @@ void main() {
             }
             #else
             value += color_data[base + src].rgb;
+            count++;
             #endif
         }
         value /= float(rhab_per_omm);

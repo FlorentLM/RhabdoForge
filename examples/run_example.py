@@ -3,6 +3,7 @@ import numpy as np
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.engine.meshes import CUBE_VERTICES, CUBE_INDICES
 from insectvision.compound_eyes import Model
+from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
 from insectvision.renderers import Raytracer, Pathtracer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
 from insectvision.utils.shared import RandomnessMode
@@ -11,10 +12,12 @@ from insectvision.utils.shared import RandomnessMode
 def main():
 
     USE_POINT_CLOUD = True
+    USE_PATHTRACER = False
     SAMPLES_PER_RHABDOMERE = 64
     HEADLESS = False
     BATCH_SIZE = 1000
     SHOW_DEBUG_OBJECTS = False
+    USE_NEURAL_SUPERPOSITION = True
 
     # -----------------------------------------------
 
@@ -57,11 +60,14 @@ def main():
 
     # Setup eye model
 
+    eye_file_path = 'species_models/drosophila_custom.npz'
+    # eye_file_path = 'species_models/bee_Sturzl.npz'
+    # eye_file_path = 'species_models/drosophila_Kemppainen.npz'
 
     model = Model.from_file(
-        'species_models/drosophila_custom.npz',
-        # 'species_models/bee_Sturzl.npz',
-        # 'species_models/drosophila_Kemppainen.npz'
+        eye_file_path,
+        bundle=drosophila_bundle() if USE_NEURAL_SUPERPOSITION else None,
+        neural_superposition=USE_NEURAL_SUPERPOSITION
     )
     model.scale(1e-6)
 
@@ -75,7 +81,9 @@ def main():
     agent = Agent(position=(0.0, 0.0, 4.0))
 
     # Setup renderer
-    renderer = Raytracer(model=model, scene=scene, agent=agent, context=context,
+    Renderer = Pathtracer if USE_PATHTRACER else Raytracer
+
+    renderer = Renderer(model=model, scene=scene, agent=agent, context=context,
                          nb_samples=SAMPLES_PER_RHABDOMERE,
                          time_dithering=True,
                          randomness_mode=RandomnessMode.Halton,

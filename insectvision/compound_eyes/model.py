@@ -229,6 +229,10 @@ class Model(SpatialQueries, BaseView):
 
             cartridge_src, unwired_mask = wire_neural_superposition(self)
 
+            # Unwired peripheral slots fallback to self-wire
+            own_src = (np.arange(self._N)[:, None] * self._R + np.arange(self._R)).astype(np.uint32)
+            cartridge_src = np.where(unwired_mask, own_src, cartridge_src).astype(np.uint32)
+
             self._buf['cartridge_src'] = cartridge_src
             self._buf['is_wired'] = ~unwired_mask
 
