@@ -25,6 +25,9 @@ if TYPE_CHECKING:
     from insectvision.engine.context import Context
 
 
+WORKGROUPS_RHAB = 64
+
+
 RENDERABLE_INST_DTYPE = np.dtype([
     ('transform', np.float32, (4, 4)),
     ('inverse_transform', np.float32, (4, 4)),
@@ -665,7 +668,7 @@ class Raytracer(BaseRenderer):
                     glDispatchCompute((res[0] + 15) // 16, (res[1] + 15) // 16, 1)
                     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
 
-    def _raytrace_receptors(self):
+    def _raytrace_rhabdomeres(self):
 
         eye = self.eye_buffers
         bvh = self._baker.bvh_buffers
@@ -677,23 +680,20 @@ class Raytracer(BaseRenderer):
 
                     # Restore number of samples
                     self._eye_uniforms.update(nb_samples=self._samples_per_rhab)
-
                     self._eye_uniforms.update(cam_to_world=glm.inverse(self.agent.view))
 
                     self._eye_uniforms.apply(shader)
                     self._scene_uniforms.apply(shader)
                     self._lights_uniforms.apply(shader)
 
-                    N = self._model.size
-                    total_work = N * self._samples_per_rhab
-                    work_groups = (total_work + 63) // 64
+                    work_groups = (self._model.size * self._samples_per_rhab + WORKGROUPS_RHAB - 1) // WORKGROUPS_RHAB
 
                     glDispatchCompute(work_groups, 1, 1)
                     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
     def _sample_scene(self):
         self._baker.update()
-        self._raytrace_receptors()
+        self._raytrace_rhabdomeres()
 
     # Main public methods
 

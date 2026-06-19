@@ -23,6 +23,9 @@ if TYPE_CHECKING:
     from insectvision.engine.context import Context
 
 
+WORKGROUPS_DYNAMICS = 64
+
+
 def _query_available_VRAM() -> int:
     """Queries available VRAM in MB."""
 
@@ -468,6 +471,7 @@ class BaseRenderer(ABC):
             with self.eye_buffers.grouped_bind(['rays_intermediate', 'rhab_static', 'colors', 'ema_state', 'rhab_dynamic']):
 
                 self._eye_uniforms.apply(shader)
+
                 glDispatchCompute(self._model.size, 1, 1)
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
@@ -478,7 +482,7 @@ class BaseRenderer(ABC):
 
                 self._eye_uniforms.apply(shader)
 
-                work_groups = (self._model.N + 63) // 64
+                work_groups = (self._model.N + WORKGROUPS_DYNAMICS - 1) // WORKGROUPS_DYNAMICS
                 glDispatchCompute(work_groups, 1, 1)
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
