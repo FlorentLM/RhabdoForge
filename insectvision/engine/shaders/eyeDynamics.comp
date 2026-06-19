@@ -97,7 +97,7 @@ void main() {
     //      Ramps with the saccade, independent of the optics.
     float disp_frac   = clamp(od.curr_axial_disp / max(os.ampl_axial, 1e-6), 0.0, 1.0);
     float er = (extra_narrowing_ratio <= 0.0) ? 1.0 : extra_narrowing_ratio;  // unset uniform -> pure optics
-    float pheno_scale = mix(1.0, extra_narrowing_ratio, disp_frac);
+    float pheno_scale = mix(1.0, er, disp_frac);
 
     for (int r = 0; r < rhab_per_omm; r++) {
 

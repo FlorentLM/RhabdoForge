@@ -19,6 +19,8 @@ uniform float photon_concentration_factor;
 
 shared vec4 s_data[256]; // Shared memory for the workgroup
 
+const float MAX_SAMPLE_RADIANCE = 100.0;
+
 void main() {
     uint rhab_idx = gl_WorkGroupID.x;
     uint tid = gl_LocalInvocationID.x;
@@ -26,7 +28,7 @@ void main() {
 
     if (tid < nb_samples) {
         vec4 val = ray_results[start_idx + tid];
-        s_data[tid] = vec4(val.rgb * val.a, val.a);
+        s_data[tid] = vec4(min(val.rgb, vec3(MAX_SAMPLE_RADIANCE)) * val.a, val.a);
     } else {
         s_data[tid] = vec4(0.0);
     }
@@ -78,7 +80,7 @@ void main() {
     }
 
     // Pass concentrated radiance to eyeDynamics so adaptation filters see the boost
-    ema_val.w = concentrated_radiance;
+    ema_val.w = (ema_val.r + ema_val.g + ema_val.b) / 3.0;
     ema_state[rhab_idx] = ema_val;
 
     // Biochemical gain control

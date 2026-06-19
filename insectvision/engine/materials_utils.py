@@ -185,7 +185,7 @@ def constant_sh(bg_color):
     return c
 
 
-def get_exr_sun(exr_path, sun_percentile=99.0):
+def get_exr_sun(exr_path, sun_percentile=99.95):
     import os
     os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
     import cv2
