@@ -1,6 +1,7 @@
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
+
 import numpy as np
 from pyglm import glm
 import glfw
@@ -16,10 +17,84 @@ from insectvision.interactive.controls import Controls, ActionRegistry
 from insectvision.interactive.hud import HUD
 from insectvision.interactive.debug import DebugOverlay
 from insectvision.interactive.dashboard import Dashboard
+from insectvision.engine.resources import ShaderProgram
 
 if TYPE_CHECKING:
     from insectvision.renderers.base import BaseRenderer
     from insectvision.renderers.helpers import VisualOutput
+
+
+class HDRTarget:
+    """Offscreen linear-HDR render target: RGBA16F colour + depth24. Resizes lazily."""
+
+    def __init__(self):
+        self._fbo = self._color = self._depth = None
+        self._size = (0, 0)
+
+    def _ensure(self, w, h):
+
+        if self._fbo is not None and self._size == (w, h):
+            return
+
+        self.free()
+        self._size = (w, h)
+
+        self._color = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self._color)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, None)
+
+        for p, v in ((GL_TEXTURE_MIN_FILTER, GL_LINEAR), (GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+                     (GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE), (GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)):
+            glTexParameteri(GL_TEXTURE_2D, p, v)
+
+        self._depth = glGenRenderbuffers(1)
+
+        glBindRenderbuffer(GL_RENDERBUFFER, self._depth)
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h)
+
+        self._fbo = glGenFramebuffers(1)
+
+        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self._color, 0)
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self._depth)
+
+        if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+            raise RuntimeError("HDRTarget incomplete")
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+
+    @property
+    def color(self):
+        return self._color
+
+    def bind(self, w, h):
+        self._ensure(w, h)
+        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
+        glViewport(0, 0, w, h)
+
+    def unbind(self):
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        glViewport(0, 0, *self._size)
+
+    def blit_depth_to_default(self):
+        # so 3D overlays (debug.draw) depth-test against the world
+        w, h = self._size
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, self._fbo)
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0)
+        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_DEPTH_BUFFER_BIT, GL_NEAREST)
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+
+    def free(self):
+        if self._color:
+            glDeleteTextures([self._color])
+            self._color = None
+        if self._depth:
+            glDeleteRenderbuffers(1, [self._depth])
+            self._depth = None
+        if self._fbo:
+            glDeleteFramebuffers(1, [self._fbo])
+            self._fbo = None
+        self._size = (0, 0)
 
 
 class Context:
@@ -51,11 +126,14 @@ class Context:
             raise Exception("GLFW window can't be created")
 
         glfw.make_context_current(self.window)
-
         glfw.swap_interval(int(self._vsync))
-
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_FRAMEBUFFER_SRGB)  # we want linear (non-gamma corrected)
+
+        self._hdr = HDRTarget()
+        self._tonemap_shader = ShaderProgram(vert_path='fullscreen.vert', frag_path='tonemap.frag')
+        self._tonemap_vao = glGenVertexArrays(1)
+        self.exposure = 1.0     # TODO: Wire this in
 
         self.agent: Optional['Agent'] = None
         self.renderer: Optional['BaseRenderer'] = None
@@ -96,6 +174,22 @@ class Context:
         return (f"<Context | Mode: {mode} | "
                 f"Biol. sim time: {self.total_time:.3f}s | "
                 f"Hardware: {self.fps:.1f} FPS>")
+
+    def _tonemap_pass(self):
+        shader = self._tonemap_shader
+        with shader:
+            glDisable(GL_DEPTH_TEST)
+            glDepthMask(GL_FALSE)
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, self._hdr.color)
+            glUniform1i(shader.get_loc('hdr_scene'), 0)
+            glUniform1f(shader.get_loc('exposure'), float(self.exposure))
+            glUniform1f(shader.get_loc('contrast'), float(self.contrast))
+            glBindVertexArray(self._tonemap_vao)
+            glDrawArrays(GL_TRIANGLES, 0, 3)
+            glBindVertexArray(0)
+        glDepthMask(GL_TRUE)
+        glEnable(GL_DEPTH_TEST)
 
     @property
     def mouse_captured(self) -> bool:
@@ -479,12 +573,11 @@ class Context:
         if not self._interactive_initialised:
             return
 
+        # World / scene radiance -> HDR target (linear)
+        self._hdr.bind(self._window_size[0], self._window_size[1])
         if self.scene:
-            # convert to linear (non gamma-corrected)
-            linear_bg_color = tuple(pow(c, 2.2) for c in self.scene.background_color)
-            glClearColor(linear_bg_color[0], linear_bg_color[1], linear_bg_color[2], 1.0)
-
-        glViewport(0, 0, self._window_size[0], self._window_size[1])
+            linear_bg = tuple(pow(c, 2.2) for c in self.scene.background_color)
+            glClearColor(linear_bg[0], linear_bg[1], linear_bg[2], 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
         if self.display_mode == DisplayMode.Third_person:
@@ -496,9 +589,14 @@ class Context:
 
         self.renderer.draw(self.display_mode, pov)
 
-        if self.debug is not None and self.display_mode != DisplayMode.Panoramic: # TODO: debug projection in panoramic mode? idk if useful
-            self.debug.draw(view=pov.view, proj=pov.projection)
+        # Tonemap HDR -> default FB (hardware sRGB-encodes), carries depth for overlays
+        self._hdr.unbind()
+        self._hdr.blit_depth_to_default()
+        self._tonemap_pass()
 
+        # Overlays in display space (not tonemapped)
+        if self.debug is not None and self.display_mode != DisplayMode.Panoramic:
+            self.debug.draw(view=pov.view, proj=pov.projection)
         if self.hud:
             self.hud.draw()
 

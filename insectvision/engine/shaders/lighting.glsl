@@ -194,7 +194,7 @@ vec3 get_sky_color(vec3 direction) {
     vec3 sky;
 
     if (use_skybox) {
-        sky = texture(skybox, direction).rgb * sky_intensity;
+        sky = sample_env(direction) * sky_intensity;
     } else {
         sky = background_color * sky_intensity;
     }
@@ -206,11 +206,11 @@ vec3 get_ambient_light() {
     vec3 ambient;
 
     if (use_skybox) {
-        ambient  = texture(skybox, vec3( 0.0, 1.0,  0.0)).rgb;
-        ambient += texture(skybox, vec3( 1.0, 0.3,  0.0)).rgb;
-        ambient += texture(skybox, vec3(-1.0, 0.3,  0.0)).rgb;
-        ambient += texture(skybox, vec3( 0.0, 0.3,  1.0)).rgb;
-        ambient += texture(skybox, vec3( 0.0, 0.3, -1.0)).rgb;
+        ambient  = sample_env(vec3( 0.0, 1.0,  0.0));
+        ambient += sample_env(vec3( 1.0, 0.3,  0.0));
+        ambient += sample_env(vec3(-1.0, 0.3,  0.0));
+        ambient += sample_env(vec3( 0.0, 0.3,  1.0));
+        ambient += sample_env(vec3( 0.0, 0.3, -1.0));
         ambient /= 5.0;
     } else {
         ambient = background_color;
@@ -229,9 +229,11 @@ vec3 get_ambient_light() {
 vec3 get_surface_color(HitInfo hit) {
     InstanceInfo hit_inst = instances[hit.instance_id];
 
+    vec3 albedo;
+
     if (hit.is_point_hit) {
         Point p = getPoint(hit_inst.vertex_or_point_offset + hit.primitive_idx);
-        return pow(p.color.rgb, vec3(2.2));  // sRGB to linear
+        albedo = p.color.rgb;
 
     } else {
         uint blas_prim_id = hit.primitive_idx;
@@ -249,11 +251,14 @@ vec3 get_surface_color(HitInfo hit) {
         Material hit_mat = materials[hit_inst.material_id];
 
         if (hit_mat.texture_idx == 0xFFFFFFFFu) {
-            return unpack_color(hit_mat.base_color).rgb;
+            albedo = unpack_color(hit_mat.base_color).rgb;
         } else {
-            return texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
+            albedo = texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
         }
     }
+
+    if (hit_inst.is_srgb != 0u) albedo = pow(albedo, vec3(2.2));
+    return albedo;
 }
 
 vec3 get_surface_normal(HitInfo hit, vec3 ray_dir, vec3 hit_pos) {

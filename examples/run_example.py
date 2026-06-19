@@ -36,7 +36,7 @@ def main():
     cube_faces = CUBE_INDICES.reshape(-1, 3)
 
     # Create a mesh asset from raw vertex and index data
-    crate_asset = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='assets/textures/wood.jpg')
+    crate_asset = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='assets/textures/grass.jpg', sRGB=False)
 
     # Add multiple instances of the same asset
     static_crate_1 = scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))

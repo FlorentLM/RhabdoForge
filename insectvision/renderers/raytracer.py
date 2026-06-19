@@ -35,8 +35,9 @@ RENDERABLE_INST_DTYPE = np.dtype([
     ('is_points', np.uint32),
     ('prim_index_offset', np.uint32),
     ('radius_factor', np.float32),
-    ('padding', np.uint32, 1),
+    ('is_srgb', np.uint32),
 ])  # 160 bytes
+# TODO: reorganise this struct
 
 
 class RaytraceBaker:
@@ -83,7 +84,7 @@ class RaytraceBaker:
         self._push_to_gpu()
 
         if self.scene.skybox:
-            self.scene_textures.register_existing('skybox', self.scene.skybox.texture_id, GL_TEXTURE_CUBE_MAP)
+            self.scene_textures.register_existing('skybox', self.scene.skybox.texture_id, GL_TEXTURE_2D)
 
     # Main packing methods
 
@@ -311,6 +312,8 @@ class RaytraceBaker:
                 self.gpu_inst_info[i]['index_offset'] = 0
                 self.gpu_inst_info[i]['radius_factor'] = inst.properties.get('radius_factor', 1.0)
                 self.gpu_inst_info[i]['is_points'] = 1
+
+            self.gpu_inst_info[i]['is_srgb'] = inst.asset.is_srgb
 
             if inst.dynamic:
                 self._dynamic_map[inst.id] = i

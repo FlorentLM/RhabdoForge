@@ -11,8 +11,10 @@ from PIL import Image
 import trimesh
 from pyglm import glm
 
-from .lights import Sun, Light, DirectionalLight, PointLight, AreaLight
-from .movement import TransformMixin
+from insectvision.engine.lights import Sun, Light, DirectionalLight, PointLight, AreaLight
+from insectvision.engine.movement import TransformMixin
+from insectvision.engine.materials_utils import load_exr_equirect
+
 from .resources import ShaderProgram
 
 from insectvision.engine.meshes import CUBE_VERTICES, CUBE_INDICES
@@ -201,6 +203,7 @@ class Asset:
 
         self._texture_path: Optional[Path] = None  # source path for lazy loading
         self._texture_image: Optional[Image.Image] = None  # cached image
+        self.is_srgb = True
         self.texture_id: Optional[int] = None  # OpenGL texture ID (set by renderer)
 
     @property
@@ -231,7 +234,7 @@ class Asset:
         """Returns True if this asset has a texture (path or image)."""
         return self._texture_image is not None or self._texture_path is not None
 
-    def set_texture(self, source: Union[Path, str, Image.Image, np.ndarray, None]):
+    def set_texture(self, source: Union[Path, str, Image.Image, np.ndarray, None], sRGB: bool = True):
         """
         Sets the texture from various sources. None to clear.
 
@@ -253,34 +256,36 @@ class Asset:
             self._texture_path = Path(source)
 
         elif isinstance(source, Image.Image):
-            self._texture_image = source.convert("RGBA")
+            self._texture_image = source.convert('RGBA')
 
         elif isinstance(source, np.ndarray):
             try:
-                self._texture_image = Image.fromarray(source).convert("RGBA")
+                self._texture_image = Image.fromarray(source).convert('RGBA')
             except Exception as e:
                 print(f"Warning: Failed to convert numpy array to image for asset '{self.name}': {e}")
-
         else:
             print(f"Warning: Unrecognized texture source type {type(source).__name__} for asset '{self.name}'")
+
+        self.is_srgb = sRGB
 
     @classmethod
     def from_file(cls,
             name: str,
             file_path: Union[Path, str],
             texture: Optional[Union[Path, str, Image.Image, np.ndarray]] = None,
-            radii: Optional[Union[float, ArrayLike]] = None
+            radii: Optional[Union[float, ArrayLike]] = None,
+            sRGB: bool = True
         ):
         """
         Creates an Asset by loading a 3D model from a file.
         """
 
-        instance = cls(name)
+        asset = cls(name)
 
         # texture override will be used instead of embedded texture if provided
         texture_override = texture is not None
         if texture_override:
-            instance.set_texture(texture)
+            asset.set_texture(texture)
 
         trimesh_model = trimesh.load(file_path)
 
@@ -295,10 +300,12 @@ class Asset:
             if not isinstance(trimesh_model, (trimesh.Trimesh, trimesh.PointCloud)):
                 raise ValueError(f"Failed to extract geometry from scene {file_path}")
 
-        instance.process_trimesh(trimesh_model, radii, extract_texture=not texture_override)
+        asset.process_trimesh(trimesh_model, radii, extract_texture=not texture_override)
 
-        print(f"Created Asset '{instance.name}' ({instance.asset_type.name}) from {file_path}")
-        return instance
+        asset.is_srgb = sRGB
+
+        print(f"Created Asset '{asset.name}' ({asset.asset_type.name}) from {file_path}")
+        return asset
 
     @classmethod
     def from_arrays(cls,
@@ -309,19 +316,20 @@ class Asset:
             vertex_colors: Optional[np.ndarray] = None,
             uv_coords: Optional[np.ndarray] = None,
             texture: Optional[Union[Path, str, Image.Image, np.ndarray]] = None,
+            sRGB: bool = True,
             radii: Optional[Union[float, ArrayLike]] = None
         ):
         """
         Creates an Asset from numpy arrays.
         """
 
-        instance = cls(name)
+        asset = cls(name)
 
         if texture is not None:
-            instance.set_texture(texture)
+            asset.set_texture(texture)
 
         # For trimesh texture mapping, we need the image if UVs are provided
-        texture_for_trimesh = instance._texture_image if uv_coords is not None else None
+        texture_for_trimesh = asset._texture_image if uv_coords is not None else None
 
         trimesh_model = trimesh_from_arrays(
             vertices=vertices, faces=faces, normals=normals,
@@ -332,10 +340,11 @@ class Asset:
         if trimesh_model is None:
             raise ValueError("Failed to create geometry from arrays.")
 
-        instance.process_trimesh(trimesh_model, radii, extract_texture=False)
+        asset.process_trimesh(trimesh_model, radii, extract_texture=False)
+        asset.is_srgb = sRGB
 
-        print(f"Created Asset '{instance.name}' ({instance.asset_type.name}) from arrays")
-        return instance
+        print(f"Created Asset '{asset.name}' ({asset.asset_type.name}) from arrays")
+        return asset
 
     def process_trimesh(self,
                         trimesh_obj: Union[trimesh.Trimesh, trimesh.PointCloud],
@@ -506,57 +515,22 @@ class Instance(TransformMixin):
 
 
 class Skybox:
-    def __init__(self, texture_path: Path | str = 'textures/bright_day'):
+    def __init__(self, texture_path: Path | str = 'textures/sky.exr', max_height: int = 2048):
 
-        self.texture_id = load_cubemap(texture_path)
+        data = load_exr_equirect(texture_path, max_height=max_height)
+        h, w = data.shape[:2]
 
-        self.program = ShaderProgram(vert_path='skybox.vert', frag_path='skybox.frag')
+        texture_id = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, texture_id)
 
-        skybox_vertices = CUBE_VERTICES.reshape(-1, 5)[:, :3]
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, w, h, 0, GL_RGB, GL_FLOAT, data)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)  # wrap azimuth
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)  # clamp poles
+        glBindTexture(GL_TEXTURE_2D, 0)
 
-        self.vao = glGenVertexArrays(1)
-        glBindVertexArray(self.vao)
-
-        vbo = glGenBuffers(1)
-        glBindBuffer(GL_ARRAY_BUFFER, vbo)
-        glBufferData(GL_ARRAY_BUFFER, skybox_vertices.nbytes, skybox_vertices, GL_STATIC_DRAW)
-
-        ebo = glGenBuffers(1)
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo)
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, CUBE_INDICES.nbytes, CUBE_INDICES, GL_STATIC_DRAW)
-
-        glEnableVertexAttribArray(0)
-        glVertexAttribPointer(0, 3, GL_FLOAT, False, 0, ctypes.c_void_p(0))
-
-        glBindVertexArray(0)
-
-    def draw(self, projection_matrix, view_matrix, simulate_insect_vision=False, uv_encoded_textures=False):
-
-        shader = self.program
-        shader.use()
-
-        glDepthFunc(GL_LEQUAL)  # changing depth function to LEQUAL is needed so the 1.0 depth passes
-
-        # We are inside the skybox so we need to see the back-faces
-        glDisable(GL_CULL_FACE)
-
-        glUniformMatrix4fv(shader.get_loc('projection'), 1, False, glm.value_ptr(projection_matrix))
-        glUniformMatrix4fv(shader.get_loc('view'), 1, False, glm.value_ptr(view_matrix))
-        glUniform1i(shader.get_loc('false_colors'), int(simulate_insect_vision and not uv_encoded_textures))
-        glUniform1i(shader.get_loc('uv_encoding'), int(uv_encoded_textures))
-
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_CUBE_MAP, self.texture_id)
-        glUniform1i(shader.get_loc('skybox'), 0)
-
-        glBindVertexArray(self.vao)
-        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, None)
-        glBindVertexArray(0)
-
-        glEnable(GL_CULL_FACE)  # Re-enable culling for the rest of the scene
-        glDepthFunc(GL_LESS)  # restore default depth function
-
-        shader.stop()
+        self.texture_id = texture_id
 
 
 class Scene:

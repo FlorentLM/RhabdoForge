@@ -34,12 +34,12 @@ struct InstanceInfo {
     uint is_points;    // 0 = no (= mesh), 1 = points
     uint prim_index_offset;
     float radius_factor;
-    uint pad0;
+    uint is_srgb;
 };  // 160 bytes
 
 // ================================== Textures (fixed bindings) =====================================
 
-layout(binding = 0) uniform samplerCube skybox;
+layout(binding = 0) uniform sampler2D skybox;
 layout(binding = 1) uniform sampler2DArray scene_textures;
 
 // ====================================== Scene uniforms ============================================
@@ -129,6 +129,16 @@ void fast_getPoint(uint point_idx, out vec3 pos, out float radius) {
     pos.y = points_data[base_offset + 1u];
     pos.z = points_data[base_offset + 2u];
     radius = points_data[base_offset + 3u];
+}
+
+// ==================================== Skybox equirect sampler =========================================
+
+vec3 sample_env(vec3 dir) {
+
+    const float MAX_ENV = 1.0e4;
+
+    vec2 uv = vec2(atan(dir.x, dir.z) / TWOPI + 0.5, 0.5 - asin(clamp(dir.y, -1.0, 1.0)) / PI);
+    return min(texture(skybox, uv).rgb, vec3(MAX_ENV));
 }
 
 // ================================ Primitive intersection functions ================================

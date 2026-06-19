@@ -1,4 +1,3 @@
-from typing import Optional
 import numpy as np
 
 
@@ -106,98 +105,39 @@ def chirp_texture(resolution: int, f_start: float, f_end: float, phase: float, a
     return pattern
 
 
-# TODO: Move these somewhere else maybe
-
-def aces_tonemap(x):
+def load_exr_equirect(input_path, max_height: int = 2048):
     """
-    ACES tonemapping curve approx
+    Load an HDR equirectangular EXR as a linear float32 RGB array (H, W, 3). No tonemapping.
     """
-    a = 2.51
-    b = 0.03
-    c = 2.43
-    d = 0.59
-    e = 0.14
-    return np.clip((x * (a * x + b)) / (x * (c * x + d) + e), 0, 1)
 
-
-def exr_to_cubemap(input_path, output_size: Optional[int] = None, exposure=1.0, contrast=1.05, fmt='jpg'):
-    """For stuff from https://polyhaven.com/hdris"""
-
-    from pathlib import Path
     import os
     os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
     import cv2
+    from pathlib import Path
 
-    input_path = Path(input_path)
-
-    # Load EXR
-    img = cv2.imread(input_path, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYCOLOR)
+    img = cv2.imread(str(Path(input_path)), cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYCOLOR)
     if img is None:
-        print(f"Error: Could not load {input_path}")
-        return
+        raise FileNotFoundError(f"Could not load EXR: {input_path}")
 
-    # Define the 6 faces and their rotations
-    faces = ['right', 'left', 'top', 'bottom', 'front', 'back']
+    img = img[:, :, :3][:, :, ::-1]  # BGR -> RGB
+    if not np.issubdtype(img.dtype, np.floating):  # LDR (8/16-bit) source
+        img = img.astype(np.float32) / float(np.iinfo(img.dtype).max)
+        img = np.power(img, 2.2)  # sRGB -> linear (approx)
+    else:
+        img = img.astype(np.float32)  # EXR/HDR already linear
 
-    output_folder = Path('assets/textures') / input_path.stem
-    output_folder.mkdir(exist_ok=True, parents=True)
+    img = np.ascontiguousarray(img, dtype=np.float32)   # just to be sure
 
-    fmt = fmt.strip('.').lower()
-    output_size = output_size or min(img.shape[:2])
+    MAX_RADIANCE = 1.0e4
+    img = np.nan_to_num(img, nan=0.0, posinf=MAX_RADIANCE, neginf=0.0)
+    img = np.clip(img, 0.0, MAX_RADIANCE).astype(np.float32)
 
-    print(f'Converting {input_path.name} ({img.shape[1]}x{img.shape[0]}) to {output_size}x{output_size} {fmt} cubemap...')
+    h, w = img.shape[:2]
+    if h > max_height:
+        new_h = max_height
+        new_w = int(round(w * new_h / h))
+        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        img = np.ascontiguousarray(img, dtype=np.float32)
 
-    for i, face in enumerate(faces):
+    return img
 
-        # Create coordinates for the cube face
-        grid = np.indices((output_size, output_size), dtype=np.float32)
-        y, x = grid[0], grid[1]
-
-        xx = 2.0 * x / (output_size - 1) - 1.0
-        yy = 2.0 * y / (output_size - 1) - 1.0
-
-        if face == 'right':  # Right
-            vx, vy, vz = np.ones_like(xx), -yy, -xx
-        elif face == 'left':  # Left
-            vx, vy, vz = -np.ones_like(xx), -yy, xx
-        elif face == 'top':  # Top
-            vx, vy, vz = xx, np.ones_like(xx), yy
-        elif face == 'bottom':  # Bottom
-            vx, vy, vz = xx, -np.ones_like(xx), -yy
-        elif face == 'front':  # Front
-            vx, vy, vz = xx, -yy, np.ones_like(xx)
-        elif face == 'back':  # Back
-            vx, vy, vz = -xx, -yy, -np.ones_like(xx)
-
-        # To spherical coordinates
-        mag = np.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
-        vx, vy, vz = vx / mag, vy / mag, vz / mag
-
-        phi = np.arctan2(vx, vz)
-        theta = np.arcsin(vy)
-
-        # Back to equirect UV
-        out_x = (phi / (2 * np.pi) + 0.5) * (img.shape[1] - 1)
-        out_y = (0.5 - theta / np.pi) * (img.shape[0] - 1)
-
-        face_img = cv2.remap(img, out_x, out_y, cv2.INTER_LINEAR)
-
-        # Tonemapping & Gamma correction (HDR -> LDR)
-
-        # Exposure
-        face_img = face_img * exposure
-
-        # ACES tonemapping
-        face_img = aces_tonemap(face_img)
-
-        # Contrast adjust (S curve)
-        face_img = np.clip((face_img - 0.5) * contrast + 0.5, 0, 1)
-
-        # Gamma (linear to sRGB)
-        face_img = np.power(face_img, 1.0 / 2.2)
-
-        face_img = (np.clip(face_img, 0, 1) * 255).astype(np.uint8)
-
-        cv2.imwrite((output_folder / face).with_suffix('.' + fmt), face_img)
-
-    print('Done.')
