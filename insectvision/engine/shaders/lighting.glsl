@@ -60,6 +60,8 @@ uniform int directional_lights_count;
 uniform int point_lights_count;
 uniform int area_lights_count;
 
+uniform vec3 sh_irradiance_coeffs[9];
+
 // ====================================== Light SSBOs ===============================================
 
 #ifdef HAS_DIRECTIONAL_LIGHT
@@ -190,38 +192,24 @@ vec3 get_sun_disk_color(vec3 direction) {
 #endif
 }
 
-vec3 get_sky_color(vec3 direction) {
-    vec3 sky;
-
-    if (use_skybox) {
-        sky = sample_env(direction) * sky_intensity;
-    } else {
-        sky = background_color * sky_intensity;
-    }
-
-    return sky + get_sun_disk_color(direction);
+vec3 get_sky_color(vec3 direction, bool with_sun) {
+    vec3 sky = use_skybox ? sample_env(direction) * sky_intensity
+                          : background_color * sky_intensity;
+    if (with_sun) sky += get_sun_disk_color(direction);
+    return sky;
 }
 
-vec3 get_ambient_light() {
-    vec3 ambient;
-
-    if (use_skybox) {
-        ambient  = sample_env(vec3( 0.0, 1.0,  0.0));
-        ambient += sample_env(vec3( 1.0, 0.3,  0.0));
-        ambient += sample_env(vec3(-1.0, 0.3,  0.0));
-        ambient += sample_env(vec3( 0.0, 0.3,  1.0));
-        ambient += sample_env(vec3( 0.0, 0.3, -1.0));
-        ambient /= 5.0;
-    } else {
-        ambient = background_color;
-    }
-
-    // Desaturate to reduce color cast
-    float ambient_saturation = 0.3;
-    float luma = dot(ambient, vec3(0.2126, 0.7152, 0.0722));
-    ambient = mix(vec3(luma), ambient, ambient_saturation);
-
-    return ambient * ambient_intensity;
+vec3 sh_irradiance(vec3 n) {
+    vec3 r = sh_irradiance_coeffs[0] * 0.282095
+           + sh_irradiance_coeffs[1] * (0.488603 * n.y)
+           + sh_irradiance_coeffs[2] * (0.488603 * n.z)
+           + sh_irradiance_coeffs[3] * (0.488603 * n.x)
+           + sh_irradiance_coeffs[4] * (1.092548 * n.x * n.y)
+           + sh_irradiance_coeffs[5] * (1.092548 * n.y * n.z)
+           + sh_irradiance_coeffs[6] * (0.315392 * (3.0 * n.z * n.z - 1.0))
+           + sh_irradiance_coeffs[7] * (1.092548 * n.x * n.z)
+           + sh_irradiance_coeffs[8] * (0.546274 * (n.x * n.x - n.y * n.y));
+    return max(r, vec3(0.0));   // clamp SH ringing -> no negative ambient near bright suns
 }
 
 // ===================================== Surface data ==============================================

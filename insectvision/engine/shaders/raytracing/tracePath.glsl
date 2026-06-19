@@ -19,20 +19,13 @@ vec3 trace_path(Ray r, inout uint rng_state) {
 
         if (!hit.found) {
             // Sky contribution (includes sun disk for directional lights)
-            radiance += throughput * get_sky_color(direction);
+            radiance += throughput * get_sky_color(direction, bounce == 0);
             break;
         }
 
         vec3 hit_pos = r.origin + direction * hit.t;
         vec3 surface_color = get_surface_color(hit);
-        vec3 normal = get_surface_normal(hit, direction);
-
-        // Ambient (first bounce only)
-        if (bounce == 0 && enable_ambient) {
-            vec3 ambient_light = get_ambient_light();
-            float hemisphere_factor = dot(normal, vec3(0.0, 1.0, 0.0)) * 0.4 + 0.6;
-            radiance += throughput * surface_color * ambient_light * hemisphere_factor;
-        }
+        vec3 normal = get_surface_normal(hit, direction, hit_pos);
 
         // Direct lighting (Next Event Estimation)
         if (enable_direct) {

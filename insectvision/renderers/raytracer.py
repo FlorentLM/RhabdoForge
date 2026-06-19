@@ -9,7 +9,7 @@ from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from insectvision.utils.shared import DisplayMode, RandomnessMode, SamplingMode
-
+from insectvision.engine.materials_utils import constant_sh
 from insectvision.engine.scene import AssetType
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
 from insectvision.engine.resources import (
@@ -505,17 +505,24 @@ class Raytracer(BaseRenderer):
 
         # Lazy resource handles
         self._active_defines: Dict[str, Any] = {}
-        self._raytrace_shader: Optional[ShaderProgram] = None
+        self._raytrace_shader: Optional['ShaderProgram'] = None
 
-        self._view_shaders: Dict[str, ShaderProgram] = {}
+        self._view_shaders: Dict[str, 'ShaderProgram'] = {}
         self.view_textures = TextureRegistry(self.resource_manager)
         self._pano_res = pano_res
 
+        if self.scene.skybox is not None:
+            use_skybox = True
+            coeffs = self.scene.skybox.sh_coeffs
+        else:
+            use_skybox = False
+            coeffs = constant_sh(self.scene.background_color)
+
         self._scene_uniforms = UniformRegistry(
             nb_tlas_nodes=len(self._baker.cpu_tlas_nodes),
-
-            use_skybox=self.scene.skybox is not None,
-            background_color=self.scene.background_color
+            use_skybox=use_skybox,
+            background_color=self.scene.background_color,
+            sh_irradiance_coeffs=coeffs
         )
 
         if 'skybox' in self._baker.scene_textures:
@@ -538,7 +545,7 @@ class Raytracer(BaseRenderer):
     # Internal properties for lazy-loaded resources
 
     @property
-    def raytrace_shader(self) -> ShaderProgram:
+    def raytrace_shader(self) -> 'ShaderProgram':
         self._ensure_defines()
 
         if self._raytrace_shader is None:
@@ -548,7 +555,7 @@ class Raytracer(BaseRenderer):
                                                   defines=self._active_defines)
         return self._raytrace_shader
 
-    def _get_view_shader(self, view_name: str) -> ShaderProgram:
+    def _get_view_shader(self, view_name: str) -> 'ShaderProgram':
         self._ensure_defines()
 
         if view_name not in self._view_shaders:

@@ -1,4 +1,5 @@
 import numpy as np
+from pathlib import Path
 
 
 def checkerboard_texture(width, height, block_size=1, ratio=0.5):
@@ -105,7 +106,7 @@ def chirp_texture(resolution: int, f_start: float, f_end: float, phase: float, a
     return pattern
 
 
-def load_exr_equirect(input_path, max_height: int = 2048):
+def load_exr_equirect(input_path: str | Path, max_height: int = 2048):
     """
     Load an HDR equirectangular EXR as a linear float32 RGB array (H, W, 3). No tonemapping.
     """
@@ -113,7 +114,6 @@ def load_exr_equirect(input_path, max_height: int = 2048):
     import os
     os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
     import cv2
-    from pathlib import Path
 
     img = cv2.imread(str(Path(input_path)), cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYCOLOR)
     if img is None:
@@ -141,3 +141,79 @@ def load_exr_equirect(input_path, max_height: int = 2048):
 
     return img
 
+
+def sh_irradiance(equirect_rgb):
+    """
+    Project an HDR equirect (H, W, 3, linear) onto 9 SH coeffs scaled for diffuse irradiance.
+    Returns (9, 3) float32 array such that  irradiance(N) = sum_i c_i * Y_i(N)  (multiply by albedo).
+    """
+
+    H, W, _ = equirect_rgb.shape
+    img = equirect_rgb.astype(np.float64)
+
+    u = (np.arange(W) + 0.5) / W
+    v = (np.arange(H) + 0.5) / H
+    phi = (u - 0.5) * 2.0 * np.pi  # azimuth
+    el  = (0.5 - v) * np.pi        # elevation
+    cos_el = np.cos(el)
+
+    X = np.sin(phi)[None, :] * cos_el[:, None]
+    Y = np.sin(el)[:, None] * np.ones((1, W))
+    Z = np.cos(phi)[None, :] * cos_el[:, None]
+
+    dw = cos_el[:, None] * (2.0 * np.pi / W) * (np.pi / H)
+
+    basis = [
+        0.282095 * np.ones_like(X),                 # Y00
+        0.488603 * Y, 0.488603 * Z, 0.488603 * X,   # Y1-1 Y10 Y11
+        1.092548 * X * Y, 1.092548 * Y * Z,           # Y2-2 Y2-1
+        0.315392 * (3.0 * Z * Z - 1.0),              # Y20
+        1.092548 * X * Z, 0.546274 * (X * X - Y * Y) # Y21  Y22
+    ]
+    scale = np.array([1.0, 2/3, 2/3, 2/3, 1/4, 1/4, 1/4, 1/4, 1/4])
+
+    coeffs = np.zeros((9, 3))
+    for i, Yb in enumerate(basis):
+        coeffs[i] = (img * (Yb * dw)[..., None]).reshape(-1, 3).sum(0) * scale[i]
+
+    return coeffs.astype(np.float32)
+
+
+def constant_sh(bg_color):
+    c = np.zeros((9, 3), np.float32)
+    c[0] = np.power(np.asarray(bg_color, np.float32), 2.2) / 0.282095  # linear bg as constant irradiance
+    return c
+
+
+def get_exr_sun(exr_path, sun_percentile=99.0):
+    import os
+    os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+    import cv2
+
+    img = cv2.imread(exr_path, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYCOLOR)[:, :, :3][:, :, ::-1]
+    img = np.nan_to_num(img.astype(np.float32), posinf=1e4, neginf=0.0)
+    H, W = img.shape[:2]
+    L = img @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+
+    # Locate the sun
+    thr = np.percentile(L, sun_percentile)
+    mask = L >= thr
+    ys, xs = np.nonzero(mask)
+    cx, cy = xs.mean(), ys.mean()
+
+    # Pixel -> direction
+    phi = (cx / W - 0.5) * 2.0 * np.pi
+    theta = (0.5 - cy / H) * np.pi
+    azimuth = np.degrees(np.arctan2(np.sin(phi) * np.cos(theta), np.cos(phi) * np.cos(theta)))
+    elevation = np.degrees(np.arcsin(np.clip(np.sin(theta), -1.0, 1.0)))
+
+    # Sun radiance -> directional-light colour & intensity (solid-angle weighted)
+    sin_t = np.sin((np.arange(H) + 0.5) / H * np.pi)[:, None]      # equirect area weight
+    w = mask * sin_t
+    sun_rgb = (img * w[..., None]).reshape(-1, 3).sum(0) / max(w.sum(), 1e-6)
+
+    intensity = np.max(sun_rgb)
+    color = sun_rgb / max(intensity, 1e-6)
+    ang_radius = np.sqrt(mask.sum() / np.pi) / H * np.pi     # rough disk radius (rad)
+
+    return azimuth, elevation, color, intensity, ang_radius

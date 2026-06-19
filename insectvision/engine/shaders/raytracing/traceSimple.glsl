@@ -11,7 +11,7 @@ vec3 trace_simple(Ray r) {
     traverse_tlas(r, direction, closest_hit);
 
     if (!closest_hit.found) {
-        return get_sky_color(direction);
+        return get_sky_color(direction, true);
     }
 
     vec3 surface_color = get_surface_color(closest_hit);
@@ -22,9 +22,8 @@ vec3 trace_simple(Ray r) {
 
     // Ambient
     if (enable_ambient) {
-        vec3 ambient_light = get_ambient_light();
-        float hemisphere_factor = dot(normal, vec3(0.0, 1.0, 0.0)) * 0.4 + 0.6;
-        result += surface_color * ambient_light * hemisphere_factor;
+        vec3 irradiance = sh_irradiance(normal) * ambient_intensity;
+        result += surface_color * irradiance;
     }
 
     // Direct lighting

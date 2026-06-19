@@ -10,17 +10,19 @@ from pyglm import glm
 from insectvision.geometry.linalg import tangent_frames
 from insectvision.utils.shared import DisplayMode, RandomnessMode, SamplingMode
 from insectvision.engine.agent import Agent
-from insectvision.engine.scene import Scene, Asset, AssetType
-from insectvision.engine.lights import DirectionalLight
+from insectvision.engine.scene import AssetType
 from insectvision.engine.resources import ShaderProgram, GPUResourceManager
 from insectvision.renderers.base import BaseRenderer
 
 if TYPE_CHECKING:
+    from insectvision.engine.scene import Scene, Asset
+    from insectvision.engine.agent import OrbitCamera
     from insectvision.compound_eyes import Model
     from insectvision.engine.context import Context
+    from insectvision.engine.lights import DirectionalLight
 
 
-def _get_light_space_matrix(light: DirectionalLight, scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
+def _get_light_space_matrix(light: 'DirectionalLight', scene_center=(0.0, 0.0, 0.0), scene_radius: float = 50.0) -> glm.mat4:
     """Computes the orthographic projection and view matrix for a directional light."""
 
     center = glm.vec3(scene_center)
@@ -179,7 +181,7 @@ class RasterMesh:
     Holds OpenGL resources.
     """
 
-    def __init__(self, asset: Asset, vert_path: str, frag_path: str):
+    def __init__(self, asset: 'Asset', vert_path: str, frag_path: str):
         self.asset_id = asset.id
         self.draw_count = asset.indices.size
 
@@ -283,7 +285,7 @@ class RasterPoints:
     Holds OpenGL resources.
     """
 
-    def __init__(self, asset: Asset, vert_path: str, frag_path: str):
+    def __init__(self, asset: 'Asset', vert_path: str, frag_path: str):
         self.asset_id = asset.id
         self.draw_count = asset._nb_points
 
@@ -338,7 +340,7 @@ class RasterBaker:
     Creates and caches OpenGL vertex arrays (VAOs) for each unique asset in the scene.
     """
 
-    def __init__(self, scene: Scene, resource_manager: GPUResourceManager, enable_shadows: bool = False):
+    def __init__(self, scene: 'Scene', resource_manager: 'GPUResourceManager', enable_shadows: bool = False):
         self.scene = scene
         self.resource_manager = resource_manager
 
@@ -389,7 +391,7 @@ class RasterBaker:
 
         return renderables_list
 
-    def update_texture(self, asset: Asset):
+    def update_texture(self, asset: 'Asset'):
         """Replace a raster mesh texture without rebuilding the VAO."""
         mesh = self._cache.get(asset.id)
 
@@ -435,12 +437,12 @@ class Rasterizer(BaseRenderer):
     def __init__(self,
                  model: 'Model',
                  scene: 'Scene',
-                 agent: Agent,
+                 agent: 'Agent',
                  context: Optional['Context'] = None,
                  time_dithering: bool = False,
                  nb_samples: int = 256,
-                 randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
-                 sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
+                 randomness_mode: Union[int, str, 'RandomnessMode'] = RandomnessMode.Pseudo,
+                 sampling_mode: Union[int, str, 'SamplingMode'] = SamplingMode.Gaussian,
                  cubemap_res: int = 512,
                  batch_size: int = 1,
                  enable_microsaccades: bool = False,
@@ -743,7 +745,7 @@ class Rasterizer(BaseRenderer):
 
     # Main public methods
 
-    def draw(self, view_mode: DisplayMode, point_of_view: Union['Agent', 'OrbitCamera']):
+    def draw(self, view_mode: 'DisplayMode', point_of_view: Union['Agent', 'OrbitCamera']):
 
         if view_mode in (DisplayMode.Perspective, DisplayMode.Third_person):
             if self.enable_shadows and self._shadow_map:
@@ -772,7 +774,7 @@ class Rasterizer(BaseRenderer):
 
     # Dynamic updates
 
-    def update_texture(self, asset: Asset):
+    def update_texture(self, asset: 'Asset'):
         """Update a texture on the GPU for given Asset."""
         self._baker.update_texture(asset)
 

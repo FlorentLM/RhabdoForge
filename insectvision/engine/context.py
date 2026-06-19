@@ -176,18 +176,22 @@ class Context:
                 f"Hardware: {self.fps:.1f} FPS>")
 
     def _tonemap_pass(self):
+
         shader = self._tonemap_shader
+
         with shader:
             glDisable(GL_DEPTH_TEST)
             glDepthMask(GL_FALSE)
+
             glActiveTexture(GL_TEXTURE0)
+
             glBindTexture(GL_TEXTURE_2D, self._hdr.color)
             glUniform1i(shader.get_loc('hdr_scene'), 0)
             glUniform1f(shader.get_loc('exposure'), float(self.exposure))
-            glUniform1f(shader.get_loc('contrast'), float(self.contrast))
             glBindVertexArray(self._tonemap_vao)
             glDrawArrays(GL_TRIANGLES, 0, 3)
             glBindVertexArray(0)
+
         glDepthMask(GL_TRUE)
         glEnable(GL_DEPTH_TEST)
 
@@ -214,6 +218,7 @@ class Context:
         """Swap the active controller (safe to call at any time)."""
         if self._controls is not None:
             self._controls.free()
+
         self._controls = new_controls
         if self._controls is not None and self._interactive_initialised:
             self._controls.setup(self)

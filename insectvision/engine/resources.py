@@ -744,26 +744,41 @@ class UniformRegistry:
 
         # Numpy arrays
         elif isinstance(value, np.ndarray):
-            shape = value.shape
+
+            ndim = value.ndim
             size = value.size
+            shape = value.shape
             dtype_kind = value.dtype.kind
 
-            if shape == (3, 3):
-                return lambda v: glUniformMatrix3fv(loc, 1, GL_TRUE, np.ascontiguousarray(v).flatten())
-            elif shape == (4, 4):
-                return lambda v: glUniformMatrix4fv(loc, 1, GL_TRUE, np.ascontiguousarray(v).flatten())
+            value_flat = np.ascontiguousarray(value).flatten()
 
+            # Matrices (single (3,3)/(4,4) or arrays of matrices (N, 3, 3)/(N, 4, 4))
+            if ndim >= 2 and shape[-2:] == (3, 3):
+                return lambda v: glUniformMatrix3fv(loc, size // 9, GL_TRUE, value_flat)
+
+            elif ndim >= 2 and shape[-2:] == (4, 4):
+                return lambda v: glUniformMatrix4fv(loc, size // 16, GL_TRUE, value_flat)
+
+            # Scalars (1D or ND arrays of single values tied to specific GL types)
             elif uniform_type in (GL_INT, GL_UNSIGNED_INT, GL_FLOAT, GL_BOOL):
                 if dtype_kind in ('i', 'u', 'b'):
-                    return lambda v: glUniform1iv(loc, v.size, np.ascontiguousarray(v).flatten())
+                    return lambda v: glUniform1iv(loc, size, value_flat)
                 else:
-                    return lambda v: glUniform1fv(loc, v.size, np.ascontiguousarray(v).flatten())
+                    return lambda v: glUniform1fv(loc, size, value_flat)
 
-            elif size == 2: return lambda v: glUniform2fv(loc, 1, np.ascontiguousarray(v).flatten())
-            elif size == 3: return lambda v: glUniform3fv(loc, 1, np.ascontiguousarray(v).flatten())
-            elif size == 4: return lambda v: glUniform4fv(loc, 1, np.ascontiguousarray(v).flatten())
+            # Vectors (single vectors (2,) or arrays of vectors (N, 2), (N, 3), (N, 4))
+            else:
+                vec_size = shape[-1] if ndim > 0 else 1
 
-        raise TypeError(f"UniformRegistry doesn't know how to dispatch type: {type(value)} for uniform")
+                if vec_size == 2:
+                    return lambda v: glUniform2fv(loc, size // 2, value_flat)
+                elif vec_size == 3:
+                    return lambda v: glUniform3fv(loc, size // 3, value_flat)
+                elif vec_size == 4:
+                    return lambda v: glUniform4fv(loc, size // 4, value_flat)
+
+        raise TypeError(
+            f"UniformRegistry doesn't know how to dispatch type: {type(value)} with shape {getattr(value, 'shape', 'N/A')} for uniform")
 
     def apply(self, shader: 'ShaderProgram'):
         """Applies all dirty uniforms to the given shader."""

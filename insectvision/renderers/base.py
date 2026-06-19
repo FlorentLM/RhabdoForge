@@ -506,18 +506,18 @@ class BaseRenderer(ABC):
         next_pbo_index = (self._pbo_index + 1) % 2
         fence = self._fences[next_pbo_index]
 
-        out_array = np.zeros_like(self._colours_cpu_buffer)
         if fence:
-            # glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000)
-
             with self.eye_buffers[f'pbo_{next_pbo_index}'].bind(mode_override=GL_PIXEL_PACK_BUFFER):
                 ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
+
                 if ptr:
                     ctypes.memmove(self._colours_cpu_buffer.ctypes.data, ptr, bytes_to_read)
                     glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
                     out_array = self._colours_cpu_buffer.copy()
                 else:
                     print("Warning: Failed to map PBO. Context lost?")
+        else:
+            out_array = np.zeros_like(self._colours_cpu_buffer)
 
         self._pbo_index = next_pbo_index
         return out_array
@@ -996,6 +996,7 @@ class BaseRenderer(ABC):
     @selected_ommatidia.setter
     def selected_ommatidia(self, values: Optional[Union[int, Sequence[int], np.ndarray]]):
         self._selected_omm_indices.fill(-1)
+
         if values is not None:
             if isinstance(values, np.ndarray):
                 vals = values.ravel()
@@ -1006,6 +1007,7 @@ class BaseRenderer(ABC):
             else:
                 for i, val in enumerate(list(values)[:10]):
                     self._selected_omm_indices[i] = int(val)
+
         self._update_selected_ommatidia()
 
     @property

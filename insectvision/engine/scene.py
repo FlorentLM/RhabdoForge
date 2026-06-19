@@ -13,51 +13,7 @@ from pyglm import glm
 
 from insectvision.engine.lights import Sun, Light, DirectionalLight, PointLight, AreaLight
 from insectvision.engine.movement import TransformMixin
-from insectvision.engine.materials_utils import load_exr_equirect
-
-from .resources import ShaderProgram
-
-from insectvision.engine.meshes import CUBE_VERTICES, CUBE_INDICES
-
-
-def load_cubemap(folder_path):
-
-    faces_gl =[
-        GL_TEXTURE_CUBE_MAP_POSITIVE_X,
-        GL_TEXTURE_CUBE_MAP_NEGATIVE_X,
-        GL_TEXTURE_CUBE_MAP_POSITIVE_Y,
-        GL_TEXTURE_CUBE_MAP_NEGATIVE_Y,
-        GL_TEXTURE_CUBE_MAP_POSITIVE_Z,
-        GL_TEXTURE_CUBE_MAP_NEGATIVE_Z
-    ]
-
-    face_files =['right.jpg', 'left.jpg', 'top.jpg', 'bottom.jpg', 'front.jpg', 'back.jpg']
-
-    texture_id = glGenTextures(1)
-    glBindTexture(GL_TEXTURE_CUBE_MAP, texture_id)
-
-    for i in range(6):
-        filepath = Path(folder_path) / face_files[i]
-        if not filepath.exists():
-            # Try png
-            filepath = filepath.with_suffix('.png')
-            if not filepath.exists():
-                raise FileNotFoundError(f"Could not find cubemap face: {filepath.with_suffix('.png')}")
-
-        with Image.open(filepath) as im:
-            w, h = im.width, im.height
-            im_data = im.convert('RGBA').tobytes()
-
-        glTexImage2D(faces_gl[i], 0, GL_SRGB8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, im_data)
-
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE)
-
-    glBindTexture(GL_TEXTURE_CUBE_MAP, 0)
-    return texture_id
+from insectvision.engine.materials_utils import load_exr_equirect, sh_irradiance, get_exr_sun
 
 
 def trimesh_from_arrays(
@@ -515,9 +471,12 @@ class Instance(TransformMixin):
 
 
 class Skybox:
-    def __init__(self, texture_path: Path | str = 'textures/sky.exr', max_height: int = 2048):
+    def __init__(self, texture_path: str | Path = 'textures/sky.exr', max_height: int = 2048):
 
-        data = load_exr_equirect(texture_path, max_height=max_height)
+        self._texture_path = Path(texture_path)
+        data = load_exr_equirect(self._texture_path, max_height=max_height)
+        self.sh_coeffs = sh_irradiance(data)
+
         h, w = data.shape[:2]
 
         texture_id = glGenTextures(1)
@@ -538,30 +497,34 @@ class Scene:
     The logical scene representation. A simple container for assets and instances.
     """
 
-    def __init__(self, background_color: Sequence[float] = (0.0, 0.0, 0.0)):
-        self.assets: Dict[str, Asset] = {}
+    def __init__(self, background_color: Sequence[float] = (0.0, 0.0, 0.0), skybox_path: Optional[str | Path] = None):
+        self.assets: Dict[str, 'Asset'] = {}
         self.background_color = background_color
-        self._skybox: Optional[Skybox] = None
+        self._skybox: Optional['Skybox'] = None
 
-        self._directional_lights: Set[DirectionalLight] = set()
-        self._point_lights: Set[PointLight] = set()
-        self._area_lights: Set[AreaLight] = set()
+        self._directional_lights: Set['DirectionalLight'] = set()
+        self._point_lights: Set['PointLight'] = set()
+        self._area_lights: Set['AreaLight'] = set()
 
-        self._dynamic_instances: Set[Instance] = set()
-        self._mesh_instances: Set[Instance] = set()
-        self._point_instances: Set[Instance] = set()
+        self._dynamic_instances: Set['Instance'] = set()
+        self._mesh_instances: Set['Instance'] = set()
+        self._point_instances: Set['Instance'] = set()
 
-        default_sun = Sun(intensity=1.0, angular_size=0.05)
-        default_sun.azimuth = 4.84
-        default_sun.elevation = 39.75
+        if skybox_path is not None:
+            self.add_skybox(skybox_path)
+        else:
+            default_sun = Sun(intensity=1.0, angular_size=0.05)
+            default_sun.azimuth = 4.84
+            default_sun.elevation = 39.75
 
-        self.add_light(default_sun)
+            self._sun_ref = default_sun
+            self.add_light(self._sun_ref)
 
     def add_instance(self,
-        asset: Union[Asset, str],
+        asset: Union['Asset', str],
         transform: Optional[Union[glm.mat4, ArrayLike]] = None,
         **kwargs
-    ) -> Instance:
+    ) -> 'Instance':
 
         if isinstance(asset, Asset):
             asset_obj = asset
@@ -600,7 +563,7 @@ class Scene:
 
         return instance
 
-    def add_light(self, light: Light):
+    def add_light(self, light: 'Light'):
         if isinstance(light, DirectionalLight):
             self._directional_lights.add(light)
         elif isinstance(light, PointLight):
@@ -610,9 +573,21 @@ class Scene:
 
     def add_skybox(self, texture_path: str):
         """Creates and loads a skybox from a directory of textures."""
+
         self._skybox = Skybox(texture_path)
 
-    def remove_instance(self, instance: Instance, prune_asset: bool = False):
+        if self._sun_ref:
+
+            self.remove_light(self._sun_ref)    # TODO: using _sun_ref is kinda crappy
+
+            azim, elev, col, intensity, ang_radius = get_exr_sun(self._skybox._texture_path)
+            # TODO: intensity is whack, must fix it
+            sun = Sun(azimuth=azim, elevation=elev, intensity=1.0, angular_size=ang_radius, color=col)
+            self._sun_ref = sun
+
+            self.add_light(self._sun_ref)
+
+    def remove_instance(self, instance: 'Instance', prune_asset: bool = False):
         self._mesh_instances.discard(instance)
         self._point_instances.discard(instance)
         self._dynamic_instances.discard(instance)
@@ -627,7 +602,7 @@ class Scene:
             if not still_used and asset.name in self.assets:
                 del self.assets[asset.name]
 
-    def remove_asset(self, asset: Union[Asset, str]):
+    def remove_asset(self, asset: Union['Asset', str]):
         """
         Removes an asset and all of its instances from the scene.
         """
@@ -648,7 +623,7 @@ class Scene:
 
         self.assets.pop(asset_obj.name, None)
 
-    def remove_light(self, light: Light):
+    def remove_light(self, light: 'Light'):
         if isinstance(light, DirectionalLight):
             self._directional_lights.discard(light)
         elif isinstance(light, PointLight):
@@ -673,7 +648,7 @@ class Scene:
         self._area_lights.clear()
 
     def load(self,
-            file_path: Union[str, Path],
+            file_path: Path | str,
             transform: Optional[Union[glm.mat4, ArrayLike]] = None,
             **kwargs
         ) -> List[Instance]:
@@ -740,34 +715,34 @@ class Scene:
         return new_instances
 
     @property
-    def instances(self) -> List[Instance]:
+    def instances(self) -> List['Instance']:
         """
         Returns a combined list of all instances.
         """
         return list(self._mesh_instances | self._point_instances)
 
     @property
-    def mesh_instances(self) -> List[Instance]:
+    def mesh_instances(self) -> List['Instance']:
         return list(self._mesh_instances)
 
     @property
-    def point_instances(self) -> List[Instance]:
+    def point_instances(self) -> List['Instance']:
         return list(self._point_instances)
 
     @property
-    def lights(self) -> List[Light]:
+    def lights(self) -> List['Light']:
         return list(self._directional_lights | self._point_lights | self._area_lights)
 
     @property
-    def directional_lights(self) -> List[DirectionalLight]:
+    def directional_lights(self) -> List['DirectionalLight']:
         return list(self._directional_lights)
 
     @property
-    def point_lights(self) -> List[PointLight]:
+    def point_lights(self) -> List['PointLight']:
         return list(self._point_lights)
 
     @property
-    def area_lights(self) -> List[AreaLight]:
+    def area_lights(self) -> List['AreaLight']:
         return list(self._area_lights)
 
     @property
@@ -783,14 +758,14 @@ class Scene:
         return sum(inst.asset.nb_points for inst in self._point_instances)
 
     @property
-    def sun(self) -> Optional[Sun]:
+    def sun(self) -> Optional['Sun']:
         """
         Returns the first Sun found in the directional lights set.
         """
         return next((l for l in self._directional_lights if isinstance(l, Sun)), None)
 
     @sun.setter
-    def sun(self, value: Optional[Sun]):
+    def sun(self, value: Optional['Sun']):
         """
         Replaces all current Sun instances in the directional lights set.
         """
