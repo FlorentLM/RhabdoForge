@@ -36,7 +36,7 @@ def main():
     cube_faces = CUBE_INDICES.reshape(-1, 3)
 
     # Create a mesh asset from raw vertex and index data
-    crate_asset = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='assets/textures/grass.jpg', sRGB=False)
+    crate_asset = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='assets/textures/wood.jpg', sRGB=False)
 
     # Add multiple instances of the same asset
     static_crate_1 = scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))
@@ -46,7 +46,7 @@ def main():
     dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
 
     # Add a skybox
-    scene.add_skybox('assets/textures/kloppenheim_05_4k')
+    scene.add_skybox('assets/textures/kloppenheim_05_4k.exr')   # from https://polyhaven.com/a/kloppenheim_05
 
     # Example debug objects (wireframes, grid etc)
     if SHOW_DEBUG_OBJECTS:
