@@ -55,11 +55,9 @@ class Light(ABC, TransformMixin):
     Abstract base class for all light types.
     """
 
-    def __init__(self,
-                 color: Sequence[float] = (1.0, 1.0, 1.0),
-                 intensity: float = 1.0,
-                 cast_shadows: bool = True,
-                 active: bool = True):
+    _param_rev: int = 0  # bumps on any non-transform parameter change
+
+    def __init__(self, color=(1.0, 1.0, 1.0), intensity=1.0, cast_shadows=True, active=True):
         """
         Args:
             color: RGB colour of the light
@@ -70,12 +68,42 @@ class Light(ABC, TransformMixin):
         self.transform = glm.mat4(1.0)
         self._color = glm.vec3(color)
         self._intensity = max(0.0, intensity)
-        self.cast_shadows = cast_shadows
-        self._active = active
+        self._cast_shadows = bool(cast_shadows)
+        self._active = bool(active)
+
+    def __repr_extra__(self) -> str:
+        return ""
+
+    def __repr__(self):
+        extra = self.__repr_extra__()
+        extra = f" | {extra}" if extra else ""
+        state = "" if self.active else " | inactive"
+        c = self._color
+        return (f"<{self.__class__.__name__} | I={self._intensity:.2f} "
+                f"| colour=({c.x:.2f},{c.y:.2f},{c.z:.2f}){extra}{state}>")
+
+    @property
+    def revision(self) -> int:
+        """
+        Combined change counter: any transform or parameter change that affects
+        the packed GPU row advances this. The baker compares it against last-seen.
+        """
+        return self._transform_rev + self._param_rev
+
+    def touch_params(self) -> None:
+        """Mark non-transform parameters (colour, intensity, attenuation, ...) as changed."""
+        self._param_rev += 1
 
     @property
     def active(self) -> bool:
         return self._active and self._intensity > 0.0
+
+    @active.setter
+    def active(self, value: bool):
+        self._active = bool(value)
+        self.touch_params()
+
+    is_active = active
 
     @property
     @abstractmethod
@@ -87,11 +115,11 @@ class Light(ABC, TransformMixin):
         return self._color
 
     @color.setter
-    def color(self, value: Union[glm.vec3, ArrayLike, None]):
-        if value is None:
-            self._color = glm.vec3(1.0, 1.0, 1.0)
-        else:
-            self._color = glm.vec3(value)
+    def color(self, value):
+        self._color = glm.vec3(1.0, 1.0, 1.0) if value is None else glm.vec3(value)
+        self.touch_params()
+
+    colour = color
 
     @property
     def intensity(self) -> float:
@@ -100,6 +128,16 @@ class Light(ABC, TransformMixin):
     @intensity.setter
     def intensity(self, value: float):
         self._intensity = max(0.0, value)
+        self.touch_params()
+
+    @property
+    def cast_shadows(self) -> bool:
+        return self._cast_shadows
+
+    @cast_shadows.setter
+    def cast_shadows(self, value: bool):
+        self._cast_shadows = bool(value)
+        self.touch_params()
 
 
 class DirectionalLight(Light):
@@ -124,6 +162,10 @@ class DirectionalLight(Light):
         self._angular_size = max(0.0, angular_size)
         self.direction = direction
 
+    def __repr_extra__(self) -> str:
+        d = self.direction
+        return f"dir=({d.x:.2f},{d.y:.2f},{d.z:.2f})"
+
     @property
     def light_type(self) -> LightType:
         return LightType.Directional
@@ -147,6 +189,7 @@ class DirectionalLight(Light):
     @angular_size.setter
     def angular_size(self, value: float):
         self._angular_size = max(0.0, value)
+        self.touch_params()
 
     def pack(self) -> np.ndarray:
         data = np.zeros(1, dtype=DIR_LIGHT_DTYPE)
@@ -187,6 +230,9 @@ class Sun(DirectionalLight):
 
         self.from_angles(azimuth, elevation)
         self._color_override = glm.vec3(color) if color is not None else None
+
+    def __repr_extra__(self) -> str:
+        return f"az={self.azimuth:.1f}° el={self.elevation:.1f}°"
 
     @property
     def azimuth(self) -> float:
@@ -264,6 +310,9 @@ class Sun(DirectionalLight):
     def color(self, value: Optional[Union[glm.vec3, ArrayLike]]):
         """Set a fixed colour override, or None to use elevation-based colour."""
         self._color_override = glm.vec3(value) if value is not None else None
+        self.touch_params()
+
+    colour = color
 
     def set_time_of_day(self, hour: float, latitude: float = 45.0):
         """
@@ -304,7 +353,11 @@ class PointLight(Light):
 
         self.position = position
         self._radius = max(0.0, radius)
-        self.constant, self.linear, self.quadratic = attenuation
+        self._constant, self._linear, self._quadratic = attenuation
+
+    def __repr_extra__(self) -> str:
+        p = self.position
+        return f"pos=({p.x:.2f},{p.y:.2f},{p.z:.2f}) r={self._radius:.2f}"
 
     @property
     def light_type(self) -> LightType:
@@ -315,9 +368,46 @@ class PointLight(Light):
         """Physical radius for soft shadows."""
         return self._radius
 
+    @property
+    def constant(self):
+        return self._constant
+
+    @constant.setter
+    def constant(self, v):
+        self._constant = float(v)
+        self.touch_params()
+
+    @property
+    def linear(self):
+        return self._linear
+
+    @linear.setter
+    def linear(self, v):
+        self._linear = float(v)
+        self.touch_params()
+
+    @property
+    def quadratic(self):
+        return self._quadratic
+
+    @quadratic.setter
+    def quadratic(self, v):
+        self._quadratic = float(v)
+        self.touch_params()
+
     @radius.setter
     def radius(self, value: float):
         self._radius = max(0.0, value)
+        self.touch_params()
+
+    @property
+    def attenuation(self):
+        return (self._constant, self._linear, self._quadratic)
+
+    @attenuation.setter
+    def attenuation(self, value):
+        self._constant, self._linear, self._quadratic = (float(v) for v in value)
+        self.touch_params()
 
     def attenuation_at(self, distance: float) -> float:
         """Calculate attenuation factor at a given distance."""
@@ -364,11 +454,23 @@ class AreaLight(Light):
         self.lookat(look_at)
         self._width = max(0.001, width)
         self._height = max(0.001, height)
-        self.two_sided = two_sided
+        self._two_sided = bool(two_sided)
+
+    def __repr_extra__(self) -> str:
+        return f"{self._width:.2f}×{self._height:.2f}"
 
     @property
     def light_type(self) -> LightType:
         return LightType.Area
+
+    @property
+    def two_sided(self) -> bool:
+        return self._two_sided
+
+    @two_sided.setter
+    def two_sided(self, value: bool):
+        self._two_sided = bool(value)
+        self.touch_params()
 
     # Basis vector mapping
 
@@ -395,6 +497,7 @@ class AreaLight(Light):
     @width.setter
     def width(self, value: float):
         self._width = max(0.001, value)
+        self.touch_params()
 
     @property
     def height(self) -> float:
@@ -404,6 +507,7 @@ class AreaLight(Light):
     @height.setter
     def height(self, value: float):
         self._height = max(0.001, value)
+        self.touch_params()
 
     @property
     def area(self) -> float:

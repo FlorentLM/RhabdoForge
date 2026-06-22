@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
@@ -116,15 +118,14 @@ def trimesh_from_arrays(
 
 ##
 
+@dataclass
 class MaterialData:
     """
-    Material properties for rendering (colors, specular, etc.)
+    Material properties for rendering (colours, specular, etc.)
     """
-
-    def __init__(self):
-        self.base_color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
-        self.specular = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)  # w = shininess
-        self.emission = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    base_color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+    specular = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)  # w = shininess
+    emission = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
 
 class AssetType(Enum):
@@ -501,6 +502,8 @@ class Instance(TransformMixin):
     def visible(self, value: bool):
         self._visible = bool(value)
         self.touch()
+
+    is_visible = visible
 
 
 class Skybox:

@@ -90,6 +90,8 @@ def main():
                          enable_microsaccades=True,
                          enable_direct=True, enable_shadows=True, enable_ambient=True)
 
+    renderer.photon_concentration = 0.5
+
     # The BVH can also be displayed in debug
     if SHOW_DEBUG_OBJECTS:
         for blas in renderer.BLASes:
