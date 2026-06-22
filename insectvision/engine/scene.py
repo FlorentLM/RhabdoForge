@@ -1,10 +1,8 @@
-from dataclasses import dataclass
-
 import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import Dict, List, Optional, Union, Sequence, Set
+from typing import TYPE_CHECKING, Dict, List, Optional, Union, Sequence, Set
 from numpy.typing import ArrayLike
 from enum import Enum, auto
 from pathlib import Path
@@ -17,15 +15,30 @@ from insectvision.engine.lights import Sun, Light, DirectionalLight, PointLight,
 from insectvision.engine.movement import TransformMixin
 from insectvision.engine.materials_utils import load_exr_equirect, sh_irradiance, get_exr_sun
 
+if TYPE_CHECKING:
+    from PIL.ImageFile import ImageFile
+
+
+def human_format(num: float) -> str:
+    # Source - https://stackoverflow.com/a/45846841
+    # Posted by rtaft
+    # Retrieved 2026-06-22, License - CC BY-SA 3.0
+    num = float(f'{num:.3g}')
+    magnitude = 0
+    while abs(num) >= 1000:
+        magnitude += 1
+        num /= 1000.0
+    return f'{num:f}'.rstrip('0').rstrip('.') + ['', 'K', 'M', 'B', 'T'][magnitude]
+
 
 def trimesh_from_arrays(
     vertices: np.ndarray,
-    faces: np.ndarray = None,
-    normals: np.ndarray = None,
-    vertex_colors: np.ndarray = None,
-    uv_coords: np.ndarray = None,
-    texture_image: Image.Image = None
-) -> Union[trimesh.Trimesh, trimesh.PointCloud, None]:
+    faces: Optional[np.ndarray] = None,
+    normals: Optional[np.ndarray] = None,
+    vertex_colors: Optional[np.ndarray] = None,
+    uv_coords: Optional[np.ndarray] = None,
+    texture_image: Optional[Image.Image] = None
+) -> Optional[Union[trimesh.Trimesh, trimesh.PointCloud]]:
     """
     Creates a trimesh.Trimesh object from numpy arrays
 
@@ -138,39 +151,23 @@ class AssetType(Enum):
 
 class Asset:
     """
-    A container for a renderable asset (mesh or point cloud).
+    Base container for a renderable asset (mesh or point cloud).
     """
+
+    asset_type: Optional['AssetType'] = None   # set per subclass
 
     def __init__(self, name: str):
         self.id = id(self)
         self.name = name
-        self.asset_type: Optional[AssetType] = None
+        self.material: 'MaterialData' = MaterialData()
 
-        # Mesh data
-        self.vertices: Optional[np.ndarray] = None
-        self.indices: Optional[np.ndarray] = None
-
-        # Point cloud data
-        self.points: Optional[np.ndarray] = None
-        self.colors: Optional[np.ndarray] = None
-        self.normals: Optional[np.ndarray] = None
-        self.radii: Optional[np.ndarray] = None
-
-        self.material = MaterialData()
-
-        self._texture_path: Optional[Path] = None  # source path for lazy loading
-        self._texture_image: Optional[Image.Image] = None  # cached image
+        self._texture_path: Optional['Path'] = None  # source path for lazy loading
+        self._texture_image: Optional['Image'] = None  # cached image
         self.is_srgb = True
-        self.texture_id: Optional[int] = None  # OpenGL texture ID (set by renderer)
 
         self._material_rev: int = 0
         self._texture_rev: int = 0
         self._geometry_rev: int = 0
-
-    def __repr__(self):
-        kind = self.asset_type.name if self.asset_type else "Uninitialised"
-        prim = f"{self.nb_triangles} tris" if self.asset_type == AssetType.Mesh else f"{self.nb_points} pts"
-        return f"<Asset '{self.name}' | {kind} | {prim} | {'textured' if self.has_texture else 'untextured'}>"
 
     def touch_material(self) -> None:
         """Mark material (base colour/specular/emission) as changed."""
@@ -185,11 +182,58 @@ class Asset:
         self._geometry_rev += 1
 
     @property
-    def texture_path(self) -> Optional[Path]:
+    def material_revision(self) -> int:
+        return self._material_rev
+
+    @property
+    def texture_revision(self) -> int:
+        return self._texture_rev
+
+    @property
+    def geometry_revision(self) -> int:
+        return self._geometry_rev
+
+    @property
+    def vertices(self) -> Optional[np.ndarray]:
+        return self._vertices
+
+    # Geometry summary (overridden by the two child classes)
+
+    @property
+    def nb_triangles(self) -> int:
+        return 0
+
+    @property
+    def nb_points(self) -> int:
+        return 0
+
+    def _geom_summary(self) -> str:
+        return 'empty'
+
+    def __repr__(self):
+        return (f"<{self.__class__.__name__} '{self.name}' | {self._geom_summary()} | "
+                f"{'textured' if self.has_texture else 'untextured'}>")
+
+    @vertices.setter
+    def vertices(self, verts: Optional[np.ndarray]) -> None:
+        self._vertices = np.ascontiguousarray(verts, dtype=np.float32) if verts is not None else None
+
+    @property
+    def indices(self) -> Optional[np.ndarray]:
+        return self._indices
+
+    @indices.setter
+    def indices(self, indices: Optional[np.ndarray]) -> None:
+        self._indices = np.ascontiguousarray(indices, dtype=np.uint32) if indices is not None else None
+
+    # Shared properties
+
+    @property
+    def texture_path(self) -> Optional['Path']:
         return self._texture_path
 
     @property
-    def texture_image(self) -> Optional[Image.Image]:
+    def texture_image(self) -> Optional['Image']:
         """
         Returns the texture as a PIL Image (lazily).
         Or None if no texture available.
@@ -212,17 +256,27 @@ class Asset:
         """Returns True if this asset has a texture (path or image)."""
         return self._texture_image is not None or self._texture_path is not None
 
-    def set_material(self, base_color=None, specular=None, emission=None) -> None:
-        """Update material fields and flag the change."""
+    def set_material(self,
+            base_color: Optional[ArrayLike] = None,
+            specular: Optional[ArrayLike] = None,
+            emission: Optional[ArrayLike] = None
+        ) -> None:
+        """
+        Update material fields.
+        """
+
         if base_color is not None:
             self.material.base_color = np.asarray(base_color, dtype=np.float32)
+
         if specular is not None:
             self.material.specular = np.asarray(specular, dtype=np.float32)
+
         if emission is not None:
             self.material.emission = np.asarray(emission, dtype=np.float32)
+
         self.touch_material()
 
-    def set_texture(self, source: Union[Path, str, Image.Image, np.ndarray, None], sRGB: bool = True):
+    def set_texture(self, source: Optional[Union[Path, str, Image, np.ndarray]], sRGB: bool = True):
         """
         Sets the texture from various sources. None to clear.
 
@@ -243,57 +297,100 @@ class Asset:
 
         if isinstance(source, (Path, str)):
             self._texture_path = Path(source)
-
         elif isinstance(source, Image.Image):
             self._texture_image = source.convert('RGBA')
-
         elif isinstance(source, np.ndarray):
             try:
                 self._texture_image = Image.fromarray(source).convert('RGBA')
             except Exception as e:
-                print(f"Warning: Failed to convert numpy array to image for asset '{self.name}': {e}")
+                print(f"Warning: Failed to convert array to image for '{self.name}': {e}")
         else:
-            print(f"Warning: Unrecognized texture source type {type(source).__name__} for asset '{self.name}'")
+            print(f"Warning: Unrecognised texture source {type(source).__name__} for '{self.name}'")
 
         self.is_srgb = sRGB
+
+    @staticmethod
+    def _resolve_texture_image(texture: Union[np.ndarray, 'Image', 'ImageFile']):
+
+        if isinstance(texture, Image.Image):
+            return texture.convert('RGBA')
+
+        if isinstance(texture, (str, Path)):
+            try:
+                return Image.open(Path(texture)).convert('RGBA')
+            except Exception:
+                return None
+
+        if isinstance(texture, np.ndarray):
+            try:
+                return Image.fromarray(texture).convert('RGBA')
+            except Exception:
+                return None
+
+        return None
+
+    # Factory methods
+
+    @classmethod
+    def from_trimesh(cls,
+            name: str,
+            tm: trimesh.Trimesh | trimesh.PointCloud | trimesh.Geometry,
+            radii: Optional[ArrayLike] = None,
+            extract_texture: bool = True
+        ) -> 'Asset':
+
+        if tm.is_empty:
+            raise ValueError(f"Geometry is empty for asset '{name}'.")
+
+        if isinstance(tm, trimesh.Trimesh) and tm.faces is not None and len(tm.faces) > 0:
+            a = MeshAsset(name)
+            a._setup(tm, extract_texture)
+
+            if radii is not None:
+                print(f"Asset '{name}': Parameter 'radii' has no effect on mesh assets. Ignored.")
+
+        elif isinstance(tm, trimesh.PointCloud) and tm.vertices is not None:
+            a = PointsAsset(name)
+            a._setup(tm, radii)
+
+        # TODO: elif trimesh.Geometry ??
+
+        else:
+            raise ValueError(f"No valid geometry found for asset '{name}'.")
+
+        return a
 
     @classmethod
     def from_file(cls,
             name: str,
             file_path: Union[Path, str],
-            texture: Optional[Union[Path, str, Image.Image, np.ndarray]] = None,
+            texture: Optional[Union[Path, str, Image, np.ndarray]] = None,
             radii: Optional[Union[float, ArrayLike]] = None,
             sRGB: bool = True
-        ):
+        ) -> 'Asset':
         """
         Creates an Asset by loading a 3D model from a file.
         """
 
-        asset = cls(name)
+        model = trimesh.load(file_path)
 
-        # texture override will be used instead of embedded texture if provided
-        texture_override = texture is not None
-        if texture_override:
+        if model is None:
+            raise ValueError(f'Failed to load 3D model from {file_path}')
+
+        if isinstance(model, trimesh.Scene):
+            print(f"Info: '{file_path}' has multiple meshes. Merging into '{name}'.")
+            model = model.dump(concatenate=True)
+
+            if not isinstance(model, (trimesh.Trimesh, trimesh.PointCloud)):
+                raise ValueError(f'Failed to extract geometry from scene {file_path}')
+
+        asset = cls.from_trimesh(name, model, radii=radii, extract_texture=texture is None)
+        if texture is not None:
             asset.set_texture(texture)
 
-        trimesh_model = trimesh.load(file_path)
-
-        if trimesh_model is None:
-            raise ValueError(f"Failed to load 3D model from {file_path}")
-
-        if isinstance(trimesh_model, trimesh.Scene):
-            print(f"Info: File '{file_path}' contains multiple meshes. Merging into single Asset '{name}'.")
-
-            trimesh_model = trimesh_model.dump(concatenate=True)
-
-            if not isinstance(trimesh_model, (trimesh.Trimesh, trimesh.PointCloud)):
-                raise ValueError(f"Failed to extract geometry from scene {file_path}")
-
-        asset.process_trimesh(trimesh_model, radii, extract_texture=not texture_override)
-
         asset.is_srgb = sRGB
+        print(f"Created {asset!r} from {file_path}")
 
-        print(f"Created Asset '{asset.name}' ({asset.asset_type.name}) from {file_path}")
         return asset
 
     @classmethod
@@ -307,154 +404,217 @@ class Asset:
             texture: Optional[Union[Path, str, Image.Image, np.ndarray]] = None,
             sRGB: bool = True,
             radii: Optional[Union[float, ArrayLike]] = None
-        ):
+        ) -> 'Asset':
         """
         Creates an Asset from numpy arrays.
         """
 
-        asset = cls(name)
+        tex_img = cls._resolve_texture_image(texture) if (texture is not None and uv_coords is not None) else None
+
+        model = trimesh_from_arrays(vertices=vertices,
+                                    faces=faces,
+                                    normals=normals,
+                                    vertex_colors=vertex_colors,
+                                    uv_coords=uv_coords,
+                                    texture_image=tex_img)
+        if model is None:
+            raise ValueError('Failed to create geometry from arrays.')
+
+        asset = cls.from_trimesh(name, model, radii=radii, extract_texture=False)
 
         if texture is not None:
             asset.set_texture(texture)
 
-        # For trimesh texture mapping, we need the image if UVs are provided
-        texture_for_trimesh = asset._texture_image if uv_coords is not None else None
-
-        trimesh_model = trimesh_from_arrays(
-            vertices=vertices, faces=faces, normals=normals,
-            vertex_colors=vertex_colors, uv_coords=uv_coords,
-            texture_image=texture_for_trimesh
-        )
-
-        if trimesh_model is None:
-            raise ValueError("Failed to create geometry from arrays.")
-
-        asset.process_trimesh(trimesh_model, radii, extract_texture=False)
         asset.is_srgb = sRGB
 
-        print(f"Created Asset '{asset.name}' ({asset.asset_type.name}) from arrays")
+        print(f"Created {asset!r} from arrays")
         return asset
 
-    def process_trimesh(self,
-                        trimesh_obj: Union[trimesh.Trimesh, trimesh.PointCloud],
-                        radii: Optional[Union[float, ArrayLike]],
-                        extract_texture: bool = True
-                        ):
-        """
-        Populates Asset data from a trimesh object.
-        """
 
-        if trimesh_obj.is_empty:
-            raise ValueError(f"Geometry is empty for asset '{self.name}'.")
+class MeshAsset(Asset):
+    """
+    Triangle mesh asset.
+    """
 
-        if isinstance(trimesh_obj, trimesh.Trimesh) and trimesh_obj.faces is not None and len(trimesh_obj.faces) > 0:
-            self.asset_type = AssetType.Mesh
-            self._setup_mesh_data(trimesh_obj, extract_texture)
+    asset_type = AssetType.Mesh
 
-        elif isinstance(trimesh_obj, trimesh.PointCloud) and trimesh_obj.vertices is not None:
-            self.asset_type = AssetType.Points
-            self._setup_point_cloud_data(trimesh_obj, radii)
+    def __init__(self, name):
+        super().__init__(name)
 
-        else:
-            raise ValueError(f"No valid geometry found for asset '{self.name}'.")
+        self._vertices4: Optional[np.ndarray] = None  # (V, 4), BVH-owned
+        self._uv: Optional[np.ndarray] = None  # (V, 2)
+        self._indices: Optional[np.ndarray] = None  # (T, 3) uint32
 
-    def _setup_mesh_data(self, trimesh_obj: trimesh.Trimesh, extract_texture: bool):
-        """
-        Populates mesh-specific data from a trimesh object.
-        """
+    @property
+    def vertices4(self) -> Optional[np.ndarray]:
+        return self._vertices4
 
-        vertices_3d = trimesh_obj.vertices.astype(np.float32)
-        indices = trimesh_obj.faces.astype(np.uint32)
+    @property
+    def vertices(self) -> Optional[np.ndarray]:
+        """(V, 3) xyz view into vertices4. If mutated in place, touch_geometry() must be called."""
+        return None if self._vertices4 is None else self._vertices4[:, :3]
 
-        # UVs
-        uvs = np.zeros((len(vertices_3d), 2), dtype=np.float32)
-        if hasattr(trimesh_obj.visual, 'uv') and trimesh_obj.visual.uv is not None:
-            if trimesh_obj.visual.uv.shape[0] == vertices_3d.shape[0]:
-                uvs = trimesh_obj.visual.uv.astype(np.float32)
-            else:
-                print(f"Warning: UV count mismatch in '{self.name}', zeroing UVs.")
+    @vertices.setter
+    def vertices(self, xyz):
+        if xyz is None:
+            self._vertices4 = None
+            return
 
-        self.vertices = np.concatenate((vertices_3d, uvs), axis=1)
-        self.indices = indices
+        xyz = np.asarray(xyz, dtype=np.float32)
+        # reuse the buffer when count is unchanged so the BVH's reference stays valid
+        if self._vertices4 is None or len(self._vertices4) != len(xyz):
+            self._vertices4 = np.zeros((len(xyz), 4), dtype=np.float32)
 
-        # Extract material properties from trimesh
-        if hasattr(trimesh_obj.visual, 'material') and trimesh_obj.visual.material is not None:
-            mat = trimesh_obj.visual.material
+        self._vertices4[:, :3] = xyz[:, :3]
 
-            # Base colour
-            if hasattr(mat, 'main_color') and mat.main_color is not None:
-                self.material.base_color = (mat.main_color / 255.0).astype(np.float32)
+    @property
+    def uv(self) -> Optional[np.ndarray]:
+        return self._uv
 
-            # Specular
-            if hasattr(mat, 'specular') and mat.specular is not None:
-                spec = np.array(mat.specular, dtype=np.float32)
-                if spec.max() > 1.0:
-                    spec /= 255.0
-                shininess = getattr(mat, 'shininess', 0.0)
-                self.material.specular = np.array([spec[0], spec[1], spec[2], shininess], dtype=np.float32)
+    @uv.setter
+    def uv(self, uv):
+        self._uv = np.ascontiguousarray(uv, dtype=np.float32) if uv is not None else None
 
-            # Embedded texture (only if not already set)
-            if extract_texture and not self.has_texture:
-                if hasattr(mat, 'image') and mat.image is not None:
-                    self._texture_image = mat.image.convert("RGBA")
+    @property
+    def indices(self) -> Optional[np.ndarray]:
+        return self._indices
 
-        if self.has_texture:
-            source = f"path '{self._texture_path}'" if self._texture_path else "embedded/provided image"
-            print(f"Info: Asset '{self.name}' has texture from {source}")
-        else:
-            print(f"Info: Asset '{self.name}' has no texture (will use base_color)")
-
-    def _setup_point_cloud_data(self, trimesh_obj: trimesh.PointCloud, radii: Optional[Union[float, ArrayLike]]):
-        """
-        Populates point cloud-specific data.
-        """
-
-        self.points = trimesh_obj.vertices.astype(np.float32)
-        self._nb_points = len(self.points)
-
-        # Colors
-        if hasattr(trimesh_obj.visual, 'vertex_colors') and trimesh_obj.visual.vertex_colors is not None:
-            vc = trimesh_obj.visual.vertex_colors
-            if vc.shape[0] == self._nb_points:
-                if vc.dtype == np.uint8:
-                    self.colors = vc[:, :3].astype(np.float32) / 255.0
-                else:
-                    self.colors = vc[:, :3].astype(np.float32)
-            else:
-                self.colors = np.ones((self._nb_points, 3), dtype=np.float32)
-        else:
-            self.colors = np.ones((self._nb_points, 3), dtype=np.float32)
-
-        # Normals
-        if hasattr(trimesh_obj, 'vertex_normals') and trimesh_obj.vertex_normals is not None:
-            if trimesh_obj.vertex_normals.shape[0] == self._nb_points:
-                self.normals = trimesh_obj.vertex_normals.astype(np.float32)
-            else:
-                self.normals = np.zeros((self._nb_points, 3), dtype=np.float32)
-        else:
-            self.normals = np.zeros((self._nb_points, 3), dtype=np.float32)
-
-        # Radii
-        if isinstance(radii, (float, int)):
-            self.radii = np.full(self._nb_points, radii, dtype=np.float32)
-        elif radii is not None:
-            self.radii = np.asarray(radii, dtype=np.float32)
-            if len(self.radii) != self._nb_points:
-                raise ValueError("Radii count must match point count.")
-        else:
-            self.radii = np.full(self._nb_points, 0.05, dtype=np.float32)
+    @indices.setter
+    def indices(self, idx):
+        self._indices = np.ascontiguousarray(idx, dtype=np.uint32) if idx is not None else None
 
     @property
     def nb_triangles(self) -> int:
-        if self.asset_type == AssetType.Mesh and self.indices is not None:
-            return len(self.indices)
-        return 0
+        return 0 if self._indices is None else len(self._indices)
+
+    def _geom_summary(self) -> str:
+        nb_tris = human_format(self.nb_triangles)
+        nb_vert = 0 if self._vertices4 is None else human_format(len(self._vertices4))
+        return f"{nb_tris} tris / {nb_vert} verts"
+
+    def shading_vertices(self) -> np.ndarray:
+        """(V, 5) [x, y, z, u, v] for the GPU vertex SSBO (assembled on demand)."""
+        v = self._vertices4[:, :3]
+        uv = self._uv if self._uv is not None else np.zeros((len(v), 2), dtype=np.float32)
+        return np.concatenate((v, uv), axis=1)
+
+    def _setup(self, tm: trimesh.Trimesh, extract_texture: bool):
+
+        verts3 = tm.vertices.astype(np.float32)
+        self.vertices = verts3
+        self.indices = tm.faces
+
+        uvs = np.zeros((len(verts3), 2), dtype=np.float32)
+        if getattr(tm.visual, 'uv', None) is not None:
+            if tm.visual.uv.shape[0] == len(verts3):
+                uvs = tm.visual.uv.astype(np.float32)
+            else:
+                print(f"Warning: UV count mismatch in '{self.name}', zeroing UVs.")
+
+        self.uv = uvs
+
+        mat = getattr(tm.visual, 'material', None)
+        if mat is not None:
+
+            if getattr(mat, 'main_color', None) is not None:
+                self.material.base_color = (mat.main_color / 255.0).astype(np.float32)
+
+            if getattr(mat, 'specular', None) is not None:
+                spec = np.array(mat.specular, dtype=np.float32)
+
+                if spec.max() > 1.0:
+                    spec /= 255.0
+
+                shine = getattr(mat, 'shininess', 0.0)
+                self.material.specular = np.array([spec[0], spec[1], spec[2], shine], dtype=np.float32)
+
+            if extract_texture and not self.has_texture and getattr(mat, 'image', None) is not None:
+                self._texture_image = mat.image.convert("RGBA")
+
+
+class PointsAsset(Asset):
+    """
+    Point cloud asset.
+    """
+
+    asset_type = AssetType.Points
+
+    def __init__(self, name):
+        super().__init__(name)
+        self._points = self._radii = self._normals = self._colors = None
+
+    @property
+    def points(self):
+        return self._points
+
+    @points.setter
+    def points(self, p):
+        self._points = np.ascontiguousarray(p, dtype=np.float32) if p is not None else None
+
+    @property
+    def radii(self):
+        return self._radii
+
+    @radii.setter
+    def radii(self, r):
+        self._radii = np.ascontiguousarray(r, dtype=np.float32) if r is not None else None
+
+    @property
+    def normals(self):
+        return self._normals
+
+    @normals.setter
+    def normals(self, n):
+        self._normals = np.ascontiguousarray(n, dtype=np.float32) if n is not None else None
+
+    @property
+    def colors(self):
+        return self._colors
+
+    @colors.setter
+    def colors(self, c):
+        self._colors = np.ascontiguousarray(c, dtype=np.float32) if c is not None else None
 
     @property
     def nb_points(self) -> int:
-        if self.asset_type == AssetType.Points and self.points is not None:
-            return self._nb_points
-        return 0
+        return 0 if self._points is None else len(self._points)
+
+    def _geom_summary(self) -> str:
+        return f"{human_format(self.nb_points)} points"
+
+    def packed_points(self) -> np.ndarray:
+        """(P, 12) [pos(3), radius, normal(3), colour(3), pad(2)] for the GPU points SSBO."""
+        packed = np.zeros((self.nb_points, 12), dtype=np.float32)
+        packed[:, 0:3] = self._points
+        packed[:, 3] = self._radii
+        packed[:, 4:7] = self._normals
+        packed[:, 7:10] = self._colors
+        return packed
+
+    def _setup(self, tm: trimesh.PointCloud, radii: Optional[ArrayLike]):
+
+        self.points = tm.vertices.astype(np.float32)
+        n = self.nb_points
+
+        vc = getattr(tm.visual, 'vertex_colors', None)
+
+        if vc is not None and vc.shape[0] == n:
+            self.colors = (vc[:, :3] / 255.0) if vc.dtype == np.uint8 else vc[:, :3]
+        else:
+            self.colors = np.ones((n, 3), dtype=np.float32)
+
+        nm = getattr(tm, 'vertex_normals', None)
+        self.normals = nm if (nm is not None and nm.shape[0] == n) else np.zeros((n, 3), dtype=np.float32)
+
+        if isinstance(radii, (float, int)):
+            self.radii = np.full(n, radii, dtype=np.float32)
+
+        elif radii is not None:
+            self.radii = np.asarray(radii, dtype=np.float32)
+            if len(self._radii) != n:
+                raise ValueError("Radii count must match point count.")
+        else:
+            self.radii = np.full(n, 0.05, dtype=np.float32)
 
 
 class Instance(TransformMixin):
@@ -534,17 +694,19 @@ class Scene:
     """
 
     def __init__(self, background_color: Sequence[float] = (0.0, 0.0, 0.0), skybox_path: Optional[str | Path] = None):
-        self.assets: Dict[str, 'Asset'] = {}
+
         self.background_color = background_color
         self._skybox: Optional['Skybox'] = None
 
-        self._directional_lights: Set['DirectionalLight'] = set()
-        self._point_lights: Set['PointLight'] = set()
-        self._area_lights: Set['AreaLight'] = set()
+        self._assets: Dict[str, 'Asset'] = {}
 
         self._dynamic_instances: Set['Instance'] = set()
         self._mesh_instances: Set['Instance'] = set()
         self._point_instances: Set['Instance'] = set()
+
+        self._directional_lights: Set['DirectionalLight'] = set()
+        self._point_lights: Set['PointLight'] = set()
+        self._area_lights: Set['AreaLight'] = set()
 
         self._topology_rev: int = 0
         self._lights_rev: int = 0
@@ -598,7 +760,7 @@ class Scene:
 
         else:
             raise TypeError(
-                f"Invalid type for asset_or_name. Expected Asset or str, but got {type(asset).__name__}.")
+                f"Invalid type for asset. Expected BaseAsset or str, but got {type(asset).__name__}.")
 
         instance = Instance(asset_obj, transform, **kwargs)
 
@@ -625,7 +787,7 @@ class Scene:
 
         self._lights_rev += 1
 
-    def add_skybox(self, texture_path: str):
+    def add_skybox(self, texture_path: str | Path):
         """Creates and loads a skybox from a directory of textures."""
 
         self._skybox = Skybox(texture_path)
@@ -778,6 +940,10 @@ class Scene:
         return new_instances
 
     @property
+    def assets(self) -> Dict[str, 'Asset']:
+        return self._assets
+
+    @property
     def instances(self) -> List['Instance']:
         """
         Returns a combined list of all instances.
@@ -791,6 +957,13 @@ class Scene:
     @property
     def point_instances(self) -> List['Instance']:
         return list(self._point_instances)
+
+    @property
+    def dynamic_instances(self) -> List['Instance']:
+        """
+        Returns a list of all dynamic instances.
+        """
+        return list(self._dynamic_instances)
 
     @property
     def lights(self) -> List['Light']:

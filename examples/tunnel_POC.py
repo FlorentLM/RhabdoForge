@@ -155,7 +155,6 @@ def randomise_wall_textures(scene: Scene, cfg: Configuration, wall_condition: st
         new_tex = checkerboard_texture(tex_w, tex_h, block_size=bs, ratio=cfg.checkerboard_ratio)
 
         asset.set_texture(new_tex)
-        renderer.update_texture(asset)
 
 
 # Runner functions ---------------------------------------------------------------------------

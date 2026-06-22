@@ -10,7 +10,7 @@ from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
 from insectvision.utils.shared import DisplayMode, RandomnessMode, SamplingMode
 from insectvision.engine.materials_utils import constant_sh
-from insectvision.engine.scene import AssetType
+from insectvision.engine.scene import AssetType, MeshAsset, PointsAsset
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
 from insectvision.engine.resources import (
     write_pytinybvh_preamble, ShaderProgram, GPUResourceManager,
@@ -93,13 +93,13 @@ class RaytraceBaker:
 
     def _pack_lights(self):
 
-        dir_l = [l for l in self.scene.directional_lights if l.active]
-        point_l = [l for l in self.scene.point_lights if l.active]
-        area_l = [l for l in self.scene.area_lights if l.active]
+        self._dir_order = [l for l in self.scene.directional_lights if l.active]
+        self._point_order = [l for l in self.scene.point_lights if l.active]
+        self._area_order = [l for l in self.scene.area_lights if l.active]
 
-        self._nb_dir_lights = len(dir_l)
-        self._nb_point_lights = len(point_l)
-        self._nb_area_lights = len(area_l)
+        self._nb_dir_lights = len(self._dir_order)
+        self._nb_point_lights = len(self._point_order)
+        self._nb_area_lights = len(self._area_order)
 
         def _pack_or_update(name, lights, dtype):
             data = np.concatenate([l.pack() for l in lights]) if lights else np.zeros(1, dtype=dtype)
@@ -112,9 +112,22 @@ class RaytraceBaker:
                                             data=data,
                                             usage=GL_DYNAMIC_DRAW)
 
-        _pack_or_update('dir', dir_l, DIR_LIGHT_DTYPE)
-        _pack_or_update('point', point_l, POINT_LIGHT_DTYPE)
-        _pack_or_update('area', area_l, AREA_LIGHT_DTYPE)
+        _pack_or_update('dir', self._dir_order, DIR_LIGHT_DTYPE)
+        _pack_or_update('point', self._point_order, POINT_LIGHT_DTYPE)
+        _pack_or_update('area', self._area_order, AREA_LIGHT_DTYPE)
+
+        self._light_last_rev = {
+            id(l): l.revision for l in (*self._dir_order, *self._point_order, *self._area_order)
+        }
+
+    def _pack_material_row(self, asset) -> np.ndarray:
+        row = np.zeros(4, dtype=np.uint32)
+        tex_idx = self._asset_tex_map.get(asset.id)
+        row[0] = tex_idx if tex_idx is not None else 0xFFFFFFFF
+        c = asset.material.base_color
+        rgba = [int(np.clip(x, 0, 1) * 255) & 0xFF for x in c]
+        row[1] = (rgba[3] << 24) | (rgba[2] << 16) | (rgba[1] << 8) | rgba[0]
+        return row
 
     def _pack_materials(self):
         """Packs material data for all mesh assets into GPU buffers."""
@@ -123,7 +136,10 @@ class RaytraceBaker:
         if not mesh_assets:
             return
 
-        self._material_map = {asset.id: i for i, asset in enumerate(mesh_assets)}
+        self._material_assets = list(mesh_assets)
+        self._mat_last_rev = {a.id: a.material_revision for a in mesh_assets}
+        self._tex_last_rev = {a.id: a.texture_revision for a in mesh_assets}
+        self._material_map = {a.id: i for i, a in enumerate(mesh_assets)}
 
         texture_images = []
 
@@ -204,7 +220,6 @@ class RaytraceBaker:
         self._blas_leaf_chunks = []
         l_off = 0
 
-        print(f"Building BLASes for {len(self.scene.assets)} unique assets...")
         for asset in self.scene.assets.values():
 
             if asset.id in self._asset_blas_map:
@@ -213,43 +228,27 @@ class RaytraceBaker:
             blas_id = len(self._blases)
             bundle = None
 
-            if asset.asset_type == AssetType.Mesh:
+            if isinstance(asset, MeshAsset):
+                blas = BVH.from_indexed_mesh(asset.vertices4, asset.indices)
 
-                positions = asset.vertices[:, :3].astype(np.float32)
-                verts4 = np.pad(positions, ((0, 0), (0, 1)), 'constant', constant_values=0)
-                indices = asset.indices.astype(np.uint32)
-
-                blas = BVH.from_indexed_mesh(verts4, indices)
-
-                all_verts.append(asset.vertices)
+                all_verts.append(asset.shading_vertices())
                 all_idxs.append(asset.indices.flatten())
 
                 self._asset_blas_map[asset.id] = {'id': blas_id, 'v_off': v_off, 'idx_off': idx_off, 'is_points': 0}
-                v_off += len(asset.vertices)
+
+                v_off += len(asset.vertices4)
                 idx_off += len(asset.indices.flatten())
 
-            elif asset.asset_type == AssetType.Points:
-
-                points = asset.points.astype(np.float32)
-                radii = asset.radii.astype(np.float32)
-
-                blas = BVH.from_points(points,
-                                       radius=radii,
-                                       traversal_cost=1.0,
-                                       intersection_cost=1.0)
+            elif isinstance(asset, PointsAsset):
+                blas = BVH.from_points(asset.points, radius=asset.radii)
 
                 bundle = blas.get_SSBO_bundle(flatten_nodes=False)
 
-                nb_points = len(asset.points)
-                packed_points = np.zeros((nb_points, 12), dtype=np.float32)
-                packed_points[:, 0:3] = asset.points
-                packed_points[:, 3] = asset.radii
-                packed_points[:, 4:7] = asset.normals
-                packed_points[:, 7:10] = asset.colors
-                all_pts.append(packed_points)
+                all_pts.append(asset.packed_points())
 
-                self._asset_blas_map[asset.id] = {'id': blas_id, 'pt_off': pt_off}
-                pt_off += nb_points
+                self._asset_blas_map[asset.id] = {'id': blas_id, 'pt_off': pt_off, 'is_points': 1}
+
+                pt_off += asset.nb_points
 
             else:
                 continue
@@ -258,6 +257,7 @@ class RaytraceBaker:
 
             if supports_layout(target_layout) and target_layout != blas.layout:
                 blas.convert_to(target_layout, compact=True)
+
             elif target_layout != blas.layout:
                 print(f"Warning: Layout {target_layout.name} not supported. Falling back to Standard.")
                 blas.convert_to(Layout.Standard, compact=True)
@@ -273,8 +273,11 @@ class RaytraceBaker:
 
             self._asset_blas_map[asset.id].update({'n_off': n_off, 'l_off': l_off})
             self._blases.append(blas)
+
             n_off += nodes.shape[0]
             l_off += prim_indices.size
+
+        self._geom_last_rev = {a.id: a.geometry_revision for a in self.scene.assets.values()}
 
         self.cpu_verts = np.concatenate(all_verts).ravel() if all_verts else None
         self.cpu_idx = np.concatenate(all_idxs).ravel() if all_idxs else None
@@ -320,6 +323,8 @@ class RaytraceBaker:
 
             if inst.dynamic:
                 self._dynamic_map[inst.id] = i
+
+        self._dynamic_last_rev = {inst.id: inst.transform_revision for inst in all_instances if inst.dynamic}
 
         self._tlas = BVH.build_tlas(tlas_build_data, self._blases)
 
@@ -391,60 +396,149 @@ class RaytraceBaker:
 
     # Dynamic updates
 
-    def update_texture(self, asset: 'Asset'):
-        """Update a texture on the GPU for a given Asset."""
+    def _sync_lights(self):
+
+        new_dir = [l for l in self.scene.directional_lights if l.active]
+        new_point = [l for l in self.scene.point_lights if l.active]
+        new_area = [l for l in self.scene.area_lights if l.active]
+
+        if (len(new_dir), len(new_point), len(new_area)) != \
+                (self._nb_dir_lights, self._nb_point_lights, self._nb_area_lights):
+
+            self._pack_lights()  # resize + re-pin order + re-snapshot revisions
+            return  # shader recompile happens via _ensure_defines (counts changed)
+
+        self._dir_order, self._point_order, self._area_order = new_dir, new_point, new_area
+
+        for name, order in (('dir', self._dir_order),
+                            ('point', self._point_order),
+                            ('area', self._area_order)):
+
+            for row, light in enumerate(order):
+                if light.revision == self._light_last_rev.get(id(light)):
+                    continue
+
+                self.light_buffers[name].write(light.pack(), start=row)
+                self._light_last_rev[id(light)] = light.revision
+
+    def _sync_materials(self):
+
+        if 'materials' not in self.bvh_buffers:
+            return
+
+        for asset in self._material_assets:
+            if asset.material_revision == self._mat_last_rev.get(asset.id):
+                continue
+            self.bvh_buffers['materials'].write(self._pack_material_row(asset),
+                                                start=self._material_map[asset.id] * 4)
+            self._mat_last_rev[asset.id] = asset.material_revision
+
+    def _sync_textures(self):
 
         if 'materials' not in self.scene_textures:
             return
 
-        tex_idx = self._asset_tex_map.get(asset.id)
-        if tex_idx is None:
-            print(f"Warning: Asset '{asset.name}' did not have a texture when the scene was baked. "
-                  f"Texture updates need the asset to be initialised with a texture.")
+        for asset in self._material_assets:
+            if asset.texture_revision == self._tex_last_rev.get(asset.id):
+                continue
+            self._tex_last_rev[asset.id] = asset.texture_revision
+
+            tex_idx = self._asset_tex_map.get(asset.id)
+            if tex_idx is None:  # had no texture at bake but promotion needs an array realloc (TODO in future)
+                continue
+            img = asset.texture_image
+            if img is None:
+                continue
+
+            if img.size != (self.tex_w, self.tex_h):
+                img = img.resize((self.tex_w, self.tex_h), Image.Resampling.LANCZOS)
+
+            glBindTexture(GL_TEXTURE_2D_ARRAY, self.scene_textures['materials'].handle)
+            glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, tex_idx,
+                            self.tex_w, self.tex_h, 1,
+                            GL_RGBA, GL_UNSIGNED_BYTE, img.convert('RGBA').tobytes())
+            glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
+
+    def _sync_geometry(self) -> bool:
+        """
+        Refit BLASes whose geometry was edited in place (positions only).
+        Returns True if anything changed.
+        """
+
+        any_changed = False
+
+        for asset in self.scene.assets.values():
+
+            bmap = self._asset_blas_map.get(asset.id)
+            if bmap is None or asset.geometry_revision == self._geom_last_rev.get(asset.id):
+                continue
+
+            self._geom_last_rev[asset.id] = asset.geometry_revision
+
+            blas = self._blases[bmap['id']]
+            if not blas.is_refittable:
+                print(f"Warning: BLAS for '{asset.name}' is not refittable; geometry edit needs a re-bake.")
+                continue
+
+            blas.refit()
+            nodes = blas.get_buffers()['nodes'].astype(np.float32).ravel()
+            self.bvh_buffers['blas_nodes'].write(nodes, start=bmap['n_off'] * 8)   # 8 floats / standard node
+
+            if bmap['is_points'] == 0:
+                self.bvh_buffers['verts'].write(
+                    asset.shading_vertices().astype(np.float32).ravel(), start=bmap['v_off'] * 5)
+            else:
+                self.bvh_buffers['points'].write(
+                    asset.packed_points().ravel(), start=bmap['pt_off'] * 12)
+            any_changed = True
+
+        return any_changed
+
+    def _sync_transforms(self, refit_TLAS: bool = False):
+
+        if self._tlas is None or not self._dynamic_map:
             return
 
-        img = asset.texture_image
-        if img is None:
-            return
+        dirty_rows = []
 
-        if img.size != (self.tex_w, self.tex_h):
-            img = img.resize((self.tex_w, self.tex_h), Image.Resampling.LANCZOS)
-
-        glBindTexture(GL_TEXTURE_2D_ARRAY, self.scene_textures['materials'].handle)
-        glTexSubImage3D(
-            GL_TEXTURE_2D_ARRAY, 0, 0, 0, tex_idx,
-            self.tex_w, self.tex_h, 1, GL_RGBA, GL_UNSIGNED_BYTE, img.convert("RGBA").tobytes()
-        )
-        glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
-
-    def update(self):
-        """Pulls transforms from dynamic instances, refits the TLAS, uploads to GPU."""
-
-        self._pack_lights()
-
-        if not self._dynamic_map or self._tlas is None:
-            return
-
-        updated = False
-
-        for inst in self.scene._dynamic_instances:
-            tlas_idx = self._dynamic_map.get(inst.id)
-            if tlas_idx is None:
+        for inst in self.scene.dynamic_instances:
+            row = self._dynamic_map.get(inst.id)
+            if row is None or inst.transform_revision == self._dynamic_last_rev.get(inst.id):
                 continue
 
             transform, inv_transform = self._inst_transforms(inst)
 
-            self._tlas.set_instance_transform(tlas_idx, transform)
-            self.gpu_inst_info[tlas_idx]['transform'] = transform
-            self.gpu_inst_info[tlas_idx]['inverse_transform'] = inv_transform
-            updated = True
+            self._tlas.set_instance_transform(row, transform)   # TODO: Use pytinybvh's update_instances for batched updates if many changes
 
-        if updated:
-            self._tlas.refit_tlas()
-            new_tlas_nodes = self._tlas.get_buffers()['nodes']
+            self.gpu_inst_info[row]['transform'] = transform
+            self.gpu_inst_info[row]['inverse_transform'] = inv_transform
+            self._dynamic_last_rev[inst.id] = inst.transform_revision
 
-            self.bvh_buffers['tlas_nodes'].write(new_tlas_nodes)
-            self.bvh_buffers['inst_info'].write(self.gpu_inst_info)
+            dirty_rows.append(row)
+
+        if not dirty_rows and not refit_TLAS:
+            return
+
+        self._tlas.refit_tlas()
+        self.bvh_buffers['tlas_nodes'].write(self._tlas.get_buffers()['nodes'].astype(np.float32))
+
+        if dirty_rows:
+            rows = np.unique(np.asarray(dirty_rows, dtype=np.int64))
+            for block in np.split(rows, np.where(np.diff(rows) != 1)[0] + 1):
+                s, n = int(block[0]), block.size
+                self.bvh_buffers['inst_info'].write(self.gpu_inst_info[s:s + n], start=s)
+
+    def update(self):
+        """
+        Consumes all scene change channels and pushes minimal updates to the GPU.
+        """
+
+        self._sync_lights()
+        self._sync_materials()
+        self._sync_textures()
+
+        geom_changed = self._sync_geometry()
+        self._sync_transforms(refit_TLAS=geom_changed)
 
     # Cleanup
 
@@ -709,21 +803,15 @@ class Raytracer(BaseRenderer):
             self._raytrace_thirdperson(view_name, point_of_view)
 
             tex_id, _ = self._get_view_texture(view_name)
+
             self.screen_surface.draw(
                 tex_id,
-                is_cubemap=False,
-                simulate_insect_vision=self.simulate_insect_colours,
+                false_colors=self.simulate_insect_colours,
                 uv_encoded_textures=self.uv_encoded_textures
             )
 
         if view_mode == DisplayMode.Third_person:
             self._draw_eye_thirdperson(point_of_view)
-
-    # Public properties and methods
-
-    def update_texture(self, asset: 'Asset'):
-        """Update a texture on the GPU for given Asset."""
-        self._baker.update_texture(asset)
 
     # Cleanup
 
