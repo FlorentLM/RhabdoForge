@@ -476,20 +476,10 @@ class Dashboard:
     def _sync_ui_state(self):
         """Sync DPG widgets with Python states in case they were modified via keyboard."""
 
-        # Info panel sync
-        from insectvision.renderers import Raytracer, Pathtracer
-
-        # Renderer detection
-        is_ray_based = isinstance(self.ctx.renderer, Raytracer)
-        if isinstance(self.ctx.renderer, Pathtracer):
-            renderer_name = "Pathtracer"
-        elif is_ray_based:
-            renderer_name = "Raytracer"
-        else:
-            renderer_name = "Rasterizer"
+        rendering_mode = 'Path-tracing' if self.ctx.renderer.path_tracing else 'Ray-tracing'
 
         dpg.set_value('ui_fps_text', f'FPS: {self.ctx.fps:5.1f}')
-        dpg.set_value('ui_renderer_text', f'| Renderer: {renderer_name}')
+        dpg.set_value('ui_renderer_text', f'| Render mode: {rendering_mode}')
 
         # Timing: wall vs sim clock
         dpg.set_value('ui_wall_dt_text', f'Wall dt: {self.ctx.wall_dt * 1000.0:6.2f} ms')

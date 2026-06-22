@@ -78,7 +78,7 @@ def trimesh_from_arrays(
             else:
                 mesh_kwargs['vertex_normals'] = normals
 
-        # visual attributes (colors, UVs, texture)
+        # visual attributes (colours, UVs, texture)
         visual_args = {}
 
         if uv_coords is not None:
@@ -90,20 +90,20 @@ def trimesh_from_arrays(
                     material = trimesh.visual.material.SimpleMaterial(image=texture_image)
 
                     visual_args['material'] = material
-                    print("Info: Texture image and UV coordinates provided.")
-
-                else:
-                    print(
-                        "Info: UV coordinates provided but no texture image. Model will have UVs but no visual texture.")
+                    # print('Info: Texture image and UV coordinates provided.')
+                # TODO: Use a proper logger
+                # else:
+                #     print(
+                #         'Info: UV coordinates provided but no texture image. Model will have UVs but no visual texture.')
             else:
                 print("Warning: 'uv_coords' count or shape does not match 'vertices'. Ignoring provided UVs.")
         elif texture_image is not None and uv_coords is None:
-            print("Warning: Texture image provided but no UV coordinates. Texture will not be applied visually.")
+            print('Warning: Texture image provided but no UV coordinates. Texture will not be applied visually.')
 
         if vertex_colors is not None:
             if vertex_colors.shape[0] == vertices.shape[0] and vertex_colors.shape[1] in [3, 4]:
                 visual_args['vertex_colors'] = vertex_colors
-                print("Info: Vertex colors provided.")
+                print('Info: Vertex colors provided.')
             else:
                 print("Warning: 'vertex_colors' count or shape does not match 'vertices'. Ignoring provided colors.")
 

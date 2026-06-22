@@ -2,30 +2,18 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import TYPE_CHECKING, Tuple, List, Dict, Optional, Union, Any
+from typing import TYPE_CHECKING, List, Dict, Optional
 import numpy as np
 from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
-from insectvision.utils.shared import DisplayMode, RandomnessMode, SamplingMode
-from insectvision.engine.materials_utils import constant_sh
 from insectvision.engine.scene import AssetType, MeshAsset, PointsAsset
 from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
-from insectvision.engine.resources import (
-    write_pytinybvh_preamble, ShaderProgram, GPUResourceManager,
-    BufferRegistry, TextureRegistry, UniformRegistry
-)
-from insectvision.renderers.base import BaseRenderer
+from insectvision.engine.resources import write_pytinybvh_preamble, GPUResourceManager, BufferRegistry, TextureRegistry
 
 if TYPE_CHECKING:
-    from insectvision.engine.agent import Agent, OrbitCamera
-    from insectvision.engine.scene import Scene, Asset
-    from insectvision.compound_eyes import Model
-    from insectvision.engine.context import Context
-
-
-WORKGROUPS_RHAB = 64
+    from insectvision.engine.scene import Scene
 
 
 RENDERABLE_INST_DTYPE = np.dtype([
@@ -43,7 +31,7 @@ RENDERABLE_INST_DTYPE = np.dtype([
 # TODO: reorganise this struct
 
 
-class RaytraceBaker:
+class SceneBaker:
     """
     Manages BVH structures and GPU buffers for a Scene.
     """
@@ -51,18 +39,19 @@ class RaytraceBaker:
     def __init__(self, scene: 'Scene', resource_manager: 'GPUResourceManager'):
         self.scene = scene
 
-        self._tlas: Optional[BVH] = None
-        self._blases: List[BVH] = []
+        self._tlas: Optional['BVH'] = None
+        self._blases: List['BVH'] = []
         self._dynamic_map: Dict[int, int] = {}
 
-        self.resource_manager = resource_manager
-        self.bvh_buffers = BufferRegistry(self.resource_manager)
-        self.light_buffers = BufferRegistry(self.resource_manager)
-        self.scene_textures = TextureRegistry(self.resource_manager)
+        self.resource_manager: 'GPUResourceManager' = resource_manager
 
-        self._nb_dir_lights = 0
-        self._nb_point_lights = 0
-        self._nb_area_lights = 0
+        self.bvh_buffers: 'BufferRegistry' = BufferRegistry(self.resource_manager)
+        self.light_buffers: 'BufferRegistry' = BufferRegistry(self.resource_manager)
+        self.scene_textures: 'TextureRegistry' = TextureRegistry(self.resource_manager)
+
+        self._nb_dir_lights: int = 0
+        self._nb_point_lights: int = 0
+        self._nb_area_lights: int = 0
 
         # CPU-side data
         self.gpu_inst_info: Optional[np.ndarray] = None
@@ -70,9 +59,8 @@ class RaytraceBaker:
         self._asset_blas_map: Dict[int, Dict] = {}
         self._asset_tex_map = {}
 
-        print("Baking ray-tracing scene...")
         if not self.scene.instances:
-            print("Warning: Scene is empty, nothing to bake.")
+            print('Warning: Scene is empty, nothing to bake.')
             return
 
         # Pack scene materials and lights
@@ -103,6 +91,7 @@ class RaytraceBaker:
 
         def _pack_or_update(name, lights, dtype):
             data = np.concatenate([l.pack() for l in lights]) if lights else np.zeros(1, dtype=dtype)
+
             if name in self.light_buffers:
                 self.light_buffers[name].resize(len(data), data=data)
             else:
@@ -120,17 +109,66 @@ class RaytraceBaker:
             id(l): l.revision for l in (*self._dir_order, *self._point_order, *self._area_order)
         }
 
+    @staticmethod
+    def pack_rgba8(rgba):
+        # Clamps and packs 4 floats into one 32-bit uint
+        r, g, b, a = [int(np.clip(x, 0, 1) * 255) & 0xFF for x in rgba]
+        return (a << 24) | (b << 16) | (g << 8) | r
+
     def _pack_material_row(self, asset) -> np.ndarray:
         row = np.zeros(4, dtype=np.uint32)
+
         tex_idx = self._asset_tex_map.get(asset.id)
         row[0] = tex_idx if tex_idx is not None else 0xFFFFFFFF
-        c = asset.material.base_color
-        rgba = [int(np.clip(x, 0, 1) * 255) & 0xFF for x in c]
-        row[1] = (rgba[3] << 24) | (rgba[2] << 16) | (rgba[1] << 8) | rgba[0]
+
+        row[1] = self.pack_rgba8(asset.material.base_color)
+
         return row
 
+    def _prepare_texture_array(self, mesh_assets):
+        """Gathers images from assets and creates the GL_TEXTURE_2D_ARRAY."""
+
+        texture_images = []
+
+        # Identify which assets need a slot in the array
+        for asset in mesh_assets:
+            if asset.has_texture and asset.texture_image is not None:
+                self._asset_tex_map[asset.id] = len(texture_images)
+                texture_images.append(asset.texture_image)
+            else:
+                self._asset_tex_map[asset.id] = None
+
+        if not texture_images:
+            return
+
+        # Determine dimensions (based on first texture)
+        # TODO: This is kinda crap
+        self.tex_w, self.tex_h = texture_images[0].size
+        tex_ids = []
+
+        # Create temporary textures for each
+        for img in texture_images:
+            if img.size != (self.tex_w, self.tex_h):
+                img = img.resize((self.tex_w, self.tex_h), Image.Resampling.LANCZOS)
+
+            # Upload to a temporary handle to allow the TextureRegistry to 'array' them
+            temp_tex = self.scene_textures.allocate_2d(
+                'temp', self.tex_w, self.tex_h,
+                image_data=img.convert('RGBA').tobytes(),
+                repeat=True, dtype=int
+            )
+            tex_ids.append(temp_tex.handle)
+
+        # Collapse into final array
+        self.scene_textures.allocate_array('materials', tex_ids)
+
+        # Cleanup temporary handles
+        glDeleteTextures(len(tex_ids), tex_ids)
+        if 'temp' in self.scene_textures._textures:
+            del self.scene_textures._textures['temp']
+
     def _pack_materials(self):
-        """Packs material data for all mesh assets into GPU buffers."""
+        """Initial material data packing for all mesh assets into GPU buffers."""
 
         mesh_assets = {inst.asset for inst in self.scene.mesh_instances}
         if not mesh_assets:
@@ -141,62 +179,19 @@ class RaytraceBaker:
         self._tex_last_rev = {a.id: a.texture_revision for a in mesh_assets}
         self._material_map = {a.id: i for i, a in enumerate(mesh_assets)}
 
-        texture_images = []
-
-        for asset in mesh_assets:
-            if asset.has_texture and asset.texture_image is not None:
-                self._asset_tex_map[asset.id] = len(texture_images)
-                texture_images.append(asset.texture_image)
-            else:
-                self._asset_tex_map[asset.id] = None
-
-        if texture_images:
-            self.tex_w, self.tex_h = texture_images[0].size
-            print(f"Creating texture array: {len(texture_images)} textures at {self.tex_w}x{self.tex_h}")
-
-            tex_ids = []
-            for i, img in enumerate(texture_images):
-                if img.size != (self.tex_w, self.tex_h):
-                    print(f"  Resizing texture {i} from {img.size}")
-                    img = img.resize((self.tex_w, self.tex_h), Image.Resampling.LANCZOS)
-
-                # Create a temporary standalone texture to push in the array
-                temp_tex = self.scene_textures.allocate_2d('temp',
-                                                           self.tex_w,
-                                                           self.tex_h,
-                                                           image_data=img.convert('RGBA').tobytes(),
-                                                           repeat=True,
-                                                           dtype=int)
-                tex_ids.append(temp_tex.handle)
-
-            self.scene_textures.allocate_array('materials', tex_ids)
-
-            # remove the temporary IDs now that they've been copied to the array
-            glDeleteTextures(len(tex_ids), tex_ids)
-            del self.scene_textures._textures['temp']
+        self._prepare_texture_array(mesh_assets)        # populates self._asset_tex_map
 
         mat_data = np.zeros((len(mesh_assets), 4), dtype=np.uint32)
 
         for asset in mesh_assets:
             idx = self._material_map[asset.id]
-            tex_idx = self._asset_tex_map[asset.id]
+            mat_data[idx] = self._pack_material_row(asset)
 
-            mat_data[idx, 0] = tex_idx if tex_idx is not None else 0xFFFFFFFF
-
-            c = asset.material.base_color
-            r = int(np.clip(c[0], 0, 1) * 255) & 0xFF
-            g = int(np.clip(c[1], 0, 1) * 255) & 0xFF
-            b = int(np.clip(c[2], 0, 1) * 255) & 0xFF
-            a = int(np.clip(c[3], 0, 1) * 255) & 0xFF
-            mat_data[idx, 1] = (a << 24) | (b << 16) | (g << 8) | r
-
-        if len(mesh_assets) > 0:
-            self.bvh_buffers.allocate('materials',
-                                      dtype=np.uint32,
-                                      count=mat_data.size,
-                                      data=mat_data,
-                                      usage=GL_STATIC_DRAW)
-
+        self.bvh_buffers.allocate('materials',
+                                  dtype=np.uint32,
+                                  count=mat_data.size,
+                                  data=mat_data,
+                                  usage=GL_STATIC_DRAW)
     # BVH construction
 
     def _build_blases(self):
@@ -331,6 +326,7 @@ class RaytraceBaker:
 
     def _push_to_gpu(self):
 
+        # TODO: This thing should probably be done by BufferRegistry.allocate?
         def _data_or_default(data, dtype, min_elems=1):
             if data is None or getattr(data, 'nbytes', 0) == 0:
                 return np.zeros((min_elems,), dtype=dtype)
@@ -428,6 +424,7 @@ class RaytraceBaker:
         for asset in self._material_assets:
             if asset.material_revision == self._mat_last_rev.get(asset.id):
                 continue
+
             self.bvh_buffers['materials'].write(self._pack_material_row(asset),
                                                 start=self._material_map[asset.id] * 4)
             self._mat_last_rev[asset.id] = asset.material_revision
@@ -528,6 +525,7 @@ class RaytraceBaker:
 
             self.gpu_inst_info[row]['transform'] = transform
             self.gpu_inst_info[row]['inverse_transform'] = inv_transform
+
             self._dynamic_last_rev[inst.id] = inst.transform_revision
 
             dirty_rows.append(row)
@@ -557,393 +555,17 @@ class RaytraceBaker:
         geom_changed = self._sync_geometry()
         self._sync_transforms(refit_TLAS=geom_changed)
 
+    @property
+    def tlas(self) -> Optional['BVH']:
+        return self._tlas
+
+    @property
+    def blases(self) -> List['BVH']:
+        return self._blases
+
     # Cleanup
 
     def free(self):
         self.bvh_buffers.free()
         self.light_buffers.free()
         self.scene_textures.free()
-
-
-##
-# Raytracer
-
-
-class Raytracer(BaseRenderer):
-    """
-    Raytracer for compound eye rendering.
-    """
-
-    def __init__(
-            self,
-            model: 'Model',
-            scene: 'Scene',
-            agent: 'Agent',
-            time_dithering: bool = True,
-            nb_samples: int = 256,
-            randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
-            sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
-            pano_res: Optional[Tuple[int, int]] = (1024, 512),
-            batch_size: int = 1,
-            enable_microsaccades: bool = False,
-            enable_direct: bool = True,
-            enable_shadows: bool = True,
-            enable_ambient: bool = True,
-            context: Optional['Context'] = None,
-        ):
-
-        # Bake first so VRAM estimation is correct
-        self.scene = scene
-        self.resource_manager = GPUResourceManager()
-        self._baker = RaytraceBaker(scene, self.resource_manager)
-
-        super().__init__(
-            model=model,
-            agent=agent,
-            time_dithering=time_dithering,
-            nb_samples=nb_samples,
-            randomness_mode=randomness_mode,
-            sampling_mode=sampling_mode,
-            batch_size=batch_size,
-            enable_microsaccades=enable_microsaccades,
-            resource_manager=self.resource_manager,
-            context=context,
-        )
-
-        # Global lighting controls
-        self._enable_direct = enable_direct
-        self._enable_shadows = enable_shadows
-        self._enable_ambient = enable_ambient
-        self._ambient_intensity = 1.0
-        self._sky_intensity = 1.0
-
-        # Lazy resource handles
-        self._active_defines: Dict[str, Any] = {}
-        self._raytrace_shader: Optional['ShaderProgram'] = None
-
-        self._view_shaders: Dict[str, 'ShaderProgram'] = {}
-        self.view_textures = TextureRegistry(self.resource_manager)
-        self._pano_res = pano_res
-
-        if self.scene.skybox is not None:
-            use_skybox = True
-            coeffs = self.scene.skybox.sh_coeffs
-        else:
-            use_skybox = False
-            coeffs = constant_sh(self.scene.background_color)
-
-        self._scene_uniforms = UniformRegistry(
-            nb_tlas_nodes=len(self._baker.cpu_tlas_nodes),
-            use_skybox=use_skybox,
-            background_color=self.scene.background_color,
-            sh_irradiance_coeffs=coeffs
-        )
-
-        if 'skybox' in self._baker.scene_textures:
-            self._scene_uniforms.update(skybox=self._baker.scene_textures['skybox'].unit)
-
-        if 'materials' in self._baker.scene_textures:
-            self._scene_uniforms.update(scene_textures=self._baker.scene_textures['materials'].unit)
-
-        self._lights_uniforms = UniformRegistry(
-            enable_ambient=self._enable_ambient,
-            enable_direct=self._enable_direct,
-            enable_shadows=self._enable_shadows,
-            sky_intensity=self._sky_intensity,
-            ambient_intensity=self._ambient_intensity,
-            directional_lights_count=self._baker._nb_dir_lights,
-            point_lights_count=self._baker._nb_point_lights,
-            area_lights_count=self._baker._nb_area_lights
-        )
-
-    # Internal properties for lazy-loaded resources
-
-    @property
-    def raytrace_shader(self) -> 'ShaderProgram':
-        self._ensure_defines()
-
-        if self._raytrace_shader is None:
-            shader_path = 'shaders/raytracing/ommatidiaRaytracing.comp'
-
-            self._raytrace_shader = ShaderProgram(comp_path=shader_path,
-                                                  defines=self._active_defines)
-        return self._raytrace_shader
-
-    def _get_view_shader(self, view_name: str) -> 'ShaderProgram':
-        self._ensure_defines()
-
-        if view_name not in self._view_shaders:
-
-            if view_name == 'panoramic':
-                shader_path = 'shaders/raytracing/panoramicRaytracing.comp'
-            elif view_name == 'perspective':
-                shader_path = 'shaders/raytracing/perspectiveRaytracing.comp'
-
-            self._view_shaders[view_name] = ShaderProgram(comp_path=shader_path,
-                                                          defines=self._active_defines)
-        return self._view_shaders[view_name]
-
-    def _get_view_texture(self, view_name: str) -> Tuple[int, Tuple[int, int]]:
-
-        if view_name == 'panoramic':
-            target_res = self._pano_res
-
-        else:  # perspective
-            viewport = glGetIntegerv(GL_VIEWPORT)
-            target_res = (viewport[2], viewport[3])
-
-        if view_name not in self.view_textures:
-            self.view_textures.allocate_2d(view_name, target_res[0], target_res[1], dtype=float)
-
-        return self.view_textures[view_name].handle, target_res
-
-    def _estim_vram_use(self) -> float:
-
-        total_bytes = sum(buf.nbytes for buf in
-            (self._baker.cpu_verts, self._baker.cpu_idx, self._baker.cpu_pts, self._baker.cpu_blas,
-            self._baker.cpu_tlas_nodes, self._baker.cpu_tlas_idx, self._baker.cpu_blas_idx,
-            self._baker.gpu_inst_info)
-                          if buf is not None)
-        total_bytes += getattr(self, '_total_samples', 0) * 16
-
-        return total_bytes / (1024 * 1024)
-
-    def _get_defines(self) -> Dict[str, Any]:
-        """Determines which #defines to inject based on current baker light counts."""
-
-        defines = {}
-        defines.update(self.eye_buffers.shader_defines)
-        defines.update(self._baker.bvh_buffers.shader_defines)
-        defines.update(self._baker.light_buffers.shader_defines)
-
-        for count, name in [
-            (self._baker._nb_dir_lights, 'DIRECTIONAL'),
-            (self._baker._nb_point_lights, 'POINT'),
-            (self._baker._nb_area_lights, 'AREA')
-        ]:
-            if count >= 1:
-                defines[f'HAS_{name}_LIGHT'] = 1
-            if count > 1:
-                defines[f'MULTI_{name}'] = 1
-
-        return defines
-
-    def _invalidate_shaders(self):
-        """Invalidates all shaders that need be when defines change."""
-
-        if self._raytrace_shader:
-            self._raytrace_shader.free()
-
-        for s in self._view_shaders.values():
-            s.free()
-
-        self._raytrace_shader = None
-        self._view_shaders.clear()
-
-    def _ensure_defines(self):
-
-        new_defines = self._get_defines()
-
-        if new_defines != self._active_defines:
-            self._invalidate_shaders()
-            self._active_defines = new_defines
-
-    # Internal rendering logic and draw calls
-
-    def _raytrace_thirdperson(self, view_name: str, pov: Union['Agent', 'OrbitCamera']):
-        """Shared dispatch for panoramic / perspective ray-traced views."""
-
-        tex_id, res = self._get_view_texture(view_name)
-
-        bvh = self._baker.bvh_buffers
-        lights = self._baker.light_buffers
-
-        with self._get_view_shader(view_name) as shader:
-            glBindImageTexture(0, tex_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
-
-            with bvh.grouped_bind(), lights.grouped_bind():
-                with self._baker.scene_textures.bind_all():
-
-                    # Override number of samples for third person
-                    self._eye_uniforms.update(nb_samples=self._samples_per_px)
-
-                    self._eye_uniforms.update(cam_to_world=glm.inverse(pov.view))
-
-                    if view_name == 'perspective':
-                        self._eye_uniforms.update(inv_projection=glm.inverse(self.agent.projection))
-
-                    self._eye_uniforms.apply(shader)
-                    self._scene_uniforms.apply(shader)
-                    self._lights_uniforms.apply(shader)
-
-                    glDispatchCompute((res[0] + 15) // 16, (res[1] + 15) // 16, 1)
-                    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
-
-    def _raytrace_rhabdomeres(self):
-
-        eye = self.eye_buffers
-        bvh = self._baker.bvh_buffers
-        lights = self._baker.light_buffers
-
-        with self.raytrace_shader as shader:
-            with bvh.grouped_bind(), lights.grouped_bind(), eye.grouped_bind(['rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic']):
-                with self._baker.scene_textures.bind_all():
-
-                    # Restore number of samples
-                    self._eye_uniforms.update(nb_samples=self._samples_per_rhab)
-                    self._eye_uniforms.update(cam_to_world=glm.inverse(self.agent.view))
-
-                    self._eye_uniforms.apply(shader)
-                    self._scene_uniforms.apply(shader)
-                    self._lights_uniforms.apply(shader)
-
-                    work_groups = (self._model.size * self._samples_per_rhab + WORKGROUPS_RHAB - 1) // WORKGROUPS_RHAB
-
-                    glDispatchCompute(work_groups, 1, 1)
-                    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-
-    def _sample_scene(self):
-        self._baker.update()
-        self._raytrace_rhabdomeres()
-
-    # Main public methods
-
-    def draw(self, view_mode: 'DisplayMode', point_of_view: Union['Agent', 'OrbitCamera']):
-
-        if view_mode == DisplayMode.Compound:
-            self._draw_eye_firstperson()
-
-        elif view_mode in (DisplayMode.Panoramic, DisplayMode.Perspective, DisplayMode.Third_person):
-            view_name = 'panoramic' if view_mode == DisplayMode.Panoramic else 'perspective'
-
-            self._baker.update()
-            self._raytrace_thirdperson(view_name, point_of_view)
-
-            tex_id, _ = self._get_view_texture(view_name)
-
-            self.screen_surface.draw(
-                tex_id,
-                false_colors=self.simulate_insect_colours,
-                uv_encoded_textures=self.uv_encoded_textures
-            )
-
-        if view_mode == DisplayMode.Third_person:
-            self._draw_eye_thirdperson(point_of_view)
-
-    # Cleanup
-
-    def free(self):
-        self._invalidate_shaders()
-        if self.reduction_shader: self.reduction_shader.free()
-        self.view_textures.free()
-        if self._screen_surface: self._screen_surface.free()
-        self._baker.free()
-        super().free()
-
-    @property
-    def TLAS(self) -> Optional[BVH]:
-        return self._baker._tlas
-
-    @property
-    def BLASes(self) -> List[BVH]:
-        return self._baker._blases
-
-    @property
-    def sky_intensity(self):
-        return self._sky_intensity
-
-    @sky_intensity.setter
-    def sky_intensity(self, value):
-        self._sky_intensity = float(value)
-        self._lights_uniforms.update(sky_intensity=self._sky_intensity)
-
-    @property
-    def ambient_intensity(self):
-        return self._ambient_intensity
-
-    @ambient_intensity.setter
-    def ambient_intensity(self, value):
-        self._ambient_intensity = float(value)
-        self._lights_uniforms.update(ambient_intensity=self._ambient_intensity)
-
-    @property
-    def enable_ambient(self):
-        return self._enable_ambient
-
-    @enable_ambient.setter
-    def enable_ambient(self, value):
-        self._enable_ambient = bool(value)
-        self._lights_uniforms.update(enable_ambient=self._enable_ambient)
-
-    @property
-    def enable_direct(self):
-        return self._enable_direct
-
-    @enable_direct.setter
-    def enable_direct(self, value):
-        self._enable_direct = bool(value)
-        self._lights_uniforms.update(enable_direct=self._enable_direct)
-
-    @property
-    def enable_shadows(self):
-        return self._enable_shadows
-
-    @enable_shadows.setter
-    def enable_shadows(self, value):
-        self._enable_shadows = bool(value)
-        self._lights_uniforms.update(enable_shadows=self._enable_shadows)
-
-
-##
-# Pathtracer
-
-
-class Pathtracer(Raytracer):
-    """
-    Path tracer: multiple bounces with Monte Carlo integration.
-    """
-
-    def __init__(self,
-                 model: 'Model',
-                 scene: 'Scene',
-                 agent: 'Agent',
-                 time_dithering: bool = True,
-                 nb_samples: int = 256,
-                 randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
-                 sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
-                 pano_res: Tuple[int, int] = (1024, 512),
-                 batch_size: int = 1,
-                 enable_microsaccades: bool = False,
-                 enable_shadows: bool = True,
-                 enable_ambient: bool = True,
-                 enable_direct: bool = True,
-                 max_bounces: int = 3,
-                 context: Optional['Context'] = None
-                 ):
-
-        self.max_bounces = max_bounces
-
-        super().__init__(
-            model=model,
-            scene=scene,
-            agent=agent,
-            context=context,
-            time_dithering=time_dithering,
-            nb_samples=nb_samples,
-            randomness_mode=randomness_mode,
-            sampling_mode=sampling_mode,
-            pano_res=pano_res,
-            batch_size=batch_size,
-            enable_microsaccades=enable_microsaccades,
-            enable_shadows=enable_shadows,
-            enable_ambient=enable_ambient,
-            enable_direct=enable_direct
-        )
-
-        self._scene_uniforms.update(max_bounces=self.max_bounces)
-        # TODO: Would be nice to control this during runtime
-
-    def _get_defines(self) -> Dict[str, Any]:
-        defines = super()._get_defines()
-        defines['PATH_TRACING'] = 1
-        return defines

@@ -1,6 +1,5 @@
-from .raytracer import Raytracer, Pathtracer
+from .base import Renderer
 
 __all__ = [
-    'Raytracer',
-    'Pathtracer'
+    'Renderer'
 ]

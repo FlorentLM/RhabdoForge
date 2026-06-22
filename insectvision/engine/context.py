@@ -20,7 +20,7 @@ from insectvision.interactive.dashboard import Dashboard
 from insectvision.engine.resources import ShaderProgram
 
 if TYPE_CHECKING:
-    from insectvision.renderers.base import BaseRenderer
+    from insectvision.renderers.base import Renderer
     from insectvision.renderers.helpers import VisualOutput
 
 
@@ -136,7 +136,7 @@ class Context:
         self.exposure = 1.0     # TODO: Wire this in
 
         self.agent: Optional['Agent'] = None
-        self.renderer: Optional['BaseRenderer'] = None
+        self.renderer: Optional['Renderer'] = None
         self.scene: Optional['Scene'] = None
         self.observer: Optional['OrbitCamera'] = None
         self.display_mode: Optional['DisplayMode'] = None
@@ -499,7 +499,7 @@ class Context:
 
     # Interactive loop
 
-    def run_interactive(self, agent: 'Agent', scene: 'Scene', renderer: 'BaseRenderer',
+    def run_interactive(self, agent: 'Agent', scene: 'Scene', renderer: 'Renderer',
                         window_size=None, fps_limit=None, vsync=None, use_dashboard=False):
         """
         On first call, initialises and shows the window. Then checks if the interactive loop should continue.
@@ -546,8 +546,7 @@ class Context:
         self.tick()
 
         # Sync renderer/agent/scene state
-        if renderer._context is not self:
-            renderer.attach_context(self)
+        renderer.context = self
         renderer.runs_interactive = True
 
         if agent is not self.agent:

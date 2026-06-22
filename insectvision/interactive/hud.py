@@ -309,8 +309,6 @@ class HUD:
 
     def _update_text_vertices(self):
 
-        from insectvision.renderers import Raytracer, Pathtracer
-
         current_time = glfw.get_time()
         if current_time - self._last_update_time < self.update_interval:
             return
@@ -318,15 +316,7 @@ class HUD:
 
         pos = self.ctx.agent.position
 
-        is_ray_based = isinstance(self.ctx.renderer, Raytracer)
-        if isinstance(self.ctx.renderer, Pathtracer):
-            renderer_name = 'Pathtracer'
-        elif is_ray_based:
-            renderer_name = 'Raytracer'
-        else:
-            renderer_name = 'Rasterizer'
-
-        sample_label = 'Rays' if is_ray_based else 'Samples'
+        rendering_mode = 'Path-tracing' if self.ctx.renderer.path_tracing else 'Ray-tracing'
 
         # Enums to readable strings
         view_mode_str = self.ctx.display_mode.name.replace('_', ' ')
@@ -340,7 +330,7 @@ class HUD:
 
         # Top info line: renderer / view / projection / position
         info_text = (
-            f'Renderer: {renderer_name} | '
+            f'Rendering mode: {rendering_mode} | '
             f'View: {view_mode_str} | '
             f'Proj: {proj_mode_str} | '
             f'Pos: [{pos.x:5.2f}, {pos.y:5.2f}, {pos.z:5.2f}]'
@@ -368,13 +358,13 @@ class HUD:
         )
 
         # Bottom-right scene stats
-        samples_pp_str = f", {nb_px_samples}/px" if has_pixels else ""
-        total_pp = f" (om) + {nb_px_samples * self.nb_px:,} (px)" if has_pixels else ""
+        samples_pp_str = f', {nb_px_samples}/px' if has_pixels else ''
+        total_pp = f' (om) + {nb_px_samples * self.nb_px:,} (px)' if has_pixels else ''
 
         stats_lines = [
             f'Ommatidia: {nb_om:,}',
-            f'{sample_label}: {nb_om_samples}/rhab{samples_pp_str}',
-            f'Total {sample_label}: {nb_om * nb_om_samples:,}{total_pp}'
+            f'{nb_om_samples} rays/rhab{samples_pp_str}',
+            f'Total: {nb_om * nb_om_samples:,}{total_pp}'
         ]
 
         tot_tris = self.ctx.scene.total_triangles

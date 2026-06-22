@@ -103,7 +103,7 @@ class ShaderCompiler:
         self._include_stack.remove(path)
         return code
 
-    def compile_shader(self, path: Union[str, Path], shader_type) -> int:
+    def compile_shader(self, path: Union[str, Path], shader_type: int) -> int:
         """
         Reads, processes, and compiles a single shader stage from disk.
         """
@@ -149,7 +149,12 @@ class ShaderCompiler:
 
         return shader
 
-    def load_program(self, path_vert=None, path_frag=None, path_geom=None, path_comp=None) -> int:
+    def load_program(self,
+                     path_vert: Optional[Union[str, Path]] = None,
+                     path_frag: Optional[Union[str, Path]] = None,
+                     path_geom: Optional[Union[str, Path]] = None,
+                     path_comp: Optional[Union[str, Path]] = None
+         ) -> int:
         """
         Compiles and links a shader program (rendering or compute).
         """
@@ -157,12 +162,10 @@ class ShaderCompiler:
         shaders_to_link =[]
 
         try:
-            if path_comp:
-                shaders_to_link.append(self.compile_shader(path_comp, GL_COMPUTE_SHADER))
-            else:
-                if path_vert: shaders_to_link.append(self.compile_shader(path_vert, GL_VERTEX_SHADER))
-                if path_frag: shaders_to_link.append(self.compile_shader(path_frag, GL_FRAGMENT_SHADER))
-                if path_geom: shaders_to_link.append(self.compile_shader(path_geom, GL_GEOMETRY_SHADER))
+            if path_comp: shaders_to_link.append(self.compile_shader(path_comp, GL_COMPUTE_SHADER))
+            if path_vert: shaders_to_link.append(self.compile_shader(path_vert, GL_VERTEX_SHADER))
+            if path_frag: shaders_to_link.append(self.compile_shader(path_frag, GL_FRAGMENT_SHADER))
+            if path_geom: shaders_to_link.append(self.compile_shader(path_geom, GL_GEOMETRY_SHADER))
 
             program = glCreateProgram()
             for shader in shaders_to_link:
@@ -200,10 +203,10 @@ class ShaderProgram:
     """
 
     def __init__(self,
-            vert_path=None,
-            frag_path=None,
-            geom_path=None,
-            comp_path=None,
+            vert_path: Optional[Union[str, Path]] = None,
+            frag_path: Optional[Union[str, Path]] = None,
+            geom_path: Optional[Union[str, Path]] = None,
+            comp_path: Optional[Union[str, Path]] = None,
             defines: Optional[Union[Set[str], Dict[str, Any]]] = None,
         ):
 

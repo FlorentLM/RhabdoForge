@@ -4,7 +4,7 @@ from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.engine.meshes import CUBE_VERTICES, CUBE_INDICES
 from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
-from insectvision.renderers import Raytracer, Pathtracer
+from insectvision.renderers import Renderer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
 from insectvision.utils.shared import RandomnessMode
 
@@ -12,7 +12,6 @@ from insectvision.utils.shared import RandomnessMode
 def main():
 
     USE_POINT_CLOUD = True
-    USE_PATHTRACER = False
     SAMPLES_PER_RHABDOMERE = 64
     HEADLESS = False
     BATCH_SIZE = 1000
@@ -81,8 +80,6 @@ def main():
     agent = Agent(position=(0.0, 0.0, 4.0))
 
     # Setup renderer
-    Renderer = Pathtracer if USE_PATHTRACER else Raytracer
-
     renderer = Renderer(model=model, scene=scene, agent=agent, context=context,
                          nb_samples=SAMPLES_PER_RHABDOMERE,
                          time_dithering=True,
