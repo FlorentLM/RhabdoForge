@@ -162,6 +162,27 @@ class Asset:
         self.is_srgb = True
         self.texture_id: Optional[int] = None  # OpenGL texture ID (set by renderer)
 
+        self._material_rev: int = 0
+        self._texture_rev: int = 0
+        self._geometry_rev: int = 0
+
+    def __repr__(self):
+        kind = self.asset_type.name if self.asset_type else "Uninitialised"
+        prim = f"{self.nb_triangles} tris" if self.asset_type == AssetType.Mesh else f"{self.nb_points} pts"
+        return f"<Asset '{self.name}' | {kind} | {prim} | {'textured' if self.has_texture else 'untextured'}>"
+
+    def touch_material(self) -> None:
+        """Mark material (base colour/specular/emission) as changed."""
+        self._material_rev += 1
+
+    def touch_texture(self) -> None:
+        """Mark the texture image as changed."""
+        self._texture_rev += 1
+
+    def touch_geometry(self) -> None:
+        """Mark vertices/points as changed (triggers a BLAS refit or rebuild)."""
+        self._geometry_rev += 1
+
     @property
     def texture_path(self) -> Optional[Path]:
         return self._texture_path
@@ -190,6 +211,16 @@ class Asset:
         """Returns True if this asset has a texture (path or image)."""
         return self._texture_image is not None or self._texture_path is not None
 
+    def set_material(self, base_color=None, specular=None, emission=None) -> None:
+        """Update material fields and flag the change."""
+        if base_color is not None:
+            self.material.base_color = np.asarray(base_color, dtype=np.float32)
+        if specular is not None:
+            self.material.specular = np.asarray(specular, dtype=np.float32)
+        if emission is not None:
+            self.material.emission = np.asarray(emission, dtype=np.float32)
+        self.touch_material()
+
     def set_texture(self, source: Union[Path, str, Image.Image, np.ndarray, None], sRGB: bool = True):
         """
         Sets the texture from various sources. None to clear.
@@ -204,6 +235,7 @@ class Asset:
         # Clear existing
         self._texture_path = None
         self._texture_image = None
+        self.touch_texture()
 
         if source is None:
             return
@@ -468,6 +500,7 @@ class Instance(TransformMixin):
     @visible.setter
     def visible(self, value: bool):
         self._visible = bool(value)
+        self.touch()
 
 
 class Skybox:
@@ -510,6 +543,9 @@ class Scene:
         self._mesh_instances: Set['Instance'] = set()
         self._point_instances: Set['Instance'] = set()
 
+        self._topology_rev: int = 0
+        self._lights_rev: int = 0
+
         if skybox_path is not None:
             self.add_skybox(skybox_path)
         else:
@@ -519,6 +555,17 @@ class Scene:
 
             self._sun_ref = default_sun
             self.add_light(self._sun_ref)
+
+    def __repr__(self):
+        return (f"<Scene | {len(self._mesh_instances)} mesh + {len(self._point_instances)} point instances "
+                f"| {len(self.assets)} assets | {len(self.lights)} lights"
+                f"{' | skybox' if self._skybox else ''}>")
+
+    def touch_topology(self) -> None:
+        self._topology_rev += 1
+
+    def touch_lights(self) -> None:
+        self._lights_rev += 1
 
     def add_instance(self,
         asset: Union['Asset', str],
@@ -561,6 +608,8 @@ class Scene:
         if instance.dynamic:
             self._dynamic_instances.add(instance)
 
+        self._topology_rev += 1
+
         return instance
 
     def add_light(self, light: 'Light'):
@@ -570,6 +619,8 @@ class Scene:
             self._point_lights.add(light)
         elif isinstance(light, AreaLight):
             self._area_lights.add(light)
+
+        self._lights_rev += 1
 
     def add_skybox(self, texture_path: str):
         """Creates and loads a skybox from a directory of textures."""
@@ -602,6 +653,8 @@ class Scene:
             if not still_used and asset.name in self.assets:
                 del self.assets[asset.name]
 
+        self._topology_rev += 1
+
     def remove_asset(self, asset: Union['Asset', str]):
         """
         Removes an asset and all of its instances from the scene.
@@ -622,6 +675,7 @@ class Scene:
             pool -= {inst for inst in pool if inst.asset.id == asset_obj.id}
 
         self.assets.pop(asset_obj.name, None)
+        self._topology_rev += 1
 
     def remove_light(self, light: 'Light'):
         if isinstance(light, DirectionalLight):
@@ -630,6 +684,8 @@ class Scene:
             self._point_lights.discard(light)
         elif isinstance(light, AreaLight):
             self._area_lights.discard(light)
+
+        self._lights_rev += 1
 
     def clear_skybox(self):
         self._skybox = None
@@ -642,10 +698,14 @@ class Scene:
         if prune_assets:
             self.assets.clear()
 
+        self._topology_rev += 1
+
     def clear_lights(self):
         self._directional_lights.clear()
         self._point_lights.clear()
         self._area_lights.clear()
+
+        self._lights_rev += 1
 
     def load(self,
             file_path: Path | str,

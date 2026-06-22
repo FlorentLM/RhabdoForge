@@ -13,6 +13,9 @@ class TransformMixin:
     Mixin class for common transformation methods.
     """
 
+    _transform: glm.mat4
+    _transform_rev: int = 0
+
     def _euler_quat(self, yaw, pitch, roll, degrees=True):
         """Build a quaternion from YXZ Euler angles."""
         if degrees:
@@ -20,6 +23,22 @@ class TransformMixin:
         return (glm.angleAxis(yaw, WORLD_UP)
                 * glm.angleAxis(pitch, WORLD_RIGHT)
                 * glm.angleAxis(roll, WORLD_FORWARD))
+
+    @property
+    def transform(self) -> glm.mat4:
+        if not hasattr(self, '_transform'):
+            self._transform = glm.mat4(1.0)
+            self._transform_rev = 0
+        return self._transform
+
+    @transform.setter
+    def transform(self, value):
+        self._transform = value if isinstance(value, glm.mat4) else glm.mat4(value)
+        self.touch()
+
+    def touch(self) -> None:
+        """Mark the object's transform as changed."""
+        self._transform_rev += 1
 
     # Position
 
@@ -30,6 +49,7 @@ class TransformMixin:
     @position.setter
     def position(self, value: Union[glm.vec3, ArrayLike]):
         self.transform[3] = glm.vec4(glm.vec3(value), 1.0)
+        self.touch()
 
     pos = position
 
@@ -141,6 +161,7 @@ class TransformMixin:
     def translate(self, vec: Union[glm.vec3, ArrayLike]):
         """World-space translation."""
         self.transform[3] = glm.vec4(self.position + glm.vec3(vec), 1.0)
+        self.touch()
         return self
 
     def rotate_axis(self, angle: float, axis: Union[str, glm.vec3, ArrayLike], degrees: bool = True):
@@ -167,6 +188,7 @@ class TransformMixin:
         R = glm.mat4_cast(glm.angleAxis(a, rotation_axis))
         self.transform = R * self.transform
         self.transform[3] = glm.vec4(pos, 1.0)
+        self.touch()
         return self
 
     def rotate(self, yaw=0.0, pitch=0.0, roll=0.0, degrees=True):
