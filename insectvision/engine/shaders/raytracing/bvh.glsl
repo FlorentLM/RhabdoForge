@@ -101,6 +101,7 @@ layout(std430, binding = BINDING_TLAS_NODES) readonly buffer TlasNodesBuffer    
 // Geometry and materials
 layout(std430, binding = BINDING_VERTS) readonly buffer VertexBuffer { float v[]; };
 layout(std430, binding = BINDING_INDICES) readonly buffer IndexBuffer { uint indices[]; };
+layout(std430, binding = BINDING_INST_VISIBLE) readonly buffer InstanceVisibleBuffer { uint inst_visible[]; };
 layout(std430, binding = BINDING_MATERIALS) readonly buffer MaterialBuffer { Material materials[]; };
 layout(std430, binding = BINDING_POINTS) readonly buffer PointsBuffer { float points_data[]; };
 
@@ -255,6 +256,7 @@ void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
         if (prim_count > 0u) {
             for (uint j = 0u; j < prim_count; ++j) {
                 uint instance_id = tlas_prim_indices[first_idx + j];
+                if (inst_visible[instance_id] == 0u) continue;
                 InstanceInfo inst = instances[instance_id];
 
                 Ray r_obj;
@@ -413,6 +415,7 @@ bool is_occluded(Ray r_world) {
         if (prim_count > 0u) {
             for (uint j = 0u; j < prim_count; ++j) {
                 uint instance_id = tlas_prim_indices[first_idx + j];
+                if (inst_visible[instance_id] == 0u) continue;
                 InstanceInfo inst = instances[instance_id];
 
                 Ray r_obj;

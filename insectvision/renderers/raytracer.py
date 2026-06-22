@@ -199,19 +199,6 @@ class RaytraceBaker:
 
     # BVH construction
 
-    @staticmethod
-    def _inst_transforms(inst):
-        """Return (transform, inv_transform) arrays for a scene instance."""
-        if inst.visible:
-            transform = np.asarray(inst.transform, dtype=np.float32)
-            inv_transform = np.asarray(glm.inverse(inst.transform), dtype=np.float32)
-        else:
-            hidden = glm.translate(glm.mat4(1.0), glm.vec3(1e6, 1e6, 1e6))
-            transform = np.asarray(hidden, dtype=np.float32)
-            inv_transform = np.asarray(glm.inverse(hidden), dtype=np.float32)
-
-        return transform, inv_transform
-
     def _build_blases(self):
 
         all_verts, all_idxs, all_pts, all_nodes = [], [], [], []
@@ -297,11 +284,13 @@ class RaytraceBaker:
 
         for i, inst in enumerate(all_instances):
             blas_map = self._asset_blas_map[inst.asset.id]
-            transform, inv_transform = self._inst_transforms(inst)
+
+            transform = np.asarray(inst.transform, dtype=np.float32)
+            inv_transform = np.asarray(glm.inverse(inst.transform), dtype=np.float32)
 
             tlas_build_data[i]['transform'] = transform
             tlas_build_data[i]['blas_id'] = blas_map['id']
-            tlas_build_data[i]['mask'] = 0xFFFFFFFF
+            tlas_build_data[i]['mask'] = 0xFFFFFFFF if inst.visible else 0x00000000
 
             self.gpu_inst_info[i]['transform'] = transform
             self.gpu_inst_info[i]['inverse_transform'] = inv_transform
@@ -325,15 +314,18 @@ class RaytraceBaker:
                 self._dynamic_map[inst.id] = i
 
         self._dynamic_last_rev = {inst.id: inst.transform_revision for inst in all_instances if inst.dynamic}
+        self._vis_last_rev = {inst.id: inst.visibility_revision for inst in all_instances}
+        self.cpu_inst_visible = np.array([1 if inst.visible else 0 for inst in all_instances], dtype=np.uint32)
+        self._inst_row = {inst.id: i for i, inst in enumerate(all_instances)}  # any instance -> TLAS row
 
         self._tlas = BVH.build_tlas(tlas_build_data, self._blases)
 
-        t = self._tlas.get_SSBO_bundle(flatten_nodes=False)
+        ssbo_dat = self._tlas.get_SSBO_bundle(flatten_nodes=False)
 
-        self.cpu_tlas_nodes = t['nodes'].astype(np.float32)
-        self.cpu_tlas_idx = t['leaf_ids'].astype(np.uint32)
+        self.cpu_tlas_nodes = ssbo_dat['nodes'].astype(np.float32)
+        self.cpu_tlas_idx = ssbo_dat['leaf_ids'].astype(np.uint32)
 
-        write_pytinybvh_preamble(str(t.get('preamble', '')))
+        write_pytinybvh_preamble(str(ssbo_dat.get('preamble', '')))
 
         self.cpu_blas_idx = np.concatenate(self._blas_leaf_chunks).astype(np.uint32)
 
@@ -392,6 +384,13 @@ class RaytraceBaker:
                                   dtype=RENDERABLE_INST_DTYPE,
                                   count=inst_info.size,
                                   data=inst_info,
+                                  usage=GL_DYNAMIC_DRAW)
+
+        inst_visible = _data_or_default(data=self.cpu_inst_visible, dtype=np.uint32, min_elems=1)
+        self.bvh_buffers.allocate('inst_visible',
+                                  dtype=np.uint32,
+                                  count=inst_visible.size,
+                                  data=inst_visible,
                                   usage=GL_DYNAMIC_DRAW)
 
     # Dynamic updates
@@ -459,6 +458,22 @@ class RaytraceBaker:
                             GL_RGBA, GL_UNSIGNED_BYTE, img.convert('RGBA').tobytes())
             glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
+    def _sync_visibility(self):
+
+        if self._tlas is None:
+            return
+
+        for inst in self.scene.instances:
+            row = self._inst_row.get(inst.id)
+            if row is None or inst.visibility_revision == self._vis_last_rev.get(inst.id):
+                continue
+            self._vis_last_rev[inst.id] = inst.visibility_revision
+
+            vis = 1 if inst.visible else 0
+            self.cpu_inst_visible[row] = vis
+            self.bvh_buffers['inst_visible'].write(np.array([vis], dtype=np.uint32), start=row)  # GPU
+            self._tlas.set_instance_mask(row, 0xFFFFFFFF if vis else 0x00000000)  # CPU collision
+
     def _sync_geometry(self) -> bool:
         """
         Refit BLASes whose geometry was edited in place (positions only).
@@ -506,7 +521,8 @@ class RaytraceBaker:
             if row is None or inst.transform_revision == self._dynamic_last_rev.get(inst.id):
                 continue
 
-            transform, inv_transform = self._inst_transforms(inst)
+            transform = np.asarray(inst.transform, dtype=np.float32)
+            inv_transform = np.asarray(glm.inverse(inst.transform), dtype=np.float32)
 
             self._tlas.set_instance_transform(row, transform)   # TODO: Use pytinybvh's update_instances for batched updates if many changes
 
@@ -536,6 +552,7 @@ class RaytraceBaker:
         self._sync_lights()
         self._sync_materials()
         self._sync_textures()
+        self._sync_visibility()
 
         geom_changed = self._sync_geometry()
         self._sync_transforms(refit_TLAS=geom_changed)

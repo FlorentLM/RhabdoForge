@@ -622,6 +622,8 @@ class Instance(TransformMixin):
     Logical instance of an Asset in the scene (renderer-agnostic).
     """
 
+    _visible_rev: int = 0  # bumped on visibility change
+
     def __init__(self,
                  asset: Asset,
                  transform: Optional[Union[glm.mat4, ArrayLike]] = None,
@@ -645,23 +647,28 @@ class Instance(TransformMixin):
                 self.transform = glm.translate(glm.mat4(1.0), glm.vec3(t_np))
             else:
                 raise ValueError(
-                    f"Unsupported shape for transform: {t_np.shape}. "
-                    "Expected a (4, 4) matrix or a (3,) position vector."
-                )
+                    f'Unsupported shape for transform: {t_np.shape}. '
+                    'Expected a (4, 4) matrix or a (3,) position vector.')
+
+    def __repr__(self):
+        flags = [f for f, on in (('dynamic', self.dynamic), ('hidden', not self._visible)) if on]
+        return f"<Instance of '{self.asset.name}'{(' | ' + ', '.join(flags)) if flags else ''}>"
+
+    @property
+    def visibility_revision(self) -> int:
+        return self._visible_rev
 
     @property
     def visible(self) -> bool:
-        """
-        Whether this instance is included in ray intersection tests.
-        (toggling at runtime requires `dynamic=True` so TLAS can refit)
-        """
-        # TODO: This will eventually be replaced by the visibility masks
+        """Whether this instance is tested in ray intersection (GPU render and CPU collision)."""
         return self._visible
 
     @visible.setter
     def visible(self, value: bool):
-        self._visible = bool(value)
-        self.touch()
+        value = bool(value)
+        if value != self._visible:
+            self._visible = value
+            self._visible_rev += 1
 
     is_visible = visible
 
