@@ -33,21 +33,20 @@ The following snippet demonstrates loading a specific species model and configur
 
 ```python
 from insectvision.compound_eyes import Model
-from insectvision.compound_eyes.kernel import drosophila_kernel
+from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
 
-# Load a Drosophila model with a custom rhabdomere kernel
+# Load a Drosophila model with a custom rhabdomere bundle
 model = Model.from_file(
     'species_models/drosophila_custom.npz',
-    kernel=drosophila_kernel()
+    bundle=drosophila_bundle()
 )
 
 # Apply spatial scaling (conversion to meters)
 model.scale(1e-6)
 
 # Configure photomechanical gains
-with model.unlock(lenses=True):
-    model.ommatidia.ampl_lat_um = 1.5  # Lateral displacement in microns
-    model.ommatidia.ampl_ax_um = 8.0  # Axial contraction
+model.ommatidia.ampl_lat_um = 1.5  # Lateral displacement in microns
+model.ommatidia.ampl_ax_um = 8.0  # Axial contraction
 ```
 
 ### 2. Setting up a Raytraced Scene
@@ -55,7 +54,7 @@ with model.unlock(lenses=True):
 
 ```python
 from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.renderers import Raytracer
+from insectvision.renderers import Renderer
 
 context = Context()
 scene = Scene(background_color=(0.1, 0.1, 0.1))
@@ -68,12 +67,12 @@ scene.add_instance(asset=your_asset, transform=(0.0, 0.0, 5.0))
 agent = Agent(position=(0.0, 0.0, 0.0))
 
 # Initialize the Renderer
-renderer = Raytracer(
+renderer = Renderer(
     model=model, 
     scene=scene, 
     agent=agent, 
     context=context,
-    nb_samples=128  # Monte-Carlo samples per receptor
+    nb_samples=128  # Monte-Carlo samples per rhabdomere
 )
 ```
 

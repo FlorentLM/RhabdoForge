@@ -33,7 +33,7 @@ from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.engine.meshes import plane_geom
 from insectvision.engine.world_utils import WORLD_FORWARD
-from insectvision.renderers import Raytracer
+from insectvision.renderers import Renderer
 
 # Config ----------------------------------------------------------
 
@@ -186,7 +186,7 @@ def simulate(model, sep_deg):
 
     agent = Agent(position=(0.0, 0.0, 0.0))
 
-    renderer = Raytracer(
+    renderer = Renderer(
         model=model, scene=scene, agent=agent, context=context,
         nb_samples=512, time_dithering=True, randomness_mode='Halton',
         enable_microsaccades=True, enable_ambient=True, enable_direct=True, enable_shadows=False)

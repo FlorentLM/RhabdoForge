@@ -3,7 +3,7 @@ from pathlib import Path
 from insectvision.engine import Context, Agent, Scene
 from insectvision.engine.movement import Curve, Trajectory, extract_obj_curves
 from insectvision.compound_eyes import Model
-from insectvision.renderers import Raytracer
+from insectvision.renderers import Renderer
 
 
 def main():
@@ -25,7 +25,7 @@ def main():
 
     agent = Agent(position=(0.0, 0.0, 4.0))
 
-    renderer = Raytracer(
+    renderer = Renderer(
         model=eye_model, scene=scene, agent=agent,
         context=context,
         nb_samples=16,

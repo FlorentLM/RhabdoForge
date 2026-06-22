@@ -91,7 +91,7 @@ def main():
 
     # The BVH can also be displayed in debug
     if SHOW_DEBUG_OBJECTS:
-        for blas in renderer.BLASes:
+        for blas in renderer.blases:
             context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
 
 

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 from insectvision.compound_eyes import Model
-from insectvision.renderers import Raytracer
+from insectvision.renderers import Renderer
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.utils.shared import Colormap, norm_minmax
 from insectvision.engine.meshes import plane_geom
@@ -268,7 +268,7 @@ def run_all_trials(cfg: Configuration) -> Results:
         scene = build_tunnel(cfg, wall_condition)
         scene.sun.elevation, scene.sun.azimuth, scene.sun.color = 0.0, 0.0, (1.0, 1.0, 1.0)
 
-        renderer = Raytracer(
+        renderer = Renderer(
             model=model, scene=scene, agent=agent, context=context,
             nb_samples=cfg.nb_samples, time_dithering=True,
             randomness_mode='Halton', enable_shadows=False
