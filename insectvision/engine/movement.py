@@ -40,6 +40,10 @@ class TransformMixin:
         """Mark the object's transform as changed."""
         self._transform_rev += 1
 
+    @property
+    def transform_revision(self) -> int:
+        return self._transform_rev
+
     # Position
 
     @property
