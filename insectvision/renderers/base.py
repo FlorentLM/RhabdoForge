@@ -1077,6 +1077,15 @@ class Renderer:
         self._eye_uniforms.update(nb_samples=self._samples_per_rhab, noise_threshold=self._noise_threshold)
 
     @property
+    def pixel_samples(self) -> int:
+        """Rays per pixel for the third-person / external ray-traced views."""
+        return self._samples_per_px
+
+    @pixel_samples.setter
+    def pixel_samples(self, value: int):
+        self._samples_per_px = max(1, int(value))
+
+    @property
     def max_bounces(self) -> int:
         """Number of path-tracing bounces. 0 means standard single-bounce raytracing."""
         return self._max_bounces
@@ -1255,6 +1264,8 @@ class Renderer:
     def dither(self):
         """Dither once (reshuffle the dither counter)"""
         self._dither_counter = random.randint(0, 1024)
+
+    dither_once = dither
 
     @property
     def tlas(self) -> Optional['BVH']:

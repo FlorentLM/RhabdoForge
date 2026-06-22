@@ -694,6 +694,8 @@ class Skybox:
 
         self.texture_id = texture_id
 
+    def __repr__(self):
+        return f"<Skybox '{self._texture_path.name}'>"
 
 class Scene:
     """

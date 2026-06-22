@@ -406,35 +406,29 @@ class Context:
         print(f"Mouse control: {mode_name}")
 
     def toggle_time_dithering(self):
-        if hasattr(self.renderer, 'time_dithering'):
-            self.renderer.time_dithering = not self.renderer.time_dithering
+        self.renderer.time_dithering = not self.renderer.time_dithering
 
     def dither_once(self):
         self.renderer.dither()
 
     def increase_samples(self):
-        if hasattr(self.renderer, 'nb_samples'):
-            self.renderer.nb_samples *= 2
+        self.renderer.nb_samples *= 2
 
     def decrease_samples(self):
-        if hasattr(self.renderer, 'nb_samples'):
-            self.renderer.nb_samples = max(1, self.renderer.nb_samples // 2)
+        self.renderer.nb_samples = max(1, self.renderer.nb_samples // 2)
 
     def increase_pixel_samples(self):
-        if hasattr(self.renderer, 'pixel_samples'):
-            self.renderer.samples_per_pixel *= 2
+        self.renderer.pixel_samples *= 2
 
     def decrease_pixel_samples(self):
-        if hasattr(self.renderer, 'pixel_samples'):
-            self.renderer.pixel_samples = max(1, self.renderer.pixel_samples // 2)
+        self.renderer.pixel_samples = max(1, self.renderer.pixel_samples // 2)
 
     def toggle_debug(self):
         if self.debug is not None:
             self.debug.enabled = not self.debug.enabled
 
     def toggle_microsaccades(self):
-        if hasattr(self.renderer, 'microsaccades_enabled'):
-            self.renderer.microsaccades_enabled = not self.renderer.microsaccades_enabled
+        self.renderer.microsaccades_enabled = not self.renderer.microsaccades_enabled
 
     def reset_position(self):
         self.agent.position = (0.0, 0.0, 0.0)

@@ -77,6 +77,11 @@ class SceneBaker:
         if self.scene.skybox:
             self.scene_textures.register_existing('skybox', self.scene.skybox.texture_id, GL_TEXTURE_2D)
 
+    def __repr__(self):
+        return (f"<SceneBaker | {len(self._blases)} BLAS"
+                f" | lights {self._nb_dir_lights}D/{self._nb_point_lights}P/{self._nb_area_lights}A"
+                f" | TLAS {'ready' if self._tlas is not None else 'empty'}>")
+
     # Main packing methods
 
     def _pack_lights(self):
