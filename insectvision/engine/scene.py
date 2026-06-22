@@ -118,14 +118,14 @@ def trimesh_from_arrays(
 
 ##
 
-@dataclass
 class MaterialData:
     """
     Material properties for rendering (colours, specular, etc.)
     """
-    base_color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
-    specular = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)  # w = shininess
-    emission = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    def __init__(self):
+        self.base_color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+        self.specular = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)  # w = shininess
+        self.emission = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
 
 class AssetType(Enum):
