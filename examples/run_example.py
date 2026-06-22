@@ -6,6 +6,7 @@ from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
 from insectvision.renderers import Renderer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
+from insectvision.renderers.helpers import VisualOutput
 from insectvision.utils.shared import RandomnessMode
 
 
@@ -158,21 +159,17 @@ def main():
                 all_timesteps.append(visual_output)
 
         # After the loop, flush() gets the last partial batch from async mode
-        # (this is harmless in sync mode, it will just return an empty array)
-        final_chunk = renderer.flush()  # TODO: This might actually be done automatically
+        # (this is harmless in sync mode, it will just return None)
+        final_chunk = renderer.flush()
 
-        if final_chunk.size > 0:
+        if final_chunk is not None:
             all_timesteps.append(final_chunk)
 
-    print(f"Ran for {context.frame_count} frames in {context.wall_time:.2f}s (avg. {context.frame_count / context.wall_time:.2f} fps).")
+    print(f'Ran for {context.frame_count} frames in {context.wall_time:.2f}s (avg. {context.frame_count / context.wall_time:.2f} fps).')
 
     if all_timesteps:
-        # In sync mode, this combines 10,000 arrays of shape (19362, 4)
-        # In async mode, this might combine 10 arrays of shape (1000, 19362, 4)
-
-        full_dataset = np.concatenate(all_timesteps, axis=0)
+        full_dataset = VisualOutput.from_history(all_timesteps)
         print(f"Final concatenated dataset shape: {full_dataset.shape}")
-
 
     # Cleanup
     context.free()

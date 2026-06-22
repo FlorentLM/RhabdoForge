@@ -28,20 +28,24 @@ class VisualOutput:
         .raw_radiance -> (..., )  Physical light intensity recovered by 'un-baking'
                                   the adaptation factor.
     """
-    __slots__ = ('_data', '_model', '_shape')
+    __slots__ = ('_data', '_model', '_shape', '_is_time_series')
 
     def __init__(self, data: np.ndarray, model: 'Model'):
 
         if data.shape[-2] % model.shape[1] != 0:
-            raise ValueError(f"data length {data.shape[-2]} not divisible by R={model.shape[1]}")
+            raise ValueError(f'data length {data.shape[-2]} not divisible by R={model.shape[1]}')
 
         self._data = data
         self._model = model
 
         if data.ndim == 3:
+            self._is_time_series = True
             self._shape = int(data.shape[0]), int(data.shape[-2] // model.shape[1]), int(model.shape[1])
         else:
+            self._is_time_series = False
             self._shape = int(data.shape[-2] // model.shape[1]), int(model.shape[1])
+
+    # TODO: __bool__ overload
 
     @property
     def shape(self) -> Tuple[int, int] | Tuple[int, int, int]:
@@ -59,8 +63,9 @@ class VisualOutput:
     def from_history(cls, history: list['VisualOutput']) -> 'VisualOutput':
         """Stacks a list of single-frame VisualOutputs into one timeseries VisualOutput."""
         if not history:
-            raise ValueError("History list is empty")
-        return cls(np.stack([vo.data for vo in history], axis=0), history[0]._model)
+            raise ValueError('History list is empty')
+        return cls(np.stack([vo.data for vo in history if vo], axis=0), history[0]._model)
+    # TODO: support stacking list of already-timeseries VO
 
     @property
     def data(self) -> np.ndarray:

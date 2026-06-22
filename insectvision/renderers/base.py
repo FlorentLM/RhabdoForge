@@ -797,7 +797,7 @@ class Renderer:
 
     # TODO: The following public methods should probably be all under the hood
 
-    def flush(self) -> np.ndarray:
+    def flush(self) -> Optional['VisualOutput']:
         """
         Blocks until all queued frames on the GPU are rendered, downloads the data, and resets the counter.
         This is used to retrieve a full batch, or the final partial batch at the end of a simulation.
@@ -810,13 +810,13 @@ class Renderer:
 
         frames_to_read = int(self._frame_index)
 
-        # Direct synchronous download is ok here
+        # Download the block
         with self.eye_buffers['colors'].bind():
             data_bytes = glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, self._model.size * 16 * frames_to_read)
             data_np = np.frombuffer(data_bytes, dtype=np.float32).reshape(frames_to_read, self._model.size, 4)
 
         self._frame_index = 0
-        return data_np.copy()       # TODO: Should return a timeseries VisualOutput
+        return VisualOutput(data_np, self._model)
 
     def sync_cpu(self, force_all=False):
         """
@@ -918,21 +918,21 @@ class Renderer:
         if not readback:
             return None
 
-        out_array: Optional[np.ndarray] = None
-
         if self.runs_interactive or self._batch_size == 1:
             # Interactive path: return previous frame via ping-pong PBO
             out_array = self._readback_async()
+
+            if out_array.size == 0:
+                return None
+
+            return VisualOutput(out_array, self._model)
+
         else:
             # Batched path: return full block (only when batch is full)
             if self._frame_index >= self._batch_size:
                 print(f"  > GPU batch is full. Flushing {self._batch_size} frames...")
-                out_array = self.flush()
 
-        if out_array is None or out_array.size == 0:
-            return None
-
-        return VisualOutput(out_array, self._model)
+            return self.flush()
 
     def set_overlay(self,
                     values: Optional[Union[Dict['EyeView', np.array], np.array]] = None,
