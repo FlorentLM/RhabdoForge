@@ -389,7 +389,7 @@ class Asset:
             asset.set_texture(texture)
 
         asset.is_srgb = sRGB
-        print(f"Created {asset!r} from {file_path}")
+        print(f'Created {asset!r} from {file_path}')
 
         return asset
 
@@ -427,7 +427,7 @@ class Asset:
 
         asset.is_srgb = sRGB
 
-        print(f"Created {asset!r} from arrays")
+        print(f'Created {asset!r} from arrays')
         return asset
 
 
@@ -752,7 +752,7 @@ class Scene:
             asset_obj = asset
 
             if asset_obj.name not in self.assets:
-                print(f"New {asset_obj.asset_type.name} asset '{asset_obj.name}' registered with the scene.")
+                print(f'Registered {asset_obj!r}.')
                 self.assets[asset_obj.name] = asset_obj
 
             elif self.assets[asset_obj.name].id != asset_obj.id:
@@ -773,6 +773,7 @@ class Scene:
                 f"Invalid type for asset. Expected BaseAsset or str, but got {type(asset).__name__}.")
 
         instance = Instance(asset_obj, transform, **kwargs)
+        print(f'Added {instance!r}.')
 
         if asset_obj.asset_type == AssetType.Mesh:
             self._mesh_instances.add(instance)
