@@ -39,6 +39,7 @@ class ViewField:
         self.field_name = field_name
         self.level = level      # 'ommatidia' or 'rhabdomere'
         self.is_metadata = field_name in _BIT_LAYOUT    # TODO: can be removed when the per-ommatidium metadata is moved
+        self.is_flag = self.is_metadata and _BIT_LAYOUT[field_name][1] == 1  # single-bit metadata = booleans:
         self.__doc__ = doc
 
     def _index(self, obj):
@@ -49,7 +50,10 @@ class ViewField:
         return obj.omm_indices
 
     def __get__(self, obj, objtype=None):
-        return self if obj is None else obj._buffer[self.field_name, self._index(obj)]
+        if obj is None:
+            return self
+        out = obj._buffer[self.field_name, self._index(obj)]
+        return out.astype(bool) if self.is_flag else out
 
     def __set__(self, obj, value):
         obj._buffer[(self.field_name, self._index(obj))] = value
