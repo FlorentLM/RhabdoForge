@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.collections import EllipseCollection
 import matplotlib.patches as patches
-from species_models.bee_Sturzl2010.bee_procedural_Sturzl_2010 import sturzl_spherical_to_cartesian
 
 
 def plot_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):
@@ -48,6 +47,8 @@ def plot_ortho_projection(ommatidia_dirs):
     """
     Orthographic projection of ommatidia directions, reproduces Figure 8 from Stürzl et al., 2010.
     """
+
+    from species_models.bee_Sturzl2010.bee_procedural_Sturzl_2010 import sturzl_spherical_to_cartesian
 
     az = ommatidia_dirs[:, 0]
     el = ommatidia_dirs[:, 1]

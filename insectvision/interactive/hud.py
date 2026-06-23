@@ -314,7 +314,7 @@ class HUD:
             return
         self._last_update_time = current_time
 
-        pos = self.ctx.agent.position
+        pos = self.ctx.renderer.agent.position
 
         rendering_mode = 'Path-tracing' if self.ctx.renderer.path_tracing else 'Ray-tracing'
 
@@ -367,11 +367,11 @@ class HUD:
             f'Total: {nb_rhab * samples_rhab:,}{total_pp}'
         ]
 
-        tot_tris = self.ctx.scene.total_triangles
+        tot_tris = self.ctx.renderer.scene.total_triangles
         if tot_tris > 0:
             stats_lines.append(f'Triangles: {tot_tris:,}')
 
-        tot_points = self.ctx.scene.total_points
+        tot_points = self.ctx.renderer.scene.total_points
         if tot_points > 0:
             stats_lines.append(f'Points: {tot_points:,}')
 

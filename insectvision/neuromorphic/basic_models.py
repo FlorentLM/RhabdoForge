@@ -134,8 +134,13 @@ class GradientFlowDetector:
             direction=direction, k=1, coordinate=coordinate, return_weights=True
         )
 
-        self._prev = None            # previous-frame home-lens luminance
-        self.last_estimate = 0.0     # pooled Lucas-Kanade velocity
+        dirs_self = self.eye.directions
+        dirs_target = self.eye.model.directions[self.targets]
+        self.delta_phi = np.arccos(np.clip(np.sum(dirs_self * dirs_target, axis=1), -1.0, 1.0))
+
+        self._prev_self = None      # previous-frame home-lens luminance
+        self._prev_target = None    # previous-frame target lens luminance
+        self.last_estimate = 0.0    # pooled Lucas-Kanade velocity
 
         self._num_ema = 0.0
         self._den_ema = 0.0
@@ -144,15 +149,21 @@ class GradientFlowDetector:
 
         luminance = visual_output.lmc_input[:, :3].mean(axis=-1)
         I_self = luminance[self.self_indices]
+        I_target = luminance[self.targets]
 
-        if self._prev is None:
-            self._prev = I_self.copy()
+        if self._prev_self is None:
+            self._prev_self = I_self.copy()
+            self._prev_target = I_target.copy()
             return np.zeros(len(self.eye), dtype=np.float32)
 
-        # Spatial gradient along flow axis (current frame), temporal gradient (home lens)
-        I_x = luminance[self.targets] - I_self
-        I_t = (I_self - self._prev) / dt
-        self._prev = I_self.copy()
+        # Average spatial gradient across current and previous frame
+        I_x = 0.5 * ((I_target - I_self) + (self._prev_target - self._prev_self)) / self.delta_phi
+
+        # Average temporal gradient across self and target lenses
+        I_t = 0.5 * ((I_self - self._prev_self) + (I_target - self._prev_target)) / dt
+
+        self._prev_self = I_self.copy()
+        self._prev_target = I_target.copy()
 
         # Pooled (Lucas-Kanade) estimate: ratio of sums -> A/k cancellation
         alpha = dt / (self.tau_smooth + dt)
@@ -162,8 +173,7 @@ class GradientFlowDetector:
         self._num_ema += alpha * (inst_num - self._num_ema)
         self._den_ema += alpha * (inst_den - self._den_ema)
 
-        self.last_estimate = float(abs(-self._num_ema / (self._den_ema + self.eps)))  # currently lens/s
-        # TODO: divide by angular neighbour spacing to get rad/s
+        self.last_estimate = float(abs(-self._num_ema / (self._den_ema + self.eps)))
 
         # Per-lens local velocity (for the heatmap overlay and the mean balance)
         v_local = -(I_t * I_x) / (I_x * I_x + 1e-3)

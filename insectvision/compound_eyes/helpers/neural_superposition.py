@@ -158,7 +158,7 @@ def wire_neural_superposition(
             nb_i = (nb_uv[:, 0] + 1j * nb_uv[:, 1]) / ang_spacing
             valid_nb = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
 
-            # Candidate transforms (identity only when the bundle is lattice-pinned).
+            # Candidate transforms (identity only when the bundle is lattice-pinned)
             ws_set = [1.0 + 0j]
             if not assume_aligned and (mag_ok := np.abs(tpl_i) > 1e-8).any():
                 nb_valid_idx = np.flatnonzero(valid_nb)

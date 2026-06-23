@@ -988,7 +988,8 @@ if __name__ == "__main__":
     )
 
     model = Model.from_file(
-        'species_models/drosophila_custom.npz',
+        # 'species_models/drosophila_custom.npz',
+        'species_models/bee_Sturzl.npz',
         bundle=drosophila_bundle(), orientation=aligner, neural_superposition=True
     )
 

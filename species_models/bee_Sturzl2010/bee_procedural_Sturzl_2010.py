@@ -240,18 +240,19 @@ def generate_eyes(right_eye_dirs):
     ).T
 
     def to_opengl(coords):
-        x_int, y_int, z_int = coords[:, 0], coords[:, 1], coords[:, 2]
-        return np.stack([y_int, z_int, -x_int], axis=1)
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        return np.stack([y, z, -x], axis=1)
 
     r_dir = to_opengl(pts_internal)
+
     r_dir /= np.linalg.norm(r_dir, axis=1, keepdims=True)
     r_ori = r_dir * BEE_EYE_RADIUS
 
-    # Offset right eye along X (OpenGL)
+    # Offset right eye along X
     offset = BEE_EYE_SEPARATION / 2
     r_ori[:, 0] += offset
 
-    #Generate left eye by mirroring right eye
+    # Generate left eye by mirroring right eye
     l_ori = r_ori.copy()
     l_ori[:, 0] *= -1
 
@@ -299,7 +300,8 @@ if __name__ == "__main__":
         output_filename,
         directions=directions,
         positions=positions,
-        eye_id=eye_id
+        eye_id=eye_id,
+        acceptance_angles_rad=np.deg2rad(np.concatenate([right_eye_acceptance, right_eye_acceptance])[:, None])
     )
 
     if PLOT_EYES:

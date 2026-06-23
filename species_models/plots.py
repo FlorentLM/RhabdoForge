@@ -6,7 +6,7 @@ from scipy.spatial import cKDTree
 
 from insectvision.geometry.neighbours import delaunay_edges
 from insectvision.geometry.hexatic import hexatic_order, phasor_from_points
-from insectvision.geometry.spherical import stereo_proj
+from insectvision.geometry.spherical import sphere_to_stereo
 
 
 def plot_fitted_comparison(
@@ -103,7 +103,7 @@ def plot_lattice_3d(
     fig = plt.figure(figsize=(9, 8))
     ax = fig.add_subplot(111, projection='3d')
 
-    pts_2d, _, _, _ = stereo_proj(dirs_3d)
+    pts_2d, _, _, _ = sphere_to_stereo(dirs_3d)
 
     edges = None
     adj = None

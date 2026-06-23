@@ -972,7 +972,7 @@ class Renderer:
         """
 
         if self._frame_index == 0:
-            return np.array([])
+            return None
 
         glFinish()  # Block until all rendering commands are complete
 
@@ -1078,7 +1078,7 @@ class Renderer:
         """
 
         if self._context is None:
-            raise RuntimeError("renderer.step() requires an attached Context.")
+            raise RuntimeError('renderer.step() requires an attached Context.')
 
         # Sync any CPU-side changes to the eye model
         self.sync_cpu()

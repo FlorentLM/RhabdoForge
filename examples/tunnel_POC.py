@@ -53,15 +53,16 @@ class Configuration:
 
     # Flight / control
     flight_speed: float = 0.5          # m/s base forward speed
-    control_authority: float = 1.5     # k: lateral correction at full error, as a fraction of flight_speed
+    control_authority: float = 0.25     # k: lateral correction at full error, as a fraction of flight_speed
     speed_modulation: float = 0.5      # slow forward speed when steering hard (0 = off, 1 = full)
     motor_noise_frac: float = 0.30     # motor noise sd as a fraction of full-scale correction
     motor_noise: bool = True
 
     eye_model_path: str = 'species_models/drosophila_custom.npz'
+    # eye_model_path: str = 'species_models/bee_Sturzl.npz'
 
     # Batch
-    n_trials: int = 1
+    n_trials: int = 10
     time_limit_s: float = 30.0          # per-trial time limit
     nb_samples: int = 256
     seed: Optional[int] = 0
@@ -102,6 +103,7 @@ def _add_wall(scene: Scene, name: str, corners, block_size: int, cfg: Configurat
     v, uv, idx = plane_geom(*corners)
 
     tex_h, tex_w = int(cfg.texture_res / cfg.height), int(cfg.texture_res / cfg.length)
+    # tex_h, tex_w = int(cfg.texture_res * cfg.height), int(cfg.texture_res * cfg.length)
 
     tex = checkerboard_texture(tex_w, tex_h, block_size=block_size, ratio=cfg.checkerboard_ratio)
     scene.add_instance(Asset.from_arrays(name=name, vertices=v, faces=idx, uv_coords=uv, texture=tex))
@@ -113,7 +115,7 @@ def build_tunnel(cfg: Configuration, wall_condition: str) -> Scene:
     right_bs = cfg.block_size * cfg.asym_factor if wall_condition == WALL_ASYMMETRIC else cfg.block_size
 
     scene = Scene(background_color=(0.15, 0.15, 0.3))
-    scene.add_skybox('assets/textures/bright_day_nosun')
+    scene.add_skybox('assets/textures/kloppenheim_05_4k.exr')
 
     _add_wall(scene, 'left_wall',
               ([-w/2, 0.0, -l], [-w/2, h, -l], [-w/2, h, 0.0], [-w/2, 0.0, 0.0]),
@@ -141,7 +143,7 @@ def random_tunnel_start(width, height, margin_pct: float = 0.5, randomise_height
     return start_x, start_y, 0.0
 
 
-def randomise_wall_textures(scene: Scene, cfg: Configuration, wall_condition: str, renderer: Raytracer):
+def randomise_wall_textures(scene: Scene, cfg: Configuration, wall_condition: str):
     """Regenerates random checkerboard patterns for all walls and updates the GPU."""
 
     tex_h, tex_w = int(cfg.texture_res / cfg.height), int(cfg.texture_res / cfg.length)
@@ -159,7 +161,7 @@ def randomise_wall_textures(scene: Scene, cfg: Configuration, wall_condition: st
 
 # Runner functions ---------------------------------------------------------------------------
 
-def run_trial(cfg: Configuration, context: Context, scene: Scene, renderer: Raytracer,
+def run_trial(cfg: Configuration, context: Context, renderer: 'Renderer',
               agent: Agent, left_eye, right_eye, mode: str, model_name: str,
               rng: np.random.Generator, draw: bool = False) -> RunLog:
     """One closed-loop run from a random lateral start to the end of the tunnel."""
@@ -171,19 +173,22 @@ def run_trial(cfg: Configuration, context: Context, scene: Scene, renderer: Rayt
     agent.yaw = agent.pitch = agent.roll = 0.0
 
     EMD = MODEL_CLASS[model_name]
-    left_emd = EMD(eye=left_eye, direction=(-1.0, 0.0), coordinate='spherical')
-    right_emd = EMD(eye=right_eye, direction=(1.0, 0.0), coordinate='spherical')
+    left_emd = EMD(eye=left_eye, direction=(0.0, 0.0, 1.0), coordinate='cartesian')
+    right_emd = EMD(eye=right_eye, direction=(0.0, 0.0, 1.0), coordinate='cartesian')
 
     log = RunLog()
     w, l = cfg.width, cfg.length
     t0 = context.total_time
 
-    while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
+    while context.run_interactive(renderer=renderer):
 
         context.input()
         dt = context.dt
 
         visual_output = renderer.step()
+
+        if visual_output is None:
+            continue
 
         left_motion = left_emd.process(visual_output, dt)
         right_motion = right_emd.process(visual_output, dt)
@@ -195,7 +200,7 @@ def run_trial(cfg: Configuration, context: Context, scene: Scene, renderer: Rayt
         summ = abs(right_estim) + abs(left_estim) + 1e-6
         error = diff / summ
 
-        k = cfg.control_authority * 10.0
+        k = cfg.control_authority
         u = k * error
 
         if cfg.motor_noise:
@@ -205,14 +210,14 @@ def run_trial(cfg: Configuration, context: Context, scene: Scene, renderer: Rayt
         v_fwd = cfg.flight_speed * (1.0 - cfg.speed_modulation * min(abs(error), 1.0))
 
         if mode == MODE_YAW:
-            psi_cmd = np.arcsin(np.clip(u, -1.0, 1.0))
-            turn_rate = np.degrees(psi_cmd - agent.yaw)
+            psi_cmd = np.rad2deg(np.arcsin(np.clip(u, -1.0, 1.0)))
+            turn_rate = psi_cmd - agent.yaw
 
             agent.rotate(yaw=turn_rate * dt).translate(agent.forward * v_fwd * dt)
 
         elif mode == MODE_STRAFE:
-            strafe_adjust = -0.01    # strafe needs to be scaled down and sign corrected to be in the same range as yaw
-            agent.translate((agent.forward * v_fwd + agent.right * strafe_adjust * u * cfg.flight_speed) * dt)
+            strafe_sign = -1.0    # strafe needs sign corrected
+            agent.translate((agent.forward * v_fwd + agent.right * strafe_sign * u * cfg.flight_speed) * dt)
 
         else:
             raise ValueError(f'Unknown mode {mode!r}')
@@ -281,14 +286,14 @@ def run_all_trials(cfg: Configuration) -> Results:
             for mode in (MODE_YAW, MODE_STRAFE):
                 runs: List[RunLog] = []
 
-                randomise_wall_textures(scene, cfg, wall_condition, renderer)
+                randomise_wall_textures(scene, cfg, wall_condition)
 
                 for t in range(cfg.n_trials):
                     print(f'  {wall_condition:11s} / {MODEL_LABEL[model_name]:22s} / '
                           f'{MODE_LABEL[mode]:24s}  trial {t+1}/{cfg.n_trials}')
 
                     runs.append(
-                        run_trial(cfg, context, scene, renderer, agent,
+                        run_trial(cfg, context, renderer, agent,
                                   left_eye, right_eye, mode, model_name, rng, draw=True)
                     )
 
