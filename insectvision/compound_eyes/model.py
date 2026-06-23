@@ -4,28 +4,27 @@ Does all the building, and exposes properties that the other views can re-expose
 """
 from pathlib import Path
 from typing import Optional, Union, Tuple, List
-
 import numpy as np
 from numpy.typing import ArrayLike
 
 from insectvision.utils.shared import norm_l2, broadcast_1d, broadcast_to_shape
 from insectvision.engine.meshes import icosphere, fibonacci_sphere
 from insectvision.engine.world_utils import WORLD_FORWARD
-
 from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world
 from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned
 from insectvision.geometry.spherical import angle_to_chord
-
 from insectvision.compound_eyes.buffers import Buffer
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
-from insectvision.compound_eyes.helpers.neural_superposition import wire_neural_superposition, get_conflict_masks, \
-    get_noconflict_masks, refine_chi
-from insectvision.compound_eyes.helpers.acceptance import AcceptanceModel, SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
+from insectvision.compound_eyes.helpers.neural_superposition import (
+    wire_neural_superposition, get_conflict_masks, get_noconflict_masks, refine_chi
+)
+from insectvision.compound_eyes.helpers.acceptance import (
+    AcceptanceModel, SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
+)
 from insectvision.compound_eyes.helpers.ommatidia_lattice import voronoi_estimation
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner, AlignmentResult, apply_chirality, trivial_alignment
-
 from insectvision.compound_eyes.views import SpatialQueries, BaseView, logger, OmmatidiumView, EyeView, RhabdomereView
 
 

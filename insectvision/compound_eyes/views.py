@@ -16,7 +16,6 @@ from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
-from insectvision.compound_eyes.helpers.neural_superposition import UNWIRED_SRC
 from insectvision.geometry.linalg import tangent_frames
 from insectvision.geometry.neighbours import knn, top_k_facing
 from insectvision.geometry.spherical import cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle
@@ -355,7 +354,7 @@ class BaseView:
         Unwired slots map to the home rhabdomere, so the table is always a valid gather."""
         rhab = self.omm_indices[..., None] * self.R + np.arange(self.R, dtype=np.intp)
         src = self._buffer['cartridge_src', rhab].reshape(self.N, self.R)
-        return np.where(src == UNWIRED_SRC, rhab, src.astype(np.intp))
+        return src.astype(np.intp)
 
     @property
     def cartridge_map(self) -> np.ndarray:
@@ -364,7 +363,8 @@ class BaseView:
             return np.full((self.N, self.R), -1, dtype=np.intp)
         rhab = self.omm_indices[..., None] * self.R + np.arange(self.R, dtype=np.intp)
         src = self._buffer['cartridge_src', rhab].reshape(self.N, self.R)
-        return np.where(src != UNWIRED_SRC, (src // self.R).astype(np.intp), -1)
+        is_wired = self._buffer['is_wired', rhab].reshape(self.N, self.R).astype(bool)
+        return np.where(is_wired, (src // self.R).astype(np.intp), -1)
 
     @property
     def has_conflicts(self) -> np.ndarray:
@@ -906,7 +906,7 @@ class CartridgeView(OmmatidiumView):
     def rhab_indices(self) -> np.ndarray:
         phys = self._omm_indices[..., None] * self.R + np.arange(self.R, dtype=np.intp)
         src = self._buffer['cartridge_src', phys].reshape(-1)
-        return np.where(src == UNWIRED_SRC, phys.reshape(-1), src.astype(np.intp))
+        return src.astype(np.intp)
 
 
 class RhabdomereView(BaseView):
