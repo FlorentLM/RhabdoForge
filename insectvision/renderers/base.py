@@ -231,6 +231,7 @@ class Renderer:
         self._sampling_mode = self._to_enum(sampling_mode, SamplingMode)
 
         # Render surfaces and related things
+        self._bg_col_linear = tuple(c ** 2.2 for c in self.scene.background_color)  # TODO: what if already linear
         self._screen_surface: Optional['TextureViewer'] = None      # onscreen, visible surface
         self._hdr_surface: 'HDRRenderTarget' = HDRRenderTarget()    # offscreen surface
         self._panoramic_resolution = panoramic_resolution
@@ -280,7 +281,13 @@ class Renderer:
         self._dither_counter: int = 0   # only advanced when time dithering is on
         self._frame_index: int = 0      # advanced at each new rendered frame
 
-        # Visualisation state and parameters stuff
+        # Eye mesh visualisation
+        self._omm_length_factor = 1.0
+        self._eyes_exaggeration = 1.0           # 1.0 = render the eye at true physical size
+        self._saccade_exaggeration = 1e-6       # TODO: why
+        self._rf_exaggeration = 0.5             # 0.5 = RF blobs tile edge-to-edge (tiled mode)
+
+        # Other visualisation state and parameters stuff
         self._projection_mode = OmmatidiaProjection.Position
         self._output_mode: 'EyeOutput' = EyeOutput.Cartridge
         self._tiled_mode = True
@@ -409,12 +416,9 @@ class Renderer:
             rhab_per_omm=self._model.R,
             bundle_centre_idx=self._model.bundle.center_index,
 
-            # Various visualisation parameters (currently fixed and not modifiable)
+            # Various visualisation parameters
             visualisation_eye_surface_albedo=1.0,
-            visualisation_rf_scale=0.5,
-            visualisation_omm_length=max(0.01, np.mean(self._model.ommatidia.aperture)) * 0.3,
-            visualisation_eyes_scale=1.0,
-            visualisation_saccade_scale=0.001,      # TODO: needs to be automatically scaled by eye dimensions + saccade ampl
+            **self._update_visualisation_scales(),
 
             # States
             output_mode=self._output_mode,
@@ -496,8 +500,8 @@ class Renderer:
             nb_rhabdomeres=self._model.size,
             rhab_per_omm=self._model.R,
             bundle_centre_idx=self._model.bundle.center_index,
-            visualisation_omm_length=max(0.01, np.mean(self._model.ommatidia.aperture)) * 0.3,
             extra_narrowing_ratio=float(self._model.bundle.extra_narrowing_ratio),
+            **self._update_visualisation_scales()
         )
 
     def _update_selected_ommatidia(self):
@@ -634,6 +638,26 @@ class Renderer:
             defines['PATH_TRACING'] = 1
 
         return defines
+
+    def _update_visualisation_scales(self) -> Dict[str, float]:
+        """
+        Derive eye mesh visualisation dimensions from the model's geometry.
+        """
+
+        omm = self._model.ommatidia
+
+        ampl = float(np.mean(np.abs(omm.lateral_amplitude)))
+        focal = float(np.mean(omm.focal_length))
+        saccade_rad = ampl / focal if (ampl > 0 and focal > 0) else 0.0
+
+        saccade_scale = (self._saccade_exaggeration / saccade_rad) if saccade_rad > 0 else 0.0
+
+        return dict(
+            visualisation_omm_length=self._omm_length_factor,
+            visualisation_eyes_scale=self._eyes_exaggeration,
+            visualisation_saccade_scale=saccade_scale,
+            visualisation_rf_scale=self._rf_exaggeration,
+        )
 
     # Various internal helpers
 
@@ -1010,9 +1034,7 @@ class Renderer:
         w, h = self.context.viewport_size
         self._hdr_surface.bind(w, h)
 
-        # TODO: do the background mapping in init
-        linear_bg = tuple(c ** 2.2 for c in self.scene.background_color)
-        glClearColor(linear_bg[0], linear_bg[1], linear_bg[2], 1.0)
+        glClearColor(*self._bg_col_linear, 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
         if view_mode == DisplayMode.Compound:
@@ -1395,11 +1417,38 @@ class Renderer:
         print(f"Sampling Mode: {self._sampling_mode.name}")
 
     @property
-    def lum_ref(self):
+    def model_exaggeration(self) -> float:
+        return self._eyes_exaggeration
+
+    @model_exaggeration.setter
+    def model_exaggeration(self, v: float):
+        self._eyes_exaggeration = float(v)
+        self._eye_uniforms.update(**self._update_visualisation_scales())
+
+    @property
+    def receptive_field_exaggeration(self) -> float:
+        return self._rf_exaggeration
+
+    @receptive_field_exaggeration.setter
+    def receptive_field_exaggeration(self, v: float):
+        self._rf_exaggeration = float(v)
+        self._eye_uniforms.update(**self._update_visualisation_scales())
+
+    @property
+    def saccade_exaggeration(self) -> float:
+        return self._saccade_exaggeration
+
+    @saccade_exaggeration.setter
+    def saccade_exaggeration(self, v: float):
+        self._saccade_exaggeration = float(v)
+        self._eye_uniforms.update(**self._update_visualisation_scales())
+
+    @property
+    def reference_luminance(self):
         return self._lum_ref
 
-    @lum_ref.setter
-    def lum_ref(self, value):
+    @reference_luminance.setter
+    def reference_luminance(self, value):
         self._lum_ref = float(value)
         self._eye_uniforms.update(lum_ref=self._lum_ref)
 
@@ -1458,6 +1507,15 @@ class Renderer:
             )
             # dummy call to initialise the buffer
             self.set_overlay()
+
+    @property
+    def false_colours(self) -> bool:
+        return self._false_colours
+
+    @false_colours.setter
+    def false_colours(self, v: bool):
+        self._false_colours = bool(v)
+        self._eye_uniforms.update(false_colors=self._false_colours and not self.uv_encoded_textures)
 
     @property
     def selected_ommatidia(self) -> Optional[list]:
