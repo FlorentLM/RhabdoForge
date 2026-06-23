@@ -59,15 +59,14 @@ def main():
         context.debug.add(DebugBox(dynamic_crate))
 
     # Setup eye model
-
     eye_file_path = 'species_models/drosophila_custom.npz'
     # eye_file_path = 'species_models/bee_Sturzl.npz'
     # eye_file_path = 'species_models/drosophila_Kemppainen.npz'
 
     model = Model.from_file(
         eye_file_path,
-        bundle=drosophila_bundle() if USE_NEURAL_SUPERPOSITION else None,
-        neural_superposition=USE_NEURAL_SUPERPOSITION
+        # bundle=drosophila_bundle() if USE_NEURAL_SUPERPOSITION else None,
+        # neural_superposition=USE_NEURAL_SUPERPOSITION
     )
     model.scale(1e-6)
 
@@ -80,6 +79,7 @@ def main():
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))
 
+    print('before renderer')
     # Setup renderer
     renderer = Renderer(model=model, scene=scene, agent=agent, context=context,
                          nb_samples=SAMPLES_PER_RHABDOMERE,
@@ -88,6 +88,7 @@ def main():
                          enable_microsaccades=True,
                          enable_direct=True, enable_shadows=True, enable_ambient=True)
 
+    print('after renderer')
     renderer.photon_concentration = 0.5
 
     # The BVH can also be displayed in debug
@@ -126,7 +127,7 @@ def main():
 
     if not HEADLESS:
 
-        while context.run_interactive(agent=agent, scene=scene, renderer=renderer, use_dashboard=True):
+        while context.run_interactive(renderer=renderer, use_dashboard=True):
 
             context.input()  # Processes mouse and keyboard, optional
 

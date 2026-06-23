@@ -697,6 +697,7 @@ class Skybox:
     def __repr__(self):
         return f"<Skybox '{self._texture_path.name}'>"
 
+
 class Scene:
     """
     The logical scene representation. A simple container for assets and instances.

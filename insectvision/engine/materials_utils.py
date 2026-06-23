@@ -142,39 +142,46 @@ def load_exr_equirect(input_path: str | Path, max_height: int = 2048):
     return img
 
 
-def sh_irradiance(equirect_rgb):
+def sh_irradiance(equirect_rgb: np.ndarray):
     """
     Project an HDR equirect (H, W, 3, linear) onto 9 SH coeffs scaled for diffuse irradiance.
     Returns (9, 3) float32 array such that  irradiance(N) = sum_i c_i * Y_i(N)  (multiply by albedo).
     """
 
     H, W, _ = equirect_rgb.shape
-    img = equirect_rgb.astype(np.float64)
 
+    # Coordinates generation
     u = (np.arange(W) + 0.5) / W
     v = (np.arange(H) + 0.5) / H
-    phi = (u - 0.5) * 2.0 * np.pi  # azimuth
-    el  = (0.5 - v) * np.pi        # elevation
+    phi = (u - 0.5) * (2.0 * np.pi)
+    el = (0.5 - v) * np.pi
+
     cos_el = np.cos(el)
+    sin_el = np.sin(el)
+    cos_phi = np.cos(phi)
+    sin_phi = np.sin(phi)
 
-    X = np.sin(phi)[None, :] * cos_el[:, None]
-    Y = np.sin(el)[:, None] * np.ones((1, W))
-    Z = np.cos(phi)[None, :] * cos_el[:, None]
+    # Weight the image by the solid angle (dw)
+    dw = cos_el * ((2.0 * np.pi / W) * (np.pi / H))
+    img_weighted = (equirect_rgb * dw[:, None, None]).reshape(-1, 3)
 
-    dw = cos_el[:, None] * (2.0 * np.pi / W) * (np.pi / H)
+    X = np.outer(cos_el, sin_phi).ravel()
+    Y = np.repeat(sin_el, W)
+    Z = np.outer(cos_el, cos_phi).ravel()
 
-    basis = [
-        0.282095 * np.ones_like(X),                 # Y00
-        0.488603 * Y, 0.488603 * Z, 0.488603 * X,   # Y1-1 Y10 Y11
-        1.092548 * X * Y, 1.092548 * Y * Z,           # Y2-2 Y2-1
-        0.315392 * (3.0 * Z * Z - 1.0),              # Y20
-        1.092548 * X * Z, 0.546274 * (X * X - Y * Y) # Y21  Y22
-    ]
-    scale = np.array([1.0, 2/3, 2/3, 2/3, 1/4, 1/4, 1/4, 1/4, 1/4])
+    basis = np.empty((9, H * W), dtype=X.dtype)
 
-    coeffs = np.zeros((9, 3))
-    for i, Yb in enumerate(basis):
-        coeffs[i] = (img * (Yb * dw)[..., None]).reshape(-1, 3).sum(0) * scale[i]
+    basis[0] = 0.282095
+    basis[1] = 0.32573533 * Y
+    basis[2] = 0.32573533 * Z
+    basis[3] = 0.32573533 * X
+    basis[4] = 0.27313700 * X * Y
+    basis[5] = 0.27313700 * Y * Z
+    basis[6] = 0.07884800 * (3.0 * Z * Z - 1.0)
+    basis[7] = 0.27313700 * X * Z
+    basis[8] = 0.13656850 * (X * X - Y * Y)
+
+    coeffs = basis @ img_weighted
 
     return coeffs.astype(np.float32)
 

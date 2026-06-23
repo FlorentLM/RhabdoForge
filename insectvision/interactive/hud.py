@@ -323,10 +323,6 @@ class HUD:
         proj_mode_str = self.ctx.renderer.projection_mode.name
 
         # Stats
-        nb_om = self.ctx.renderer._model.N
-        nb_om_samples = getattr(self.ctx.renderer, 'nb_samples', 1)
-        nb_px_samples = getattr(self.ctx.renderer, 'samples_per_pixel', 1)
-        has_pixels = self.ctx.display_mode.name in ('Panoramic', 'Third_person')
 
         # Top info line: renderer / view / projection / position
         info_text = (
@@ -337,9 +333,6 @@ class HUD:
         )
 
         # Timing line: hardware (wall) clock vs biological (sim) clock
-        wall_fps = self.ctx.fps
-        wall_dt_ms = self.ctx.wall_dt * 1000.0
-
         if self.ctx.time_step is not None:
             sim_hz = 1.0 / self.ctx.time_step
             sim_str = f'Sim: {sim_hz:5.1f} Hz (fixed {self.ctx.time_step * 1000:.1f} ms)'
@@ -347,24 +340,31 @@ class HUD:
             sim_str = 'Sim: real-time (variable)'
 
         timing_text = (
-            f'Wall: {wall_fps:5.1f} FPS ({wall_dt_ms:5.1f} ms) | '
+            f'Wall: {self.ctx.fps:5.1f} FPS ({self.ctx.wall_dt * 1000.0:5.1f} ms) | '
             f'{sim_str} | '
             f'Total sim time: {self.ctx.total_time:7.3f} s'
         )
 
         line_height = self.font_renderer.font_size * 1.1
+
         self._info_shadow_verts, self._info_fg_verts = self._build_text_buffers(
             [info_text, timing_text], x_align='left', y_start=self.height - 2 * line_height
         )
 
         # Bottom-right scene stats
-        samples_pp_str = f', {nb_px_samples}/px' if has_pixels else ''
-        total_pp = f' (om) + {nb_px_samples * self.nb_px:,} (px)' if has_pixels else ''
+        nb_omm = self.ctx.renderer.model.N
+        nb_rhab = self.ctx.renderer.model.size
+        samples_rhab = self.ctx.renderer.nb_samples
+        samples_px = self.ctx.renderer.pixel_samples
+
+        has_pixels = self.ctx.display_mode.name in ('Panoramic', 'Third_person')
+        samples_pp_str = f', {samples_px}/px' if has_pixels else ''
+        total_pp = f' (om) + {samples_px * self.nb_px:,} (px)' if has_pixels else ''
 
         stats_lines = [
-            f'Ommatidia: {nb_om:,}',
-            f'{nb_om_samples} rays/rhab{samples_pp_str}',
-            f'Total: {nb_om * nb_om_samples:,}{total_pp}'
+            f'Ommatidia: {nb_omm:,}, Rhabdomeres: {nb_rhab:,}',
+            f'{samples_rhab} rays/rhab{samples_pp_str}',
+            f'Total: {nb_rhab * samples_rhab:,}{total_pp}'
         ]
 
         tot_tris = self.ctx.scene.total_triangles

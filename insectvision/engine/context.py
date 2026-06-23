@@ -17,97 +17,29 @@ from insectvision.interactive.controls import Controls, ActionRegistry
 from insectvision.interactive.hud import HUD
 from insectvision.interactive.debug import DebugOverlay
 from insectvision.interactive.dashboard import Dashboard
-from insectvision.engine.resources import ShaderProgram
 
 if TYPE_CHECKING:
     from insectvision.renderers.base import Renderer
     from insectvision.renderers.helpers import VisualOutput
 
 
-class HDRTarget:
-    """Offscreen linear-HDR render target: RGBA16F colour + depth24. Resizes lazily."""
-
-    def __init__(self):
-        self._fbo = self._color = self._depth = None
-        self._size = (0, 0)
-
-    def _ensure(self, w, h):
-
-        if self._fbo is not None and self._size == (w, h):
-            return
-
-        self.free()
-        self._size = (w, h)
-
-        self._color = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, self._color)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, None)
-
-        for p, v in ((GL_TEXTURE_MIN_FILTER, GL_LINEAR), (GL_TEXTURE_MAG_FILTER, GL_LINEAR),
-                     (GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE), (GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)):
-            glTexParameteri(GL_TEXTURE_2D, p, v)
-
-        self._depth = glGenRenderbuffers(1)
-
-        glBindRenderbuffer(GL_RENDERBUFFER, self._depth)
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h)
-
-        self._fbo = glGenFramebuffers(1)
-
-        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self._color, 0)
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self._depth)
-
-        if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
-            raise RuntimeError("HDRTarget incomplete")
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-
-    @property
-    def color(self):
-        return self._color
-
-    def bind(self, w, h):
-        self._ensure(w, h)
-        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
-        glViewport(0, 0, w, h)
-
-    def unbind(self):
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-        glViewport(0, 0, *self._size)
-
-    def blit_depth_to_default(self):
-        # so 3D overlays (debug.draw) depth-test against the world
-        w, h = self._size
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, self._fbo)
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0)
-        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_DEPTH_BUFFER_BIT, GL_NEAREST)
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-
-    def free(self):
-        if self._color:
-            glDeleteTextures([self._color])
-            self._color = None
-        if self._depth:
-            glDeleteRenderbuffers(1, [self._depth])
-            self._depth = None
-        if self._fbo:
-            glDeleteFramebuffers(1, [self._fbo])
-            self._fbo = None
-        self._size = (0, 0)
-
-
 class Context:
+    """
+    Application host for interactive sessions.
+
+    Owns the window, GL context, input/controls, the simulation clocks, and the
+    on-screen overlays (HUD, dashboard, debug).
+    """
 
     def __init__(self,
-                 window_size: tuple = None,
+                 window_size: Optional[Tuple[int, int]] = None,
                  debug_overlay: bool = True,
-                 fps_limit: int = None,
+                 fps_limit: Optional[int] = None,
                  vsync: bool = False,
                  controls: Optional['Controls'] = None
                  ):
 
-        self._window_size = window_size if window_size is not None else (1280, 720)
+        self._viewport_size: Tuple[int, int] = window_size if window_size is not None else (1280, 720)
         self._fps_limit = fps_limit if fps_limit is not None else 0
         self._interactive_initialised = False
         self._vsync = vsync
@@ -117,7 +49,7 @@ class Context:
 
         glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
 
-        self.window = glfw.create_window(self._window_size[0], self._window_size[1],
+        self.window = glfw.create_window(self._viewport_size[0], self._viewport_size[1],
                                          title="Interactive mode",
                                          monitor=None,
                                          share=None)
@@ -128,18 +60,14 @@ class Context:
         glfw.make_context_current(self.window)
         glfw.swap_interval(int(self._vsync))
         glEnable(GL_DEPTH_TEST)
-        glEnable(GL_FRAMEBUFFER_SRGB)  # we want linear (non-gamma corrected)
+        glEnable(GL_FRAMEBUFFER_SRGB)  # hardware sRGB-encode on the final present
 
-        self._hdr = HDRTarget()
-        self._tonemap_shader = ShaderProgram(vert_path='fullscreen.vert', frag_path='tonemap.frag')
-        self._tonemap_vao = glGenVertexArrays(1)
-        self.exposure = 1.0     # TODO: Wire this in
-
-        self.agent: Optional['Agent'] = None
+        # Things the Context renders (engine + orbit/observer for 3rd person)
         self.renderer: Optional['Renderer'] = None
-        self.scene: Optional['Scene'] = None
         self.observer: Optional['OrbitCamera'] = None
         self.display_mode: Optional['DisplayMode'] = None
+
+        # Overlays
         self.hud: Optional['HUD'] = None
         self.dashboard: Optional['Dashboard'] = None
         self.debug: Optional['DebugOverlay'] = DebugOverlay() if debug_overlay else None
@@ -175,25 +103,11 @@ class Context:
                 f"Biol. sim time: {self.total_time:.3f}s | "
                 f"Hardware: {self.fps:.1f} FPS>")
 
-    def _tonemap_pass(self):
+    @property
+    def viewport_size(self) -> Tuple[int, int]:
+        return self._viewport_size
 
-        shader = self._tonemap_shader
-
-        with shader:
-            glDisable(GL_DEPTH_TEST)
-            glDepthMask(GL_FALSE)
-
-            glActiveTexture(GL_TEXTURE0)
-
-            glBindTexture(GL_TEXTURE_2D, self._hdr.color)
-            glUniform1i(shader.get_loc('hdr_scene'), 0)
-            glUniform1f(shader.get_loc('exposure'), float(self.exposure))
-            glBindVertexArray(self._tonemap_vao)
-            glDrawArrays(GL_TRIANGLES, 0, 3)
-            glBindVertexArray(0)
-
-        glDepthMask(GL_TRUE)
-        glEnable(GL_DEPTH_TEST)
+    window_size = viewport_size
 
     @property
     def mouse_captured(self) -> bool:
@@ -362,11 +276,7 @@ class Context:
                 del self._key_bindings[binding]
 
         # A key might be bound to multiple actions, only remove if unbound
-        key_still_bound = False
-        for (bound_key, bound_action) in self._key_bindings.keys():
-            if bound_key == key_code:
-                key_still_bound = True
-                break
+        key_still_bound = any(bound_key == key_code for (bound_key, _) in self._key_bindings.keys())
 
         if not key_still_bound and key_code in self._key_bindings_desc:
             del self._key_bindings_desc[key_code]
@@ -434,17 +344,16 @@ class Context:
         self.agent.position = (0.0, 0.0, 0.0)
 
     def reset_rotation(self):
-        self.agent.yaw, self.agent.pitch, self.agent.roll = (0.0, 0.0, 0.0)
+        self.agent.set_rotation(0.0, 0.0, 0.0)
 
     def pick_ommatidium(self, ndc_x: float, ndc_y: float) -> Optional[int]:
         """Calculates closest ommatidium based on active display projection."""
-        if not self.renderer or not getattr(self.renderer, '_model', None):
+        if self.renderer is None or self.renderer.model is None:
             return None
         if self.display_mode not in (DisplayMode.Compound, DisplayMode.Third_person):
             return None
 
-        model = self.renderer._model
-
+        model = self.renderer.model
         p_local = model.positions
 
         if self.display_mode == DisplayMode.Compound:
@@ -493,10 +402,21 @@ class Context:
 
     # Interactive loop
 
-    def run_interactive(self, agent: 'Agent', scene: 'Scene', renderer: 'Renderer',
+    def _attach_renderer(self, renderer: 'Renderer'):
+        """Bind a renderer and (re)build the observer that orbits its agent."""
+        self.renderer = renderer
+        renderer.context = self            # bidirectional bind (renderer.step needs ctx.dt)
+        renderer.runs_interactive = True
+        self.observer = OrbitCamera(
+            target=renderer.agent, distance=1.5,
+            ratio=self._viewport_size[0] / self._viewport_size[1],
+        )
+
+    def run_interactive(self, renderer: 'Renderer',
                         window_size=None, fps_limit=None, vsync=None, use_dashboard=False):
         """
-        On first call, initialises and shows the window. Then checks if the interactive loop should continue.
+        On first call, initialises and shows the window. Then reports whether the
+        interactive loop should continue.
         """
 
         if not self._interactive_initialised:
@@ -513,13 +433,13 @@ class Context:
             glfw.swap_interval(int(self._vsync))
             glfw.show_window(self.window)
 
-            self.observer = OrbitCamera(target=agent, distance=1.5, ratio=self._window_size[0] / self._window_size[1])
+            self._attach_renderer(renderer)
             self.display_mode = DisplayMode.Compound
             self.hud = HUD(self, font_size=18)
 
             if use_dashboard:
                 self.dashboard = Dashboard(self)
-                self.hud.show = False  # default HUD to false dashboard is active
+                self.hud.show = False  # default HUD off when the dashboard is active
 
             # Default to kb + mouse
             if self._controls is None:
@@ -539,16 +459,16 @@ class Context:
         # Advance the clocks
         self.tick()
 
-        # Sync renderer/agent/scene state
-        renderer.context = self
-        renderer.runs_interactive = True
+        # Pick up a renderer swap (rare but might happen)
+        if renderer is not self.renderer:
+            self._attach_renderer(renderer)
 
-        if agent is not self.agent:
-            self.agent = agent
-            self.observer = OrbitCamera(target=agent, distance=1.5, ratio=self._window_size[0] / self._window_size[1])
-
-        if scene is not self.scene:
-            self.scene = scene
+        # and keep observer camera aimed at the agent
+        elif self.observer.target is not renderer.agent:
+            self.observer = OrbitCamera(
+                target=renderer.agent, distance=1.5,
+                ratio=self._viewport_size[0] / self._viewport_size[1],
+            )
 
         return True
 
@@ -571,26 +491,14 @@ class Context:
         if not self._interactive_initialised:
             return
 
-        # World / scene radiance -> HDR target (linear)
-        self._hdr.bind(self._window_size[0], self._window_size[1])
-        if self.scene:
-            linear_bg = tuple(pow(c, 2.2) for c in self.scene.background_color)
-            glClearColor(linear_bg[0], linear_bg[1], linear_bg[2], 1.0)
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
         if self.display_mode == DisplayMode.Third_person:
-            self.observer.ratio = self._window_size[0] / self._window_size[1]
+            self.observer.ratio = self._viewport_size[0] / self._viewport_size[1]
             self.observer.update()
             pov = self.observer
         else:
-            pov = self.agent
+            pov = self.renderer.agent
 
         self.renderer.draw(self.display_mode, pov)
-
-        # Tonemap HDR -> default FB (hardware sRGB-encodes), carries depth for overlays
-        self._hdr.unbind()
-        self._hdr.blit_depth_to_default()
-        self._tonemap_pass()
 
         # Overlays in display space (not tonemapped)
         if self.debug is not None and self.display_mode != DisplayMode.Panoramic:
@@ -625,17 +533,15 @@ class Context:
             self.dashboard.free()
         if self.renderer:
             self.renderer.free()
-        if self.scene:
-            self.scene.free()
         glfw.terminate()
 
     @property
     def window_size(self) -> tuple:
-        return self._window_size
+        return self._viewport_size
 
     @window_size.setter
     def window_size(self, value: tuple):
-        self._window_size = value
+        self._viewport_size = value
         if self.window:
             glfw.set_window_size(self.window, value[0], value[1])
 

@@ -118,8 +118,9 @@ class KeyboardMouse(Controls):
         """
 
         window = self.ctx.window
-        agent = self.ctx.agent
         wall_dt = self.ctx.wall_dt
+
+        agent = self.ctx.renderer.agent
 
         # Continuous movement (WASD + vertical)
         move_direction = glm.vec3(0.0)

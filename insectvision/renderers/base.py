@@ -59,6 +59,79 @@ def query_available_VRAM() -> int:
 
 ##
 
+class HDRRenderTarget:
+    """Offscreen linear-HDR render target: RGBA16F colour + depth24. Resizes lazily."""
+
+    def __init__(self):
+        self._fbo = self._color = self._depth = None
+        self._size = (0, 0)
+
+    def _ensure(self, w, h):
+
+        if self._fbo is not None and self._size == (w, h):
+            return
+
+        self.free()
+        self._size = (w, h)
+
+        self._color = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self._color)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, None)
+
+        for p, v in ((GL_TEXTURE_MIN_FILTER, GL_LINEAR), (GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+                     (GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE), (GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)):
+            glTexParameteri(GL_TEXTURE_2D, p, v)
+
+        self._depth = glGenRenderbuffers(1)
+
+        glBindRenderbuffer(GL_RENDERBUFFER, self._depth)
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h)
+
+        self._fbo = glGenFramebuffers(1)
+
+        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self._color, 0)
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self._depth)
+
+        if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+            raise RuntimeError("HDRTarget incomplete")
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+
+    @property
+    def color(self):
+        return self._color
+
+    def bind(self, w, h):
+        self._ensure(w, h)
+        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
+        glViewport(0, 0, w, h)
+
+    def unbind(self):
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        glViewport(0, 0, *self._size)
+
+    def blit_depth_to_default(self):
+        # so 3D overlays (debug.draw) depth-test against the world
+        w, h = self._size
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, self._fbo)
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0)
+        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_DEPTH_BUFFER_BIT, GL_NEAREST)
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+
+    def free(self):
+        if self._color:
+            glDeleteTextures([self._color])
+            self._color = None
+        if self._depth:
+            glDeleteRenderbuffers(1, [self._depth])
+            self._depth = None
+        if self._fbo:
+            glDeleteFramebuffers(1, [self._fbo])
+            self._fbo = None
+        self._size = (0, 0)
+
+
 class TextureViewer:
     """A helper to render a 2D texture to a fullscreen quad."""
 
@@ -78,7 +151,7 @@ class TextureViewer:
             self._vao = glGenVertexArrays(1)
         return self._vao
 
-    def draw(self, texture_id, false_colors=False, uv_encoded_textures=False):
+    def display(self, texture_id, false_colors=False, uv_encoded_textures=False):
         """Draws the given texture to the screen."""
 
         shader = self.shader
@@ -135,9 +208,9 @@ class Renderer:
                  ):
 
         # Scene + baker first (VRAM estimation depends on it)
-        self.scene: 'Scene' = scene
-        self.resource_manager: 'GPUResourceManager' = resource_manager or GPUResourceManager()
-        self._baker: 'SceneBaker' = SceneBaker(scene, self.resource_manager)
+        self._scene: 'Scene' = scene
+        self._resource_manager: 'GPUResourceManager' = resource_manager or GPUResourceManager()
+        self._baker: 'SceneBaker' = SceneBaker(scene, self._resource_manager)
 
         # Compound eyes model and agent
         self._model: 'Model' = model
@@ -157,9 +230,13 @@ class Renderer:
         self._randomness_mode = self._to_enum(randomness_mode, RandomnessMode)
         self._sampling_mode = self._to_enum(sampling_mode, SamplingMode)
 
-        # Render surface and related params
-        self._screen_surface: Optional[TextureViewer] = None
+        # Render surfaces and related things
+        self._screen_surface: Optional['TextureViewer'] = None      # onscreen, visible surface
+        self._hdr_surface: 'HDRRenderTarget' = HDRRenderTarget()    # offscreen surface
         self._panoramic_resolution = panoramic_resolution
+        self._tonemap_shader = ShaderProgram(vert_path='fullscreen.vert', frag_path='tonemap.frag')
+        self._tonemap_vao = glGenVertexArrays(1)
+        self._exposure = 1.0
 
         # Slots for lazy resource handles
         self._current_defines: Dict[str, Any] = {}
@@ -178,8 +255,85 @@ class Renderer:
         self._lights_uniforms = UniformRegistry()
         self._scene_uniforms = UniformRegistry()
 
-        self.eye_buffers: 'BufferRegistry' = BufferRegistry(self.resource_manager)
-        self._projection_textures: 'TextureRegistry' = TextureRegistry(self.resource_manager)
+        self.eye_buffers: 'BufferRegistry' = BufferRegistry(self._resource_manager)
+        self._projection_textures: 'TextureRegistry' = TextureRegistry(self._resource_manager)
+
+        # Store local attributes to sync with uniforms
+
+        # Global lighting controls
+        self._enable_direct = enable_direct
+        self._enable_shadows = enable_shadows
+        self._enable_ambient = enable_ambient
+        self._ambient_intensity = 1.0
+        self._sky_intensity = 1.0
+
+        # States flags and other things
+        self._time_dithering: bool = time_dithering
+        self._microsaccades_enabled: bool = enable_microsaccades
+        self._overlay_enabled: bool = False
+        self.runs_interactive: bool = False
+
+        self.false_colours: bool = False            # TODO: expose these (and generate UV-encoded assets for demo)
+        self.uv_encoded_textures: bool = False
+
+        # Time keeping
+        self._dither_counter: int = 0   # only advanced when time dithering is on
+        self._frame_index: int = 0      # advanced at each new rendered frame
+
+        # Visualisation state and parameters stuff
+        self._projection_mode = OmmatidiaProjection.Position
+        self._output_mode: 'EyeOutput' = EyeOutput.Cartridge
+        self._tiled_mode = True
+        self._lum_ref = 1.0             # target operating-point luminance (scene-dependant)
+        self._noise_threshold = 0.05
+        self._selected_omm_indices = np.full(10, -1, dtype=np.int32)
+
+        # Overlay parameters
+        self._overlay_colormap: 'Colormap' = Colormap.Thermal
+        self._overlay_range: Tuple[float, float] = (0.0, 1.0)
+        self._overlay_current_peak: float = 0.0
+        self._overlay_compression: float = 1.0         # power exponent for range compression (1.0 = linear, 0.5 = sqrt, etc)
+        self._overlay_autorange_perc: int = 98       # percentile to reject outliers
+
+        # TODO: Add multiple selectable overlay modes: luminance, adaptation state, etc, and custom (the set_data one)
+
+        using_skybox = self.scene.skybox is not None
+        self._scene_uniforms.update(
+            nb_tlas_nodes=len(self._baker.cpu_tlas_nodes),
+            background_color=self.scene.background_color,
+            max_bounces=self._max_bounces,
+
+            # Skybox params
+            use_skybox=using_skybox,
+            skybox=self._baker.scene_textures['skybox'].unit if using_skybox else 0,
+            sh_irradiance_coeffs=self.scene.skybox.sh_coeffs if using_skybox else constant_sh(self.scene.background_color),
+
+            # If any texture is used
+            scene_textures=self._baker.scene_textures['materials'].unit if 'materials' in self._baker.scene_textures else 0
+        )
+
+        self._lights_uniforms.update(
+            enable_ambient=self._enable_ambient,
+            enable_direct=self._enable_direct,
+            enable_shadows=self._enable_shadows,
+            sky_intensity=self._sky_intensity,
+            ambient_intensity=self._ambient_intensity,
+            directional_lights_count=self._baker._nb_dir_lights,
+            point_lights_count=self._baker._nb_point_lights,
+            area_lights_count=self._baker._nb_area_lights
+        )
+
+        self._init_model_resources()
+
+        self._update_selected_ommatidia()
+
+    def __repr__(self):
+        loop_mode = 'Open-loop (batched)' if self._batch_size > 1 else 'Closed-loop / Interactive'
+        return (f"<{self.__class__.__name__} | Mode: {loop_mode} | "
+                f"Batch size: {self._batch_size} | "
+                f"{self.nb_samples} samples/rhabdomere>")
+
+    def _init_model_resources(self):
 
         # Allocate GPU buffers
 
@@ -244,45 +398,6 @@ class Renderer:
         self._fences = [0, 0]
         self._colours_cpu_buffer = np.zeros((self._model.size, 4), dtype=np.float32)
 
-        # Store local attributes to sync with uniforms
-
-        # Global lighting controls
-        self._enable_direct = enable_direct
-        self._enable_shadows = enable_shadows
-        self._enable_ambient = enable_ambient
-        self._ambient_intensity = 1.0
-        self._sky_intensity = 1.0
-
-        # States flags and other things
-        self._time_dithering: bool = time_dithering
-        self._microsaccades_enabled: bool = enable_microsaccades
-        self._overlay_enabled: bool = False
-        self.runs_interactive: bool = False
-
-        self.false_colours: bool = False            # TODO: expose these (and generate UV-encoded assets for demo)
-        self.uv_encoded_textures: bool = False
-
-        # Time keeping
-        self._dither_counter: int = 0   # only advanced when time dithering is on
-        self._frame_index: int = 0      # advanced at each new rendered frame
-
-        # Visualisation state and parameters stuff
-        self._projection_mode = OmmatidiaProjection.Position
-        self._output_mode = EyeOutput.Cartridge
-        self._tiled_mode = True
-        self._lum_ref = 1.0             # target operating-point luminance (scene-dependant)
-        self._noise_threshold = 0.05
-        self._selected_omm_indices = np.full(10, -1, dtype=np.int32)
-
-        # Overlay parameters
-        self._overlay_colormap = Colormap.Thermal
-        self._overlay_range = (0.0, 1.0)
-        self._overlay_current_peak: Optional[float] = None
-        self._overlay_compression = 1.0         # power exponent for range compression (1.0 = linear, 0.5 = sqrt, etc)
-        self._overlay_autorange_perc = 98       # percentile to reject outliers
-
-        # TODO: Add multiple selectable overlay modes: luminance, adaptation state, etc, and custom (the set_data one)
-
         # Upload all default uniforms values
 
         self._eye_uniforms.update(
@@ -311,7 +426,7 @@ class Renderer:
             # Sampling modes
             nb_samples=self._samples_per_rhab,
             use_hybrid_sampling=self._use_hybrid_sampling,
-            sampling_mode=self._sampling_mode, # 0 = Gaussian, 1 = Airy
+            sampling_mode=self._sampling_mode,  # 0 = Gaussian, 1 = Airy
             randomness_mode=self._randomness_mode,
             airy_lut=airy_sensitivity_lut(),
 
@@ -330,52 +445,83 @@ class Renderer:
             # Rhabdomere dynamics
             noise_threshold=self._noise_threshold,
             enable_actuation=self._microsaccades_enabled,
-            photon_concentration_factor=0.0,        # TODO: document this better
+            photon_concentration_factor=0.0,  # TODO: document this better
             lum_ref=self._lum_ref,
             extra_narrowing_ratio=float(self._model.bundle.extra_narrowing_ratio),
         )
 
-        using_skybox = self.scene.skybox is not None
-        self._scene_uniforms.update(
-            nb_tlas_nodes=len(self._baker.cpu_tlas_nodes),
-            background_color=self.scene.background_color,
-            max_bounces=self._max_bounces,
+    def _free_model_resources(self):
+        """
+        Tear down everything sized by or derived from the model
+        """
 
-            # Skybox params
-            use_skybox=using_skybox,
-            skybox=self._baker.scene_textures['skybox'].unit if using_skybox else 0,
-            sh_irradiance_coeffs=self.scene.skybox.sh_coeffs if using_skybox else constant_sh(self.scene.background_color),
+        # Compute shaders: dispatch + panoramic/perspective projection
+        self._invalidate_shaders()
 
-            # If any texture is used
-            scene_textures=self._baker.scene_textures['materials'].unit if 'materials' in self._baker.scene_textures else 0
+        # Reduction / dynamics compute shaders
+        for shader in (self.reduction_shader, self.dynamics_shader):
+            if shader:
+                shader.free()
+        self.reduction_shader = None
+        self.dynamics_shader = None
+
+        # PBO ping-pong sync fences
+        for f in self._fences:
+            if f:
+                try:
+                    glDeleteSync(f)
+                except Exception:
+                    pass
+        self._fences = [0, 0]
+        self._pbo_index = 0
+
+        # Eye-mesh VAOs reference VBOs that live inside eye_buffers so they must go before the registry is freed
+        for vao, _ in self._eyemesh_vaos.values():
+            glDeleteVertexArrays(1, [vao])
+        self._eyemesh_vaos.clear()
+
+        # Eye mesh shaders rebuild lazily
+        for shader in self._eyemesh_shaders.values():
+            shader.free()
+        self._eyemesh_shaders.clear()
+
+        # All per-ommatidium / per-rhabdomere SSBOs + PBOs and the lazy overlay / eye mesh VBOs that share the registry
+        self.eye_buffers.free()
+
+    def _update_model_uniforms(self) -> None:
+        """Upload model-derived uniforms."""
+
+        self._eye_uniforms.update(
+            nb_ommatidia=self._model.N,
+            nb_rhabdomeres=self._model.size,
+            rhab_per_omm=self._model.R,
+            bundle_centre_idx=self._model.bundle.center_index,
+            visualisation_omm_length=max(0.01, np.mean(self._model.ommatidia.aperture)) * 0.3,
+            extra_narrowing_ratio=float(self._model.bundle.extra_narrowing_ratio),
         )
 
-        self._lights_uniforms.update(
-            enable_ambient=self._enable_ambient,
-            enable_direct=self._enable_direct,
-            enable_shadows=self._enable_shadows,
-            sky_intensity=self._sky_intensity,
-            ambient_intensity=self._ambient_intensity,
-            directional_lights_count=self._baker._nb_dir_lights,
-            point_lights_count=self._baker._nb_point_lights,
-            area_lights_count=self._baker._nb_area_lights
-        )
+    def _update_selected_ommatidia(self):
+        sel_omm_indices = self._selected_omm_indices.copy()
 
-        self._update_selected_ommatidia()
+        if self._output_mode == EyeOutput.Raw:
+            for i in range(10):
+                if sel_omm_indices[i] != -1:
+                    sel_omm_indices[i] *= self._model.R
+                    sel_omm_indices[i] += self._model.bundle.center_index
 
-    def __repr__(self):
-        loop_mode = 'Open-loop (batched)' if self._batch_size > 1 else 'Closed-loop / Interactive'
-        return (f"<{self.__class__.__name__} | Mode: {loop_mode} | "
-                f"Batch size: {self._batch_size} | "
-                f"{self.nb_samples} samples/rhabdomere>")
+        self._eye_uniforms.update(selected_ommatidia=sel_omm_indices)
 
-    # Internal properties for lazy loaded resources
+    def _invalidate_shaders(self):
+        """Invalidates all shaders that need be when defines change."""
 
-    @property
-    def screen_surface(self):
-        if self._screen_surface is None:
-            self._screen_surface = TextureViewer()
-        return self._screen_surface
+        self.dispatch_shader.free()
+
+        for s in self._projection_shaders.values():
+            s.free()
+
+        self._projection_shaders.clear()
+
+    # Internal getters for lazy loaded resources
 
     def _get_eyemesh_vao(self, shape: str) -> Tuple[int, int]:
         """Lazy-loads and returns (vao_id, vertex_count) for the requested shape."""
@@ -416,7 +562,7 @@ class Renderer:
         key = (view_type, overlay)
 
         if key not in self._eyemesh_shaders:
-            prefix = 'external' if view_type == 'external' else 'subjective'
+            prefix = 'subjective' if view_type == 'subjective' else 'external'
             defines = self.eye_buffers.shader_defines.copy()
 
             if overlay:
@@ -462,8 +608,6 @@ class Renderer:
 
         return self._projection_textures[proj_name].handle, target_res
 
-    # Various internal helpers
-
     def _collect_defines(self) -> Dict[str, Any]:
         """
         Determines which #defines to inject based on current baker light counts.
@@ -490,15 +634,7 @@ class Renderer:
 
         return defines
 
-    def _invalidate_shaders(self):
-        """Invalidates all shaders that need be when defines change."""
-
-        self.dispatch_shader.free()
-
-        for s in self._projection_shaders.values():
-            s.free()
-
-        self._projection_shaders.clear()
+    # Various internal helpers
 
     def _safe_samples_lim(self, batch_size: int, nb_samples: int, prioritize_batch: bool = True) -> Tuple[int, int]:
         """
@@ -574,17 +710,6 @@ class Renderer:
                 print(f"Warning: Invalid mode '{val}' for {enum_class.__name__}. Defaulting to {list(enum_class)[0].name}")
                 return list(enum_class)[0]
         return enum_class(val)
-
-    def _update_selected_ommatidia(self):
-        sel_omm_indices = self._selected_omm_indices.copy()
-
-        if self._output_mode == EyeOutput.Raw:
-            for i in range(10):
-                if sel_omm_indices[i] != -1:
-                    sel_omm_indices[i] *= self._model.R
-                    sel_omm_indices[i] += self._model.bundle.center_index
-
-        self._eye_uniforms.update(selected_ommatidia=sel_omm_indices)
 
     # Main internal rendering calls: Dispatch -> Reduction -> Dynamics
 
@@ -682,6 +807,26 @@ class Renderer:
         self._pbo_index = next_pbo_index
         return out_array
 
+    def _tonemap_pass(self):
+
+        shader = self._tonemap_shader
+
+        with shader:
+            glDisable(GL_DEPTH_TEST)
+            glDepthMask(GL_FALSE)
+
+            glActiveTexture(GL_TEXTURE0)
+
+            glBindTexture(GL_TEXTURE_2D, self._hdr_surface.color)
+            glUniform1i(shader.get_loc('hdr_scene'), 0)
+            glUniform1f(shader.get_loc('exposure'), float(self.exposure))
+            glBindVertexArray(self._tonemap_vao)
+            glDrawArrays(GL_TRIANGLES, 0, 3)
+            glBindVertexArray(0)
+
+        glDepthMask(GL_TRUE)
+        glEnable(GL_DEPTH_TEST)
+
     def _main_render(self):
         """Shared pipeline: tick -> upload updated uniforms -> scene-specific sampling -> reduce -> actuate."""
 
@@ -701,7 +846,7 @@ class Renderer:
     def _render_subjective_view(self):
         """First-person compound-eye view (colours or scalar overlay)."""
 
-        shader = self._get_eyemesh_shader('fp', self.overlay_enabled)
+        shader = self._get_eyemesh_shader('subjective', self.overlay_enabled)
 
         with shader:
 
@@ -733,7 +878,7 @@ class Renderer:
     def _render_external_view(self, observer_camera):
         """Third-person eye model (colours or scalar overlay)."""
 
-        shader = self._get_eyemesh_shader('tp', self.overlay_enabled)
+        shader = self._get_eyemesh_shader('external', self.overlay_enabled)
 
         with shader:
 
@@ -863,6 +1008,14 @@ class Renderer:
 
     def draw(self, view_mode: Union[str, 'DisplayMode'], point_of_view: Union['Agent', 'OrbitCamera']):
 
+        w, h = self.context.viewport_size
+        self._hdr_surface.bind(w, h)
+
+        # TODO: do the background mapping in init
+        linear_bg = tuple(c ** 2.2 for c in self.scene.background_color)
+        glClearColor(linear_bg[0], linear_bg[1], linear_bg[2], 1.0)
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
         if view_mode == DisplayMode.Compound:
             self._render_subjective_view()
 
@@ -874,7 +1027,7 @@ class Renderer:
 
             tex_id, _ = self._get_projection_texture(view_name)
 
-            self.screen_surface.draw(
+            self.screen_surface.display(
                 tex_id,
                 false_colors=self.false_colours,
                 uv_encoded_textures=self.uv_encoded_textures
@@ -882,6 +1035,11 @@ class Renderer:
 
         if view_mode == DisplayMode.Third_person:
             self._render_external_view(point_of_view)
+
+        self._hdr_surface.unbind()
+        self._hdr_surface.blit_depth_to_default()
+
+        self._tonemap_pass()
 
     def step(self, readback: bool = True) -> Optional['VisualOutput']:
         """
@@ -1029,6 +1187,64 @@ class Renderer:
     # Public properties and methods
 
     @property
+    def model(self) -> 'Model':
+        return self._model
+
+    @model.setter
+    def model(self, new_model: 'Model') -> None:
+        if new_model is self._model:
+            return
+        same_topology = (new_model.shape == self._model.shape)
+        self._model = new_model
+
+        if same_topology:
+            # Size unchanged: buffer sizes still valid
+            # Re-upload static+dynamic rows and refresh model-derived uniforms
+            self.sync_cpu(force_all=True)
+            self._update_model_uniforms()
+        else:
+            # Topology changed: rebuild eye-side GPU resources
+            self._free_model_resources()
+            self._batch_size, self._samples_per_rhab = self._safe_samples_lim(
+                self._batch_size, self._samples_per_rhab, prioritize_batch=True
+            )
+            self._init_model_resources()  # reallocates SSBOs/PBOs, recompiles, pushes uniforms
+
+        # Selection + overlay buffers are sized by `size`, reset them
+        self._selected_omm_indices.fill(-1)
+        self._update_selected_ommatidia()
+
+    @property
+    def scene(self) -> 'Scene':
+        return self._scene
+
+    @scene.setter
+    def scene(self, new_scene: 'Scene') -> None:
+
+        if new_scene is self._scene:
+            return
+
+        self._scene = new_scene
+        self._baker.free()
+        self._baker = SceneBaker(new_scene, self._resource_manager)
+        self._invalidate_shaders()  # light-count #defines might have changed
+
+        using_skybox = new_scene.skybox is not None
+        self._scene_uniforms.update(
+            nb_tlas_nodes=len(self._baker.cpu_tlas_nodes),
+            background_color=new_scene.background_color,
+            use_skybox=using_skybox,
+            skybox=self._baker.scene_textures['skybox'].unit if using_skybox else 0,
+            sh_irradiance_coeffs=(new_scene.skybox.sh_coeffs if using_skybox
+                                  else constant_sh(new_scene.background_color)),
+        )
+        self._lights_uniforms.update(
+            directional_lights_count=self._baker._nb_dir_lights,
+            point_lights_count=self._baker._nb_point_lights,
+            area_lights_count=self._baker._nb_area_lights,
+        )
+
+    @property
     def context(self) -> Optional['Context']:
         """The Context this renderer is attached to (if any)."""
         return self._context
@@ -1042,6 +1258,20 @@ class Renderer:
             return
         self._context = new_context
         self._context.renderer = self
+
+    @property
+    def screen_surface(self):
+        if self._screen_surface is None:
+            self._screen_surface = TextureViewer()
+        return self._screen_surface
+
+    @property
+    def exposure(self) -> float:
+        return self._exposure
+
+    @exposure.setter
+    def exposure(self, value: float):
+        self._exposure = float(value)
 
     @property
     def batch_size(self):
@@ -1324,35 +1554,29 @@ class Renderer:
 
     # Cleanup
 
-    def free(self):
-        """Free GPU resources."""
+    def free(self) -> None:
+        """
+        Free all GPU resources owned by the renderer.
+        """
 
-        self._invalidate_shaders()
-        self._projection_textures.free()
+        # Eyes stuff: shaders, SSBOs/PBOs, fences, eye-mesh VAOs/shaders
+        self._free_model_resources()
 
-        if self._screen_surface:
-            self._screen_surface.free()
-
+        # Scene baking (BVH, lights, scene textures)
         self._baker.free()
 
-        for f in self._fences:
-            if f:
-                try:
-                    glDeleteSync(f)
-                except Exception:
-                    pass
+        # View-side render targets and the fullscreen-blit helper
+        self._projection_textures.free()
+        if self._screen_surface:
+            self._screen_surface.free()
+            self._screen_surface = None
 
-        self.eye_buffers.free()
+        # Presentation: HDR target + tonemap pass (moved in from Context)
+        self._hdr_surface.free()
+        if self._tonemap_shader:
+            self._tonemap_shader.free()
+            self._tonemap_shader = None
 
-        # Clean up VAOs
-        for vao, _ in self._eyemesh_vaos.values():
-            glDeleteVertexArrays(1, [vao])
-        self._eyemesh_vaos.clear()
-
-        # Clean up Eye shaders
-        for shader in self._eyemesh_shaders.values():
-            shader.free()
-        self._eyemesh_shaders.clear()
-
-        for shader in (self.reduction_shader, self.dynamics_shader):
-            if shader: shader.free()
+        if self._tonemap_vao:
+            glDeleteVertexArrays(1, [self._tonemap_vao])
+            self._tonemap_vao = None

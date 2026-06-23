@@ -42,7 +42,9 @@ class Dashboard:
         dpg.create_viewport(title='InsectVision Dashboard', width=650, height=950, vsync=self.ctx.vsync)
         dpg.setup_dearpygui()
 
-        model = self.ctx.renderer._model
+        model = self.ctx.renderer.model
+        scene = self.ctx.renderer.scene
+
         self.rec_data_buffers = [collections.deque(maxlen=self.plot_history_len) for _ in range(model.R)]
 
         with dpg.window(label='Inspector', width=650, height=950, no_close=True, no_move=True, tag='main_window'):
@@ -90,7 +92,8 @@ class Dashboard:
 
                     self.omm_selection_text = dpg.add_text("Selected ommatidia: [0]")
                     self.omm_slider = dpg.add_slider_int(label="Primary Ommatidium ID (or type)", default_value=0,
-                                                         max_value=model.N - 1, callback=self._on_slider_change)
+                                                         max_value=max(0, self.ctx.renderer.model.N - 1),
+                                                         callback=self._on_slider_change)
                     dpg.add_button(label="Clear Selection", callback=lambda: self.toggle_omm_selection(None))
 
                     dpg.add_separator()
@@ -154,25 +157,25 @@ class Dashboard:
                         label='Lateral Gain (um)',
                         default_value=float(model.ommatidia.lateral_amplitude[0]),
                         min_value=0.0, max_value=5.0,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'lateral_amplitude', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'lateral_amplitude', a)
                     )
                     dpg.add_slider_float(
                         label='Axial Gain (um)',
                         default_value=float(model.ommatidia.axial_amplitude[0]),
                         min_value=0.0, max_value=5.0,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'axial_amplitude', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'axial_amplitude', a)
                     )
                     dpg.add_slider_float(
                         label='Tau Fast (s)',
                         default_value=float(model.ommatidia.tau_adapt_fast[0]),
                         min_value=0.001, max_value=0.1,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'tau_adapt_fast', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'tau_adapt_fast', a)
                     )
                     dpg.add_slider_float(
                         label='Tau Relaxation (s)',
                         default_value=float(model.ommatidia.tau_relax[0]),
                         min_value=0.01, max_value=0.5,
-                        callback=lambda s, a: setattr(self.ctx.renderer._model.ommatidia, 'tau_relax', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'tau_relax', a)
                     )
 
                     dpg.add_separator()
@@ -228,14 +231,14 @@ class Dashboard:
                             label='Heatmap Compression',
                             default_value=self.ctx.renderer._overlay_compression,
                             min_value=0.1, max_value=2.0,
-                            callback=lambda s, a: setattr(self.ctx.renderer, '_overlay_compression', a)
+                            callback=lambda s, a: self.ctx.renderer.set_overlay(compression=a)
                         )
 
                         dpg.add_combo(
                             list(Colormap.__members__.keys()),
                             label='Colormap',
                             default_value=self.ctx.renderer._overlay_colormap.name,
-                            callback=lambda s, a: setattr(self.ctx.renderer, '_overlay_colormap', Colormap[a])
+                            callback=lambda s, a: self.ctx.renderer.set_overlay(colormap=Colormap[a])
                         )
 
                         dpg.add_separator()
@@ -294,26 +297,27 @@ class Dashboard:
                     )
 
                     dpg.add_separator()
-                    if self.ctx.scene.sun:
+
+                    if scene.sun:
                         dpg.add_text('Sun Controls', color=[255, 200, 100])
                         self.ui_tags['sun_control'] = dpg.add_checkbox(
                             label='Mouse Controls Sun (L)', default_value=self.ctx.sun_control_mode,
                             callback=lambda s, a: setattr(self.ctx, 'sun_control_mode', a)
                         )
                         self.ui_tags['sun_azimuth'] = dpg.add_slider_float(
-                            label='Azimuth', default_value=self.ctx.scene.sun.azimuth,
+                            label='Azimuth', default_value=scene.sun.azimuth,
                             min_value=-180.0, max_value=180.0,
                             callback=self._update_sun
                         )
                         self.ui_tags['sun_elevation'] = dpg.add_slider_float(
-                            label='Elevation', default_value=self.ctx.scene.sun.elevation,
+                            label='Elevation', default_value=scene.sun.elevation,
                             min_value=1.0, max_value=89.0,
                             callback=self._update_sun
                         )
                         self.ui_tags['sun_intensity'] = dpg.add_slider_float(
-                            label='Sun Intensity', default_value=self.ctx.scene.sun.intensity,
+                            label='Sun Intensity', default_value=scene.sun.intensity,
                             min_value=0.0, max_value=10.0,
-                            callback=lambda s, a: setattr(self.ctx.scene.sun, 'intensity', a)
+                            callback=lambda s, a: setattr(scene.sun, 'intensity', a)
                         )
 
                 # Tab 5: Agent / cam
@@ -375,7 +379,7 @@ class Dashboard:
                 if len(self.selected_ommatidia) < self.max_selected:
                     self.selected_ommatidia.append(ommatidia_indices)
 
-        model = self.ctx.renderer._model
+        model = self.ctx.renderer.model
         pad_len = len(self.frame_data)
         for lid in self.selected_ommatidia:
             if lid not in self.omm_histories:
@@ -456,27 +460,31 @@ class Dashboard:
         self._main_thread_queue.append(lambda: setattr(self.ctx.renderer, 'nb_samples', app_data))
 
     def _update_sun(self, sender, app_data):
-        if self.ctx.scene.sun:
+        scene = self.ctx.renderer.scene
+        if scene.sun:
             az = dpg.get_value(self.ui_tags['sun_azimuth'])
             el = dpg.get_value(self.ui_tags['sun_elevation'])
-            self.ctx.scene.sun.from_angles(az, el, self.ctx.scene.sun.distance)
+            scene.sun.from_angles(az, el, scene.sun.distance)
 
     def _update_agent_pos(self, sender, app_data):
         x = dpg.get_value(self.ui_tags['pos_x'])
         y = dpg.get_value(self.ui_tags['pos_y'])
         z = dpg.get_value(self.ui_tags['pos_z'])
-        self.ctx.agent.position = glm.vec3(x, y, z)
+        self.ctx.renderer.agent.position = glm.vec3(x, y, z)
 
     def _update_agent_rot(self, sender, app_data):
         y = dpg.get_value(self.ui_tags['rot_y'])
         p = dpg.get_value(self.ui_tags['rot_p'])
         r = dpg.get_value(self.ui_tags['rot_r'])
-        self.ctx.agent.yaw, self.ctx.agent.pitch, self.ctx.agent.roll = np.radians(y), np.radians(p), np.radians(r)
+        self.ctx.renderer.agent.set_rotation(y, p, r)
 
     def _sync_ui_state(self):
         """Sync DPG widgets with Python states in case they were modified via keyboard."""
 
         rendering_mode = 'Path-tracing' if self.ctx.renderer.path_tracing else 'Ray-tracing'
+
+        scene = self.ctx.renderer.scene
+        agent = self.ctx.renderer.agent
 
         dpg.set_value('ui_fps_text', f'FPS: {self.ctx.fps:5.1f}')
         dpg.set_value('ui_renderer_text', f'| Render mode: {rendering_mode}')
@@ -493,8 +501,8 @@ class Dashboard:
 
         dpg.set_value('ui_sim_total_text', f'Total sim time: {self.ctx.total_time:7.3f} s')
 
-        model = self.ctx.renderer._model
-        dpg.configure_item(self.rec_slider, max_value=max(0, model.R - 1))
+        dpg.configure_item(self.omm_slider, max_value=max(0, self.ctx.renderer.model.N - 1))
+        dpg.configure_item(self.rec_slider, max_value=max(0, self.ctx.renderer.model.R - 1))
 
         # Modes
         view_str = self.ctx.display_mode.name.replace('_', ' ')
@@ -503,20 +511,21 @@ class Dashboard:
         dpg.set_value('ui_proj_text', f'| Proj: {proj_str}')
 
         # Position
-        pos = self.ctx.agent.position
+        pos = agent.position
         dpg.set_value('ui_pos_text', f'Pos: [{pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}]')
 
         # Samples and ommatidia
-        nb_om = self.ctx.renderer._model.N
-        nb_om_samples = getattr(self.ctx.renderer, 'nb_samples', 1)
-        nb_px_samples = getattr(self.ctx.renderer, 'samples_per_pixel', 1)
+        nb_omm = self.ctx.renderer.model.N
+        nb_rhab = self.ctx.renderer.model.size
+        samples_rhab = self.ctx.renderer.nb_samples
+        samples_px = self.ctx.renderer.pixel_samples
 
-        dpg.set_value('ui_omm_text', f'Ommatidia: {nb_om:,}')
-        dpg.set_value('ui_samples_text', f'| Samples: {nb_om_samples}/om | {nb_px_samples}/px')
+        dpg.set_value('ui_omm_text', f'Ommatidia: {nb_omm:,}, Rhabdomeres: {nb_rhab:,}')
+        dpg.set_value('ui_samples_text', f'| Samples: {samples_rhab}/rhab | {samples_px}/px')
 
         # Scene Stats
-        dpg.set_value('ui_tri_text', f'Triangles: {self.ctx.scene.total_triangles:,}')
-        dpg.set_value('ui_pts_text', f'| Points: {self.ctx.scene.total_points:,}')
+        dpg.set_value('ui_tri_text', f'Triangles: {scene.total_triangles:,}')
+        dpg.set_value('ui_pts_text', f'| Points: {scene.total_points:,}')
 
         # Interactive inputs sync
 
@@ -527,27 +536,24 @@ class Dashboard:
         dpg.set_value(self.ui_tags['heatmap'], self.ctx.renderer.overlay_enabled)
         dpg.set_value(self.ui_tags['randomness_mode'], self.ctx.renderer.randomness_mode.name)
         dpg.set_value(self.ui_tags['sampling_mode'], self.ctx.renderer.sampling_mode.name)
-
-        if hasattr(self.ctx.renderer, 'time_dithering'):
-            dpg.set_value(self.ui_tags['time_dither'], self.ctx.renderer.time_dithering)
-        if hasattr(self.ctx.renderer, 'nb_samples'):
-            dpg.set_value(self.ui_tags['samples'], self.ctx.renderer.nb_samples)
+        dpg.set_value(self.ui_tags['time_dither'], self.ctx.renderer.time_dithering)
+        dpg.set_value(self.ui_tags['samples'], self.ctx.renderer.nb_samples)
 
         # Environment sync
-        if self.ctx.scene.sun:
+        if scene.sun:
             dpg.set_value(self.ui_tags['sun_control'], self.ctx.sun_control_mode)
-            dpg.set_value(self.ui_tags['sun_azimuth'], self.ctx.scene.sun.azimuth)
-            dpg.set_value(self.ui_tags['sun_elevation'], self.ctx.scene.sun.elevation)
-            dpg.set_value(self.ui_tags['sun_intensity'], self.ctx.scene.sun.intensity)
+            dpg.set_value(self.ui_tags['sun_azimuth'], scene.sun.azimuth)
+            dpg.set_value(self.ui_tags['sun_elevation'], scene.sun.elevation)
+            dpg.set_value(self.ui_tags['sun_intensity'], scene.sun.intensity)
 
         # Agent sync
         dpg.set_value(self.ui_tags['pos_x'], pos.x)
         dpg.set_value(self.ui_tags['pos_y'], pos.y)
         dpg.set_value(self.ui_tags['pos_z'], pos.z)
 
-        dpg.set_value(self.ui_tags['rot_y'], self.ctx.agent.yaw)
-        dpg.set_value(self.ui_tags['rot_p'], self.ctx.agent.pitch)
-        dpg.set_value(self.ui_tags['rot_r'], self.ctx.agent.roll)
+        dpg.set_value(self.ui_tags['rot_y'], agent.yaw)
+        dpg.set_value(self.ui_tags['rot_p'], agent.pitch)
+        dpg.set_value(self.ui_tags['rot_r'], agent.roll)
 
         dpg.set_value('ui_mouse_lock', self.ctx.mouse_captured)
 
@@ -687,7 +693,7 @@ class Dashboard:
         # Sync UI state (renderer -> dashboard)
         self._sync_ui_state()
 
-        model = self.ctx.renderer._model
+        model = self.ctx.renderer.model
         mode = self.ctx.renderer.output_mode
 
         # maintain a mapping of what the shader needs to highlight

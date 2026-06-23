@@ -111,7 +111,6 @@ void main() {
             }
             #else
             value += color_data[base + src].rgb;
-            count++;
             #endif
         }
         value /= float(rhab_per_omm);
