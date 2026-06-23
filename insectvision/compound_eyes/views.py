@@ -608,7 +608,7 @@ class SpatialQueries:
             - query: global ommatidia indices (only those inside this view are used).
             - positions: (Q, 3) world-space query points.
 
-        immediate_only restricts to the cached first-ring graph; otherwise
+        immediate_only restricts to the cached first-ring graph, otherwise
         neighbour_dist_factor tags 'is_immediate' (d <= factor * local scale),
         or set it to None to skip the tagging.
         """

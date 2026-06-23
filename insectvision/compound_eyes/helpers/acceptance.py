@@ -126,7 +126,7 @@ class SamplingAcceptance:
 class ExplicitAcceptance:
     """
     Use a supplied array of half-widths verbatim.
-    Accepts (R,), (N, R), or (N, R, 2), broadcast to (N, R, 2).
+    Accepts (N,), (R,), (N, R), or (N, R, 2), broadcast to (N, R, 2).
     """
     values_rad: np.ndarray
 
@@ -136,10 +136,13 @@ class ExplicitAcceptance:
 
     def __call__(self, lens_optics: LensOptics, rhab_optics: RhabdomereOptics) -> np.ndarray:
         n, r = lens_optics.nb_lenses, rhab_optics.nb_rhabdomeres
+        if n == r:
+            print(f'Number of rhabdomeres and ommatidia are the same (is this a debug eye?). Broadcast of acceptance array might not work as expected.')
+
         return broadcast_to_shape(
             values=self.values_rad,
             shape=(n, r, 2),
-            accepted=[((r,), (1,)), ((n, r), (0, 1)), ((n, r, 2), (0, 1, 2))],
+            accepted=[((r,), (1,)), ((n,), (0,)), ((n, r), (0, 1)), ((n, r, 2), (0, 1, 2))],
             name='acceptance',
             dtype=np.float32
         )

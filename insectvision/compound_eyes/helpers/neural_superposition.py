@@ -73,9 +73,9 @@ def wire_neural_superposition(
     angular_dev: float = 40.0,
     scale_dev: float = 0.75,
     min_snap_matches: int = 2,
-    neighbour_dist_factor: float = 1.25,
+    neighbour_dist_factor: float = 1.5,
     k_search: int = 20,
-    top_k: int = 6,
+    top_k: int = 3,
     identity_bias: float = 0.05,
     unassigned_penalty: float = 10.0,
     allow_plasticity: bool = True,
@@ -129,6 +129,14 @@ def wire_neural_superposition(
     right = model.buffer['right']
     up = model.buffer['up']
 
+    def _too_similar(new_key, existing_keys, threshold=0.8):
+        new_set = set(new_key)
+        for existing in existing_keys:
+            shared = len(new_set.intersection(set(existing)))
+            if shared / len(new_set) >= threshold:
+                return True
+        return False
+
     for eye in model.eyes:
         n_e = len(eye)
         if n_e < 2:
@@ -159,27 +167,56 @@ def wire_neural_superposition(
             valid_nb = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
 
             # Candidate transforms (identity only when the bundle is lattice-pinned)
-            ws_set = [1.0 + 0j]
+            ws_dedup = { (1.0, 0.0) }   # tuple of floats instead of complex number (can't hash a complex)
+
             if not assume_aligned and (mag_ok := np.abs(tpl_i) > 1e-8).any():
                 nb_valid_idx = np.flatnonzero(valid_nb)
                 for i_a in np.flatnonzero(mag_ok):
                     ws = nb_i[nb_valid_idx] / tpl_i[i_a]
-                    ok = (np.abs(np.angle(ws)) <= ang_gate) & (np.abs(np.abs(ws) - 1.0) <= scale_dev)
-                    ws_set.extend(ws[ok].tolist())
 
-            lens_cands, seen = [], set()
-            for w in ws_set:
-                d = np.where(valid_nb[None, :], np.abs((w * tpl_i)[:, None] - nb_i[None, :]), np.inf)
+                    # Mask for valid transforms
+                    ok_mask = (np.abs(np.angle(ws)) <= ang_gate) & (np.abs(np.abs(ws) - 1.0) <= scale_dev)
+
+                    for w in ws[ok_mask]:
+                        # Round to 3 decimals to dedup candidates
+                        # also need to convert the complex number to tuple of floats
+                        w_key = (float(np.round(w.real, 3)), float(np.round(w.imag, 2)))
+                        ws_dedup.add(w_key)
+
+            lens_cands = []
+            seen_topologies = set()
+
+            for wr, wi in ws_dedup:
+
+                w = wr + 1j * wi    # reconstruct complex number
+
+                # Cost matrix
+                d = np.where(valid_nb[None, :], np.abs((w * tpl_i[periph])[:, None] - nb_i[None, :]), np.inf)
+
                 r_idx, c_idx = linear_sum_assignment(d)
                 md = d[r_idx, c_idx]
 
                 keep = (md < assign_radius) & np.isfinite(md)
                 if int(keep.sum()) >= min_snap_matches:
-                    donors_g, slots_g = neighb.indices[i_loc][c_idx[keep]], periph[r_idx[keep]]
-                    key = tuple(sorted(zip(slots_g, donors_g)))
-                    if key not in seen:
-                        seen.add(key)
-                        lens_cands.append((identity_bias * float(np.abs(w - 1.0)), slots_g, donors_g, md[keep]))
+
+                    # Create hashable key (tuple of tuples of ints)
+                    donors_g = neighb.indices[i_loc][c_idx[keep]].astype(int).tolist()
+                    slots_g = periph[r_idx[keep]].astype(int).tolist()
+
+                    topo_key = tuple(sorted(zip(slots_g, donors_g)))
+
+                    if topo_key not in seen_topologies and not _too_similar(topo_key, seen_topologies):
+                        seen_topologies.add(topo_key)
+                        lens_cands.append((
+                            identity_bias * float(np.abs(w - 1.0)),
+                            np.array(slots_g),
+                            np.array(donors_g),
+                            md[keep]
+                        ))
+
+            # Sort and truncate to keep MILP doable
+            lens_cands.sort(key=lambda t: t[0])
+            candidates[i_loc] = lens_cands[:top_k]
 
             # Fallback: if no candidates found, generate one 'plastic' candidate
             if not lens_cands and allow_plasticity:

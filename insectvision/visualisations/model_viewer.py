@@ -71,7 +71,7 @@ def make_eye_mesh(model) -> pv.PolyData:
         global_idx = np.asarray(eye.indices, dtype=np.int_)
         eye_pos = positions[global_idx]
 
-        eye_dirs = norm_l2(eye_pos)
+        eye_dirs = norm_l2(eye.directions)
         try:
             pts_2d, _, _, _ = sphere_to_stereo(eye_dirs)
             tri = Delaunay(pts_2d)
@@ -95,7 +95,7 @@ def make_eye_mesh(model) -> pv.PolyData:
         typical_edge = np.median(np.min(np.column_stack([l01, l12, l20]), axis=1))
 
         # Drop triangles whose longest edge is significantly large
-        valid_mask = max_len < (typical_edge * 2.0)
+        valid_mask = max_len < (typical_edge * 4.0)
         valid_simplices = simplices[valid_mask]
 
         if len(valid_simplices) > 0:
@@ -993,14 +993,11 @@ if __name__ == "__main__":
         bundle=drosophila_bundle(), orientation=aligner, neural_superposition=True
     )
 
-    model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
-
-    # model = CompoundEyeModel.from_sphere(
+    # model = Model.from_sphere(
     #     n=1600, bundle=drosophila_bundle(), orientation=aligner, neural_superposition=True
     # )
 
-    # model.refine_bundle_alignment(max_nudge_deg=30.0)
-    # model.cartridges_report()
+    # model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
 
     viewer = EyeViewer(model, aligner=aligner)
     viewer.show()

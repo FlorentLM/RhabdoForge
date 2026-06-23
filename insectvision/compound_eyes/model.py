@@ -273,6 +273,7 @@ class Model(SpatialQueries, BaseView):
         if force_isotropic:
             # Theoretical IOA for N facets (lenses) tiled hexagonally on a sphere
             kwargs['interommatidial_angles_rad'] = [np.sqrt((4.0 * np.pi) / (n * np.sqrt(3.0) / 2.0))] * 2
+
         return cls(directions=dirs, positions=(dirs * float(eye_radius)).astype(np.float32), **kwargs)
 
     @classmethod

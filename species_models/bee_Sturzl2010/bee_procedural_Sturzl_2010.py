@@ -301,7 +301,7 @@ if __name__ == "__main__":
         directions=directions,
         positions=positions,
         eye_id=eye_id,
-        acceptance_angles_rad=np.deg2rad(np.concatenate([right_eye_acceptance, right_eye_acceptance])[:, None])
+        acceptance_angles_rad=np.deg2rad(np.concatenate([right_eye_acceptance, right_eye_acceptance]))
     )
 
     if PLOT_EYES:

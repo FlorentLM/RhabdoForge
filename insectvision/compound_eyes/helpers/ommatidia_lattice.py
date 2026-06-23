@@ -1,6 +1,7 @@
 import warnings
 from typing import Callable, Tuple
 import numpy as np
+from joblib import Parallel, delayed
 from scipy.interpolate import RBFInterpolator
 from scipy.optimize import minimize
 from scipy.spatial import ConvexHull, Voronoi, cKDTree
@@ -9,7 +10,7 @@ from insectvision.geometry.linalg import tangent_frames
 from insectvision.geometry.hexatic import hexatic_rest_vectors
 from insectvision.geometry.neighbours import mean_neighbour_distance, delaunay_edges
 from insectvision.geometry.polygons import (
-    Polygon2D, polygon_area, weighted_polygon_centroids, voronoi_cells, mirror_across_hull, order_polygon_ccw
+    Polygon2D, weighted_polygon_centroids, voronoi_cells, mirror_across_hull
 )
 
 
@@ -344,12 +345,13 @@ def spring_relaxation(
 def voronoi_estimation(
         positions,
         directions,
-        k=18,
-        packing=1.0,
-        n_iter=1,
-        shell_factor=1.5,
-        min_ring=4,
-        fill_sweeps=6
+        k: int=18,
+        packing: float= 1.0,
+        n_iter: int=1,
+        shell_factor: float= 1.5,
+        min_ring: int=4,
+        fill_sweeps: int=6,
+        n_jobs: int = -1
     ):
     """
     Per-ommatidium facet diameter from the local Voronoi cell area on the eye surface.
@@ -373,8 +375,44 @@ def voronoi_estimation(
     tree = cKDTree(positions)
     kq = max(0, min(k + 1, N))
     dist, idx = tree.query(positions, k=kq)
+
+    def _worker_voronoi_dv(pts_2d, packing, ref_i):
+        """
+        pts_2d: (k, 2) array of neighbour projections
+        packing: float
+        ref_i: local spacing reference for clamping
+        """
+        try:
+            vor = Voronoi(pts_2d)
+
+            # Get region for the first point (which is our center 0,0)
+            region_idx = vor.point_region[0]
+            region = vor.regions[region_idx]
+
+            # Check if cell is bounded
+            if region and (-1 not in region):
+                # Scipy Voronoi regions are already ordered, so shoelace logic from polygons.py is inlined
+                v = vor.vertices[region]
+
+                # Shoelace area (inlined)
+                x = v[:, 0]
+                y = v[:, 1]
+                area = 0.5 * np.abs(
+                    np.dot(x[:-1], y[1:]) + x[-1] * y[0] -
+                    (np.dot(y[:-1], x[1:]) + y[-1] * x[0])
+                )
+
+                dv = packing * np.sqrt(2.0 * area / np.sqrt(3.0))
+
+                fb = packing * ref_i
+                if 0.6 * fb < dv < 1.5 * fb:
+                    return dv
+        except Exception:
+            pass
+        return np.nan
+
+    # Spacing reference
     nn = dist[:, 1:]
-    ring_idx = idx[:, 1:min(7, kq)]
 
     shell = np.where(nn <= shell_factor * dist[:, 1:2], nn, np.nan)
     with warnings.catch_warnings():
@@ -382,46 +420,49 @@ def voronoi_estimation(
         ref = np.nanmedian(shell, axis=1)
 
     ref = np.where(np.isfinite(ref), ref, dist[:, 1])
+
+    # Boundary detection
     n_shell = np.sum(np.isfinite(shell), axis=1)
     boundary = n_shell < min_ring
 
-    D = np.full(N, np.nan, dtype=float)
-
-    # Per-lens tangent basis
+    # Generate basis for every point
     right_b, up_b = tangent_frames(directions)
 
-    for i in range(N):
-        nb = idx[i, 1:]
-        u, v = right_b[i], up_b[i]
-        rel = positions[nb] - positions[i]
-        pts = np.vstack([[0.0, 0.0], np.column_stack([rel @ u, rel @ v])])
-        fb = packing * ref[i]
+    rel_pos = positions[idx] - positions[:, np.newaxis, :]
 
-        try:
-            vor = Voronoi(pts)
-            region = vor.regions[vor.point_region[0]]
-            if region and (-1 not in region):
-                poly = order_polygon_ccw(vor.vertices[region])
-                area = polygon_area(poly)
-                dv = packing * np.sqrt(2.0 * area / np.sqrt(3.0))
-                if 0.6 * fb < dv < 1.5 * fb:
-                    D[i] = dv
-        except Exception:
-            pass
+    u_coords = np.einsum('nij,nj->ni', rel_pos, right_b)
+    v_coords = np.einsum('nij,nj->ni', rel_pos, up_b)
 
-        if np.isnan(D[i]) and not boundary[i]:
-            D[i] = fb  # interior fallback
+    all_pts_2d = np.stack([u_coords, v_coords], axis=-1)
 
-    D[boundary] = np.nan  # Never trust boundary fallback
+    # Only process non-boundary points
+    active_indices = np.where(~boundary)[0]
 
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(_worker_voronoi_dv)(
+            all_pts_2d[i],
+            packing,
+            ref[i]
+        ) for i in active_indices
+    )
+
+    D = np.full(N, np.nan, dtype=float)
+    D[active_indices] = results
+
+    # Propagate interior values to boundary
+    ring_idx = idx[:, 1:min(7, kq)]
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', RuntimeWarning)
-        for _ in range(fill_sweeps):  # propagate interior values outward
-            med = np.nanmedian(np.concatenate([D[:, None], D[ring_idx]], axis=1), axis=1)
-            D[boundary] = med[boundary]
+        for _ in range(fill_sweeps):
+            # Look at neighbour values (including the ones just filled)
+            neighbor_vals = D[ring_idx]
+            med = np.nanmedian(neighbor_vals, axis=1)   # Median of neighbours for boundary points
+            mask = boundary & np.isnan(D)     # only update boundary points that are still NaN
+            D[mask] = med[mask]
 
     D = np.where(np.isfinite(D), D, packing * ref)  # last resort
 
+    # Smoothing
     for _ in range(int(n_iter)):
         D = np.median(np.concatenate([D[:, None], D[ring_idx]], axis=1), axis=1)
 
