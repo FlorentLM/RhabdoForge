@@ -26,6 +26,9 @@ source .venv/bin/activate  # on Windows: .venv\Scripts\activate
 
 *Note: A GPU supporting OpenGL 4.3+ is required for the Compute Shader-based rendering pipelines, so no macOS support, sorry*
 
+**Troubleshoot:** If the `pytinybvh` dependency fails to install on your machine with this error: `error: external filter 'git-lfs filter-process' failed`
+then you can define the `GIT_LFS_SKIP_SMUDGE` environment variable (`$env:GIT_LFS_SKIP_SMUDGE=1` on Windows, or `export GIT_LFS_SKIP_SMUDGE=1` on Linux), and then run `uv sync` again.
+
 ## Usage Examples
 
 ### 1. Initializing a Compound Eye Model

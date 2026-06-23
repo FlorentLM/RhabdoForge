@@ -16,6 +16,6 @@ dependencies = [
     "pyvista",
     "pyglm",
     "pytinybvh @ git+https://github.com/FlorentLM/pytinybvh.git#egg=pytinybvh",
-    "pyqt5>=5.15.11",
     "dearpygui>=2.3.1",
+    "opencv-python>=4.13.0.92",
 ]
