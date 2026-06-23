@@ -79,7 +79,6 @@ def main():
     # Setup Agent
     agent = Agent(position=(0.0, 0.0, 4.0))
 
-    print('before renderer')
     # Setup renderer
     renderer = Renderer(model=model, scene=scene, agent=agent, context=context,
                          nb_samples=SAMPLES_PER_RHABDOMERE,
@@ -88,7 +87,6 @@ def main():
                          enable_microsaccades=True,
                          enable_direct=True, enable_shadows=True, enable_ambient=True)
 
-    print('after renderer')
     renderer.photon_concentration = 0.5
 
     # The BVH can also be displayed in debug

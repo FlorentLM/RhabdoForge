@@ -145,7 +145,7 @@ void main() {
     vec2 axes = (projection_mode == 1) ? rd.curr_acc_angles : os.ioa_angles;
     vec3 scale;
     if (projection_mode == 1) {
-        scale = vec3(visualisation_omm_length * tan(axes * 0.5), visualisation_omm_length);
+        scale = vec3(visualisation_omm_length * tan(axes * 0.5), visualisation_omm_length) * 0.01;
 
     } else {
         float rad = length(os.position) * visualisation_eyes_scale;

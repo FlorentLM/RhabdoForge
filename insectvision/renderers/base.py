@@ -388,10 +388,10 @@ class Renderer:
                                   _async_reader=self._readback_async)
 
         # All buffers allocated (baker ones + eye_buffers ones): Compile the main shaders
-        base_defines = self._collect_defines()
-        self.dispatch_shader = ShaderProgram(comp_path='shaders/dispatch.comp', defines=base_defines)
-        self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp', defines=base_defines)
-        self.dynamics_shader = ShaderProgram(comp_path='shaders/dynamics.comp', defines=base_defines)
+        self._current_defines = self._collect_defines()
+        self.dispatch_shader = ShaderProgram(comp_path='shaders/dispatch.comp', defines=self._current_defines)
+        self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp', defines=self._current_defines)
+        self.dynamics_shader = ShaderProgram(comp_path='shaders/dynamics.comp', defines=self._current_defines)
 
         # Tracking of PBOs state
         self._pbo_index = 0
@@ -414,7 +414,7 @@ class Renderer:
             visualisation_rf_scale=0.5,
             visualisation_omm_length=max(0.01, np.mean(self._model.ommatidia.aperture)) * 0.3,
             visualisation_eyes_scale=1.0,
-            visualisation_saccade_scale=1.0,
+            visualisation_saccade_scale=0.001,      # TODO: needs to be automatically scaled by eye dimensions + saccade ampl
 
             # States
             output_mode=self._output_mode,
@@ -515,6 +515,7 @@ class Renderer:
         """Invalidates all shaders that need be when defines change."""
 
         self.dispatch_shader.free()
+        self.dispatch_shader = ShaderProgram(comp_path='shaders/dispatch.comp', defines=self._collect_defines())
 
         for s in self._projection_shaders.values():
             s.free()
@@ -730,8 +731,7 @@ class Renderer:
                     # Restore number of samples
                     self._eye_uniforms.update(nb_samples=self._samples_per_rhab)
                     self._eye_uniforms.update(cam_to_world=glm.inverse(self.agent.view))
-
-                    # TODO: These don't need to be updated *every* frame if they did not change
+                    # TODO: doesn't need to be updated *every* frame if did not change
 
                     self._eye_uniforms.apply(shader)
                     self._scene_uniforms.apply(shader)
@@ -773,8 +773,7 @@ class Renderer:
         Returns the *previous* frame colours (and zeros on the first frame).
         """
 
-        N = self._model.size
-        bytes_to_read = N * 16
+        bytes_to_read = self._model.size * 16
 
         # Copy colour SSBO into current PBO
         with (self.eye_buffers['colors'].bind(mode_override=GL_COPY_READ_BUFFER),
@@ -834,7 +833,7 @@ class Renderer:
         self._eye_uniforms.update(
             dt=self._context.dt,
             frame_offset=self._frame_index % self._batch_size,
-            dither_counter=self._dither_counter
+            dither_counter=self._dither_counter,
         )
 
         self._dispatch()
@@ -1020,12 +1019,12 @@ class Renderer:
             self._render_subjective_view()
 
         elif view_mode in (DisplayMode.Panoramic, DisplayMode.Perspective, DisplayMode.Third_person):
-            view_name = 'panoramic' if view_mode == DisplayMode.Panoramic else 'perspective'
+            n = 'panoramic' if view_mode == DisplayMode.Panoramic else 'perspective'
 
             self._baker.update()
-            self._raytrace_thirdperson(view_name, point_of_view)
+            self._raytrace_thirdperson(n, point_of_view)
 
-            tex_id, _ = self._get_projection_texture(view_name)
+            tex_id, _ = self._get_projection_texture(n)
 
             self.screen_surface.display(
                 tex_id,

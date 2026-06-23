@@ -85,7 +85,8 @@ class OrbitCamera:
     A helper that orbits an Agent. Uses an internal Agent as the 'observer'.
     """
 
-    def __init__(self, target, distance=1.5, azimuth=0.0, elevation=20.0, **kwargs):
+    def __init__(self, target, distance=0.5, azimuth=0.0, elevation=20.0, **kwargs):
+
         self.target = target
         self.distance = distance
         self.azimuth = azimuth
@@ -105,7 +106,7 @@ class OrbitCamera:
         self.update()
 
     def zoom(self, factor):
-        self.distance = max(0.01, self.distance * factor)
+        self.distance = max(0.001, self.distance * factor)
         self.update()
 
     def update(self):
@@ -114,7 +115,6 @@ class OrbitCamera:
         az_rad = glm.radians(self.azimuth)
         el_rad = glm.radians(self.elevation)
 
-        # Calculate offset from target using spherical coordinates
         offset = glm.vec3(
             self.distance * glm.cos(el_rad) * glm.sin(az_rad),
             self.distance * glm.sin(el_rad),

@@ -9,9 +9,7 @@ import time
 from typing import TYPE_CHECKING, Optional, Tuple, Callable, Dict, List, Union
 from collections import deque
 
-from .scene import Scene
-from .agent import Agent, OrbitCamera
-
+from insectvision.engine.agent import OrbitCamera
 from insectvision.utils.shared import DisplayMode
 from insectvision.interactive.controls import Controls, ActionRegistry
 from insectvision.interactive.hud import HUD
@@ -341,10 +339,10 @@ class Context:
         self.renderer.microsaccades_enabled = not self.renderer.microsaccades_enabled
 
     def reset_position(self):
-        self.agent.position = (0.0, 0.0, 0.0)
+        self.renderer.agent.position = (0.0, 0.0, 0.0)
 
     def reset_rotation(self):
-        self.agent.set_rotation(0.0, 0.0, 0.0)
+        self.renderer.agent.set_rotation(0.0, 0.0, 0.0)
 
     def pick_ommatidium(self, ndc_x: float, ndc_y: float) -> Optional[int]:
         """Calculates closest ommatidium based on active display projection."""
@@ -375,7 +373,7 @@ class Context:
                 return int(best_idx)
 
         elif self.display_mode == DisplayMode.Third_person:
-            eye_to_world = np.array(glm.inverse(self.agent.view))
+            eye_to_world = np.array(glm.inverse(self.renderer.agent.view))
             p_local_h = np.column_stack((p_local, np.ones(model.N)))
             p_world_h = p_local_h @ eye_to_world
 
@@ -408,7 +406,7 @@ class Context:
         renderer.context = self            # bidirectional bind (renderer.step needs ctx.dt)
         renderer.runs_interactive = True
         self.observer = OrbitCamera(
-            target=renderer.agent, distance=1.5,
+            target=renderer.agent, distance=0.1, near=0.001,     # TODO: Needs to be sized by eye dimensions
             ratio=self._viewport_size[0] / self._viewport_size[1],
         )
 
@@ -466,7 +464,7 @@ class Context:
         # and keep observer camera aimed at the agent
         elif self.observer.target is not renderer.agent:
             self.observer = OrbitCamera(
-                target=renderer.agent, distance=1.5,
+                target=renderer.agent, distance=0.1, near=0.001,     # TODO: Needs to be sized by eye dimensions
                 ratio=self._viewport_size[0] / self._viewport_size[1],
             )
 
