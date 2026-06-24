@@ -43,6 +43,7 @@ class Gamepad(Controls):
             glfw.GAMEPAD_BUTTON_DPAD_DOWN: 'samples_dec',
             glfw.GAMEPAD_BUTTON_DPAD_LEFT: 'dither_toggle',
             glfw.GAMEPAD_BUTTON_DPAD_RIGHT: 'saccade_toggle',
+            glfw.GAMEPAD_BUTTON_A: 'dither_once',
         }
 
     def setup(self, ctx):
@@ -80,6 +81,8 @@ class Gamepad(Controls):
 
     def poll(self, ctx):
         if self._gamepad_id is None:
+            if glfw.get_time() % 2.0 < 0.01:  # Periodically check for plug-in
+                self._detect_gamepad()
             return
 
         if not glfw.joystick_is_gamepad(self._gamepad_id):
@@ -114,9 +117,15 @@ class Gamepad(Controls):
         if combo_active and not prev_combo:
             ctx.actions.trigger('reset_rot')
 
+        # LB + DPAD UP for Heatmap
+        # TODO: Add more combos
+        if lb and self._button_pressed(state, glfw.GAMEPAD_BUTTON_DPAD_UP):
+            ctx.actions.trigger('heatmap_toggle')
+
     def _poll_axes(self, ctx, state):
 
-        agent = ctx.agent
+        agent = ctx.renderer.agent
+        scene = ctx.renderer.scene
         wall_dt = ctx.wall_dt
 
         # Normalised stick inputs
@@ -158,8 +167,8 @@ class Gamepad(Controls):
         scroll_delta = (rt - lt) * wall_dt * 10.0
 
         if abs(scroll_delta) > 0:
-            if ctx.sun_control_mode and ctx.scene and ctx.scene.sun:
-                sun = ctx.scene.sun
+            if ctx.sun_control_mode and scene and scene.sun:
+                sun = scene.sun
                 intensity_factor = 1.1 ** scroll_delta
                 sun.intensity = max(0.1, min(10.0, sun.intensity * intensity_factor))
 
@@ -170,8 +179,8 @@ class Gamepad(Controls):
         # Looking
         if abs(rx) > 0 or abs(ry) > 0 or abs(left_stick_yaw_delta) > 0:
 
-            if ctx.sun_control_mode and ctx.scene and ctx.scene.sun:
-                sun = ctx.scene.sun
+            if ctx.sun_control_mode and scene and scene.sun:
+                sun = scene.sun
                 new_azimuth = sun.azimuth - (rx * self._sun_orbit_speed * wall_dt)
                 new_elevation = sun.elevation - (ry * self._sun_orbit_speed * wall_dt)
                 new_elevation = max(1.0, min(89.0, new_elevation))
