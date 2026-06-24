@@ -255,22 +255,27 @@ class Model(SpatialQueries, BaseView):
     @classmethod
     def from_sphere(cls,
             n: int = 2000,
-            eye_radius: float = 0.01,
+            eye_radius: float = 0.005,
             method: str = 'icosphere',
             force_isotropic: bool = False,
+            separation: Optional[float] = 0.0025,
             **kwargs,
         ) -> 'Model':
         """
-        Construct a uniform spherical compound eye.
+        Construct a spherical compound eye.
 
         Args:
             - n: int, Approximate number of ommatidia.
-            - eye_radius: float, Sphere radius in world units (default 0.01 m = 10 mm).
+            - eye_radius: float, Sphere radius in world units (default 0.005 m = 5 mm).
             - method: {'icosphere', 'fibonacci'}, Spherical sampling method.
+            - separation: float, optional. Lateral gap between the two hemispheres in world units (default 0.0025 m = 2.5 mm).
+                None or <= 0 disables the split and generates a full sphere.
+                >= 0 separates the sphere in two eyes and translates each half outward along x by separation/2.
             - **kwargs: Forwarded to __init__.
         """
-        method = method.lower()
-        dirs = icosphere(n) if method == 'icosphere' else fibonacci_sphere(n) if method == 'fibonacci' else None
+
+        method = str(method).lower()
+        dirs = icosphere(n) if 'ico' in method else fibonacci_sphere(n) if 'fibo' in method else None
 
         if dirs is None:
             raise ValueError("Method must be 'icosphere' or 'fibonacci'")
@@ -279,7 +284,18 @@ class Model(SpatialQueries, BaseView):
             # Theoretical IOA for N facets (lenses) tiled hexagonally on a sphere
             kwargs['interommatidial_angles_rad'] = [np.sqrt((4.0 * np.pi) / (n * np.sqrt(3.0) / 2.0))] * 2
 
-        return cls(directions=dirs, positions=(dirs * float(eye_radius)).astype(np.float32), **kwargs)
+        positions = (dirs * float(eye_radius)).astype(np.float32)
+
+        split_eyes = separation is not None and separation >= 0.0
+        if split_eyes:
+            right = dirs[:, 0] >= 0.0
+            kwargs['eye_indices'] = right.astype(np.uint32)  # 0 = left (-x), 1 = right (+x)
+
+            shift = 0.5 * float(separation)
+            positions[right, 0] += shift
+            positions[~right, 0] -= shift
+
+        return cls(directions=dirs, positions=positions, **kwargs)
 
     @classmethod
     def from_lenses(cls,
