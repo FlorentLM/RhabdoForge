@@ -17,7 +17,7 @@ from scipy.spatial import cKDTree
 
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
 from insectvision.geometry.linalg import tangent_frames
-from insectvision.geometry.neighbours import knn, top_k_facing, gabriel_neighbours
+from insectvision.geometry.neighbours import knn, top_k_facing, beta_skeleton_neighbours
 from insectvision.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo
 )
@@ -546,7 +546,7 @@ class SpatialQueries:
             pts2d = np.zeros((n, 2))
         else:
             pts2d, *_ = sphere_to_stereo(self.directions)
-            adj = gabriel_neighbours(pts2d)
+            adj = beta_skeleton_neighbours(pts2d, beta=self.model.lattice_beta)
 
         pair_keys = set()
         for i_loc, a in enumerate(adj):

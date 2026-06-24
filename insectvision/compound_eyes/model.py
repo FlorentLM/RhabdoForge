@@ -34,9 +34,6 @@ class Model(SpatialQueries, BaseView):
     and a bundle of R rhabdomeres per ommatidium.
     """
 
-    # Fraction spacing that the lens diameter occupies (1.0 = fully touching, 0.9 leaves a small interommatidial cuticle gap, etc)
-    HEX_PACKING_FACTOR = 0.9
-
     def __init__(self,
             directions: ArrayLike,
             positions: ArrayLike,
@@ -49,7 +46,9 @@ class Model(SpatialQueries, BaseView):
             chiralities: Optional[ArrayLike] = None,
             orientation: Optional['BundlesAligner'] = None,
             flow_direction: Optional[ArrayLike] = None,
-            neural_superposition: bool = False
+            neural_superposition: bool = False,
+            lens_packing: float = 0.9,
+            lattice_beta: float = 1.0
         ):
 
         self._spatial = {}
@@ -120,6 +119,12 @@ class Model(SpatialQueries, BaseView):
         self._eyes = self._instantiate_eyes()
 
         # ============ Ommatidia lattice properties ============
+
+        # Fraction spacing that the lens diameter occupies: 1.0 = fully touching, 0.9 leaves a small interommatidial cuticle gap, etc
+        self._lens_packing: float = float(max(0.0, lens_packing))
+
+        # β parameter for the β-skeleton graph: beta slightly <1 keeps edges that shear pushes past 90°
+        self._lattice_beta: float = float(max(0.0, lattice_beta))
 
         # Lattice properties from the first-ring neighbour graph:
         # IOA (minor, major), tilt, hexatic order, and per-ommatidium spacing.
@@ -623,7 +628,7 @@ class Model(SpatialQueries, BaseView):
         """
 
         # Base estimate from lattice spacing
-        diameters = (self.HEX_PACKING_FACTOR * ioa_spacing).astype(np.float32)
+        diameters = (self._lens_packing * ioa_spacing).astype(np.float32)
 
         # Fallback for degenerate spacing: median of valid spacings
         valid_diameters = diameters[diameters > 0]
@@ -638,7 +643,7 @@ class Model(SpatialQueries, BaseView):
                     diameters[eye.indices] = voronoi_estimation(
                         self._buf['position'][eye.indices],
                         self._buf['forward'][eye.indices],
-                        packing=self.HEX_PACKING_FACTOR
+                        packing=self._lens_packing
                     )
                 except Exception:
                     # Voronoi estimator unavailable: keep the spacing estimate for this eye
@@ -853,6 +858,25 @@ class Model(SpatialQueries, BaseView):
 
     def directed_neighbours (self, *args, **kwargs):
         raise NotImplementedError('Neighbours queries must be done per-eye.')
+
+    # Advanced properties
+    # TODO: Maybe recompute what needs to be if these change
+
+    @property
+    def lens_packing(self) -> float:
+        return self._lens_packing
+
+    @lens_packing.setter
+    def lens_packing(self, value: float):
+        self._lens_packing = float(max(0.0, value))
+
+    @property
+    def lattice_beta(self) -> float:
+        return self._lattice_beta
+
+    @lattice_beta.setter
+    def lattice_beta(self, value: float):
+        self._lattice_beta = float(max(0.0, value))
 
     # Quick groups getters
 

@@ -72,16 +72,17 @@ def delaunay_neighbours(points2d: np.ndarray, max_length_factor: float = 0.0) ->
     return [np.array(s, dtype=np.intp) for s in neighbour_lists]
 
 
-def gabriel_edges(points2d: np.ndarray) -> np.ndarray:
+def beta_skeleton_edges(points2d: np.ndarray, beta: float = 1.0) -> np.ndarray:
     """
-    Gabriel-graph edges: density/anisotropy adaptive Delaunay subgraph.
+    β-skeleton restricted to Delaunay edges: a Delaunay subgraph for beta <= 1
+        - beta = 1.0 is the Gabriel graph
+        - beta slightly <1 re-admits edges that shear pushes past 90° (noop on well-ordered lattices)
 
-    Edge (i, j) is kept iff the disk with ij as diameter contains no third point.
-    Because candidates are Delaunay edges, the only points that can intrude are
-    the (<=2) triangle-opposite vertices.
+    Reject a Delaunay edge iff an opposite vertex subtends an angle > theta c where:
+        theta c = pi - arcsin(beta)        # 90° at beta=1, ~116° at beta=0.9
 
-    Returns:
-         - (E, 2) int array of undirected edges (sorted)
+    Note: Testing only the (<=2) Delaunay-opposite vertices is exact for beta <= 1, since
+    the forbidden region is a subset of the diametral disk
     """
 
     p = np.asarray(points2d, dtype=np.float64)
@@ -90,35 +91,42 @@ def gabriel_edges(points2d: np.ndarray) -> np.ndarray:
         i, j = np.triu_indices(n, k=1)
         return np.stack([i, j], axis=1).astype(int)
 
+    cos_tc = np.cos(np.pi - np.arcsin(beta))  # beta <= 1
+
     s = Delaunay(p).simplices
 
     i = s[:, [0, 1, 2]].ravel()
     j = s[:, [1, 2, 0]].ravel()
-    k = s[:, [2, 0, 1]].ravel()     # vertex opposite edge (i, j)
+    k = s[:, [2, 0, 1]].ravel()
 
-    not_gabriel = np.einsum('ab,ab->a', p[i] - p[k], p[j] - p[k]) < 0.0
+    a, b = p[i] - p[k], p[j] - p[k]
+    cos_ang = np.einsum('ab,ab->a', a, b) / (
+            np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1) + 1e-300)
+
+    reject = cos_ang < cos_tc  # angle at k is > theta_c
 
     lo, hi = np.minimum(i, j), np.maximum(i, j)
-    key = lo.astype(np.int64) * n + hi       # undirected key
+    key = lo.astype(np.int64) * n + hi
     order = np.argsort(key, kind='stable')
+
     uniq, start = np.unique(key[order], return_index=True)
 
-    bad = np.maximum.reduceat(not_gabriel[order].astype(np.int8), start).astype(bool)
-    good = uniq[~bad]          # survives iff *no* incident triangle is obtuse
+    bad = np.maximum.reduceat(reject[order].astype(np.int8), start).astype(bool)
+    good = uniq[~bad]
 
     return np.stack([good // n, good % n], axis=1).astype(int)
 
 
-def gabriel_neighbours(points2d: ArrayLike) -> List[np.ndarray]:
+def beta_skeleton_neighbours(points2d: np.ndarray, beta: float = 1.0) -> List[np.ndarray]:
     """
-    First-ring neighbour lists (adjacency view of gabriel_edges).
+    First-ring neighbour lists.
     """
 
     points2d = np.asarray(points2d)
 
     nb: List[list] = [[] for _ in range(len(points2d))]
 
-    for a, b in gabriel_edges(points2d):
+    for a, b in beta_skeleton_edges(points2d, beta):
         a, b = int(a), int(b)
         nb[a].append(b)
         nb[b].append(a)

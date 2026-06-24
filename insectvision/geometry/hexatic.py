@@ -4,7 +4,7 @@ from numpy.typing import ArrayLike
 from scipy.interpolate import RBFInterpolator
 
 from insectvision.geometry.circular import resultant
-from insectvision.geometry.neighbours import gabriel_neighbours
+from insectvision.geometry.neighbours import beta_skeleton_neighbours
 
 
 def hexatic_axis_angle(z6) -> np.ndarray:
@@ -84,7 +84,7 @@ def hexatic_axis_field(
     points2d = np.asarray(points2d, dtype=np.float64)
 
     if neighbours is None:
-        neighbours = gabriel_neighbours(points2d)
+        neighbours = beta_skeleton_neighbours(points2d)
 
     z6 = phasor_from_points(points2d, neighbours)
     order = hexatic_order(z6)
