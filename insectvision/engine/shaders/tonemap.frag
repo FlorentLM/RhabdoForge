@@ -11,11 +11,12 @@ float aces_scalar(float x) {
 }
 
 void main() {
-    vec3 c = texture(hdr_scene, v_tex_coord).rgb * exposure;
+    vec4 tex_raw = texture(hdr_scene, v_tex_coord);
+    vec3 c = tex_raw.rgb * exposure;
 
     float L  = dot(c, vec3(0.2126, 0.7152, 0.0722));   // Rec.709 luminance
-    float Lt = aces_scalar(L);                 // curve applied to luminance only
-    c *= (L > 1e-6) ? (Lt / L) : 0.0;          // ratio scale, so chroma untouched
+    float Lt = aces_scalar(L);                         // curve applied to luminance only
+    c *= (L > 1e-6) ? (Lt / L) : 0.0;                  // ratio scale, so chroma untouched
 
-    f_color = vec4(c, 1.0);   // GL_FRAMEBUFFER_SRGB encodes on write
+    f_color = vec4(c, tex_raw.a);   // GL_FRAMEBUFFER_SRGB encodes on write
 }

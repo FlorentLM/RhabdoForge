@@ -2,6 +2,7 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
+from pathlib import Path
 import random
 from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple, Sequence, Any, List
 import numpy as np
@@ -13,7 +14,8 @@ from insectvision.utils.shared import (
 )
 from insectvision.engine.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.resources import (
-    ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry, TextureRegistry
+    ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry, TextureRegistry, HDRRenderTarget, TextureViewer,
+    StaticRenderTarget
 )
 from insectvision.engine.materials_utils import constant_sh
 from insectvision.renderers.baking import SceneBaker
@@ -58,129 +60,6 @@ def query_available_VRAM() -> int:
 
 
 ##
-
-class HDRRenderTarget:
-    """Offscreen linear-HDR render target: RGBA16F colour + depth24. Resizes lazily."""
-
-    def __init__(self):
-        self._fbo = self._color = self._depth = None
-        self._size = (0, 0)
-
-    def _ensure(self, w, h):
-
-        if self._fbo is not None and self._size == (w, h):
-            return
-
-        self.free()
-        self._size = (w, h)
-
-        self._color = glGenTextures(1)
-        glBindTexture(GL_TEXTURE_2D, self._color)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, None)
-
-        for p, v in ((GL_TEXTURE_MIN_FILTER, GL_LINEAR), (GL_TEXTURE_MAG_FILTER, GL_LINEAR),
-                     (GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE), (GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)):
-            glTexParameteri(GL_TEXTURE_2D, p, v)
-
-        self._depth = glGenRenderbuffers(1)
-
-        glBindRenderbuffer(GL_RENDERBUFFER, self._depth)
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h)
-
-        self._fbo = glGenFramebuffers(1)
-
-        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self._color, 0)
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self._depth)
-
-        if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
-            raise RuntimeError("HDRTarget incomplete")
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-
-    @property
-    def color(self):
-        return self._color
-
-    def bind(self, w, h):
-        self._ensure(w, h)
-        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
-        glViewport(0, 0, w, h)
-
-    def unbind(self):
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-        glViewport(0, 0, *self._size)
-
-    def blit_depth_to_default(self):
-        # so 3D overlays (debug.draw) depth-test against the world
-        w, h = self._size
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, self._fbo)
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0)
-        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_DEPTH_BUFFER_BIT, GL_NEAREST)
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-
-    def free(self):
-        if self._color:
-            glDeleteTextures([self._color])
-            self._color = None
-        if self._depth:
-            glDeleteRenderbuffers(1, [self._depth])
-            self._depth = None
-        if self._fbo:
-            glDeleteFramebuffers(1, [self._fbo])
-            self._fbo = None
-        self._size = (0, 0)
-
-
-class TextureViewer:
-    """A helper to render a 2D texture to a fullscreen quad."""
-
-    def __init__(self):
-        self._program = None
-        self._vao = None
-
-    @property
-    def shader(self) -> ShaderProgram:
-        if self._program is None:
-            self._program = ShaderProgram(vert_path='fullscreen.vert', frag_path='textureSampler.frag')
-        return self._program
-
-    @property
-    def vao(self):
-        if self._vao is None:
-            self._vao = glGenVertexArrays(1)
-        return self._vao
-
-    def display(self, texture_id, false_colors=False, uv_encoded_textures=False):
-        """Draws the given texture to the screen."""
-
-        shader = self.shader
-
-        with shader:
-            glDisable(GL_DEPTH_TEST)
-            glDepthMask(GL_FALSE)
-
-            glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_2D, texture_id)
-            glUniform1i(shader.get_loc('texture_sampler'), 0)
-
-            glUniform1i(shader.get_loc('false_colors'), int(false_colors and not uv_encoded_textures))
-            glUniform1i(shader.get_loc('uv_encodeing'), int(uv_encoded_textures))
-
-            glBindVertexArray(self.vao)
-            glDrawArrays(GL_TRIANGLES, 0, 3)
-
-            glBindVertexArray(0)
-
-        glDepthMask(GL_TRUE)
-        glEnable(GL_DEPTH_TEST)
-        glClear(GL_DEPTH_BUFFER_BIT)
-
-    def free(self):
-        if self._program: self._program.free()
-        if self._vao: glDeleteVertexArrays(1, [self._vao])
-        self._program = None
-        self._vao = None
 
 
 class Renderer:
@@ -233,8 +112,12 @@ class Renderer:
         # Render surfaces and related things
         self._bg_col_linear = tuple(c ** 2.2 for c in self.scene.background_color)  # TODO: what if already linear
         self._screen_surface: Optional['TextureViewer'] = None      # onscreen, visible surface
-        self._hdr_surface: 'HDRRenderTarget' = HDRRenderTarget()    # offscreen surface
         self._panoramic_resolution = panoramic_resolution
+
+        # Offscreen surfaces
+        self._hdr_surface: 'HDRRenderTarget' = HDRRenderTarget()    # Main HDR render target
+        self._snapshot_target: 'StaticRenderTarget' = StaticRenderTarget(srgb=True)     # Render target for screenshots
+
         self._tonemap_shader = ShaderProgram(vert_path='fullscreen.vert', frag_path='tonemap.frag')
         self._tonemap_vao = glGenVertexArrays(1)
         self._exposure = 1.0
@@ -1036,12 +919,13 @@ class Renderer:
 
     # Main public methods
 
-    def draw(self, view_mode: Union[str, 'DisplayMode'], point_of_view: Union['Agent', 'OrbitCamera']):
+    def draw(self, view_mode: Union[str, 'DisplayMode'], point_of_view: Union['Agent', 'OrbitCamera'],
+             target_fbo: int = 0, override_size: Optional[Tuple[int, int]] = None, bg_alpha: float = 1.0):
 
-        w, h = self.context.viewport_size
+        w, h = override_size if override_size else self.context.viewport_size
         self._hdr_surface.bind(w, h)
 
-        glClearColor(*self._bg_col_linear, 1.0)
+        glClearColor(*self._bg_col_linear, bg_alpha)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
         if view_mode == DisplayMode.Compound:
@@ -1064,8 +948,10 @@ class Renderer:
         if view_mode == DisplayMode.Third_person:
             self._render_external_view(point_of_view)
 
-        self._hdr_surface.unbind()
-        self._hdr_surface.blit_depth_to_default()
+        glBindFramebuffer(GL_FRAMEBUFFER, target_fbo)
+        glViewport(0, 0, w, h)
+
+        self._hdr_surface.blit_depth_to(target_fbo)
 
         self._tonemap_pass()
 
@@ -1211,6 +1097,49 @@ class Renderer:
             overlay_colormap=int(self._overlay_colormap),
             overlay_compression=self._overlay_compression,
         )
+
+    def take_snapshot(self,
+            filepath: Union[str, 'Path'],
+            view_mode: Union[str, 'DisplayMode'],
+            point_of_view: Union['Agent', 'OrbitCamera'],
+            width: Optional[int] = None,
+            height: Optional[int] = None,
+            transparent: bool = True
+            ):
+        """
+        Renders the current view to an off-screen buffer and saves it as a transparent PNG.
+        """
+        from PIL import Image
+
+        w = width or self.context.viewport_size[0]
+        h = height or self.context.viewport_size[1]
+
+        # Save current state
+        prev_fbo = glGetIntegerv(GL_DRAW_FRAMEBUFFER)
+        prev_viewport = glGetIntegerv(GL_VIEWPORT)
+
+        bg_alpha = 0.0 if transparent else 1.0
+        self._snapshot_target.bind(w, h)
+        self.draw(view_mode, point_of_view, target_fbo=self._snapshot_target.fbo_id,
+                  override_size=(w, h), bg_alpha=bg_alpha)
+
+        # Read back pixels
+        glPixelStorei(GL_PACK_ALIGNMENT, 1)
+        data = glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE)
+
+        # Restore state
+        self._snapshot_target.unbind()
+        glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo)
+        glViewport(*prev_viewport)
+
+        # Save
+        image = Image.frombytes('RGBA', (w, h), data).transpose(Image.FLIP_TOP_BOTTOM)
+        filepath = str(filepath)
+        if not filepath.lower().endswith('.png'):
+            filepath += '.png'
+        image.save(filepath)
+
+        print(f'Snapshot saved to {filepath}')
 
     # Public properties and methods
 
@@ -1649,3 +1578,5 @@ class Renderer:
         if self._tonemap_vao:
             glDeleteVertexArrays(1, [self._tonemap_vao])
             self._tonemap_vao = None
+
+        self._snapshot_target.free()

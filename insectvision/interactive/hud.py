@@ -228,8 +228,8 @@ class HUD:
     def __init__(self, context, font_size=18):
         self.ctx = context
 
-        self.width = self.ctx.window_size[0]
-        self.height = self.ctx.window_size[1]
+        self.width = self.ctx.viewport_size[0]
+        self.height = self.ctx.viewport_size[1]
         self.nb_px = self.width * self.height
 
         self.show = True

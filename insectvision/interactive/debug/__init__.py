@@ -105,7 +105,7 @@ class DebugOverlay:
 
                 ctx = context_or_pov
                 if ctx.display_mode == DisplayMode.Third_person and ctx.observer is not None:
-                    ctx.observer.ratio = ctx.window_size[0] / ctx.window_size[1]
+                    ctx.observer.ratio = ctx.viewport_size[0] / ctx.viewport_size[1]
                     ctx.observer.update()
                     pov = ctx.observer
                 else:

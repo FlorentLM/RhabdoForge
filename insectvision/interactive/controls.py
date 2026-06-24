@@ -188,6 +188,15 @@ class ActionRegistry:
             'Tab',
             ''
         )
+        self.register(
+            'take_snapshot',
+            'Take Snapshot',
+            'UI',
+            'Save transparent PNG of current view',
+            lambda: self.ctx.take_snapshot(),
+            'Insert',
+            ''
+        )
 
     def get_by_category(self, category: str) -> List['Action']:
         return [a for a in self.actions.values() if a.category == category]

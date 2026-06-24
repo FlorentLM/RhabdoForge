@@ -812,3 +812,205 @@ class UniformRegistry:
 
             self._dispatchers[cache_key](value)
             shader_vers[name] = cur_ver
+
+
+# TODO: improve these two classes/ maybe merge them
+
+class StaticRenderTarget:
+    """
+    Offscreen render target for standard 8-bit colour.
+    Manages a Framebuffer (FBO), a Texture (colour), and a Renderbuffer (depth).
+    """
+
+    def __init__(self, srgb: bool = True):
+        self._srgb = srgb
+        self._fbo = None
+        self._color_tex = None
+        self._depth_rbo = None
+        self._size = (0, 0)
+
+    def _ensure(self, w: int, h: int):
+        """Reallocates resources only if the requested size has changed."""
+        if self._fbo is not None and self._size == (w, h):
+            return
+
+        self.free()
+        self._size = (w, h)
+
+        # Colour texture
+        self._color_tex = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self._color_tex)
+
+        # SRGB for gamma-correct snapshots, or standard RGBA
+        internal_format = GL_SRGB8_ALPHA8 if self._srgb else GL_RGBA8
+        glTexImage2D(GL_TEXTURE_2D, 0, internal_format, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, None)
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+
+        # Depth Renderbuffer
+        self._depth_rbo = glGenRenderbuffers(1)
+        glBindRenderbuffer(GL_RENDERBUFFER, self._depth_rbo)
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h)
+
+        self._fbo = glGenFramebuffers(1)
+        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self._color_tex, 0)
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self._depth_rbo)
+
+        if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+            raise RuntimeError(f"StaticRenderTarget is incomplete.")
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+
+    def bind(self, w: int, h: int):
+        self._ensure(w, h)
+        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
+        glViewport(0, 0, w, h)
+
+    def unbind(self):
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+
+    @property
+    def texture_id(self) -> int:
+        return self._color_tex
+
+    @property
+    def fbo_id(self) -> int:
+        return self._fbo
+
+    def free(self):
+        if self._color_tex:
+            glDeleteTextures([self._color_tex])
+        if self._depth_rbo:
+            glDeleteRenderbuffers(1, [self._depth_rbo])
+        if self._fbo:
+            glDeleteFramebuffers(1, [self._fbo])
+        self._color_tex = self._depth_rbo = self._fbo = None
+        self._size = (0, 0)
+
+
+class HDRRenderTarget:
+    """Offscreen linear-HDR render target: RGBA16F colour + depth24. Resizes lazily."""
+
+    def __init__(self):
+        self._fbo = self._color = self._depth = None
+        self._size = (0, 0)
+
+    def _ensure(self, w, h):
+
+        if self._fbo is not None and self._size == (w, h):
+            return
+
+        self.free()
+        self._size = (w, h)
+
+        self._color = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, self._color)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, None)
+
+        for p, v in ((GL_TEXTURE_MIN_FILTER, GL_LINEAR), (GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+                     (GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE), (GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)):
+            glTexParameteri(GL_TEXTURE_2D, p, v)
+
+        self._depth = glGenRenderbuffers(1)
+
+        glBindRenderbuffer(GL_RENDERBUFFER, self._depth)
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h)
+
+        self._fbo = glGenFramebuffers(1)
+
+        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self._color, 0)
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, self._depth)
+
+        if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+            raise RuntimeError("HDRTarget incomplete")
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+
+    @property
+    def color(self):
+        return self._color
+
+    def bind(self, w, h):
+        self._ensure(w, h)
+        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo)
+        glViewport(0, 0, w, h)
+
+    def unbind(self):
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        glViewport(0, 0, *self._size)
+
+    def blit_depth_to(self, target_fbo=0):
+        # so 3D overlays (debug.draw) depth-test against the world
+        w, h = self._size
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, self._fbo)
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target_fbo)
+        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_DEPTH_BUFFER_BIT, GL_NEAREST)
+        glBindFramebuffer(GL_FRAMEBUFFER, target_fbo)
+
+    def free(self):
+        if self._color:
+            glDeleteTextures([self._color])
+            self._color = None
+        if self._depth:
+            glDeleteRenderbuffers(1, [self._depth])
+            self._depth = None
+        if self._fbo:
+            glDeleteFramebuffers(1, [self._fbo])
+            self._fbo = None
+        self._size = (0, 0)
+
+
+class TextureViewer:
+    """A helper to render a 2D texture to a fullscreen quad."""
+
+    def __init__(self):
+        self._program = None
+        self._vao = None
+
+    @property
+    def shader(self) -> ShaderProgram:
+        if self._program is None:
+            self._program = ShaderProgram(vert_path='fullscreen.vert', frag_path='textureSampler.frag')
+        return self._program
+
+    @property
+    def vao(self):
+        if self._vao is None:
+            self._vao = glGenVertexArrays(1)
+        return self._vao
+
+    def display(self, texture_id, false_colors=False, uv_encoded_textures=False):
+        """Draws the given texture to the screen."""
+
+        shader = self.shader
+
+        with shader:
+            glDisable(GL_DEPTH_TEST)
+            glDepthMask(GL_FALSE)
+
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, texture_id)
+            glUniform1i(shader.get_loc('texture_sampler'), 0)
+
+            glUniform1i(shader.get_loc('false_colors'), int(false_colors and not uv_encoded_textures))
+            glUniform1i(shader.get_loc('uv_encodeing'), int(uv_encoded_textures))
+
+            glBindVertexArray(self.vao)
+            glDrawArrays(GL_TRIANGLES, 0, 3)
+
+            glBindVertexArray(0)
+
+        glDepthMask(GL_TRUE)
+        glEnable(GL_DEPTH_TEST)
+        glClear(GL_DEPTH_BUFFER_BIT)
+
+    def free(self):
+        if self._program: self._program.free()
+        if self._vao: glDeleteVertexArrays(1, [self._vao])
+        self._program = None
+        self._vao = None

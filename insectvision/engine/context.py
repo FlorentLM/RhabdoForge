@@ -102,12 +102,6 @@ class Context:
                 f"Hardware: {self.fps:.1f} FPS>")
 
     @property
-    def viewport_size(self) -> Tuple[int, int]:
-        return self._viewport_size
-
-    window_size = viewport_size
-
-    @property
     def mouse_captured(self) -> bool:
         return self._mouse_captured
 
@@ -355,7 +349,7 @@ class Context:
         p_local = model.positions
 
         if self.display_mode == DisplayMode.Compound:
-            aspect_ratio = self.window_size[0] / self.window_size[1]
+            aspect_ratio = self.viewport_size[0] / self.viewport_size[1]
             norms = np.linalg.norm(p_local, axis=1, keepdims=True)
             norms[norms == 0] = 1.0
             p_vec = p_local / norms
@@ -420,7 +414,7 @@ class Context:
         if not self._interactive_initialised:
 
             if window_size is not None:
-                self.window_size = window_size
+                self.viewport_size = window_size
 
             if fps_limit is not None:
                 self.fps_limit = fps_limit
@@ -533,15 +527,27 @@ class Context:
             self.renderer.free()
         glfw.terminate()
 
+    def take_snapshot(self, filepath: Optional[str] = None, transparent: bool = True):
+        import time
+
+        if self.renderer:
+            if filepath is None:
+                filepath = f'snapshot_{int(time.time())}.png'
+
+            pov = self.observer if self.display_mode == DisplayMode.Third_person else self.renderer.agent
+            self.renderer.take_snapshot(filepath, self.display_mode, pov, transparent=transparent)
+
     @property
-    def window_size(self) -> tuple:
+    def viewport_size(self) -> Tuple[int, int]:
         return self._viewport_size
 
-    @window_size.setter
-    def window_size(self, value: tuple):
-        self._viewport_size = value
+    @viewport_size.setter
+    def viewport_size(self, value: Tuple[int, int]):
+        self._viewport_size = int(value[0]), int(value[1])
         if self.window:
             glfw.set_window_size(self.window, value[0], value[1])
+
+    window_size = viewport_size
 
     @property
     def fps_limit(self) -> int:

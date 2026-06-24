@@ -48,6 +48,7 @@ class KeyboardMouse(Controls):
             glfw.KEY_TAB: 'mouse_lock_toggle',
             glfw.KEY_X: 'dither_once',
             glfw.KEY_G: 'debug_toggle',
+            glfw.KEY_INSERT: 'take_snapshot',
         }
 
     def setup(self, ctx):
