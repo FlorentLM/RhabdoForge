@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Tuple
 import numpy as np
 from scipy.optimize import linear_sum_assignment, LinearConstraint, milp, Bounds
 from scipy.sparse import coo_matrix
-
+from scipy.sparse.csgraph import connected_components
 from insectvision.geometry.circular import wrap_angle
 from insectvision.geometry.neighbours import smooth_field_partitioned, knn
 
@@ -66,27 +66,307 @@ def get_noconflict_masks(N: int, R: int) -> SimpleNamespace:
     )
 
 
+def _too_similar(new_key, existing_keys, threshold=0.8):
+
+    new_set = set(new_key)
+
+    for existing in existing_keys:
+        shared = len(new_set.intersection(set(existing)))
+        if shared / len(new_set) >= threshold:
+            return True
+
+    return False
+
+
+def _make_solver_context(model: 'Model', **p) -> 'SimpleNamespace':
+    """
+    Read-only template data + tuning params shared by the solver for every zone.
+    """
+
+    N, R = model.shape
+    center = model.bundle.center_index
+    periph = model.bundle.peripheral_indices
+
+    rot = model.buffer['rest_offset']
+    rot_dx, rot_dy = rot[..., 0], rot[..., 1]
+
+    k_scale = float(np.mean(np.linalg.norm(
+        model.bundle.offsets_um[periph] - model.bundle.offsets_um[center], axis=1))) or 1.0
+
+    return SimpleNamespace(
+        periph=periph,
+        center=center, R=R,
+        tpl_dx=(rot_dx - rot_dx[:, center:center + 1]) / k_scale,
+        tpl_dy=(rot_dy - rot_dy[:, center:center + 1]) / k_scale,
+        forward=model.buffer['forward'],
+        right=model.buffer['right'],
+        up=model.buffer['up'],
+        ang_gate=np.radians(p['angular_dev']),
+        **{k: p[k] for k in (
+            'assign_radius', 'scale_dev', 'min_snap_matches',
+            'k_search', 'top_k', 'identity_bias', 'unassigned_penalty',
+            'allow_plasticity', 'plasticity_radius', 'time_limit_s',
+            'assume_aligned'
+        )}
+    )
+
+
+def _enumerate_candidates(zone, neighb, ctx):
+    """
+    Wiring stage 1, scoped to one zone. Returns List[List[candidate]] per lens.
+    """
+
+    n_e = len(zone)
+    periph = ctx.periph
+    candidates = [[] for _ in range(n_e)]
+
+    for i_loc in range(n_e):
+        i_glob = int(zone.indices[i_loc])
+        tpl_i = ctx.tpl_dx[i_glob] + 1j * ctx.tpl_dy[i_glob]
+
+        nb_dirs = ctx.forward[neighb.indices[i_loc]] - ctx.forward[i_glob]
+        nb_uv = nb_dirs @ np.stack([ctx.right[i_glob], ctx.up[i_glob]], axis=1)
+
+        ang_spacing = np.nanmedian(
+            np.where(neighb.is_immediate[i_loc], np.linalg.norm(nb_uv, axis=1), np.nan))
+        if np.isnan(ang_spacing) or ang_spacing < 1e-9:
+            ang_spacing = 1.0
+
+        nb_i = (nb_uv[:, 0] + 1j * nb_uv[:, 1]) / ang_spacing
+        valid_nb = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
+
+        # Dedup candidates that are essentially the same
+
+        ws_dedup = {(1.0, 0.0)}     # set can't contain complex numbers so stored as tuple of floats
+
+        if not ctx.assume_aligned and (mag_ok := np.abs(tpl_i) > 1e-8).any():
+
+            nb_valid_idx = np.flatnonzero(valid_nb)
+
+            for i_a in np.flatnonzero(mag_ok):
+                ws = nb_i[nb_valid_idx] / tpl_i[i_a]
+                ok = (np.abs(np.angle(ws)) <= ctx.ang_gate) & (np.abs(np.abs(ws) - 1.0) <= ctx.scale_dev)
+
+                for w in ws[ok]:
+                    # Rounding for dedup
+                    ws_dedup.add((float(np.round(w.real, 3)), float(np.round(w.imag, 2))))
+
+        lens_cands, seen = [], set()
+
+        for wr, wi in ws_dedup:
+            w = wr + 1j * wi    # Rebuild the complex number from the tuple key
+
+            d = np.where(valid_nb[None, :], np.abs((w * tpl_i[periph])[:, None] - nb_i[None, :]), np.inf)
+            r_idx, c_idx = linear_sum_assignment(d)
+            md = d[r_idx, c_idx]
+            keep = (md < ctx.assign_radius) & np.isfinite(md)
+
+            if int(keep.sum()) >= ctx.min_snap_matches:
+                donors_g = neighb.indices[i_loc][c_idx[keep]].astype(int).tolist()
+                slots_g = periph[r_idx[keep]].astype(int).tolist()
+
+                topo = tuple(sorted(zip(slots_g, donors_g)))
+
+                if topo not in seen and not _too_similar(topo, seen):
+                    seen.add(topo)
+                    lens_cands.append((ctx.identity_bias * float(np.abs(w - 1.0)),
+                                       np.array(slots_g), np.array(donors_g), md[keep]))
+
+        lens_cands.sort(key=lambda t: t[0])
+        candidates[i_loc] = lens_cands[:ctx.top_k]
+
+        if not lens_cands and ctx.allow_plasticity:
+
+            d = np.where(valid_nb[None, :], np.abs(tpl_i[periph][:, None] - nb_i[None, :]), np.inf)
+            r_idx, c_idx = linear_sum_assignment(d)
+            md = d[r_idx, c_idx]
+            keep = (md < ctx.plasticity_radius) & np.isfinite(md)
+
+            if keep.any():
+                lens_cands.append((ctx.unassigned_penalty * 0.5,
+                                   periph[r_idx[keep]], neighb.indices[i_loc][c_idx[keep]], md[keep]))
+
+        lens_cands.sort(key=lambda t: t[0])
+        candidates[i_loc] = lens_cands[:ctx.top_k]
+
+    return candidates
+
+
+def _coupling_components(candidates, n_e):
+    """
+    Connected components of the lens graph: two lenses are coupled iff they share a
+    candidate (donor, slot) pair. MILP is separable across these, so each is solved independently.
+    """
+
+    jr_to_lenses = {}
+
+    for i_loc, cands in enumerate(candidates):
+        for _, slots_g, donors_g, _ in cands:
+            for r, j in zip(np.asarray(slots_g, dtype=int).tolist(),
+                            np.asarray(donors_g, dtype=int).tolist()):
+                jr_to_lenses.setdefault((j, r), []).append(i_loc)
+
+    rows, cols = [], []
+    for lenses in jr_to_lenses.values():
+        l0 = lenses[0]
+        for l in lenses[1:]:
+            rows.append(l0)
+            cols.append(l)
+
+    if rows:
+        A = coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(n_e, n_e))
+    else:
+        A = coo_matrix((n_e, n_e))
+
+    _, labels = connected_components(A, directed=False)
+
+    return [np.flatnonzero(labels == c) for c in range(labels.max() + 1)] if n_e else []
+
+
+def _solve_lens_subset(lens_order, candidates, zone, ctx):
+    """
+    Build + solve the MILP for one component.
+    Returns assignment triples, or None if solver failed.
+    """
+
+    periph = ctx.periph
+    m = len(lens_order)
+
+    costs, z_vars, x_vars, d_vars = [], [], [], []
+    var_count = 0
+
+    for i_loc in lens_order:
+        cands = candidates[i_loc] or [(0.0, np.array([]), np.array([]), np.array([]))]
+
+        i_z, i_x = [], []
+        for w_cost, slots_g, donors_g, dists in cands:
+            i_z.append(var_count); costs.append(w_cost); var_count += 1
+            c_x = {}
+            for r, j, dist in zip(slots_g, donors_g, dists):
+                c_x[int(r)] = (var_count, int(j)); costs.append(dist); var_count += 1
+            i_x.append(c_x)
+        z_vars.append(i_z); x_vars.append(i_x)
+
+        i_d = {}
+        for r in periph:
+            i_d[int(r)] = var_count; costs.append(ctx.unassigned_penalty); var_count += 1
+        d_vars.append(i_d)
+
+    if var_count == 0:
+        return []
+
+    rows_eq, cols_eq, data_eq, b_eq = [], [], [], []
+    rows_ub, cols_ub, data_ub, b_ub = [], [], [], []
+    eq_row = ub_row = 0
+
+    for t in range(m):                    # Constraint 1: one candidate per lens
+        for z_idx in z_vars[t]:
+            rows_eq.append(eq_row); cols_eq.append(z_idx); data_eq.append(1.0)
+        b_eq.append(1.0); eq_row += 1
+
+    for t in range(m):                   # Constraint 2: each slot wired or dropped
+        for r in periph:
+            r = int(r)
+            for c_x in x_vars[t]:
+                if r in c_x:
+                    rows_eq.append(eq_row); cols_eq.append(c_x[r][0]); data_eq.append(1.0)
+            rows_eq.append(eq_row); cols_eq.append(d_vars[t][r]); data_eq.append(1.0)
+            b_eq.append(1.0); eq_row += 1
+
+    for t in range(m):                    # Constraint 3: x <= z
+        for c_idx, c_x in enumerate(x_vars[t]):
+            z_idx = z_vars[t][c_idx]
+            for r, (x_idx, _) in c_x.items():
+                rows_ub.append(ub_row); cols_ub.append(x_idx); data_ub.append(1.0)
+                rows_ub.append(ub_row); cols_ub.append(z_idx); data_ub.append(-1.0)
+                b_ub.append(0.0); ub_row += 1
+
+    jr_to_x = {}                           # Constraint 4: each (donor, slot) used only once
+    for t in range(m):
+        for c_x in x_vars[t]:
+            for r, (x_idx, j) in c_x.items():
+                jr_to_x.setdefault((j, r), []).append(x_idx)
+    for x_list in jr_to_x.values():
+        for x_idx in x_list:
+            rows_ub.append(ub_row); cols_ub.append(x_idx); data_ub.append(1.0)
+        b_ub.append(1.0); ub_row += 1
+
+    constraints = []
+    if b_eq:
+        A_eq = coo_matrix((data_eq, (rows_eq, cols_eq)), shape=(len(b_eq), var_count))
+        constraints.append(LinearConstraint(A_eq, lb=b_eq, ub=b_eq))
+    if b_ub:
+        A_ub = coo_matrix((data_ub, (rows_ub, cols_ub)), shape=(len(b_ub), var_count))
+        constraints.append(LinearConstraint(A_ub, lb=-np.inf, ub=b_ub))
+
+    result = milp(
+        c=costs,
+        constraints=constraints,
+        bounds=Bounds(0, 1),
+        integrality=np.ones(var_count, dtype=int),
+        options={'time_limit': ctx.time_limit_s, 'mip_rel_gap': 0.01, 'disp': False}
+    )
+
+    if not result.success:
+        return None
+
+    chosen = set(np.flatnonzero(result.x > 0.5))
+    out = []
+    for t, i_loc in enumerate(lens_order):
+        i_glob = int(zone.indices[i_loc])
+        for c_x in x_vars[t]:
+            for r, (x_idx, j) in c_x.items():
+                if x_idx in chosen:
+                    out.append((i_glob, r, j))
+    return out
+
+
+def solve_zone(zone, ctx):
+    """
+    Wire one chirality zone. Returns (triples, n_failed_components).
+    """
+
+    n_e = len(zone)
+    if n_e < 2:
+        return [], 0
+
+    neighb = zone.neighbours(query=zone.indices, k=min(ctx.k_search, n_e - 1))
+    if not neighb:
+        return [], 0
+
+    candidates = _enumerate_candidates(zone, neighb, ctx)
+    components = _coupling_components(candidates, n_e)
+
+    triples, n_failed = [], 0
+    for comp in components:
+        res = _solve_lens_subset(comp, candidates, zone, ctx)
+        if res is None:
+            n_failed += 1
+        else:
+            triples.extend(res)
+    return triples, n_failed
+
 
 def wire_neural_superposition(
-    model: 'Model',
-    assign_radius: float = 0.5,
-    angular_dev: float = 40.0,
-    scale_dev: float = 0.75,
-    min_snap_matches: int = 2,
-    neighbour_dist_factor: float = 1.5,
-    k_search: int = 20,
-    top_k: int = 3,
-    identity_bias: float = 0.05,
-    unassigned_penalty: float = 10.0,
-    allow_plasticity: bool = True,
-    plasticity_radius: float = 2.0,
-    time_limit_s: float = 60.0,
-    assume_aligned: bool = False,
-) -> Tuple[np.ndarray, np.ndarray]:
+        model: 'Model',
+        assign_radius: float = 0.5,
+        angular_dev: float = 40.0,
+        scale_dev: float = 0.75,
+        min_snap_matches: int = 2,
+        k_search: int = 20,
+        top_k: int = 3,
+        identity_bias: float = 0.05,
+        unassigned_penalty: float = 10.0,
+        allow_plasticity: bool = True,
+        plasticity_radius: float = 2.0,
+        time_limit_s: float = 60.0,
+        assume_aligned: bool = False,
+        n_jobs: int = -1
+    ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Neural-superposition wiring allowing for local distortions and missing connections.
 
-    Solves a per-eye MILP that lets individual rhabdomere slots be left unwired
+    Solves a per-zone MILP that lets individual rhabdomere slots be left unwired
     (with a penalty) and uses 'plastic' connections in highly distorted lattice
     regions where a rigid transform would fail.
 
@@ -95,7 +375,6 @@ def wire_neural_superposition(
         - angular_dev: Max angular deviation (deg) allowed for bundle rotation.
         - scale_dev: Max scaling allowed (fraction) relative to the bundle size.
         - min_snap_matches: Minimum number of rhabdomeres that must align for a valid candidate.
-        - neighbour_dist_factor: Multiplier to define "immediate" lattice neighbours.
         - k_search: Number of nearest neighbours to search for candidates.
         - top_k: Number of best-scoring candidates per lens to pass to the MILP solver.
         - identity_bias: Preference for the "default" orientation (0 rotation, 1 scale).
@@ -103,277 +382,44 @@ def wire_neural_superposition(
         - allow_plasticity: If True, allows 'best-effort' wiring in distorted regions.
         - plasticity_radius: Increased search radius (μm) used when in plastic mode.
         - time_limit_s: Hard timeout for the MILP solver.
+        - n_jobs: Number of jobs to run in parallel, -1 for auto.
     """
 
     N, R = model.shape
-
     if R == 1:
         return np.full((N, 1), -1, dtype=np.intp)
 
     center = model.bundle.center_index
-    periph = model.bundle.peripheral_indices
-
     cartridge_map = np.full((N, R), -1, dtype=np.intp)
-    cartridge_map[:, center] = model.omm_indices       # TODO: this name might change
+    cartridge_map[:, center] = model.omm_indices
 
-    rot = model.buffer['rest_offset']
-    rot_dx, rot_dy = rot[..., 0], rot[..., 1]
+    solver_ctx = _make_solver_context(
+        model=model, angular_dev=angular_dev, assign_radius=assign_radius, scale_dev=scale_dev,
+        min_snap_matches=min_snap_matches, k_search=k_search, top_k=top_k, identity_bias=identity_bias,
+        unassigned_penalty=unassigned_penalty, allow_plasticity=allow_plasticity,
+        plasticity_radius=plasticity_radius, time_limit_s=time_limit_s, assume_aligned=assume_aligned
+    )
 
-    k_scale = float(np.mean(np.linalg.norm(
-        model.bundle.offsets_um[periph] - model.bundle.offsets_um[center], axis=1))) or 1.0
-    tpl_dx = (rot_dx - rot_dx[:, center:center + 1]) / k_scale
-    tpl_dy = (rot_dy - rot_dy[:, center:center + 1]) / k_scale
-    ang_gate = np.radians(angular_dev)
+    zones = [(eye.eye_index, sign, zv)
+             for eye in model.eyes
+             for sign, zv in eye.ommatidia_by_chirality().items()]
 
-    forward = model.buffer['forward']
-    right = model.buffer['right']
-    up = model.buffer['up']
+    if n_jobs == 1:
+        results = [solve_zone(zv, solver_ctx) for _, _, zv in zones]
+    else:
+        from joblib import Parallel, delayed
+        results = Parallel(n_jobs=n_jobs, prefer='threads')(
+            delayed(solve_zone)(zv, solver_ctx) for _, _, zv in zones)
 
-    def _too_similar(new_key, existing_keys, threshold=0.8):
-        new_set = set(new_key)
-        for existing in existing_keys:
-            shared = len(new_set.intersection(set(existing)))
-            if shared / len(new_set) >= threshold:
-                return True
-        return False
+    for (eye_idx, sign, _), (triples, n_failed) in zip(zones, results):
+        if n_failed:
+            logger.warning(f"Eye {eye_idx} (chirality {sign:+d}): {n_failed} MILP "
+                           f"component(s) failed; affected slots left unwired.")
+        for i_glob, r, j in triples:
+            cartridge_map[i_glob, r] = j
 
-    for eye in model.eyes:
-        n_e = len(eye)
-        if n_e < 2:
-            continue
-
-        neighb = eye.neighbours(
-            query=eye.indices,
-            k=min(k_search, n_e - 1),
-            neighbour_dist_factor=neighbour_dist_factor
-        )
-
-        # Stage 1: Enumerate candidates
-        candidates = [[] for _ in range(n_e)]
-        for i_loc in range(n_e):
-            i_glob = eye.indices[i_loc]
-            tpl_i = (tpl_dx[i_glob] + 1j * tpl_dy[i_glob])
-
-            # Setup neighbour coordinates in tangent plane (using optical axes)
-            nb_dirs = forward[neighb.indices[i_loc]] - forward[i_glob]
-            nb_uv = (nb_dirs @ np.stack([right[i_glob], up[i_glob]], axis=1))
-
-            # Normalised by local angular spacing
-            ang_spacing = np.nanmedian(np.where(neighb.is_immediate[i_loc], np.linalg.norm(nb_uv, axis=1), np.nan))
-            if np.isnan(ang_spacing) or ang_spacing < 1e-9:
-                ang_spacing = 1.0
-
-            nb_i = (nb_uv[:, 0] + 1j * nb_uv[:, 1]) / ang_spacing
-            valid_nb = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
-
-            # Candidate transforms (identity only when the bundle is lattice-pinned)
-            ws_dedup = { (1.0, 0.0) }   # tuple of floats instead of complex number (can't hash a complex)
-
-            if not assume_aligned and (mag_ok := np.abs(tpl_i) > 1e-8).any():
-                nb_valid_idx = np.flatnonzero(valid_nb)
-                for i_a in np.flatnonzero(mag_ok):
-                    ws = nb_i[nb_valid_idx] / tpl_i[i_a]
-
-                    # Mask for valid transforms
-                    ok_mask = (np.abs(np.angle(ws)) <= ang_gate) & (np.abs(np.abs(ws) - 1.0) <= scale_dev)
-
-                    for w in ws[ok_mask]:
-                        # Round to 3 decimals to dedup candidates
-                        # also need to convert the complex number to tuple of floats
-                        w_key = (float(np.round(w.real, 3)), float(np.round(w.imag, 2)))
-                        ws_dedup.add(w_key)
-
-            lens_cands = []
-            seen_topologies = set()
-
-            for wr, wi in ws_dedup:
-
-                w = wr + 1j * wi    # reconstruct complex number
-
-                # Cost matrix
-                d = np.where(valid_nb[None, :], np.abs((w * tpl_i[periph])[:, None] - nb_i[None, :]), np.inf)
-
-                r_idx, c_idx = linear_sum_assignment(d)
-                md = d[r_idx, c_idx]
-
-                keep = (md < assign_radius) & np.isfinite(md)
-                if int(keep.sum()) >= min_snap_matches:
-
-                    # Create hashable key (tuple of tuples of ints)
-                    donors_g = neighb.indices[i_loc][c_idx[keep]].astype(int).tolist()
-                    slots_g = periph[r_idx[keep]].astype(int).tolist()
-
-                    topo_key = tuple(sorted(zip(slots_g, donors_g)))
-
-                    if topo_key not in seen_topologies and not _too_similar(topo_key, seen_topologies):
-                        seen_topologies.add(topo_key)
-                        lens_cands.append((
-                            identity_bias * float(np.abs(w - 1.0)),
-                            np.array(slots_g),
-                            np.array(donors_g),
-                            md[keep]
-                        ))
-
-            # Sort and truncate to keep MILP doable
-            lens_cands.sort(key=lambda t: t[0])
-            candidates[i_loc] = lens_cands[:top_k]
-
-            # Fallback: if no candidates found, generate one 'plastic' candidate
-            if not lens_cands and allow_plasticity:
-                d = np.where(valid_nb[None, :], np.abs(tpl_i[periph][:, None] - nb_i[None, :]), np.inf)
-
-                r_idx, c_idx = linear_sum_assignment(d)
-                md = d[r_idx, c_idx]
-
-                keep = (md < plasticity_radius) & np.isfinite(md)
-                if keep.any():
-                    lens_cands.append((
-                        unassigned_penalty * 0.5,
-                        periph[r_idx[keep]],
-                        neighb.indices[i_loc][c_idx[keep]],
-                        md[keep]
-                    ))
-
-            lens_cands.sort(key=lambda t: t[0])
-            candidates[i_loc] = lens_cands[:top_k]
-
-        # Stage 2: MILP selection (with graceful drops)
-        costs = []
-        z_vars, x_vars, d_vars = [], [], []
-        var_count = 0
-
-        for i_loc in range(n_e):
-            cands = candidates[i_loc]
-            if not cands:
-                # Isolated lens fallback
-                cands = [(0.0, np.array([]), np.array([]), np.array([]))]
-
-            i_z, i_x = [], []
-            for w_cost, slots_g, donors_g, dists in cands:
-                # Template selection variable (z)
-                i_z.append(var_count)
-                costs.append(w_cost)
-                var_count += 1
-
-                # Individual slot connection variables (x)
-                c_x = {}
-                for r, j, dist in zip(slots_g, donors_g, dists):
-                    c_x[r] = (var_count, j)
-                    costs.append(dist)
-                    var_count += 1
-                i_x.append(c_x)
-
-            z_vars.append(i_z)
-            x_vars.append(i_x)
-
-            # Drop variables (d)
-            i_d = {}
-            for r in periph:
-                i_d[r] = var_count
-                costs.append(unassigned_penalty)
-                var_count += 1
-            d_vars.append(i_d)
-
-        if var_count == 0:
-            continue
-
-        rows_eq, cols_eq, data_eq, b_eq = [], [], [], []
-        rows_ub, cols_ub, data_ub, b_ub = [], [], [], []
-        eq_row, ub_row = 0, 0
-
-        # Constraint 1: Pick exactly one candidate rotation per lens
-        for i_loc in range(n_e):
-            for z_idx in z_vars[i_loc]:
-                rows_eq.append(eq_row)
-                cols_eq.append(z_idx)
-                data_eq.append(1.0)
-            b_eq.append(1.0)
-            eq_row += 1
-
-        # Constraint 2: Every slot is either wired (via chosen x) or dropped (d)
-        for i_loc in range(n_e):
-            for r in periph:
-                for c_x in x_vars[i_loc]:
-                    if r in c_x:
-                        x_idx, _ = c_x[r]
-                        rows_eq.append(eq_row)
-                        cols_eq.append(x_idx)
-                        data_eq.append(1.0)
-                rows_eq.append(eq_row)
-                cols_eq.append(d_vars[i_loc][r])
-                data_eq.append(1.0)
-                b_eq.append(1.0)
-                eq_row += 1
-
-        # Constraint 3: Can only wire a slot if its parent template candidate is chosen
-        for i_loc in range(n_e):
-            for c_idx, c_x in enumerate(x_vars[i_loc]):
-                z_idx = z_vars[i_loc][c_idx]
-                for r, (x_idx, _) in c_x.items():
-                    rows_ub.append(ub_row)
-                    cols_ub.append(x_idx)
-                    data_ub.append(1.0)
-
-                    rows_ub.append(ub_row)
-                    cols_ub.append(z_idx)
-                    data_ub.append(-1.0)
-
-                    b_ub.append(0.0)
-                    ub_row += 1
-
-        # Constraint 4: Global donor limit (no donation conflicts)
-        jr_to_x = {}
-        for i_loc in range(n_e):
-            for c_x in x_vars[i_loc]:
-                for r, (x_idx, j) in c_x.items():
-                    key = (j, r)
-                    if key not in jr_to_x:
-                        jr_to_x[key] = []
-                    jr_to_x[key].append(x_idx)
-
-        for x_list in jr_to_x.values():
-            for x_idx in x_list:
-                rows_ub.append(ub_row)
-                cols_ub.append(x_idx)
-                data_ub.append(1.0)
-            b_ub.append(1.0)
-            ub_row += 1
-
-        # Build and solve MILP
-        constraints = []
-        if len(b_eq) > 0:
-            A_eq = coo_matrix((data_eq, (rows_eq, cols_eq)), shape=(len(b_eq), var_count))
-            constraints.append(LinearConstraint(A_eq, lb=b_eq, ub=b_eq))
-        if len(b_ub) > 0:
-            A_ub = coo_matrix((data_ub, (rows_ub, cols_ub)), shape=(len(b_ub), var_count))
-            constraints.append(LinearConstraint(A_ub, lb=-np.inf, ub=b_ub))
-
-        result = milp(
-            c=costs,
-            constraints=constraints,
-            bounds=Bounds(0, 1),
-            integrality=np.ones(var_count, dtype=int),
-            options={'time_limit': time_limit_s, 'mip_rel_gap': 0.01, 'disp': False},
-        )
-
-        if not result.success:
-            logger.warning(
-                f"Eye {eye.eye_index}: MILP failed ({result.message}). Falling back to unassigned."
-            )
-            continue
-
-        # Map the MILP solution back to the cartridge map
-        chosen = set(np.flatnonzero(result.x > 0.5))
-        for i_loc in range(n_e):
-            i_glob = eye.indices[i_loc]
-            for c_x in x_vars[i_loc]:
-                for r, (x_idx, j) in c_x.items():
-                    if x_idx in chosen:
-                        cartridge_map[i_glob, r] = j
-
-    # source receptor = donor_omm * R + slot (same slot in the donor's bundle)
     cs_signed = cartridge_map * R + np.arange(R)
-    unwired_mask = cartridge_map < 0
+    unwired_mask = (cartridge_map < 0).astype(bool)
     cartridge_src = np.where(unwired_mask, UNWIRED_SRC, cs_signed).astype(np.uint32)
 
     return cartridge_src, unwired_mask

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Union, Tuple, List
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.spatial import Delaunay
 
 from insectvision.utils.shared import norm_l2, broadcast_1d, broadcast_to_shape
 from insectvision.engine.meshes import icosphere, fibonacci_sphere
@@ -488,23 +489,62 @@ class Model(SpatialQueries, BaseView):
 
         return is_binocular
 
-    def _identify_edge_ommatidia(self) -> np.ndarray:
+    def _identify_edge_ommatidia(self, n_rings: int = 1) -> np.ndarray:
         """
-        Edge ommatidia = incomplete first ring (< 6 Gabriel neighbours) with at least
-        two first-ring neighbours that are themselves incomplete.
+        Detect edge ommatidia from the topological boundary of the lattice.
+        Args:
+            - n_rings: 1 = outermost ring only, 2 = outer two rings, etc.
         """
+
+        ALPHA = 1.4
         is_edge = np.zeros(self._N, dtype=bool)
-        is_candidate = self._buf['neighbour_count'][:, 0] < 6
 
         for eye in self._eyes:
-            adj = eye._get_first_ring_graph()['adjacency']
-            eye_glob = eye.indices
-            cand_local = is_candidate[eye_glob]
-            for i_local in range(len(eye)):
-                if cand_local[i_local]:
-                    nb_local = adj[i_local]
-                    if nb_local.size and int(np.sum(cand_local[nb_local])) >= 2:
-                        is_edge[eye_glob[i_local]] = True
+            graph = eye._get_first_ring_graph()
+            pts, adj = graph['points2d'], graph['adjacency']
+            n = len(pts)
+            if n < 3:
+                is_edge[eye.indices] = True
+                continue
+
+            local_s = np.array([
+                np.median(np.linalg.norm(pts[a] - pts[i], axis=1)) if a.size else np.inf
+                for i, a in enumerate(adj)
+            ])
+
+            tri = Delaunay(pts).simplices
+            a, b, c = pts[tri[:, 0]], pts[tri[:, 1]], pts[tri[:, 2]]
+            ab = np.linalg.norm(a - b, axis=1)
+            bc = np.linalg.norm(b - c, axis=1)
+            ca = np.linalg.norm(c - a, axis=1)
+            area = 0.5 * np.abs((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]))
+            circumradius = (ab * bc * ca) / (4.0 * area + 1e-300)
+
+            kept = tri[circumradius <= ALPHA * local_s[tri].mean(axis=1)]  # alpha-complex
+
+            # Boundary = belongs to exactly one kept triangle
+            e = np.sort(np.concatenate([kept[:, [0, 1]], kept[:, [1, 2]], kept[:, [2, 0]]]), axis=1)
+            key = e[:, 0].astype(np.int64) * n + e[:, 1]
+            uniq, count = np.unique(key, return_counts=True)
+            bkey = uniq[count == 1]
+            ring = np.unique(np.stack([bkey // n, bkey % n], axis=1).ravel())
+
+            # Grow inward along the β-skeleton graph
+            labelled = np.zeros(n, dtype=bool)
+            labelled[ring] = True
+            frontier = ring
+
+            for _ in range(max(0, n_rings - 1)):
+                if not frontier.size:
+                    break
+
+                nxt = np.unique(np.concatenate([adj[i] for i in frontier]))
+                nxt = nxt[~labelled[nxt]]
+                labelled[nxt] = True
+                frontier = nxt
+
+            is_edge[eye.indices[labelled]] = True
+
         return is_edge
 
     # Private - Facets (lenses) lattice geometry helpers

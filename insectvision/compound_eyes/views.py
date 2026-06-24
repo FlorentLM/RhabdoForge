@@ -520,7 +520,7 @@ class SpatialQueries:
 
     def _get_first_ring_graph(self) -> dict:
         """
-        First-ring (Gabriel) graph for this view's ommatidia.
+        First-ring β-skeleton graph for this view's ommatidia.
 
         Built once on a stereographic projection of the optical axes, and cached.
 
@@ -548,6 +548,19 @@ class SpatialQueries:
             pts2d, *_ = sphere_to_stereo(self.directions)
             adj = beta_skeleton_neighbours(pts2d, beta=self.model.lattice_beta)
 
+        # Largest empty angular sector between consecutive first-ring neighbour bearings:
+        #   Complete ring (incl 5- or 7-fold disclinations) should have ~ 2*pi/degree
+        #   Any lens missing a sector should be >= ~2*pi/3
+        max_gap = np.full(n, 2.0 * np.pi, dtype=np.float64)
+        if n >= 3:
+            for i_loc, a in enumerate(adj):
+                if a.size < 2:
+                    continue
+                d = pts2d[a] - pts2d[i_loc]
+                ang = np.sort(np.arctan2(d[:, 1], d[:, 0]))
+                wrap = (ang[0] + 2.0 * np.pi) - ang[-1]
+                max_gap[i_loc] = max(float(np.diff(ang).max()), float(wrap))
+
         pair_keys = set()
         for i_loc, a in enumerate(adj):
             gi = int(omm[i_loc])
@@ -558,6 +571,7 @@ class SpatialQueries:
 
         g = {
             'adjacency': adj,
+            'max_gap': max_gap,
             'degree': np.fromiter((a.size for a in adj), dtype=np.int32, count=n),
             'pair_keys': pair_keys,
             'big': big,
