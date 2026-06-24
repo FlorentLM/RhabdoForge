@@ -17,8 +17,10 @@ from scipy.spatial import cKDTree
 
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
 from insectvision.geometry.linalg import tangent_frames
-from insectvision.geometry.neighbours import knn, top_k_facing
-from insectvision.geometry.spherical import cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle
+from insectvision.geometry.neighbours import knn, top_k_facing, gabriel_neighbours
+from insectvision.geometry.spherical import (
+    cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo
+)
 from insectvision.geometry.circular import wrap_angle
 from insectvision.utils.shared import norm_l2
 
@@ -516,6 +518,73 @@ class SpatialQueries:
 
         return graph
 
+    def _get_first_ring_graph(self) -> dict:
+        """
+        First-ring (Gabriel) graph for this view's ommatidia.
+
+        Built once on a stereographic projection of the optical axes, and cached.
+
+        Returns:
+            Dict containing:
+            - adjacency (list of local-index arrays)
+            - degree (n,)
+            - pair_keys (set of undirected global-index edge keys)
+            - big (key multiplier)
+            - points2d (n, 2)
+        """
+
+        g = self._spatial_store.get('first_ring_graph')
+        if g is not None:
+            return g
+
+        n = len(self)
+        omm = self.omm_indices
+        big = int(self.model.shape[0]) + 1
+
+        if n < 3:
+            adj = [np.delete(np.arange(n, dtype=np.intp), i) for i in range(n)]
+            pts2d = np.zeros((n, 2))
+        else:
+            pts2d, *_ = sphere_to_stereo(self.directions)
+            adj = gabriel_neighbours(pts2d)
+
+        pair_keys = set()
+        for i_loc, a in enumerate(adj):
+            gi = int(omm[i_loc])
+            for j_loc in a.tolist():
+                gj = int(omm[j_loc])
+                lo, hi = (gi, gj) if gi < gj else (gj, gi)
+                pair_keys.add(lo * big + hi)
+
+        g = {
+            'adjacency': adj,
+            'degree': np.fromiter((a.size for a in adj), dtype=np.int32, count=n),
+            'pair_keys': pair_keys,
+            'big': big,
+            'points2d': pts2d,
+        }
+        self._spatial_store['first_ring_graph'] = g
+        return g
+
+    def _tag_first_ring(self, result: 'NeighbourResult', valid_global: np.ndarray) -> None:
+        """Tag result.is_immediate by Gabriel first-ring membership."""
+
+        nb = result.indices
+
+        if not nb.size:
+            result.is_immediate = np.zeros(nb.shape, dtype=bool)
+            return
+
+        graph = self._get_first_ring_graph()
+        keys, big = graph['pair_keys'], graph['big']
+        qi = np.asarray(valid_global, dtype=np.int64)[:, None]
+
+        lo = np.minimum(qi, nb).astype(np.int64)
+        hi = np.maximum(qi, nb).astype(np.int64)
+        flat = (lo * big + hi).ravel().tolist()
+
+        result.is_immediate = np.fromiter((kk in keys for kk in flat), dtype=bool, count=len(flat)).reshape(nb.shape)
+
     def _get_directional_graph(self, k: int = 8) -> dict:
         """
         For each ommatidium, its k nearest neighbours in direction space (chord
@@ -608,9 +677,9 @@ class SpatialQueries:
             - query: global ommatidia indices (only those inside this view are used).
             - positions: (Q, 3) world-space query points.
 
-        immediate_only restricts to the cached first-ring graph, otherwise
-        neighbour_dist_factor tags 'is_immediate' (d <= factor * local scale),
-        or set it to None to skip the tagging.
+        immediate_only restricts to the cached first-ring graph.
+        neighbour_dist_factor tags 'is_immediate' for points queries (d <= factor * local scale).
+            (set to None to skip tagging)
         """
 
         if (query is None) == (positions is None):
@@ -636,7 +705,7 @@ class SpatialQueries:
                 nb_chir = self._omm_chirality(g_neighb_indices.ravel()).reshape(g_neighb_indices.shape)
                 result.same_chirality = nb_chir == q_chir[:, None]
 
-            self._tag_immediate(result, neighb_dists, neighbour_dist_factor)
+            self._tag_first_ring(result, valid_global)
             return result
 
         # Points path
@@ -900,6 +969,15 @@ class OmmatidiumView(SpatialQueries, BaseView):
     @property
     def rhabdomeres(self) -> 'RhabdomereView':
         return RhabdomereView(self._model, self.rhab_indices)
+
+    def ommatidia_by_chirality(self) -> dict[int, 'OmmatidiumView']:
+        chir = self._omm_chirality(self.omm_indices)  # +1 / -1 per ommatidium
+        out = {}
+        for sign in (+1.0, -1.0):
+            idx = self.omm_indices[chir == sign]
+            if idx.size:
+                out[int(sign)] = OmmatidiumView(self.model, idx)
+        return out
 
 
 class CartridgeView(OmmatidiumView):

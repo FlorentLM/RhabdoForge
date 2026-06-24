@@ -1,10 +1,10 @@
-from typing import Sequence
+from typing import Sequence, Optional
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.interpolate import RBFInterpolator
 
 from insectvision.geometry.circular import resultant
-from insectvision.geometry.neighbours import delaunay_neighbours
-
+from insectvision.geometry.neighbours import gabriel_neighbours
 
 
 def hexatic_axis_angle(z6) -> np.ndarray:
@@ -68,8 +68,13 @@ def hexatic_rest_vectors(edge_vec: np.ndarray, theta, length) -> np.ndarray:
     return rest
 
 
-def hexatic_axis_field(points2d, neighbours=None, smoothing=0.5, min_order=0.5,
-                       max_length_factor=1.8, return_confidence=False):
+def hexatic_axis_field(
+        points2d: ArrayLike,
+        neighbours: Optional[ArrayLike] = None,
+        smoothing: float = 0.5,
+        min_order: float = 0.5,
+        return_confidence: bool = False
+    ):
     """
     Continuous local hexatic-axis interpolant.
 
@@ -79,7 +84,7 @@ def hexatic_axis_field(points2d, neighbours=None, smoothing=0.5, min_order=0.5,
     points2d = np.asarray(points2d, dtype=np.float64)
 
     if neighbours is None:
-        neighbours = delaunay_neighbours(points2d, max_length_factor=max_length_factor)
+        neighbours = gabriel_neighbours(points2d)
 
     z6 = phasor_from_points(points2d, neighbours)
     order = hexatic_order(z6)

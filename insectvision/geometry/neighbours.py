@@ -1,5 +1,6 @@
 from typing import List, Optional, Tuple, Sequence
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree, Delaunay
 
 from insectvision.utils.shared import norm_l2
@@ -71,7 +72,61 @@ def delaunay_neighbours(points2d: np.ndarray, max_length_factor: float = 0.0) ->
     return [np.array(s, dtype=np.intp) for s in neighbour_lists]
 
 
-# knn queries
+def gabriel_edges(points2d: np.ndarray) -> np.ndarray:
+    """
+    Gabriel-graph edges: density/anisotropy adaptive Delaunay subgraph.
+
+    Edge (i, j) is kept iff the disk with ij as diameter contains no third point.
+    Because candidates are Delaunay edges, the only points that can intrude are
+    the (<=2) triangle-opposite vertices.
+
+    Returns:
+         - (E, 2) int array of undirected edges (sorted)
+    """
+
+    p = np.asarray(points2d, dtype=np.float64)
+    n = len(p)
+    if n < 3:
+        i, j = np.triu_indices(n, k=1)
+        return np.stack([i, j], axis=1).astype(int)
+
+    s = Delaunay(p).simplices
+
+    i = s[:, [0, 1, 2]].ravel()
+    j = s[:, [1, 2, 0]].ravel()
+    k = s[:, [2, 0, 1]].ravel()     # vertex opposite edge (i, j)
+
+    not_gabriel = np.einsum('ab,ab->a', p[i] - p[k], p[j] - p[k]) < 0.0
+
+    lo, hi = np.minimum(i, j), np.maximum(i, j)
+    key = lo.astype(np.int64) * n + hi       # undirected key
+    order = np.argsort(key, kind='stable')
+    uniq, start = np.unique(key[order], return_index=True)
+
+    bad = np.maximum.reduceat(not_gabriel[order].astype(np.int8), start).astype(bool)
+    good = uniq[~bad]          # survives iff *no* incident triangle is obtuse
+
+    return np.stack([good // n, good % n], axis=1).astype(int)
+
+
+def gabriel_neighbours(points2d: ArrayLike) -> List[np.ndarray]:
+    """
+    First-ring neighbour lists (adjacency view of gabriel_edges).
+    """
+
+    points2d = np.asarray(points2d)
+
+    nb: List[list] = [[] for _ in range(len(points2d))]
+
+    for a, b in gabriel_edges(points2d):
+        a, b = int(a), int(b)
+        nb[a].append(b)
+        nb[b].append(a)
+
+    return [np.array(s, dtype=np.intp) for s in nb]
+
+
+# kNN queries
 
 def knn(
         tree: Optional[cKDTree] = None,

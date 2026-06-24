@@ -210,11 +210,10 @@ class Model(SpatialQueries, BaseView):
 
         self._buf['omm_id'] = self.omm_indices
 
-        # First-ring neighbour count per ommatidium
+        # First-ring neighbour count per ommatidium (Gabriel graph degree)
         neighbour_count = np.zeros(self._N, dtype=np.uint32)
         for eye in self._eyes:
-            res = eye.neighbours(query=eye.indices, k=6, neighbour_dist_factor=1.5)
-            neighbour_count[eye.indices] = np.sum(res.is_immediate, axis=1).astype(np.uint32)
+            neighbour_count[eye.indices] = eye._get_first_ring_graph()['degree'].astype(np.uint32)
 
         self._buf['neighbour_count'] = neighbour_count
 
@@ -486,39 +485,26 @@ class Model(SpatialQueries, BaseView):
 
     def _identify_edge_ommatidia(self) -> np.ndarray:
         """
-        Identifies edge ommatidia: < 6 neighbours and at least two of its neighbours also have < 6 neighbours.
+        Edge ommatidia = incomplete first ring (< 6 Gabriel neighbours) with at least
+        two first-ring neighbours that are themselves incomplete.
         """
-
         is_edge = np.zeros(self._N, dtype=bool)
-        n = 6
-
-        neighb_count = self._buf['neighbour_count'][:, 0] # only one column necessary, this is repeated per Rhab # TODO: Reorganise metadata to avoid this
-
-        # Potential edges
-        is_candidate = neighb_count < n
+        is_candidate = self._buf['neighbour_count'][:, 0] < 6
 
         for eye in self._eyes:
-            neighbours_graph = eye._get_neighbour_graph(k=n)
-            neighb_indices = neighbours_graph['neighbour_indices']
-
-            eye_candidates = is_candidate[eye.indices]
-
+            adj = eye._get_first_ring_graph()['adjacency']
+            eye_glob = eye.indices
+            cand_local = is_candidate[eye_glob]
             for i_local in range(len(eye)):
-                if eye_candidates[i_local]:
-                    neighb_local = neighb_indices[i_local]
-                    neighb_local_masked = neighb_local[neighb_local >= 0]
-
-                    if np.sum(eye_candidates[neighb_local_masked]) >= 2:
-                        is_edge[eye.indices[i_local]] = True
-
+                if cand_local[i_local]:
+                    nb_local = adj[i_local]
+                    if nb_local.size and int(np.sum(cand_local[nb_local])) >= 2:
+                        is_edge[eye_glob[i_local]] = True
         return is_edge
 
     # Private - Facets (lenses) lattice geometry helpers
 
-    def _compute_lattice_properties(self,
-            k_search: int = 8,
-            neighbour_dist_factor: float = 1.5,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def _compute_lattice_properties(self, k_search: int = 12) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Per-ommatidium lattice properties from the local first-ring neighbour graph.
 
@@ -535,8 +521,6 @@ class Model(SpatialQueries, BaseView):
 
         Args:
             - k_search: number of neighbours to query per ommatidium (~ a few rings).
-            - neighbour_dist_factor: a neighbour is first-ring if its
-                distance <= neighbour_dist_factor * closest.
 
         Returns:
             ioa_angles: (N, 2) (minor, major) in radians
@@ -561,8 +545,7 @@ class Model(SpatialQueries, BaseView):
             neighbours = eye.neighbours(
                 query=eye.indices,
                 k=min(k_search, n - 1),
-                immediate_only=False,
-                neighbour_dist_factor=neighbour_dist_factor
+                immediate_only=False
             )
             if not neighbours:
                 continue
