@@ -1,7 +1,10 @@
+import os
+from datetime import datetime
 from itertools import cycle
 import numpy as np
 import pyvista as pv
 from scipy.spatial import Delaunay
+from PIL import Image
 
 from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
@@ -931,6 +934,7 @@ class EyeViewer:
         self.plotter.add_key_event('s', toggle_saccade)
         self.plotter.add_key_event('b', cycle_bigpanel)
         self.plotter.add_key_event('n', cycle_debugger)
+        self.plotter.add_key_event('Insert', self._dump_snapshots)
 
         self._update_alignment_hint()
         self._update_saccade_hint()
@@ -964,6 +968,45 @@ class EyeViewer:
             (1, 2), 'hint_bn',
             f'[B] showing: {label}\n[N] next random cartridge',
         )
+
+    def _dump_snapshots(self):
+        """Captures a high-res screenshot and saves each panel as a separate PNG."""
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder = f"eye_viewer_snaps_{timestamp}"
+        os.makedirs(folder, exist_ok=True)
+
+        print(f"Exporting snapshots to {folder}...")
+
+        img_array = self.plotter.screenshot(None, return_img=True, scale=3)
+        full_img = Image.fromarray(img_array)
+
+        # grid dimensions
+        rows, cols = 2, 4
+        w, h = full_img.size
+        cw, rh = w // cols, h // rows
+
+        # Define panels to extract
+        panels = [
+            (0, 0, 1, "01_optic_flow"),
+            (0, 1, 1, "02_alignment_axes"),
+            (0, 2, 1, "03_major_axes"),
+            (0, 3, 1, "04_saccade_axes"),
+            (1, 0, 1, "05_heatmaps"),
+            (1, 1, 1, "06_ioa"),
+            (1, 2, 2, "07_big_panel"),  # merged panel is 2 columns wide
+        ]
+
+        for r, c, span, name in panels:
+            left = c * cw
+            top = r * rh
+            right = (c + span) * cw
+            bottom = (r + 1) * rh
+
+            panel_img = full_img.crop((left, top, right, bottom))
+            path = os.path.join(folder, f"{name}.png")
+            panel_img.save(path)
+            print(f"  > Saved {path}")
 
     ##
 
