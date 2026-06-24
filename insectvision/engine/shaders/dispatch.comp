@@ -16,6 +16,9 @@ layout(std430, binding = BINDING_RAYS_INTERMEDIATE) writeonly buffer RayResultBu
 // Uniforms
 uniform uint dither_counter;
 uniform mat4 cam_to_world;
+uniform int nb_ommatidia;
+uniform int nb_rhabdomeres;
+uniform int rhab_per_omm;
 uniform int nb_samples;
 uniform bool fused_rhabdoms;
 uniform int randomness_mode;

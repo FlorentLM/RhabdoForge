@@ -13,6 +13,7 @@ layout(std430, binding = BINDING_RAYS_INTERMEDIATE) readonly buffer  RayResults 
 // Uniforms
 uniform int nb_samples;
 uniform int nb_rhabdomeres;
+uniform int rhab_per_omm;
 uniform bool fused_rhabdoms;
 uniform int frame_offset;
 uniform float dt;   // seconds since last frame
