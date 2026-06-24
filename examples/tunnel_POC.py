@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 from insectvision.compound_eyes import Model
+from insectvision.engine.world_utils import WORLD_FORWARD
 from insectvision.renderers import Renderer
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.utils.shared import Colormap, norm_minmax
@@ -43,7 +44,7 @@ class Configuration:
     height: float = 0.2
     length: float = 10.0
 
-    time_step: float = 0.01            # 10 ms time step: at 500 fps this means 5 times faster than real time
+    time_step: float = 0.01       # 10 ms time step: at 500 fps this means 5 times faster than real time
 
     # Texture
     block_size: int = 4                # fine chequer size
@@ -53,16 +54,23 @@ class Configuration:
 
     # Flight / control
     flight_speed: float = 0.5          # m/s base forward speed
-    control_authority: float = 0.25     # k: lateral correction at full error, as a fraction of flight_speed
-    speed_modulation: float = 0.5      # slow forward speed when steering hard (0 = off, 1 = full)
-    motor_noise_frac: float = 0.30     # motor noise sd as a fraction of full-scale correction
-    motor_noise: bool = True
+    control_authority: float = 1.0     # k: lateral correction at full error, as a fraction of flight_speed
+    yaw_damping: float = 3.0
+    strafe_damping: float = 3.0
+    speed_modulation: float = 0.5       # slow forward speed when steering hard (0 = off, 1 = full)
+    motor_noise_frac: float = 0.30      # motor noise sd as a fraction of full-scale correction
+    motor_noise: bool = False
 
+    # Eyes param
+    tau_membrane: float = 0.012
     eye_model_path: str = 'species_models/drosophila_custom.npz'
     # eye_model_path: str = 'species_models/bee_Sturzl.npz'
 
+    # EMD params
+    emd_pooling: int = 1
+
     # Batch
-    n_trials: int = 10
+    n_trials: int = 1
     time_limit_s: float = 30.0          # per-trial time limit
     nb_samples: int = 256
     seed: Optional[int] = 0
@@ -103,7 +111,6 @@ def _add_wall(scene: Scene, name: str, corners, block_size: int, cfg: Configurat
     v, uv, idx = plane_geom(*corners)
 
     tex_h, tex_w = int(cfg.texture_res / cfg.height), int(cfg.texture_res / cfg.length)
-    # tex_h, tex_w = int(cfg.texture_res * cfg.height), int(cfg.texture_res * cfg.length)
 
     tex = checkerboard_texture(tex_w, tex_h, block_size=block_size, ratio=cfg.checkerboard_ratio)
     scene.add_instance(Asset.from_arrays(name=name, vertices=v, faces=idx, uv_coords=uv, texture=tex))
@@ -173,12 +180,18 @@ def run_trial(cfg: Configuration, context: Context, renderer: 'Renderer',
     agent.yaw = agent.pitch = agent.roll = 0.0
 
     EMD = MODEL_CLASS[model_name]
-    left_emd = EMD(eye=left_eye, direction=(0.0, 0.0, 1.0), coordinate='cartesian')
-    right_emd = EMD(eye=right_eye, direction=(0.0, 0.0, 1.0), coordinate='cartesian')
+
+    # Tuning the EMD to the expected forward velocity
+    target_v = cfg.flight_speed / (cfg.width / 2.0)  # expected angular velocity at tunnel centre
+
+    left_emd = EMD(eye=left_eye, direction=-WORLD_FORWARD, target_velocity=target_v, pooling_k=cfg.emd_pooling)
+    right_emd = EMD(eye=right_eye, direction=-WORLD_FORWARD, target_velocity=target_v, pooling_k=cfg.emd_pooling)
 
     log = RunLog()
     w, l = cfg.width, cfg.length
     t0 = context.total_time
+
+    summ_ref = 0.001
 
     while context.run_interactive(renderer=renderer):
 
@@ -197,11 +210,13 @@ def run_trial(cfg: Configuration, context: Context, renderer: 'Renderer',
         right_estim = right_emd.last_estimate
 
         diff = right_estim - left_estim
-        summ = abs(right_estim) + abs(left_estim) + 1e-6
-        error = diff / summ
+        summ = abs(right_estim) + abs(left_estim)
+        summ_ref += 0.01 * (summ - summ_ref)    # slow EMA of the bilateral signal scale
+        error = diff / (summ + 0.1 * summ_ref)
 
         k = cfg.control_authority
         u = k * error
+        # u = k * np.tanh(error * 5.0)
 
         if cfg.motor_noise:
             u += rng.normal(0.0, cfg.motor_noise_frac * k)
@@ -210,14 +225,19 @@ def run_trial(cfg: Configuration, context: Context, renderer: 'Renderer',
         v_fwd = cfg.flight_speed * (1.0 - cfg.speed_modulation * min(abs(error), 1.0))
 
         if mode == MODE_YAW:
-            psi_cmd = np.rad2deg(np.arcsin(np.clip(u, -1.0, 1.0)))
-            turn_rate = psi_cmd - agent.yaw
+            sign = 1.0
+
+            psi_des = np.rad2deg(np.arcsin(np.clip(u * sign, -1.0, 1.0)))  # deg
+            turn_rate = psi_des - cfg.yaw_damping * agent.yaw  # deg/s
 
             agent.rotate(yaw=turn_rate * dt).translate(agent.forward * v_fwd * dt)
 
         elif mode == MODE_STRAFE:
-            strafe_sign = -1.0    # strafe needs sign corrected
-            agent.translate((agent.forward * v_fwd + agent.right * strafe_sign * u * cfg.flight_speed) * dt)
+            sign = -1.0
+
+            strafe_rate = (agent.right * u * sign * cfg.flight_speed) / max(1.0, cfg.strafe_damping)
+
+            agent.translate((agent.forward * v_fwd + strafe_rate) * dt)
 
         else:
             raise ValueError(f'Unknown mode {mode!r}')
@@ -261,9 +281,10 @@ def run_all_trials(cfg: Configuration) -> Results:
     model = Model.from_file(cfg.eye_model_path)
     model.scale(1e-6)
 
-    model.tau_membrane = 0.012
+    model.tau_membrane = cfg.tau_membrane
 
     left_eye, right_eye = model.eyes
+
     agent = Agent()
 
     results: Results = {}
@@ -363,7 +384,7 @@ def _trajectory_panel(
             yw = rep.arr('yaw')[i]
 
             t = matplotlib.markers.MarkerStyle(marker='_')
-            t._transform = t.get_transform().translate(0.5, 0.0).rotate_deg(np.degrees(yw))
+            t._transform = t.get_transform().translate(0.5, 0.0).rotate_deg(yw)
 
             ax.plot(d[i], x[i],
                     marker=t,
@@ -470,6 +491,6 @@ if __name__ == '__main__':
 
     fig = make_figure(results, cfg)
     fig.savefig('centering_figure.png', dpi=200)
-    # fig.savefig('centering_figure.pdf')
+    # fig.savefig('centering_figure.svg', format='svg')
 
     plt.show()
