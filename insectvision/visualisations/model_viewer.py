@@ -4,9 +4,9 @@ import pyvista as pv
 from scipy.spatial import Delaunay
 
 from insectvision.compound_eyes import Model
-from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, RHAB_COLOURS
+from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
-from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD
+from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD
 from insectvision.geometry.spherical import sphere_to_stereo
 from insectvision.utils.shared import norm_l2
 
@@ -643,38 +643,45 @@ class EyeViewer:
         if self.R > 1:
             offsets = receptor_tip_offsets(self.model)
             max_off = float(np.max(np.linalg.norm(offsets, axis=2)))
-            if max_off > 1e-8:
+
+            if max_off < 1e-5:
+                # Symmetrical or perfectly fused bundle, no offset to scale
+                tip_positions = np.broadcast_to(self.p[:, None, :], (self.N, self.R, 3))
+                is_mirrored = np.zeros(self.N, dtype=bool)
+            else:
+                # Standard open rhabdom, scale up the pattern for visibility
                 tip_scale = (self.r_sphere * 0.012) / max_off
                 tip_positions = self.p[:, None, :] + offsets * tip_scale
                 is_mirrored = self.model.chirality < 0
-                i1, i2 = self.bundle.main_axis_indices
 
-                groups = {
-                    'gold': [], 'red': [], 'white': [],
-                    'teal': [], 'royalblue': [],
-                }
-                for r in range(self.R):
-                    pts_r = tip_positions[:, r, :]
-                    if r == self.bundle.center_index:
-                        groups['gold'].append(pts_r)
-                    elif r == i1:
-                        groups['red'].append(pts_r)
-                    elif r == i2:
-                        groups['white'].append(pts_r)
-                    else:
-                        groups['teal'].append(pts_r[~is_mirrored])
-                        groups['royalblue'].append(pts_r[is_mirrored])
+            i1, i2 = self.bundle.main_axis_indices
 
-                for color, pts_list in groups.items():
-                    arrays = [a for a in pts_list if len(a) > 0]
-                    if not arrays:
-                        continue
-                    stacked = np.vstack(arrays)
-                    act = self.plotter.add_points(
-                        stacked, color=color, point_size=8,
-                        render_points_as_spheres=True,
-                    )
-                    self.actors_bundles.append(act)
+            groups = {
+                'gold': [], 'red': [], 'white': [],
+                'teal': [], 'royalblue': [],
+            }
+            for r in range(self.R):
+                pts_r = tip_positions[:, r, :]
+                if r == self.bundle.center_index:
+                    groups['gold'].append(pts_r)
+                elif r == i1:
+                    groups['red'].append(pts_r)
+                elif r == i2:
+                    groups['white'].append(pts_r)
+                else:
+                    groups['teal'].append(pts_r[~is_mirrored])
+                    groups['royalblue'].append(pts_r[is_mirrored])
+
+            for color, pts_list in groups.items():
+                arrays = [a for a in pts_list if len(a) > 0]
+                if not arrays:
+                    continue
+                stacked = np.vstack(arrays)
+                act = self.plotter.add_points(
+                    stacked, color=color, point_size=8,
+                    render_points_as_spheres=True,
+                )
+                self.actors_bundles.append(act)
 
         # Mode 2: conflicts heatmap
         if self.conflicts_field is not None:
@@ -973,28 +980,50 @@ class EyeViewer:
 ##
 
 if __name__ == "__main__":
-
-    head_ptich = np.deg2rad(10.1)
-    optic_flow = np.array([0.0, np.sin(head_ptich), np.cos(head_ptich)])
-
-    aligner = BundlesAligner(
-        flow_direction=optic_flow,
-        diagonal_strength=1.0,
-        diagonal_angle_deg=45.0,
-        alignment_smoothing_iterations=4,
-        saccade_smoothing_iterations=5
-    )
-
-    model = Model.from_file(
-        'species_models/drosophila_custom.npz',
-        # 'species_models/bee_Sturzl.npz',
-        bundle=drosophila_bundle(), orientation=aligner, neural_superposition=True,
-        lattice_beta=0.9
-    )
+    from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, honeybee_bundle
 
     # model = Model.from_sphere(
     #     n=1600, bundle=drosophila_bundle(), orientation=aligner, neural_superposition=True
     # )
+
+    # ----------------------------------------------------------------------
+
+    # droso_head_ptich = np.deg2rad(10.1)     # drosophila head pitch in flight
+    #
+    # aligner = BundlesAligner(
+    #     equatorial_discontinuity=True,  # important for drosophila rhabdomere bundles alignment
+    #     flow_direction=np.array([0.0, np.sin(droso_head_ptich), np.cos(droso_head_ptich)]),   # optic flow in flight
+    #     diagonal_strength=1.0,
+    #     diagonal_angle_deg=45.0,
+    #     alignment_smoothing_iterations=4,
+    #     saccade_smoothing_iterations=5,
+    # )
+    #
+    # model = Model.from_file(
+    #     'species_models/drosophila_custom.npz',
+    #     bundle=drosophila_bundle(),
+    #     orientation=aligner,
+    #     neural_superposition=True,    # superposition eyes
+    # )
+
+    # ----------------------------------------------------------------------
+
+    aligner = BundlesAligner(
+        equatorial_discontinuity=False,  # no equatorial discontinuity in the bee
+        flow_direction=WORLD_BACKWARD,   # optic flow in flight
+        diagonal_strength=1.0,
+        diagonal_angle_deg=45.0,
+        alignment_smoothing_iterations=4,
+        saccade_smoothing_iterations=5,
+    )
+
+    model = Model.from_file(
+        'species_models/bee_Sturzl.npz',
+        bundle=honeybee_bundle(),
+        orientation=aligner,
+        neural_superposition=False,     # Apposition eyes
+        lattice_beta=0.9                # The Stürzl procedural lattice has zones artifacts, lowering the beta helps
+    )
 
     model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
 

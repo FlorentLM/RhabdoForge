@@ -115,13 +115,14 @@ class BundlesAligner:
         - strength: float, Overall weighting of the combed target vs. raw flow projection.
     """
     def __init__(self,
-        flow_direction: ArrayLike,
-        diagonal_strength: float = 1.0,
-        diagonal_angle_deg: float = 45.0,
-        alignment_smoothing_iterations: int = 5,
-        saccade_smoothing_iterations: int = 5,
-        falloff: float = 0.7,
-        strength: float = 1.0,
+            flow_direction: ArrayLike,
+            diagonal_strength: float = 1.0,
+            diagonal_angle_deg: float = 45.0,
+            alignment_smoothing_iterations: int = 5,
+            saccade_smoothing_iterations: int = 5,
+            equatorial_discontinuity: bool = True,
+            falloff: float = 0.7,
+            strength: float = 1.0,
         ):
 
         S = np.asarray(flow_direction, dtype=np.float32).reshape(-1)
@@ -130,6 +131,8 @@ class BundlesAligner:
             raise ValueError(f"flow_direction must be a 3-vector, got shape {S.shape}")
         if float(np.linalg.norm(S)) < 1e-8:
             raise ValueError("flow_direction has zero magnitude")
+
+        self.equatorial_discontinuity = bool(equatorial_discontinuity)
 
         self.flow_direction = S / float(np.linalg.norm(S))
 
@@ -159,22 +162,20 @@ class BundlesAligner:
 
         # Eye / hemisphere signs (geometric)
         side_map = {e.eye_index: e.side_sign for e in model.eyes}
-        eye_sign = np.array([side_map[e] for e in model.eye_index], dtype=np.float32)
-        eye_sign[eye_sign == 0] = 1.0   # midline -> left
+        bilateral_sign = np.array([side_map[e] for e in model.eye_index], dtype=np.float32)
+        bilateral_sign[bilateral_sign == 0] = 1.0   # midline -> left
 
-        hemisphere_sign = np.sign(model.positions @ e_z).astype(np.float32)
-        hemisphere_sign[hemisphere_sign == 0] = 1.0   # equator -> dorsal
+        equatorial_sign = np.sign(model.positions @ e_z).astype(np.float32)
+        equatorial_sign[equatorial_sign == 0] = 1.0   # equator -> dorsal
 
-        # Resolve chirality
-        if override_chirality is not None:
-            chirality = broadcast_1d(override_chirality, model.shape[0], 'chirality')
-        else:
-            chirality = (eye_sign * hemisphere_sign).astype(np.float32)
+        if not self.equatorial_discontinuity:
+            equatorial_sign.fill(1.0)
 
         alignment = _alignment_phasor_field(
             lens_directions=model.directions,
             e_x=e_x, e_y=e_y, e_z=e_z,
-            eye_sign=eye_sign, hemisphere_sign=hemisphere_sign,
+            eye_sign=bilateral_sign,
+            hemisphere_sign=equatorial_sign,
             strength=self.strength,
             falloff=self.falloff,
             diagonal_strength=self.diagonal_strength,
@@ -183,7 +184,7 @@ class BundlesAligner:
 
         if self.alignment_smoothing_iterations > 0:
             zone_labels = (
-                    (eye_sign > 0).astype(np.int32) * 2 + (hemisphere_sign > 0).astype(np.int32)
+                    (bilateral_sign > 0).astype(np.int32) * 2 + (equatorial_sign > 0).astype(np.int32)
             )
             alignment = smooth_field_partitioned(
                 alignment,
@@ -198,12 +199,19 @@ class BundlesAligner:
         rotated = rotate_in_tangent_plane(
             vectors=alignment,
             normals=model.directions,
-            angles=np.deg2rad(model.bundle.flow_axis_deg) * eye_sign,
+            angles=np.deg2rad(model.bundle.flow_axis_deg) * bilateral_sign,
             normalize=False
         )
 
+        # Resolve chirality (most of it is no-op if equatorial_discontinuity is False, but kept for robustness)
+
+        if override_chirality is not None:
+            chirality = broadcast_1d(override_chirality, model.shape[0], 'chirality')
+        else:
+            chirality = (bilateral_sign * equatorial_sign).astype(np.float32)
+
         # Equatorial flip: bundle point up dorsally, and down ventrally
-        ref = -hemisphere_sign[:, None] * alignment
+        ref = -equatorial_sign[:, None] * alignment
         dot_check = np.einsum('ij,ij->i', rotated, ref)
         rotated[dot_check < 0] *= -1.0
 
@@ -244,7 +252,7 @@ class BundlesAligner:
             ).astype(np.float32)
 
         # Polarise: saccade phasor consistently 'up' in the flow frame
-        sacc[hemisphere_sign < 0] *= -1.0
+        sacc[equatorial_sign < 0] *= -1.0
 
         # Make sure the polarised field really points up globally
         for eye in model.eyes:
@@ -257,8 +265,8 @@ class BundlesAligner:
             saccade_phasor=sacc.astype(np.float32),
             alignment_phasor=alignment,
             major_axis=major_axis,
-            eye_sign=eye_sign,
-            hemisphere_sign=hemisphere_sign,
+            eye_sign=bilateral_sign,
+            hemisphere_sign=equatorial_sign,
             flow_frame=(e_x, e_y, e_z),
         )
 

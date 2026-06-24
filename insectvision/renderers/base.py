@@ -270,9 +270,11 @@ class Renderer:
 
         # States flags and other things
         self._time_dithering: bool = time_dithering
-        self._microsaccades_enabled: bool = enable_microsaccades
         self._overlay_enabled: bool = False
         self.runs_interactive: bool = False
+
+        self._microsaccades_enabled: bool = None
+        self.microsaccades_enabled = enable_microsaccades
 
         self.false_colours: bool = False            # TODO: expose these (and generate UV-encoded assets for demo)
         self.uv_encoded_textures: bool = False
@@ -343,6 +345,7 @@ class Renderer:
     def _init_model_resources(self):
 
         # Allocate GPU buffers
+        rays_elements = self._model.N if self._model.bundle.fused_rhabdoms else self._model.size
 
         # Ping-pong PBOs
         self.eye_buffers.allocate('pbo_0',
@@ -383,7 +386,7 @@ class Renderer:
                                   usage=GL_DYNAMIC_DRAW)
         self.eye_buffers.allocate('rays_intermediate',
                                   dtype=np.dtype((np.float32, 4)),
-                                  count=self._model.size * self._samples_per_rhab,
+                                  count=rays_elements * self._samples_per_rhab,
                                   usage=GL_DYNAMIC_DRAW)
 
         # Async SSBO
@@ -415,6 +418,7 @@ class Renderer:
             nb_rhabdomeres=self._model.size,
             rhab_per_omm=self._model.R,
             bundle_centre_idx=self._model.bundle.center_index,
+            fused_rhabdoms=int(self._model.bundle.fused_rhabdoms),
 
             # Various visualisation parameters
             visualisation_eye_surface_albedo=1.0,
@@ -500,6 +504,7 @@ class Renderer:
             nb_rhabdomeres=self._model.size,
             rhab_per_omm=self._model.R,
             bundle_centre_idx=self._model.bundle.center_index,
+            fused_rhabdoms=int(self._model.bundle.fused_rhabdoms),
             extra_narrowing_ratio=float(self._model.bundle.extra_narrowing_ratio),
             **self._update_visualisation_scales()
         )
@@ -667,7 +672,8 @@ class Renderer:
         """
 
         # Hardware limit: rays_intermediate SSBO block size
-        max_samples_hw = self._max_ssbo_bytes // (self._model.size * 16)
+        rays_elements = self._model.N if self._model.bundle.fused_rhabdoms else self._model.size
+        max_samples_hw = self._max_ssbo_bytes // (rays_elements * 16)
         safe_samples = max(1, min(nb_samples, max_samples_hw))
 
         if safe_samples < nb_samples:
@@ -687,35 +693,35 @@ class Renderer:
 
         # PBO costs (2x model_size * 16)
         fixed_usage_bytes += self._model.size * 16 * 2
-
         fixed_mb = fixed_usage_bytes / (1024 * 1024)
         room_for_dynamic_mb = avail_mb - fixed_mb
 
         # Dynamic cost per unit (1 unit = model_size * 16 bytes)
-        unit_mb = (self._model.size * 16) / (1024 * 1024)
+        colors_unit_mb = (self._model.size * 16) / (1024 * 1024)
+        rays_unit_mb = (rays_elements * 16) / (1024 * 1024)
 
         def calc_needed():
-            return (batch_size * unit_mb) + (safe_samples * unit_mb)
+            return (batch_size * colors_unit_mb) + (safe_samples * rays_unit_mb)
 
         # If exceeding VRAM, shrink the one that isn't prioritised
         if calc_needed() > room_for_dynamic_mb:
 
             if prioritize_batch:
                 # Keep batch_size, shrink samples
-                max_samples_vram = int((room_for_dynamic_mb - (batch_size * unit_mb)) / unit_mb)
+                max_samples_vram = int((room_for_dynamic_mb - (batch_size * colors_unit_mb)) / rays_unit_mb)
                 safe_samples = max(1, min(safe_samples, max_samples_vram))
 
                 # Still too much, must still shrink batch_size
                 if calc_needed() > room_for_dynamic_mb:
-                    batch_size = max(1, int((room_for_dynamic_mb - (1 * unit_mb)) / unit_mb))
+                    batch_size = max(1, int((room_for_dynamic_mb - (1 * colors_unit_mb)) / colors_unit_mb))
             else:
                 # Keep samples, shrink batch_size
-                max_batch_vram = int((room_for_dynamic_mb - (safe_samples * unit_mb)) / unit_mb)
+                max_batch_vram = int((room_for_dynamic_mb - (safe_samples * rays_unit_mb)) / colors_unit_mb)
                 batch_size = max(1, min(batch_size, max_batch_vram))
 
                 # still too much, must still shrink samples
                 if calc_needed() > room_for_dynamic_mb:
-                    safe_samples = max(1, int((room_for_dynamic_mb - (1 * unit_mb)) / unit_mb))
+                    safe_samples = max(1, int((room_for_dynamic_mb - (1 * rays_unit_mb)) / rays_unit_mb))
 
             print(f'Warning: VRAM limit reached. Config adjusted to: Batch={batch_size}, Samples={safe_samples}')
 
@@ -761,7 +767,8 @@ class Renderer:
                     self._scene_uniforms.apply(shader)
                     self._lights_uniforms.apply(shader)
 
-                    work_groups = (self._model.size * self._samples_per_rhab + WORKGROUPS_RHAB - 1) // WORKGROUPS_RHAB
+                    rays_elements = self._model.N if self._model.bundle.fused_rhabdoms else self._model.size
+                    work_groups = (rays_elements * self._samples_per_rhab + WORKGROUPS_RHAB - 1) // WORKGROUPS_RHAB
                     glDispatchCompute(work_groups, 1, 1)
 
                     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
@@ -1320,7 +1327,8 @@ class Renderer:
             return
 
         self._samples_per_rhab = safe_samples
-        self.eye_buffers['rays_intermediate'].resize(self._model.size * self._samples_per_rhab)
+        rays_elements = self._model.N if self._model.bundle.fused_rhabdoms else self._model.size
+        self.eye_buffers['rays_intermediate'].resize(rays_elements * self._samples_per_rhab)
 
         # Update noise thresholds and uniforms
         mc_noise = 0.65 / np.sqrt(max(1, self._samples_per_rhab))
@@ -1545,7 +1553,11 @@ class Renderer:
 
     @microsaccades_enabled.setter
     def microsaccades_enabled(self, value: bool):
-        self._microsaccades_enabled = bool(value)
+        value = bool(value)
+        if value and not self._model.has_microsaccades:
+            print("Can't enable microsaccades. This eye model has 0.0 microsaccade amplitude.")
+            value = False
+        self._microsaccades_enabled = value
         self._eye_uniforms.update(enable_actuation=self._microsaccades_enabled)
 
     def dither(self):

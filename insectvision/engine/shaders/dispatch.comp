@@ -17,18 +17,22 @@ layout(std430, binding = BINDING_RAYS_INTERMEDIATE) writeonly buffer RayResultBu
 uniform uint dither_counter;
 uniform mat4 cam_to_world;
 uniform int nb_samples;
+uniform bool fused_rhabdoms;
 uniform int randomness_mode;
 uniform bool use_hybrid_sampling;
 uniform int  sampling_mode;
 
 void main() {
     uint global_id = gl_GlobalInvocationID.x;
-    uint total_rhabdomeres = rhab_static.length();
 
-    if (global_id >= (nb_samples * total_rhabdomeres)) return;    // stop if out of bounds
+    uint num_ray_groups = fused_rhabdoms ? uint(nb_ommatidia) : uint(nb_rhabdomeres);
+    if (global_id >= (nb_samples * num_ray_groups)) return;    // stop if out of bounds
 
-    uint rhab_idx = global_id / nb_samples;
+    uint ray_group_idx = global_id / nb_samples;
     uint sample_idx = global_id % nb_samples;
+
+    // If fused rhabdoms, only trace one set of rays per ommatidium
+    uint rhab_idx = fused_rhabdoms ? (ray_group_idx * rhab_per_omm) : ray_group_idx;
 
     RhabdomereStatic rs = rhab_static[rhab_idx];
     RhabdomereDynamic rd = rhab_dynamic[rhab_idx];

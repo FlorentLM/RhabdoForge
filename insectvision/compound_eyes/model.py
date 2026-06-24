@@ -934,6 +934,35 @@ class Model(SpatialQueries, BaseView):
     def lattice_beta(self, value: float):
         self._lattice_beta = float(max(0.0, value))
 
+    # High-level physiological and architectural properties
+
+    @property
+    def fused_rhabdoms(self) -> bool:
+        """Whether the photoreceptors share a single fused central waveguide."""
+        return self._bundle.fused_rhabdoms
+
+    apposition = is_apposition = fused_rhabdoms
+
+    @property
+    def equatorial_discontinuity(self) -> bool:
+        """
+        Whether the eye features a dorsal/ventral anatomical equator.
+        """
+        for eye in self.eyes:
+            chir = eye.chirality
+            if np.any(chir > 0) and np.any(chir < 0):
+                return True
+        return False
+
+    @property
+    def has_microsaccades(self) -> bool:
+        """
+        Whether the ommatidia have non-zero photomechanical actuation capabilities.
+        """
+        max_lat = float(np.max(np.abs(self._buf['ampl_lateral'])))
+        max_ax = float(np.max(np.abs(self._buf['ampl_axial'])))
+        return max_lat > 1e-6 or max_ax > 1e-6
+
     # Quick groups getters
 
     @property

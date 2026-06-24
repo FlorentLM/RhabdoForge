@@ -59,6 +59,7 @@ class RhabdomereBundle:
                  focal_um: Optional[float] = 20.0,
                  sensitivity: Union[float, ArrayLike] = 1.0,
                  wavelengths_nm: Union[float, ArrayLike] = 540.0,
+                 fused_rhabdoms: bool = False,
                  tau_membrane: float = 0.0,
                  tau_rise: float = 0.015,
                  tau_relax: float = 0.060,
@@ -70,11 +71,12 @@ class RhabdomereBundle:
                  center_index: int = 0,
                  main_axis_indices: Tuple[int, int] = (0, 0),
                  flow_axis_deg: float = 0.0,
-                 saccade_offset_deg: float = 0.0,
+                 saccade_offset_deg: float = 0.0
                  ):
 
         self.name = str(name)
         self.focal_um = float(focal_um)
+        self.fused_rhabdoms = bool(fused_rhabdoms)
 
         self.tau_membrane = float(tau_membrane)
         self.tau_rise = float(tau_rise)
@@ -361,6 +363,56 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
         main_axis_indices=(2, 5),    # R3-R6
         flow_axis_deg=-81.0,
         saccade_offset_deg=28.6,
+    )
+
+
+def honeybee_bundle(name: str = 'Honeybee') -> RhabdomereBundle:
+    """
+    Reference Apis mellifera (honeybee) worker bundle.
+    Fused rhabdoms: all 9 photoreceptors contribute to a single central waveguide.
+    """
+
+    # TODO: double check the values in this bundle
+
+    # 9 photoreceptors (R1-R9)
+    # Most common ommatidium type (Type I):
+    # - 4 Green cells (R1, R4, R5, R8)
+    # - 2 UV cells (R2, R3)
+    # - 2 Blue cells (R6, R7)
+    # - 1 Basal cell (R9) - typically UV or Green
+
+    # Sensitivities in [UV, Green, Blue] channels
+    sens = np.zeros((9, 3), dtype=np.float32)
+    sens[[1, 2]] = [1.0, 0.0, 0.0]              # UV
+    sens[[5, 6]] = [0.0, 0.0, 1.0]              # Blue
+    sens[[0, 3, 4, 7, 8]] = [0.0, 1.0, 0.0]     # Green
+
+    # Peak wavelengths (nm)
+    wavelengths = np.zeros(9, dtype=np.float32)
+    wavelengths[[1, 2]] = 340.0
+    wavelengths[[5, 6]] = 436.0
+    wavelengths[[0, 3, 4, 7, 8]] = 540.0
+
+    # Fused rhabdoms: all receptors share the optical center
+    offsets = np.zeros((9, 2), dtype=np.float32)
+
+    return RhabdomereBundle(
+        name=name,
+        fused_rhabdoms=True,
+        offsets_um=offsets,
+        diameters_um=2.2,   # fused rhabdom diameter
+        focal_um=55.0,      # apposition eye focal length
+        sensitivity=sens,
+        wavelengths_nm=wavelengths,
+
+        # TODO: ?
+        ampl_lat_um=0.0,
+        ampl_ax_um=0.0,
+
+        center_index=8,             # R9 is the basal cell
+        main_axis_indices=(0, 3),   # arbitrary since offsets are 0
+        flow_axis_deg=0.0,
+        saccade_offset_deg=0.0,
     )
 
 

@@ -13,6 +13,7 @@ layout(std430, binding = BINDING_RAYS_INTERMEDIATE) readonly buffer  RayResults 
 // Uniforms
 uniform int nb_samples;
 uniform int nb_rhabdomeres;
+uniform bool fused_rhabdoms;
 uniform int frame_offset;
 uniform float dt;   // seconds since last frame
 uniform float photon_concentration_factor;
@@ -22,9 +23,13 @@ shared vec4 s_data[256]; // Shared memory for the workgroup
 const float MAX_SAMPLE_RADIANCE = 100.0;
 
 void main() {
+    
     uint rhab_idx = gl_WorkGroupID.x;
     uint tid = gl_LocalInvocationID.x;
-    uint start_idx = rhab_idx * nb_samples;
+
+    // if fused rhabdoms, all R in the ommatidium look up the same RayResult buffer block
+    uint ray_group_idx = fused_rhabdoms ? (rhab_idx / rhab_per_omm) : rhab_idx;
+    uint start_idx = ray_group_idx * nb_samples;
 
     if (tid < nb_samples) {
         vec4 val = ray_results[start_idx + tid];
