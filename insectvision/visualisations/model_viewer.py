@@ -1,11 +1,9 @@
 from itertools import cycle
-
 import numpy as np
 import pyvista as pv
 from scipy.spatial import Delaunay
 
 from insectvision.compound_eyes import Model
-from insectvision.compound_eyes.buffers import get_metadata_field
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, RHAB_COLOURS
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD

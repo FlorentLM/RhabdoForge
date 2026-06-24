@@ -7,7 +7,7 @@ from scipy.optimize import linear_sum_assignment, LinearConstraint, milp, Bounds
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from insectvision.geometry.circular import wrap_angle
-from insectvision.geometry.neighbours import smooth_field_partitioned, knn
+from insectvision.geometry.neighbours import smooth_field_partitioned
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes.model import Model

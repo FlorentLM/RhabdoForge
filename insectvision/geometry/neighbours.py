@@ -1,6 +1,5 @@
 from typing import List, Optional, Tuple, Sequence
 import numpy as np
-from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree, Delaunay
 
 from insectvision.utils.shared import norm_l2
