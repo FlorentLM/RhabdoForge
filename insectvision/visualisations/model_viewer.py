@@ -988,16 +988,17 @@ if __name__ == "__main__":
     )
 
     model = Model.from_file(
-        # 'species_models/drosophila_custom.npz',
-        'species_models/bee_Sturzl.npz',
-        bundle=drosophila_bundle(), orientation=aligner, neural_superposition=True
+        'species_models/drosophila_custom.npz',
+        # 'species_models/bee_Sturzl.npz',
+        bundle=drosophila_bundle(), orientation=aligner, neural_superposition=True,
+        lattice_beta=0.9
     )
 
     # model = Model.from_sphere(
     #     n=1600, bundle=drosophila_bundle(), orientation=aligner, neural_superposition=True
     # )
 
-    # model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
+    model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
 
     viewer = EyeViewer(model, aligner=aligner)
     viewer.show()
