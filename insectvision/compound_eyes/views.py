@@ -405,7 +405,7 @@ class NeighbourResult:
         mask: (Q,) bool, which input queries were inside this view and got results.
         indices: (M, k) int, global ommatidia indices of the k neighbours, M = mask.sum().
         distances: (M, k) float, distances to these neighbours.
-        is_immediate: (M, k) bool or None, True where the neighbour is in the first lattice ring of the query ommatidium.
+        immediate: (M, k) bool or None, True where the neighbour is in the first lattice ring of the query ommatidium.
         same_chirality: (M, k) bool or None, True where neighbour chirality matches query.
     """
 
@@ -414,7 +414,7 @@ class NeighbourResult:
         self.mask = mask
         self.indices = indices
         self.distances = distances
-        self.is_immediate = is_immediate
+        self.immediate = is_immediate
         self.same_chirality = same_chirality
 
     def __bool__(self) -> bool:
@@ -580,25 +580,6 @@ class SpatialQueries:
         self._spatial_store['first_ring_graph'] = g
         return g
 
-    def _tag_first_ring(self, result: 'NeighbourResult', valid_global: np.ndarray) -> None:
-        """Tag result.is_immediate by Gabriel first-ring membership."""
-
-        nb = result.indices
-
-        if not nb.size:
-            result.is_immediate = np.zeros(nb.shape, dtype=bool)
-            return
-
-        graph = self._get_first_ring_graph()
-        keys, big = graph['pair_keys'], graph['big']
-        qi = np.asarray(valid_global, dtype=np.int64)[:, None]
-
-        lo = np.minimum(qi, nb).astype(np.int64)
-        hi = np.maximum(qi, nb).astype(np.int64)
-        flat = (lo * big + hi).ravel().tolist()
-
-        result.is_immediate = np.fromiter((kk in keys for kk in flat), dtype=bool, count=len(flat)).reshape(nb.shape)
-
     def _get_directional_graph(self, k: int = 8) -> dict:
         """
         For each ommatidium, its k nearest neighbours in direction space (chord
@@ -651,6 +632,39 @@ class SpatialQueries:
 
     # Some internal helpers
 
+    @staticmethod
+    def _tag_immediate_factor(result: 'NeighbourResult', dists: np.ndarray, factor: Optional[float]) -> None:
+        """
+        Tag result.immediate where distance <= factor * local scale (mean of nearest 3).
+        """
+        if factor is None or not dists.size:
+            return
+
+        n_ref = min(3, dists.shape[1])
+        local_scale = np.mean(dists[:, :n_ref], axis=1, keepdims=True)
+        result.immediate = dists <= (local_scale * float(factor))
+
+    def _tag_immediate_beta(self, result: 'NeighbourResult', valid_global: np.ndarray) -> None:
+        """
+        Tag result.immediate by β-skeleton first-ring membership.
+        """
+
+        nb = result.indices
+
+        if not nb.size:
+            result.immediate = np.zeros(nb.shape, dtype=bool)
+            return
+
+        graph = self._get_first_ring_graph()
+        keys, big = graph['pair_keys'], graph['big']
+        qi = np.asarray(valid_global, dtype=np.int64)[:, None]
+
+        lo = np.minimum(qi, nb).astype(np.int64)
+        hi = np.maximum(qi, nb).astype(np.int64)
+        flat = (lo * big + hi).ravel().tolist()
+
+        result.immediate = np.fromiter((kk in keys for kk in flat), dtype=bool, count=len(flat)).reshape(nb.shape)
+
     def _omm_chirality(self, omm_global: np.ndarray) -> np.ndarray:
         """
         +1 / -1 chirality for the given (global) ommatidium indices (read from rhabdomere slot 0).
@@ -662,18 +676,6 @@ class SpatialQueries:
 
     def _empty(self) -> 'OmmatidiumView':
         return OmmatidiumView(self.model, np.empty(0, dtype=np.intp))
-
-    @staticmethod
-    def _tag_immediate(result: 'NeighbourResult', dists: np.ndarray, factor: Optional[float]) -> None:
-        """
-        Tag result.is_immediate where distance <= factor * local scale (mean of nearest 3).
-        """
-        if factor is None or not dists.size:
-            return
-
-        n_ref = min(3, dists.shape[1])
-        local_scale = np.mean(dists[:, :n_ref], axis=1, keepdims=True)
-        result.is_immediate = dists <= (local_scale * float(factor))
 
     # Public queries
 
@@ -719,7 +721,7 @@ class SpatialQueries:
                 nb_chir = self._omm_chirality(g_neighb_indices.ravel()).reshape(g_neighb_indices.shape)
                 result.same_chirality = nb_chir == q_chir[:, None]
 
-            self._tag_first_ring(result, valid_global)
+            self._tag_immediate_beta(result, valid_global)
             return result
 
         # Points path
@@ -729,7 +731,7 @@ class SpatialQueries:
 
         result = NeighbourResult(self, mask=np.ones(points.shape[0], dtype=bool),
                                  indices=g_neighb_indices, distances=neighb_dists)
-        self._tag_immediate(result, neighb_dists, neighbour_dist_factor)
+        self._tag_immediate_factor(result, neighb_dists, neighbour_dist_factor)
         return result
 
     def _query_nearest(self,

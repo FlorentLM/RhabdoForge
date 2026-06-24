@@ -602,7 +602,7 @@ class Model(SpatialQueries, BaseView):
 
             neighb_dirs = self._buf['forward'][neighbours.indices]
             neighb_pos = self._buf['position'][neighbours.indices]
-            is_immediate = neighbours.is_immediate
+            is_immediate = neighbours.immediate
 
             # Optical IOA: angular separation in optical-axis space
             angular_sep = np.arccos(np.clip(np.einsum('ik,ijk->ij', home_dirs, neighb_dirs), -1.0, 1.0)).astype(np.float32)

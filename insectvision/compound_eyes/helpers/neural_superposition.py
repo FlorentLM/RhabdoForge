@@ -127,12 +127,26 @@ def _enumerate_candidates(zone, neighb, ctx):
         nb_dirs = ctx.forward[neighb.indices[i_loc]] - ctx.forward[i_glob]
         nb_uv = nb_dirs @ np.stack([ctx.right[i_glob], ctx.up[i_glob]], axis=1)
 
-        ang_spacing = np.nanmedian(
-            np.where(neighb.is_immediate[i_loc], np.linalg.norm(nb_uv, axis=1), np.nan))
-        if np.isnan(ang_spacing) or ang_spacing < 1e-9:
-            ang_spacing = 1.0
+        # Normalise the neighbour cloud by the local first-ring metric
+        imm = neighb.immediate[i_loc] & (neighb.indices[i_loc] != i_glob)
+        ring = nb_uv[imm]
+        if ring.shape[0] >= 4:
+            C = (ring.T @ ring) / ring.shape[0]
+            evals, evecs = np.linalg.eigh(C)
+            evals = np.clip(evals, 1e-12, None)
+            # Cap per-axis stretch (3:1) so a one-sided boundary ring can't blow up
+            evals = np.maximum(evals, evals.max() / 9.0)
+            W = evecs @ np.diag(evals ** -0.5) @ evecs.T
+            nb_w = nb_uv @ W.T
+            scale = np.nanmedian(np.linalg.norm(nb_w[imm], axis=1))
+        else:
+            nb_w = nb_uv  # too few first-ring neighbours: isotropic
+            scale = np.nanmedian(np.linalg.norm(ring, axis=1)) if ring.size else 1.0
 
-        nb_i = (nb_uv[:, 0] + 1j * nb_uv[:, 1]) / ang_spacing
+        if not np.isfinite(scale) or scale < 1e-9:
+            scale = 1.0
+        nb_i = (nb_w[:, 0] + 1j * nb_w[:, 1]) / scale
+
         valid_nb = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
 
         # Dedup candidates that are essentially the same
@@ -495,10 +509,18 @@ def refine_chi(
     lens_err[~measurable] = 0.0
     lens_scale[~measurable] = 1.0
 
-    groups = [eye.indices for eye in model.eyes]
+    groups = []
     neighbours = []
     for eye in model.eyes:
-        _, nb = knn(eye._get_tree('directions'), model.directions[eye.indices], k=6)
+
+        adj = eye._get_first_ring_graph()['adjacency']
+        width = max((a.size for a in adj), default=0)
+        nb = np.full((len(adj), max(width, 1)), -1, dtype=np.intp)
+
+        for i, a in enumerate(adj):
+            nb[i, :a.size] = a
+
+        groups.append(eye.indices)
         neighbours.append(nb)
 
     smoothed_err = smooth_field_partitioned(
