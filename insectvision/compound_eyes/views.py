@@ -16,7 +16,7 @@ from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
-from insectvision.geometry.linalg import tangent_frames
+from insectvision.geometry.linalg import tangent_frames, local_to_world
 from insectvision.geometry.neighbours import knn, top_k_facing, beta_skeleton_neighbours
 from insectvision.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo
@@ -239,15 +239,7 @@ class BaseView:
     @property
     def chirality(self) -> np.ndarray:
         """Returns +1 or -1 for each ommatidium."""
-        neg = self._buffer['chirality_neg', self.omm_indices * self.R]
-        return np.where(neg == 1, -1.0, 1.0).astype(np.float32)
-
-    def _local_to_world(self, vec2: ArrayLike) -> np.ndarray:
-        """Project (N, 2) tangent-plane vectors (in right/up coords) into world (N, 3)."""
-        r = self._buffer['right', self.omm_indices]
-        u = self._buffer['up', self.omm_indices]
-        vec2 = np.asarray(vec2, dtype=np.float32)
-        return vec2[:, 0:1] * r + vec2[:, 1:2] * u
+        return self._omm_chirality(self.omm_indices)
 
     def _focal_axis_local(self, theta) -> np.ndarray:
         """
@@ -284,25 +276,17 @@ class BaseView:
     @property
     def orientation_field(self) -> np.ndarray:
         """Bundle local X-axis (chi) projected into world space. Shape (N, 3)."""
-        return self._local_to_world(self.orientation_field_local)
+        return local_to_world(self.orientation_field_local, self.right, self.up)
 
     @property
     def main_axis_field(self) -> np.ndarray:
         """Bundle main axis (e.g. R3-R6) projected into world space. Shape (N, 3)."""
-        return self._local_to_world(self.main_axis_field_local)
+        return local_to_world(self.main_axis_field_local, self.right, self.up)
 
     @property
     def saccade_field(self) -> np.ndarray:
         """Microsaccade actuation axis in world coordinates. Shape (N, 3)."""
-        return self._local_to_world(self.saccade_field_local)
-
-    # @property
-    # def saccade_field(self) -> np.ndarray:
-    #     """Per-ommatidium microsaccade actuation axis in world coordinates. Shape (N, 3)."""
-    #     saccade = self._buffer['saccade_dxdy', self.omm_indices]
-    #     r = self._buffer['right', self.omm_indices]
-    #     u = self._buffer['up', self.omm_indices]
-    #     return saccade[:, 0][:, None] * r + saccade[:, 1][:, None] * u
+        return local_to_world(self.saccade_field_local, self.right, self.up)
 
     # retina_field = ViewField('retina_dxdy', 'ommatidia')      # TODO: disabled for now
 
@@ -356,20 +340,17 @@ class BaseView:
 
     @property
     def cartridge_indices(self) -> np.ndarray:
-        """(N, R) global donor rhabdomere index per slot (= the gather table).
-        Unwired slots map to the home rhabdomere, so the table is always a valid gather."""
-        rhab = self.omm_indices[..., None] * self.R + np.arange(self.R, dtype=np.intp)
-        src = self._buffer['cartridge_src', rhab].reshape(self.N, self.R)
-        return src.astype(np.intp)
+        """(N, R) global donor rhabdomere index per slot (= the gather table)."""
+        return self._buffer['cartridge_src', self.rhab_indices].reshape(self.shape).astype(np.intp)
 
     @property
     def cartridge_map(self) -> np.ndarray:
         """(N, R) donor ommatidium per slot (-1 where unwired)."""
         if not self.neural_superposition:
             return np.full((self.N, self.R), -1, dtype=np.intp)
-        rhab = self.omm_indices[..., None] * self.R + np.arange(self.R, dtype=np.intp)
-        src = self._buffer['cartridge_src', rhab].reshape(self.N, self.R)
-        is_wired = self._buffer['is_wired', rhab].reshape(self.N, self.R).astype(bool)
+
+        src = self._buffer['cartridge_src', self.rhab_indices].reshape(self.shape)
+        is_wired = self._buffer['is_wired', self.rhab_indices].reshape(self.shape).astype(bool)
         return np.where(is_wired, (src // self.R).astype(np.intp), -1)
 
     @property
@@ -828,7 +809,9 @@ class SpatialQueries:
             degrees: bool = True,
             avoid_conflicts: bool = False,
         ) -> 'OmmatidiumView':
-        """All ommatidia whose optical axis lies within 'angle' of 'center_direction'."""
+        """
+        All ommatidia whose optical axis lies within 'angle' of 'center_direction'.
+        """
         c = np.asarray(center_direction, dtype=np.float32)
         n = float(np.linalg.norm(c))
         if n < 1e-12:
@@ -841,22 +824,75 @@ class SpatialQueries:
             radius: float,
             avoid_conflicts: bool = False,
         ) -> 'OmmatidiumView':
-        """All ommatidia whose world-space position is within 'radius' of 'center_position'."""
+        """
+        All ommatidia whose world-space position is within 'radius' of 'center_position'.
+        """
         return self._query_ball('positions', center_position, radius, avoid_conflicts)
 
+    def _suggest_k_search(self, distance_rad: float, ring_margin: int = 1, k_min: int = 15) -> int:
+        """
+        How many direction-space neighbours must be scanned for 'directed_neighbours'
+        to reach a stride of 'distance_rad'.
+
+        Note: lenses within m hex-rings ~= 1 + 3 m (m + 1).
+        Falls back to 'k_min'.
+        """
+
+        n = len(self)
+        if distance_rad <= 0 or n <= 1:
+            return min(k_min, n - 1)
+
+        ioa = self.interommatidial_angles
+        if ioa.size == 0:
+            return min(k_min, n - 1)
+
+        # Median minor IOA over the eye gives robust global estimate
+        delta_phi = float(np.median(ioa[:, 0]))
+        if not np.isfinite(delta_phi) or delta_phi <= 0:
+            return min(k_min, n - 1)
+
+        # Rings needed = distance / pitch
+        m = int(np.ceil(distance_rad / delta_phi)) + int(ring_margin)
+        # Hexagonal packing formula: neighbours in m rings = 1 + 3m(m+1)
+        k_needed = 1 + 3 * m * (m + 1)
+        return int(np.clip(k_needed, k_min, n - 1))
+    
     def directed_neighbours(self,
-            direction: ArrayLike,
-            query: Optional[ArrayLike] = None,
-            k: int = 1,
-            coordinate: str = 'spherical',
-            return_weights: bool = False,
-            k_search: int = 8,
-        ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+                            direction: ArrayLike,
+                            query: Optional[ArrayLike] = None,
+                            k: int = 1,
+                            distance: float = 0.0,
+                            coordinate: str = 'spherical',
+                            return_weights: bool = False,
+                            k_search: Optional[int] = None,
+                            ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
-        For each ommatidium, the k lattice neighbour(s) lying closest to a search
-        direction. See the long-form docstring in the original implementation;
-        behaviour is unchanged.
+        Finds the k nearest lattice neighbours to a specific vector in the tangent plane.
+
+        Projects a global search direction into the local tangent frame of each ommatidium.
+        If 'distance' is provided, it searches for a neighbour at that specific angular offset (a 'stride').
+
+        Args:
+            - direction: (2,) or (3,) array. The search direction in world coordinates.
+            - query: Optional global indices to restrict the query. If None, all ommatidia in the view are used.
+            - k: Number of neighbours to return per ommatidium.
+            - distance: Target angular distance (radians). If 0.0, the nearest
+                neighbour in that direction is returned regardless of distance.
+            - coordinate: 'spherical' (az/el) or 'cartesian' (x/y/z) for the input direction.
+            - return_weights: If True, returns a weight (0.0 to 1.0) representing
+                how closely the found neighbour matches the target vector.
+            - k_search: Number of nearest neighbours to evaluate. Set to None or -1 for auto.
+
+        Returns:
+            If return_weights is False:
+                indices: (Q,) or (Q, k) array of global ommatidium indices.
+            If return_weights is True:
+                (indices, weights): Tuple of indices and float32 weights.
         """
+
+        if k_search is None or k_search < 0:
+            k_search = self._suggest_k_search(distance)
+
         graph = self._get_directional_graph(k_search)
 
         if query is None:
@@ -871,7 +907,6 @@ class SpatialQueries:
 
         local_x = graph['local_x'][valid_local]
         local_y = graph['local_y'][valid_local]
-
         direction = np.asarray(direction, dtype=np.float32)
 
         if coordinate.lower() == 'spherical':
@@ -880,8 +915,10 @@ class SpatialQueries:
 
             d_az, d_el = direction[0], direction[1]
             dirs = self.directions[valid_local]
+
             az, el = cartesian_to_spherical(dirs)
             az_grad, el_grad = spherical_gradients(az, el)
+
             target_world = d_az * az_grad + d_el * el_grad
             target_dx = np.sum(target_world * local_x, axis=1)
             target_dy = np.sum(target_world * local_y, axis=1)
@@ -891,49 +928,63 @@ class SpatialQueries:
                 raise ValueError("Cartesian coordinates require 'direction' of shape (3,) for x, y, z")
             target_dx = local_x @ direction
             target_dy = local_y @ direction
-
         else:
             raise ValueError("Coordinates must be 'spherical' or 'cartesian'")
 
+        # Scale target by distance or normalise to unit vector
         target_norms = np.hypot(target_dx, target_dy)
-        zero_mask = target_norms < 1e-12
-        target_dx_n = np.where(zero_mask, 1.0, target_dx / np.where(zero_mask, 1.0, target_norms))
-        target_dy_n = np.where(zero_mask, 0.0, target_dy / np.where(zero_mask, 1.0, target_norms))
-        target_angle = np.arctan2(target_dy_n, target_dx_n)
+        safe = np.where(target_norms < 1e-12, 1.0, target_norms)
+        target_dx /= safe
+        target_dy /= safe
+
+        if distance > 0:
+            target_chord = angle_to_chord(distance)
+            target_dx *= target_chord
+            target_dy *= target_chord
 
         nb_proj_x = graph['proj_x'][valid_local]
         nb_proj_y = graph['proj_y'][valid_local]
         nb_local = graph['neighbour_local_indices'][valid_local]
 
-        nb_angles = np.arctan2(nb_proj_y, nb_proj_x)
-        score = np.abs(wrap_angle(nb_angles - target_angle[:, None]))
-        score = np.where(score > (np.pi / 2.0), 1e6, score)   # reject anything >90 deg off
+        # Calculate distance in tangent plane to all candidates
+        dist_sq = (nb_proj_x - target_dx[:, None]) ** 2 + (nb_proj_y - target_dy[:, None]) ** 2
 
-        k_eff = min(k, score.shape[1])
-        if k_eff <= 0:
-            indices = np.zeros(Q, dtype=np.intp) if k == 1 else np.zeros((Q, k), dtype=np.intp)
-            if return_weights:
-                w = target_norms if k == 1 else np.tile(target_norms[:, None], (1, k))
-                return indices, w
-            return indices
-
+        # Extract k best
+        k_eff = min(k, dist_sq.shape[1])
         if k_eff == 1:
-            best = np.argmin(score, axis=1)
-            indices = self.omm_indices[nb_local[np.arange(Q), best]]
-            if k > 1:
-                indices = np.tile(indices[:, None], (1, k))
+            best_idx = np.argmin(dist_sq, axis=1)
+            rows = np.arange(Q)
+            indices = self.omm_indices[nb_local[rows, best_idx]]
+            if return_weights:
+                actual_dist = np.sqrt(dist_sq[rows, best_idx])
+
+                # Normalised weight: 1.0 at target, 0.0 at distance away
+                w_scale = angle_to_chord(distance) if distance > 0 else 1.0
+                weights = np.clip(1.0 - (actual_dist / w_scale), 0.0, 1.0)
         else:
-            top_k_local = np.argpartition(score, k_eff - 1, axis=1)[:, :k_eff]
-            order = np.argsort(np.take_along_axis(score, top_k_local, axis=1), axis=1)
-            indices = self.omm_indices[np.take_along_axis(nb_local, np.take_along_axis(top_k_local, order, axis=1), axis=1)]
+
+            # Multi-neighbour logic
+            top_k_local = np.argpartition(dist_sq, k_eff - 1, axis=1)[:, :k_eff]
+            rows = np.arange(Q)[:, None]
+
+            subset_dist = dist_sq[rows, top_k_local]
+            sub_order = np.argsort(subset_dist, axis=1)
+
+            final_local_idx = np.take_along_axis(top_k_local, sub_order, axis=1)
+            indices = self.omm_indices[np.take_along_axis(nb_local, final_local_idx, axis=1)]
 
             if k > k_eff:
-                pad = np.tile(indices[:, 0:1], (1, k - k_eff))
-                indices = np.concatenate([indices, pad], axis=1)
+                indices = np.pad(indices, ((0, 0), (0, k - k_eff)), mode='edge')
+
+            if return_weights:
+                actual_dist = np.sqrt(np.take_along_axis(subset_dist, sub_order, axis=1))
+                w_scale = angle_to_chord(distance) if distance > 0 else 1.0
+                weights = np.clip(1.0 - (actual_dist / w_scale), 0.0, 1.0)
+                if k > k_eff:
+                    weights = np.pad(weights, ((0, 0), (0, k - k_eff)), mode='constant', constant_values=0.0)
 
         if return_weights:
-            w = target_norms if k == 1 else np.tile(target_norms[:, None], (1, k))
-            return indices, w.astype(np.float32)
+            return indices, weights.astype(np.float32)
 
         return indices
 
@@ -1072,10 +1123,11 @@ class RhabdomereView(BaseView):
         fwd = self._buffer['forward', omm]
         right = self._buffer['right', omm]
         up = self._buffer['up', omm]
-        focal = np.asarray(self._buffer['focal_um', omm], dtype=np.float32)[:, None]
+        focal = np.asarray(self._buffer['focal_um', omm], dtype=np.float32)
         off = np.asarray(self._buffer['rest_offset', self.rhab_indices], dtype=np.float32)
-        d = fwd * focal + right * off[:, 0:1] + up * off[:, 1:2]
-        return norm_l2(d).astype(np.float32)
+        tip_local = np.column_stack([off, -focal[:, None]])
+        d = local_to_world(tip_local, right, up, fwd)
+        return norm_l2(-d).astype(np.float32)
 
 
 class EyeView(OmmatidiumView):

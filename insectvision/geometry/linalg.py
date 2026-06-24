@@ -5,6 +5,19 @@ from numpy.typing import ArrayLike
 from insectvision.utils.shared import norm_l2
 
 
+def _match_batch(a, b):
+    """
+    Ensures 'a' and 'b' can broadcast by injecting size-1 dimensions before the last dimension.
+    """
+    a, b = np.asarray(a), np.asarray(b)
+    while a.ndim < b.ndim:
+        a = np.expand_dims(a, axis=-2)
+    while b.ndim < a.ndim:
+        b = np.expand_dims(b, axis=-2)
+    return a, b
+
+
+
 def tangent_frames(
         directions: ArrayLike,
         world_up: Optional[ArrayLike] = None,
@@ -54,11 +67,16 @@ def tangent_bearing(
     Project (target - home) onto a (right, up) tangent plane and return the bearing.
     """
 
-    delta = np.asarray(target_directions) - np.asarray(home_directions)
-    u = np.sum(delta * np.asarray(right), axis=-1)
-    v = np.sum(delta * np.asarray(up), axis=-1)
-    bearing = np.arctan2(v, u)
+    target, home = _match_batch(target_directions, home_directions)
+    delta = target - home
 
+    r_vec = _match_batch(delta, right)[1]
+    u_vec = _match_batch(delta, up)[1]
+
+    u = np.einsum('...k,...k->...', delta, r_vec)
+    v = np.einsum('...k,...k->...', delta, u_vec)
+
+    bearing = np.arctan2(v, u)
     return np.rad2deg(bearing) if degrees else bearing
 
 
@@ -121,13 +139,15 @@ def local_to_world(coords: ArrayLike, *basis: ArrayLike) -> np.ndarray:
     Express local coordinates in world space against a set of basis vectors.
     The result is *not* renormalised.
     """
-    coords = np.asarray(coords)
+
+    out_coords = np.asarray(coords)
     if coords.shape[-1] != len(basis):
-        raise ValueError(
-            f"local_to_world: coords last axis ({coords.shape[-1]}) must equal "
-            f"the number of basis vectors ({len(basis)})"
-        )
-    out = coords[..., 0, None] * np.asarray(basis[0])
+        raise ValueError(f'local_to_world: coords last axis must equal number of basis vectors')
+
+    b0 = _match_batch(out_coords, basis[0])[1]
+    out = out_coords[..., 0, None] * b0
+
     for i in range(1, len(basis)):
-        out = out + coords[..., i, None] * np.asarray(basis[i])
+        bi = _match_batch(out_coords, basis[i])[1]
+        out = out + out_coords[..., i, None] * bi
     return out

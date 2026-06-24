@@ -13,7 +13,7 @@ from insectvision.engine.meshes import icosphere, fibonacci_sphere
 from insectvision.engine.world_utils import WORLD_FORWARD
 from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
-from insectvision.geometry.linalg import tangent_frames, local_to_world
+from insectvision.geometry.linalg import tangent_frames, local_to_world, tangent_bearing
 from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned
 from insectvision.geometry.spherical import angle_to_chord
 from insectvision.compound_eyes.buffers import Buffer
@@ -466,13 +466,7 @@ class Model(SpatialQueries, BaseView):
         nodal_dist = self._bundle.focal_um or np.median(self._buf['focal_um'])
 
         tip_local = np.stack([rot_dx, rot_dy, np.full(self.shape, -nodal_dist, dtype=np.float32)], axis=-1)
-
-        tip_world = local_to_world(
-            tip_local,
-            self._buf['right'][:, None, :],
-            self._buf['up'][:, None, :],
-            self._buf['forward'][:, None, :]
-        )
+        tip_world = local_to_world(tip_local, self._buf['right'], self._buf['up'], self._buf['forward'])
 
         # Initialise the actuated direction
         self._buf['curr_direction'] = norm_l2(-tip_world).astype(np.float32)
@@ -625,8 +619,7 @@ class Model(SpatialQueries, BaseView):
 
             delta_pos = neighb_pos - home_pos[:, None, :]
 
-            # Bearings in home ommatidium's tangent frame
-            bearings = np.arctan2(np.einsum('ijk,ik->ij', delta_pos, home_up), np.einsum('ijk,ik->ij', delta_pos, home_right))
+            bearings = tangent_bearing(neighb_pos, home_pos, home_right, home_up)
 
             # Hexatic order over the first ring
             z_avg = resultant(angles=bearings, weights=is_immediate, axis=1, fold=6)
