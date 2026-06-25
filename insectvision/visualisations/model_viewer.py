@@ -1031,29 +1031,11 @@ if __name__ == "__main__":
 
     # ----------------------------------------------------------------------
 
-    # droso_head_ptich = np.deg2rad(10.1)     # drosophila head pitch in flight
-    #
-    # aligner = BundlesAligner(
-    #     equatorial_discontinuity=True,  # important for drosophila rhabdomere bundles alignment
-    #     flow_direction=np.array([0.0, np.sin(droso_head_ptich), np.cos(droso_head_ptich)]),   # optic flow in flight
-    #     diagonal_strength=1.0,
-    #     diagonal_angle_deg=45.0,
-    #     alignment_smoothing_iterations=4,
-    #     saccade_smoothing_iterations=5,
-    # )
-    #
-    # model = Model.from_file(
-    #     'species_models/drosophila_custom.npz',
-    #     bundle=drosophila_bundle(),
-    #     orientation=aligner,
-    #     neural_superposition=True,    # superposition eyes
-    # )
-
-    # ----------------------------------------------------------------------
+    droso_head_ptich = np.deg2rad(10.1)     # drosophila head pitch in flight
 
     aligner = BundlesAligner(
-        equatorial_discontinuity=False,  # no equatorial discontinuity in the bee
-        flow_direction=WORLD_BACKWARD,   # optic flow in flight
+        equatorial_discontinuity=True,  # important for drosophila rhabdomere bundles alignment
+        flow_direction=np.array([0.0, np.sin(droso_head_ptich), np.cos(droso_head_ptich)]),   # optic flow in flight
         diagonal_strength=1.0,
         diagonal_angle_deg=45.0,
         alignment_smoothing_iterations=4,
@@ -1061,12 +1043,32 @@ if __name__ == "__main__":
     )
 
     model = Model.from_file(
-        'species_models/bee_Sturzl.npz',
-        bundle=honeybee_bundle(),
+        'species_models/drosophila_custom.npz',
+        bundle=drosophila_bundle(),
         orientation=aligner,
-        neural_superposition=False,     # Apposition eyes
-        lattice_beta=0.9                # The Stürzl procedural lattice has zones artifacts, lowering the beta helps
+        neural_superposition=True,    # superposition eyes
     )
+
+    # ----------------------------------------------------------------------
+
+    # aligner = BundlesAligner(
+    #     equatorial_discontinuity=False,  # no equatorial discontinuity in the bee
+    #     flow_direction=WORLD_BACKWARD,   # optic flow in flight
+    #     diagonal_strength=1.0,
+    #     diagonal_angle_deg=45.0,
+    #     alignment_smoothing_iterations=4,
+    #     saccade_smoothing_iterations=5,
+    # )
+    #
+    # model = Model.from_file(
+    #     'species_models/bee_Sturzl.npz',
+    #     bundle=honeybee_bundle(),
+    #     orientation=aligner,
+    #     neural_superposition=False,     # Apposition eyes
+    #     lattice_beta=0.9                # The Stürzl procedural lattice has zones artifacts, lowering the beta helps
+    # )
+
+    # ----------------------------------------------------------------------
 
     model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
 
