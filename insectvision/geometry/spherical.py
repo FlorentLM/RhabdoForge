@@ -1,4 +1,3 @@
-from __future__ import annotations
 from typing import Tuple
 import numpy as np
 from numpy.typing import ArrayLike

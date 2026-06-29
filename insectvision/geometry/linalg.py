@@ -105,6 +105,7 @@ def rotate_in_tangent_plane(
     return rotated.astype(np.float32)
 
 
+# TODO: This one is unused, might get rid of
 def rotate_vectors(
         vectors: Union[np.ndarray, list],
         axes: Union[np.ndarray, list],

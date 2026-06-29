@@ -24,7 +24,6 @@ from insectvision.compound_eyes.helpers.neural_superposition import (
 from insectvision.compound_eyes.helpers.acceptance import (
     AcceptanceModel, SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
 )
-from insectvision.compound_eyes.helpers.ommatidia_lattice import voronoi_estimation
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner, AlignmentResult, apply_chirality, trivial_alignment
 from insectvision.compound_eyes.views import SpatialQueries, BaseView, logger, OmmatidiumView, EyeView, RhabdomereView
 
@@ -663,43 +662,75 @@ class Model(SpatialQueries, BaseView):
 
         return ioa_angles, ioa_tilts, ioa_order, spacing
 
-    def _estimate_apertures(self, ioa_spacing: np.ndarray, fallback_aperture: float = 20.0) -> np.ndarray:
+    def _estimate_apertures(self,
+            ioa_spacing: np.ndarray,
+            fallback_aperture: float = 20.0
+        ) -> np.ndarray:
         """
-        Estimate per-lens aperture (diameter, μm) when none is supplied.
-
-        Starts from a lattice-spacing estimate (packing factor x first-ring spacing,
-        with a fallback for degenerate spacing), refines it (per eye) with a Voronoi
-        area estimator, then denoises the field once with an angular-metric median smooth.
-
-        Args:
-            - ioa_spacing: Interommatidial spacing
-            - fallback_aperture: Last resort fallback value if can't estimate at all
+        Estimate per-lens aperture (diameter, μm) using the β-skeleton area dual.
         """
 
-        # Base estimate from lattice spacing
+        # Base fallback from median spacing
         diameters = (self._lens_packing * ioa_spacing).astype(np.float32)
-
-        # Fallback for degenerate spacing: median of valid spacings
         valid_diameters = diameters[diameters > 0]
         fallback_val = np.median(valid_diameters) if valid_diameters.size > 0 else fallback_aperture
         diameters = np.where(diameters > 0, diameters, fallback_val)
 
-        min_omm = 1 + 6 + 12 # central ommatidium + 6 first ring neighbours + 12 second ring neighbours
-
         for eye in self._eyes:
-            if len(eye) > min_omm:
-                try:
-                    diameters[eye.indices] = voronoi_estimation(
-                        self._buf['position'][eye.indices],
-                        self._buf['forward'][eye.indices],
-                        tree=eye._get_tree('positions'),
-                        packing=self._lens_packing
-                    )
-                except Exception:
-                    # Voronoi estimator unavailable: keep the spacing estimate for this eye
-                    logger.debug(f"Eye {eye.eye_index}: Voronoi estimation facet diameter failed, using spacing estimate.")
 
-        # Denoise the single-edge readout across the whole field
+            graph = eye._get_first_ring_graph()
+            pts3d = self._buf['position'][eye.indices]
+
+            n = len(eye)
+            if n < 3:
+                continue
+
+            # Reconstruct the 3D triangles from the β-skeleton edges
+            from scipy.spatial import Delaunay
+            tri = Delaunay(graph['points2d']).simplices
+
+            # Filter to only keep triangles where all 3 edges exist in the β-skeleton
+            # (removes degenerate boundary tris)
+            keys = graph['pair_keys']
+            big = graph['big']
+
+            def is_valid_tri(t):
+                edges = [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]
+                for a, b in edges:
+                    lo, hi = min(a, b), max(a, b)
+                    if (lo * big + hi) not in keys:
+                        return False
+                return True
+
+            valid_simplices = np.array([t for t in tri if is_valid_tri(t)])
+
+            if len(valid_simplices) == 0:
+                continue
+
+            # True 3D area of each triangle
+            A = pts3d[valid_simplices[:, 0]]
+            B = pts3d[valid_simplices[:, 1]]
+            C = pts3d[valid_simplices[:, 2]]
+
+            cross_prod = np.cross(B - A, C - A)
+            tri_areas = 0.5 * np.linalg.norm(cross_prod, axis=1)
+
+            # Accumulate 1/3 of the triangle's area to each of its 3 vertices
+            point_areas = np.zeros(n)
+            np.add.at(point_areas, valid_simplices[:, 0], tri_areas / 3.0)
+            np.add.at(point_areas, valid_simplices[:, 1], tri_areas / 3.0)
+            np.add.at(point_areas, valid_simplices[:, 2], tri_areas / 3.0)
+
+            # Convert area back to hex flat-to-flat diameter
+            mask = point_areas > 0
+            calculated_diameters = self._lens_packing * np.sqrt(2.0 * point_areas[mask] / np.sqrt(3.0))
+
+            # Apply only to interior points (boundary points just keep their ioa_spacing estimate)
+            update_mask = mask & eye.is_interior
+
+            diameters[eye.indices[update_mask]] = calculated_diameters[update_mask[mask]]
+
+        # Denoise
         return self._smooth_aperture_field(diameters, k=6, n_iter=2, method='median', metric='angular')
 
     def _smooth_aperture_field(

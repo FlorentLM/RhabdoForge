@@ -38,36 +38,6 @@ def phasor_from_points(points2d: np.ndarray, neighbours: Sequence[int] | Sequenc
     return z6
 
 
-def hexatic_rest_vectors(edge_vec: np.ndarray, theta, length) -> np.ndarray:
-    """
-    Rest vectors for oriented springs.
-
-    For each edge (row of 'edge_vec'), snap its bearing to the nearest local
-    hexatic axis line, and return a vector of magnitude 'length' along that line,
-    signed to point the same way as 'edge_vec' (so the spring never tries to flip an edge by 180 deg)
-    """
-
-    edge_vec = np.asarray(edge_vec, dtype=np.float64)
-    length = np.asarray(length, dtype=np.float64)
-    theta = np.asarray(theta, dtype=np.float64)
-    bearing = np.arctan2(edge_vec[:, 1], edge_vec[:, 0], dtype=np.float64)
-
-    axes = theta[..., None] + np.array([0.0, np.pi / 3.0, 2.0 * np.pi / 3.0])
-
-    # signed distance to each axis line, folded into (-pi/2, pi/2]
-    d = np.angle(np.exp(2j * (bearing[..., None] - axes))) / 2.0
-    k = np.argmin(np.abs(d), axis=-1)
-
-    snap = np.take_along_axis(axes, k[..., None], axis=-1)[..., 0]
-
-    rest = length[:, None] * np.stack([np.cos(snap), np.sin(snap)], axis=1)
-    flip = np.einsum('ij,ij->i', rest, edge_vec) < 0.0
-
-    rest[flip] *= -1.0
-
-    return rest
-
-
 def hexatic_axis_field(
         points2d: ArrayLike,
         neighbours: Optional[ArrayLike] = None,
