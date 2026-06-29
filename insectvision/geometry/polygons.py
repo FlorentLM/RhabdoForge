@@ -55,6 +55,74 @@ def polygon_centroid(points2d: np.ndarray) -> np.ndarray:
     return (centroids * areas[:, None]).sum(axis=0) / total
 
 
+def weighted_polygon_centroids(
+        cells: Sequence[Optional[np.ndarray]],
+        fallback: np.ndarray,
+        weight_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+        clip_equations: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Weighted centroids of a set of (optionally clipped) ordered polygons.
+
+    Each cell is fan-decomposed, each fan triangle is weighted by its area times
+    'weight_fn' (evaluated at the triangle centroid), and the cell's result is the
+    weighted mean of those centroids.
+
+    Fallback per cell i: weighted centroid -> (if zero weight) polygon vertex mean -> (if no usable polygon) fallback[i]
+
+    Args:
+        cells: length-N sequence of (n_i, 2) ordered vertex arrays
+        fallback: (N, 2) default position per cell (e.g. the current points)
+        weight_fn: (M, 2) -> (M,) weights at query points
+            None -> area only (= geometric centroid)
+        clip_equations: Optional, half-plane rows, each cell is clipped against
+            them (Sutherland-Hodgman) before decomposition.
+    """
+    fallback = np.asarray(fallback, dtype=np.float64)
+    n = len(cells)
+    if fallback.shape[0] != n:
+        raise ValueError(f"fallback has {fallback.shape[0]} rows but there are {n} cells")
+
+    out = fallback.copy()
+    poly_mean = np.full((n, 2), np.nan)  # per valid-but-zero-weight cell
+
+    centroids_all, areas_all, owner_all = [], [], []
+    for i, cell in enumerate(cells):
+        if cell is None or len(cell) < 3:
+            continue
+
+        poly = cell if clip_equations is None else clip_polygon(cell, clip_equations)
+        if len(poly) < 3:
+            continue
+
+        poly_mean[i] = polygon_centroid(poly)
+
+        cents, areas = fan_decompose(poly)
+        keep = areas > 1e-14
+        if keep.any():
+            centroids_all.append(cents[keep])
+            areas_all.append(areas[keep])
+            owner_all.append(np.full(int(keep.sum()), i))
+
+    has_cell = np.isfinite(poly_mean[:, 0])
+    out[has_cell] = poly_mean[has_cell]  # default = polygon vertex mean
+    if not centroids_all:
+        return out
+
+    C = np.vstack(centroids_all)
+    owner = np.concatenate(owner_all)
+    w = np.concatenate(areas_all)
+    if weight_fn is not None:
+        w = w * np.asarray(weight_fn(C)).ravel()
+
+    den = np.bincount(owner, weights=w, minlength=n)
+    num = np.stack([np.bincount(owner, weights=w * C[:, 0], minlength=n),
+                    np.bincount(owner, weights=w * C[:, 1], minlength=n)], axis=1)
+    good = den > 1e-16
+    out[good] = num[good] / den[good, None]  # override with weighted centroid
+    return out
+
+
 def order_polygon_ccw(points2d: np.ndarray) -> np.ndarray:
     """
     Order polygon vertices counter-clockwise about their centroid.
@@ -156,72 +224,6 @@ def voronoi_cells(vor: Voronoi, n_cells: Optional[int] = None) -> list:
         else:
             cells.append(vor.vertices[region])
     return cells
-
-
-def weighted_polygon_centroids(
-        cells: Sequence[Optional[np.ndarray]],
-        fallback: np.ndarray,
-        weight_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
-        clip_equations: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    """
-    Weighted centroids of a set of (optionally clipped) ordered polygons.
-
-    Each cell is fan-decomposed, each fan triangle is weighted by its area times
-    'weight_fn' (evaluated at the triangle centroid), and the cell's result is the
-    weighted mean of those centroids.
-
-    Fallback per cell i: weighted centroid -> (if zero weight) polygon vertex mean -> (if no usable polygon) fallback[i]
-
-    Args:
-        cells: length-N sequence of (n_i, 2) ordered vertex arrays
-        fallback: (N, 2) default position per cell (e.g. the current points)
-        weight_fn: (M, 2) -> (M,) weights at query points
-            None -> area only (= geometric centroid)
-        clip_equations: Optional, half-plane rows, each cell is clipped against
-            them (Sutherland-Hodgman) before decomposition.
-    """
-    fallback = np.asarray(fallback, dtype=np.float64)
-    n = len(cells)
-    if fallback.shape[0] != n:
-        raise ValueError(f"fallback has {fallback.shape[0]} rows but there are {n} cells")
-
-    out = fallback.copy()
-    poly_mean = np.full((n, 2), np.nan)  # per valid-but-zero-weight cell
-
-    centroids_all, areas_all, owner_all = [], [], []
-    for i, cell in enumerate(cells):
-        if cell is None or len(cell) < 3:
-            continue
-        poly = cell if clip_equations is None else clip_polygon(cell, clip_equations)
-        if len(poly) < 3:
-            continue
-        poly_mean[i] = np.asarray(poly, dtype=np.float64).mean(axis=0)
-
-        cents, areas = fan_decompose(poly)
-        keep = areas > 1e-14
-        if keep.any():
-            centroids_all.append(cents[keep])
-            areas_all.append(areas[keep])
-            owner_all.append(np.full(int(keep.sum()), i))
-
-    has_cell = np.isfinite(poly_mean[:, 0])
-    out[has_cell] = poly_mean[has_cell]  # default = polygon vertex mean
-    if not centroids_all:
-        return out
-
-    C = np.vstack(centroids_all)
-    owner = np.concatenate(owner_all)
-    w = np.concatenate(areas_all)
-    if weight_fn is not None:
-        w = w * np.asarray(weight_fn(C)).ravel()
-
-    den = np.bincount(owner, weights=w, minlength=n)
-    num = np.stack([np.bincount(owner, weights=w * C[:, 0], minlength=n),
-                    np.bincount(owner, weights=w * C[:, 1], minlength=n)], axis=1)
-    good = den > 1e-16
-    out[good] = num[good] / den[good, None]  # override with weighted centroid
-    return out
 
 
 def smooth_hull(

@@ -1,5 +1,5 @@
 import warnings
-from typing import Callable, Sequence
+from typing import Callable, Sequence, Optional
 import numpy as np
 from joblib import Parallel, delayed
 from scipy.optimize import minimize
@@ -115,12 +115,10 @@ def align_grid(grid: np.ndarray, points2d: np.ndarray) -> np.ndarray:
 def lloyd_relaxation(
         points2d: np.ndarray,
         density_fn: Callable,
-        boundary: ConvexHull,
-        hull_margin: float = 0.0,
+        fixed_mask: Optional[np.ndarray] = None,
         max_iter: int = 20,
         convergence_tol: float = 1e-6,
         relaxation_factor: float = 0.85,
-        fixed_mask: np.ndarray = None,
         verbose: bool = False,
 ) -> np.ndarray:
     """
@@ -129,96 +127,32 @@ def lloyd_relaxation(
     Args:
         points2d: (N, 2)
         density_fn: (M, 2) -> (M,)
-        boundary: ConvexHull of the target domain
-        hull_margin: Float, pushes the mirroring walls outward to support buffer points
         max_iter: int
         convergence_tol: Stop when mean displacement < this
         relaxation_factor: Under-relaxation factor in (0, 1]
             1.0 = full step to centroid (that can oscillate)
             0.5-0.8 = smoother convergence
         fixed_mask: (N,) bool, optional. Points where True are never moved and act
-            as fixed walls bounding their neighbours' Voronoi cells. When given,
-            hull mirroring is skipped entirely -- the fixed points (e.g. a buffer
-            ring) provide both the outward pressure and the cell bounding, without
-            the reflection boundary layer that halves true-boundary cells.
+            as fixed walls bounding their neighbours' Voronoi cells.
         verbose: Print info
     """
-    # TODO: Simplify the boundary logic here
 
     points2d = points2d.copy()
-    n_real = len(points2d)
-
-    if fixed_mask is None:
-        move = np.ones(n_real, dtype=bool)
-    else:
-        move = ~np.asarray(fixed_mask, dtype=bool)
-    use_walls = fixed_mask is not None
-
-    # get data domain (to place the ghost ring fallback)
-    domain_center = np.mean(boundary.points[boundary.vertices], axis=0)
-    domain_radius = np.max(np.linalg.norm(boundary.points[boundary.vertices] - domain_center, axis=1))
-
-    angles = np.linspace(0, 2 * np.pi, 128, endpoint=False)
-    r = domain_radius * 3.0
-    ghosts_points = domain_center + np.column_stack([np.cos(angles), np.sin(angles)]) * r
-
-    # estim initial spacing to define mirror depth and boundary expansion
-    tree = cKDTree(points2d)
-    d, _ = tree.query(points2d, k=2)
-    mean_nn = float(np.mean(d[:, 1]))
-
-    # Push the mirror walls outward by the margin
-    active_equations = boundary.equations.copy()
-    if hull_margin > 0:
-        active_equations[:, 2] -= hull_margin
-    mirror_depth = mean_nn * 3.0 + hull_margin
-
-    # Expand the hard safety-clipping boundary
-    expanded_equations = active_equations.copy()
-    expanded_equations[:, 2] -= mean_nn * 1.5
+    move = ~np.asarray(fixed_mask, dtype=bool)
 
     for it in range(max_iter):
-        if use_walls:
-            # Fixed points already bound the interior cells
-            all_pts = points2d
-            clip_eq = None
-        else:
-            mirrored_ghosts = mirror_across_hull(points2d, active_equations, mirror_depth)
-            ghosts = mirrored_ghosts if len(mirrored_ghosts) > 0 else ghosts_points
-            all_pts = np.vstack([points2d, ghosts])
-            clip_eq = expanded_equations
 
-        try:
-            vor = Voronoi(all_pts)
-        except Exception as exc:
-            if verbose:
-                print(f"  Lloyd iter {it}: Voronoi failed ({exc}), stopping.")
-            break
-
-        # Voronoi edges between a point and its reflection lie exactly on the true
-        # boundary, so we don't want the hard clipper to interfere.
-        new_pts = weighted_polygon_centroids(
-            voronoi_cells(vor, n_real),
-            fallback=points2d,
-            weight_fn=density_fn,
-            clip_equations=clip_eq,
-        )
-        # TODO: Could use the polygon_centroid function instead
+        vor = Voronoi(points2d)
+        cells = voronoi_cells(vor, len(points2d))
+        new_pts = weighted_polygon_centroids(cells, fallback=points2d, weight_fn=density_fn)
 
         step = new_pts - points2d
-        step[~move] = 0.0  # fixed walls never move
-        points_next = points2d + relaxation_factor * step
+        step[~move] = 0.0
 
-        disp = np.linalg.norm(relaxation_factor * step[move], axis=1)
-
-        if verbose:
-            print(f"  Lloyd iter {it:3d}:  mean d = {disp.mean():.6f}, max d = {disp.max():.6f}")
-
-        points2d = points_next
-
-        if disp.mean() < convergence_tol:
+        points2d = points2d + relaxation_factor * step
+        if np.linalg.norm(relaxation_factor * step[move], axis=1).mean() < convergence_tol:
             if verbose:
-                print(f"  Converged at iteration {it}.")
+                print(f"  Llyod converged at iteration {it}.")
             break
 
     return points2d
