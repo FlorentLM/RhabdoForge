@@ -692,6 +692,7 @@ class Model(SpatialQueries, BaseView):
                     diameters[eye.indices] = voronoi_estimation(
                         self._buf['position'][eye.indices],
                         self._buf['forward'][eye.indices],
+                        tree=eye._get_tree('positions'),
                         packing=self._lens_packing
                     )
                 except Exception:

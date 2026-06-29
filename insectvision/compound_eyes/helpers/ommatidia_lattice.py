@@ -187,110 +187,19 @@ def density_warp(
     return pts
 
 
-def spring_relaxation(
-        points2d,
-        spacing_fn,
-        theta_fn=None,
-        confidence_fn=None,
-        max_iter=120,
-        retriangulate_every=0,
-        max_length_factor=1.8,
-        force_cap=2.0,
-        dt=0.05,
-        convergence_tol=1e-3,
-        verbose=False,
-    ):
-    """
-    Density adaptation via spring relaxation.
-
-    Each Delaunay edge acts as a spring. If theta_fn is given, the rest state
-    is a vector whose direction is the edge's bearing snapped to the nearest
-    local hexatic axis and whose length is the local target spacing
-
-    -> edges are pulled toward both the right length and the right orientation.
-
-    Without theta_fn the rest state is a scalar length only.
-
-    With an orientation field, topology must follow it (T1 transitions), so set retriangulate_every nedds to be >0.
-
-    Args:
-        points2d: (N, 2) initial positions (a roughly hex grid)
-        spacing_fn: (M, 2) -> (M,) target local spacing
-        theta_fn: (M, 2) -> (M,) local hexatic-axis angle [rad], or None
-        retriangulate_every: recompute Delaunay edges every k iters (0 = never)
-        dt: step size (fraction of mean spacing)
-        convergence_tol: relative early-stop (fraction of local spacing)
-        verbose: print progress
-    """
-    pts = points2d.copy()
-    edges = delaunay_edges(pts, max_length_factor=max_length_factor)
-
-    for it in range(max_iter):
-        if retriangulate_every and it > 0 and it % retriangulate_every == 0:
-            edges = delaunay_edges(pts, max_length_factor=max_length_factor)
-
-        mid = 0.5 * (pts[edges[:, 0]] + pts[edges[:, 1]])
-        target_lengths = spacing_fn(mid).ravel()
-        current_diff = pts[edges[:, 1]] - pts[edges[:, 0]]
-        cur_len = np.maximum(np.linalg.norm(current_diff, axis=1, keepdims=True), 1e-12)
-        iso_rest = target_lengths[:, None] * current_diff / cur_len  # length-only rest
-
-        if theta_fn is None:
-            rest = iso_rest
-        else:
-            ax_rest = hexatic_rest_vectors(current_diff, theta_fn(mid), target_lengths)
-
-            if confidence_fn is not None:
-                w = np.clip(confidence_fn(mid), 0.0, 1.0)[:, None]  # taper to isotropic
-                rest = w * ax_rest + (1.0 - w) * iso_rest
-            else:
-                rest = ax_rest
-
-        fpe = (current_diff - rest) / target_lengths[:, None]
-        fmag = np.linalg.norm(fpe, axis=1, keepdims=True)
-        force_per_edge = np.where(fmag > force_cap, fpe * force_cap / fmag, fpe)
-
-        forces = np.zeros_like(pts)
-        np.add.at(forces, edges[:, 0], force_per_edge)
-        np.add.at(forces, edges[:, 1], -force_per_edge)
-
-        deg = np.zeros(len(pts))
-        np.add.at(deg, edges[:, 0], 1)
-        np.add.at(deg, edges[:, 1], 1)
-        forces /= np.maximum(deg, 1)[:, None]
-
-        node_scale = spacing_fn(pts).ravel()
-        disp = dt * node_scale[:, None] * forces
-        norms = np.linalg.norm(disp, axis=1, keepdims=True)
-        cap = 0.5 * node_scale[:, None]
-        applied = np.where(norms > cap, disp * cap / norms, disp)
-        pts += applied
-
-        mean_disp = float(np.linalg.norm(applied, axis=1).mean())
-        ref = float(np.median(node_scale))
-
-        if verbose and (it % 10 == 0 or it == max_iter - 1):
-            print(f"  spring iter {it:3d}:  mean |disp|/spacing = {mean_disp / max(ref, 1e-12):.5f}")
-
-        if mean_disp < convergence_tol * ref:
-            if verbose:
-                print(f"  spring converged at iter {it}.")
-            break
-
-    return pts
-
-
 def voronoi_estimation(
         positions,
         directions,
+        tree: Optional[cKDTree] = None,
         k: int=18,
         packing: float= 1.0,
         n_iter: int=1,
-        shell_factor: float= 1.5,
-        min_ring: int=4,
-        fill_sweeps: int=6,
+        shell_factor: float = 1.5,
+        min_ring: int = 4,
+        fill_sweeps: int = 6,
         n_jobs: int = -1
     ):
+
     """
     Per-ommatidium facet diameter from the local Voronoi cell area on the eye surface.
 
@@ -310,7 +219,9 @@ def voronoi_estimation(
     directions = np.asarray(directions, dtype=float)
     N = len(positions)
 
-    tree = cKDTree(positions)
+    if tree is None:
+        tree = cKDTree(positions)
+
     kq = max(0, min(k + 1, N))
     dist, idx = tree.query(positions, k=kq)
 
@@ -329,10 +240,8 @@ def voronoi_estimation(
 
             # Check if cell is bounded
             if region and (-1 not in region):
-                # Scipy Voronoi regions are already ordered, so shoelace logic from polygons.py is inlined
+                # Scipy Voronoi regions are already ordered, so shoelace logic from polygons.py is inlined here
                 v = vor.vertices[region]
-
-                # Shoelace area (inlined)
                 x = v[:, 0]
                 y = v[:, 1]
                 area = 0.5 * np.abs(
