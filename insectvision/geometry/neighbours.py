@@ -205,7 +205,7 @@ def knn(
 
 
 def mean_neighbour_distance(
-        tree: cKDTree,
+        tree: Optional[cKDTree] = None,
         query_points: Optional[np.ndarray] = None,
         k: int = 6,
 ) -> np.ndarray:

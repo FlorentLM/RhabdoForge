@@ -1,95 +1,74 @@
 import warnings
-from typing import Callable, Tuple
+from typing import Callable, Sequence
 import numpy as np
 from joblib import Parallel, delayed
-from scipy.interpolate import RBFInterpolator
 from scipy.optimize import minimize
 from scipy.spatial import ConvexHull, Voronoi, cKDTree
 
 from insectvision.geometry.linalg import tangent_frames
 from insectvision.geometry.hexatic import hexatic_rest_vectors
-from insectvision.geometry.neighbours import mean_neighbour_distance, delaunay_edges
-from insectvision.geometry.polygons import (
-    Polygon2D, weighted_polygon_centroids, voronoi_cells, mirror_across_hull
-)
+from insectvision.geometry.neighbours import delaunay_edges
+from insectvision.geometry.polygons import Polygon2D, weighted_polygon_centroids, voronoi_cells, mirror_across_hull
 
 
-class OmmatidiaSpacing2D:
+def hexagonal_grid(
+        spacing: float = 1.0,
+        angles: float | Sequence[float] = np.pi / 3,
+        extent: float = 10.0
+    ) -> np.ndarray:
     """
-    Local inter-ommatidial spacing field for a 2D cloud
+    Make a hexagonal grid with exact coverage for any geometry.
 
-    One thin-plate-spline RBF is fit over normalised local spacing
-
-    spacing(points2d) -> target local spacing (spring_relaxation, density_warp)
-    density(points2d) -> point number density (lloyd_relaxation)
-    density_scale: rescales the target lattice (>1 packs more lenses)
-
-    In 2D density ~1/spacing**2, so spacing shrinks by sqrt(density_scale)
+    Args:
+        spacing: The length of the first basis vector (b1).
+        angles:
+            - If float: The angle between b1 and b2 (standard hex = pi/3).
+            - If 3-item list: The three internal angles (alpha, beta, gamma) of the
+              lattice triangle. Sum is normalised to 180 degrees.
+        extent: The radius of the circular domain to cover.
     """
 
-    def __init__(
-            self,
-            points2d: np.ndarray,
-            smoothing: float = 0.1,
-            k: int = 6,
-            density_scale: float = 1.0,
-            clip_norm: Tuple[float, float] = (0.1, 5.0),
-            density_exponent: float = 2.0,
-    ):
+    if np.isscalar(angles):
+        # Standard case: equilateral triangle sides if angle is 60 deg
+        b1 = np.array([spacing, 0.0])
+        b2 = np.array([spacing * np.cos(angles), spacing * np.sin(angles)])
 
-        points2d = np.asarray(points2d, dtype=float)
+    else:
+        # Squished case: triangle with angles a, b, c
+        angles = np.atleast_1d(angles).astype(float)
+        if len(angles) != 3:
+            raise ValueError('Provide 3 angles for a squished lattice.')
 
-        self.density_scale = float(density_scale)
-        self.density_exponent = float(density_exponent)
-        self._clip_lo, self._clip_hi = clip_norm
+        angles = angles * (np.pi / np.sum(angles))
+        a, b, c = angles
 
-        tree = cKDTree(points2d)
-        spacing = mean_neighbour_distance(tree, points2d, k=k)
+        s2 = spacing
+        s1 = s2 * np.sin(a) / np.sin(b)
 
-        # Reference scale: mean over the inner 80% so that boundary points (inflated spacing, incomplete rings)
-        # don't pull the value up
-        # (property of the raw cloud so *not* scaled by density_scale)
+        b1 = np.array([s2, 0.0])
+        b2 = np.array([s1 * np.cos(c), s1 * np.sin(c)])
 
-        p10, p90 = np.percentile(spacing, [10, 90])
-        core = (spacing >= p10) & (spacing <= p90)
-        self.mean_spacing = float(spacing[core].mean()) if core.any() else float(spacing.mean())
+    B = np.column_stack([b1, b2])
 
-        # TPS is linear in the fitted values so density_scale can be applied at query time
-        self._rbf = RBFInterpolator(
-            points2d, spacing / self.mean_spacing,
-            kernel='thin_plate_spline', smoothing=smoothing,
-        )
+    try:
+        inv_B = np.linalg.inv(B)
+    except np.linalg.LinAlgError:
+        raise ValueError('Lattice angles result in a degenerate (collinear) basis.')
 
-    def _norm_spacing(self, points2d: np.ndarray) -> np.ndarray:
-        """Normalised (mean_spacing = 1), density-scaled, clamped spacing."""
+    n1 = int(np.ceil(extent * np.linalg.norm(inv_B[0, :])))
+    n2 = int(np.ceil(extent * np.linalg.norm(inv_B[1, :])))
 
-        points2d = np.atleast_2d(np.asarray(points2d, dtype=float))
-        s = self._rbf(points2d).ravel() / np.sqrt(self.density_scale)
-        # Clamp bc TPS extrapolates wildly outside the hull
-        return np.clip(s, self._clip_lo, self._clip_hi)
+    i_range = np.arange(-n1, n1 + 1)
+    j_range = np.arange(-n2, n2 + 1)
+    ii, jj = np.meshgrid(i_range, j_range)
 
-    def spacing(self, points2d: np.ndarray) -> np.ndarray:
-        """Target local spacing at 'points2d', in input units. Pass as spacing_fn."""
-        return self._norm_spacing(points2d) * self.mean_spacing
+    indices = np.stack([ii.ravel(), jj.ravel()], axis=0)
+    grid = (B @ indices).T
 
-    def density(self, points2d: np.ndarray) -> np.ndarray:
-        """Point number density at 'points2d' (~ 1 / spacing**exponent). Pass as density_fn."""
-        return 1.0 / self._norm_spacing(points2d) ** self.density_exponent
+    dist_sq = np.sum(grid ** 2, axis=1)
+    mask = dist_sq <= (extent ** 2)
 
-
-
-def hexagonal_grid(spacing: float, angle: float, extent: float) -> np.ndarray:
-    """
-    Make a regular hexagonal grid.
-    """
-    b1 = np.array([1.0, 0.0])
-    b2 = np.array([np.cos(angle), np.sin(angle)])
-
-    n = int(np.ceil(extent / spacing)) + 1
-    ij = np.mgrid[-n:n + 1, -n:n + 1].reshape(2, -1).T
-    grid = (ij[:, 0:1] * b1 + ij[:, 1:2] * b2) * spacing
-
-    return grid
+    return grid[mask]
 
 
 def align_grid(grid: np.ndarray, points2d: np.ndarray) -> np.ndarray:
@@ -137,9 +116,11 @@ def lloyd_relaxation(
         points2d: np.ndarray,
         density_fn: Callable,
         boundary: ConvexHull,
+        hull_margin: float = 0.0,
         max_iter: int = 20,
         convergence_tol: float = 1e-6,
         relaxation_factor: float = 0.85,
+        fixed_mask: np.ndarray = None,
         verbose: bool = False,
 ) -> np.ndarray:
     """
@@ -149,16 +130,29 @@ def lloyd_relaxation(
         points2d: (N, 2)
         density_fn: (M, 2) -> (M,)
         boundary: ConvexHull of the target domain
+        hull_margin: Float, pushes the mirroring walls outward to support buffer points
         max_iter: int
         convergence_tol: Stop when mean displacement < this
         relaxation_factor: Under-relaxation factor in (0, 1]
             1.0 = full step to centroid (that can oscillate)
             0.5-0.8 = smoother convergence
+        fixed_mask: (N,) bool, optional. Points where True are never moved and act
+            as fixed walls bounding their neighbours' Voronoi cells. When given,
+            hull mirroring is skipped entirely -- the fixed points (e.g. a buffer
+            ring) provide both the outward pressure and the cell bounding, without
+            the reflection boundary layer that halves true-boundary cells.
         verbose: Print info
     """
+    # TODO: Simplify the boundary logic here
 
     points2d = points2d.copy()
     n_real = len(points2d)
+
+    if fixed_mask is None:
+        move = np.ones(n_real, dtype=bool)
+    else:
+        move = ~np.asarray(fixed_mask, dtype=bool)
+    use_walls = fixed_mask is not None
 
     # get data domain (to place the ghost ring fallback)
     domain_center = np.mean(boundary.points[boundary.vertices], axis=0)
@@ -173,18 +167,27 @@ def lloyd_relaxation(
     d, _ = tree.query(points2d, k=2)
     mean_nn = float(np.mean(d[:, 1]))
 
-    mirror_depth = mean_nn * 3.0
+    # Push the mirror walls outward by the margin
+    active_equations = boundary.equations.copy()
+    if hull_margin > 0:
+        active_equations[:, 2] -= hull_margin
+    mirror_depth = mean_nn * 3.0 + hull_margin
 
-    # Expand the hard boundary constraints by 1.5x mean spacing
-    # (pure safety net, the mirrored points do the actual bounding)
-    expanded_equations = boundary.equations.copy()
+    # Expand the hard safety-clipping boundary
+    expanded_equations = active_equations.copy()
     expanded_equations[:, 2] -= mean_nn * 1.5
 
     for it in range(max_iter):
-        mirrored_ghosts = mirror_across_hull(points2d, boundary.equations, mirror_depth)
-        ghosts = mirrored_ghosts if len(mirrored_ghosts) > 0 else ghosts_points
+        if use_walls:
+            # Fixed points already bound the interior cells
+            all_pts = points2d
+            clip_eq = None
+        else:
+            mirrored_ghosts = mirror_across_hull(points2d, active_equations, mirror_depth)
+            ghosts = mirrored_ghosts if len(mirrored_ghosts) > 0 else ghosts_points
+            all_pts = np.vstack([points2d, ghosts])
+            clip_eq = expanded_equations
 
-        all_pts = np.vstack([points2d, ghosts])
         try:
             vor = Voronoi(all_pts)
         except Exception as exc:
@@ -198,14 +201,15 @@ def lloyd_relaxation(
             voronoi_cells(vor, n_real),
             fallback=points2d,
             weight_fn=density_fn,
-            clip_equations=expanded_equations,
+            clip_equations=clip_eq,
         )
         # TODO: Could use the polygon_centroid function instead
 
         step = new_pts - points2d
+        step[~move] = 0.0  # fixed walls never move
         points_next = points2d + relaxation_factor * step
 
-        disp = np.linalg.norm(relaxation_factor * step, axis=1)
+        disp = np.linalg.norm(relaxation_factor * step[move], axis=1)
 
         if verbose:
             print(f"  Lloyd iter {it:3d}:  mean d = {disp.mean():.6f}, max d = {disp.max():.6f}")

@@ -17,7 +17,7 @@ def hexatic_order(z6) -> np.ndarray:
     return np.abs(z6).astype(np.float32)
 
 
-def phasor_from_points(points2d: np.ndarray, neighbours: Sequence[int]) -> np.ndarray:
+def phasor_from_points(points2d: np.ndarray, neighbours: Sequence[int] | Sequence[Sequence[int]]) -> np.ndarray:
     """
     Per-point 6-fold phasor from a 2D cloud + neighbour lists.
 
