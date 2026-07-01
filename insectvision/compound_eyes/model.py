@@ -8,13 +8,14 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import Delaunay
 
+from insectvision.geometry.polygons import triangle_areas
 from insectvision.utils.shared import norm_l2, broadcast_1d, broadcast_to_shape
 from insectvision.engine.meshes import icosphere, fibonacci_sphere
 from insectvision.engine.world_utils import WORLD_FORWARD
 from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world, tangent_bearing
-from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned
+from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned, graph_spacing
 from insectvision.geometry.spherical import angle_to_chord
 from insectvision.compound_eyes.buffers import Buffer
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
@@ -516,17 +517,14 @@ class Model(SpatialQueries, BaseView):
                 is_edge[eye.indices] = True
                 continue
 
-            local_s = np.array([
-                np.median(np.linalg.norm(pts[a] - pts[i], axis=1)) if a.size else np.inf
-                for i, a in enumerate(adj)
-            ])
+            local_s = graph_spacing(pts, adj, reduce=np.median)
 
             tri = Delaunay(pts).simplices
             a, b, c = pts[tri[:, 0]], pts[tri[:, 1]], pts[tri[:, 2]]
             ab = np.linalg.norm(a - b, axis=1)
             bc = np.linalg.norm(b - c, axis=1)
             ca = np.linalg.norm(c - a, axis=1)
-            area = 0.5 * np.abs((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0]))
+            area = triangle_areas(a, b, c)
             circumradius = (ab * bc * ca) / (4.0 * area + 1e-300)
 
             kept = tri[circumradius <= ALPHA * local_s[tri].mean(axis=1)]  # alpha-complex
@@ -686,7 +684,6 @@ class Model(SpatialQueries, BaseView):
                 continue
 
             # Reconstruct the 3D triangles from the β-skeleton edges
-            from scipy.spatial import Delaunay
             tri = Delaunay(graph['points2d']).simplices
 
             # Filter to only keep triangles where all 3 edges exist in the β-skeleton
@@ -707,13 +704,11 @@ class Model(SpatialQueries, BaseView):
             if len(valid_simplices) == 0:
                 continue
 
-            # True 3D area of each triangle
+            # 3D area of each triangle
             A = pts3d[valid_simplices[:, 0]]
             B = pts3d[valid_simplices[:, 1]]
             C = pts3d[valid_simplices[:, 2]]
-
-            cross_prod = np.cross(B - A, C - A)
-            tri_areas = 0.5 * np.linalg.norm(cross_prod, axis=1)
+            tri_areas = triangle_areas(A, B, C)
 
             # Accumulate 1/3 of the triangle's area to each of its 3 vertices
             point_areas = np.zeros(n)
@@ -771,7 +766,7 @@ class Model(SpatialQueries, BaseView):
             n.append(neighb_indices)
 
         return smooth_field_partitioned(
-            out,
+            values=out,
             kind='scalar',
             groups=g,
             neighbours=n,

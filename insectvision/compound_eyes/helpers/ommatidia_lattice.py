@@ -1,15 +1,20 @@
 from typing import Callable, Sequence, Optional
 import numpy as np
+from numpy.typing import ArrayLike
+from numpy.fft import fft2, ifft2, fftfreq
 from scipy.optimize import minimize
-from scipy.spatial import Voronoi, cKDTree
+from scipy.spatial import cKDTree, ConvexHull
+from scipy.interpolate import RegularGridInterpolator, griddata
 
-from insectvision.geometry.polygons import Polygon2D, weighted_polygon_centroids, voronoi_cells
+from insectvision.geometry.polygons import Polygon2D, mirror_across_hull
+from insectvision.geometry.neighbours import delaunay_edges, mean_neighbour_distance
 
 
 def hexagonal_grid(
         spacing: float = 1.0,
         angles: float | Sequence[float] = np.pi / 3,
-        extent: float = 10.0
+        extent: float = 10.0,
+        degrees: bool = False,
     ) -> np.ndarray:
     """
     Make a hexagonal grid with exact coverage for any geometry.
@@ -23,15 +28,18 @@ def hexagonal_grid(
         extent: The radius of the circular domain to cover.
     """
 
-    if np.isscalar(angles):
-        # Standard case: equilateral triangle sides if angle is 60 deg
-        b1 = np.array([spacing, 0.0])
-        b2 = np.array([spacing * np.cos(angles), spacing * np.sin(angles)])
+    angles = np.asarray(angles, dtype=np.float64)
+    if degrees:
+        angles = np.deg2rad(angles)
 
+    if angles.ndim == 0:
+        # Standard case: equilateral triangle sides if angle is 60 deg
+        a = float(angles)
+        b1 = np.array([spacing, 0.0])
+        b2 = np.array([spacing * np.cos(a), spacing * np.sin(a)])
     else:
         # Squished case: triangle with angles a, b, c
-        angles = np.atleast_1d(angles).astype(float)
-        if len(angles) != 3:
+        if angles.size != 3:
             raise ValueError('Provide 3 angles for a squished lattice.')
 
         angles = angles * (np.pi / np.sum(angles))
@@ -66,10 +74,41 @@ def hexagonal_grid(
     return grid[mask]
 
 
-def align_grid(grid: np.ndarray, points2d: np.ndarray) -> np.ndarray:
+def hex_cell_area_factor(angles: float | Sequence[float], degrees: bool = False) -> float:
+    """
+    Unit-cell area = spacing^2 * this factor (for the angles hexagonal_grid uses).
+    """
+    angles = np.asarray(angles, dtype=np.float64)
+    if degrees:
+        angles = np.deg2rad(angles)
+
+    if angles.ndim == 0:
+        return float(np.sin(angles))
+
+    a, b, c = np.asarray(angles, float) * (np.pi / np.sum(angles))
+    return float(np.sin(a) * np.sin(c) / np.sin(b))
+
+
+def base_bond_dirs(lattice_angles: float | Sequence[float], spacing: float = 1.0, degrees: bool = False) -> np.ndarray:
+    """
+    The six ideal nearest-neighbour bond directions of the base cell (unit vectors).
+    """
+    lattice_angles = np.asarray(lattice_angles, dtype=np.float64)
+    if degrees:
+        lattice_angles = np.deg2rad(lattice_angles)
+
+    grid = hexagonal_grid(spacing=spacing, angles=lattice_angles, extent=2.5 * spacing, degrees=False)
+    nn = grid[np.argsort(np.linalg.norm(grid, axis=1))[1:7]]   # skip origin, take 6 nearest
+    return nn / np.linalg.norm(nn, axis=1, keepdims=True)
+
+
+def align_grid(grid: ArrayLike, points2d: ArrayLike) -> np.ndarray:
     """
     Align a hex grid (rigid transform) to match a point cloud.
     """
+
+    grid = np.asarray(grid, float)
+    points2d = np.asarray(points2d, float)
 
     tree_raw = cKDTree(points2d)
     domain = Polygon2D.from_points(points2d)
@@ -107,68 +146,25 @@ def align_grid(grid: np.ndarray, points2d: np.ndarray) -> np.ndarray:
     return aligned
 
 
-def lloyd_relaxation(
-        points2d: np.ndarray,
-        density_fn: Callable,
-        fixed_mask: Optional[np.ndarray] = None,
-        max_iter: int = 20,
-        convergence_tol: float = 1e-6,
-        relaxation_factor: float = 0.85,
-        verbose: bool = False,
-) -> np.ndarray:
-    """
-    Voronoi relaxation (Lloyd's algorithm, 10.1109/TIT.1982.1056489).
-
-    Args:
-        points2d: (N, 2)
-        density_fn: (M, 2) -> (M,)
-        max_iter: int
-        convergence_tol: Stop when mean displacement < this
-        relaxation_factor: Under-relaxation factor in (0, 1]
-            1.0 = full step to centroid (that can oscillate)
-            0.5-0.8 = smoother convergence
-        fixed_mask: (N,) bool, optional. Points where True are never moved and act
-            as fixed walls bounding their neighbours' Voronoi cells.
-        verbose: Print info
-    """
-
-    points2d = points2d.copy()
-    move = ~np.asarray(fixed_mask, dtype=bool)
-
-    for it in range(max_iter):
-
-        vor = Voronoi(points2d)
-        cells = voronoi_cells(vor, len(points2d))
-        new_pts = weighted_polygon_centroids(cells, fallback=points2d, weight_fn=density_fn)
-
-        step = new_pts - points2d
-        step[~move] = 0.0
-
-        points2d = points2d + relaxation_factor * step
-        if np.linalg.norm(relaxation_factor * step[move], axis=1).mean() < convergence_tol:
-            if verbose:
-                print(f"  Llyod converged at iteration {it}.")
-            break
-
-    return points2d
-
+# Relaxation
 
 def density_warp(
-        points2d: np.ndarray,
-        spacing_fn: Callable,
+        points2d: ArrayLike,
+        spacing_fn: 'Callable',
         reference_spacing: float,
         exponent: float = 1.0,
-) -> np.ndarray:
+    ) -> np.ndarray:
     """
     Warp a point set so that local spacing matches a target density field.
 
     Args:
         points2d: (N, 2)
-        spacing_fn: (M, 2) -> (M,) Target local spacing at each point
+        spacing_fn: Target local spacing at each point (M, 2) -> (M,)
         reference_spacing (float): The spacing of the uniform input grid
-        exponent (float): Warp strength. Lower values keep more points at the boundary
+        exponent (float): Warp strength. Lower value = keeps more points at the boundary
     """
-    pts = points2d.copy()
+
+    pts = np.copy(points2d).astype(np.float64)
 
     s = spacing_fn(pts)     # centre of compression
     weights = 1.0 / np.maximum(s, 1e-12)
@@ -178,5 +174,196 @@ def density_warp(
 
     scale = (s / reference_spacing) ** exponent
     pts = centroid + disp * scale[:, None]
+
+    return pts
+
+
+def spring_relaxation(
+        points2d: ArrayLike,
+        spacing_fn: 'Callable',
+        theta_fn: 'Callable',
+        bond_dirs: ArrayLike,
+        max_iter: int = 120,
+        retriangulate_every: int = 5,
+        dt: float = 0.1,
+        force_cap: float = 2.0,
+        convergence_tol: float = 1e-3,
+        verbose: bool = False,
+        domain: Optional['Polygon2D'] = None,
+        ghost_depth: float = 0.0,
+        ghost_source: str = 'hull'
+    ) -> np.ndarray:
+    """
+    Local spring relaxation with orientation-following bonds.
+
+    For each edge the ideal bond is chosen in the local lattice frame R(-theta) and
+    rotated back by theta(midpoint).
+    Thus rows curve to follow theta, and periodic retriangulation lets
+    dislocations nucleate wherever the lattice can't stay both straight and regular.
+
+    Ghost points (ghost_depth > 0): points within 'ghost_depth' of a reference boundary
+    are mirrored to the outside and added to the cloud before triangulating, to the edge
+    points symmetric spring pressure to prevent the boundary from collapsing inward.
+
+    ghost_source:
+        - 'hull': reflect across domain.hull (the smooth contour), requires 'domain'.
+        - 'edge': reflect across ConvexHull(pts), the lattice's own current outer edge, so the
+                    mirror plane moves with the lattice.
+        - 'none': no ghosts (free boundary, will contract during relaxation).
+    """
+
+    ghost_source = 'none' if not ghost_source else str(ghost_source).lower()
+
+    if ghost_source not in ('hull', 'edge', 'none'):
+        raise ValueError(f"ghost_source must be 'hull', 'edge' or 'none', got {ghost_source!r}")
+
+    pts = np.copy(points2d).astype(np.float64)
+    n_real = len(pts)
+    use_ghosts = (ghost_depth > 0.0 and ghost_source != 'none'
+                  and (ghost_source == 'edge' or domain is not None))
+
+    def build_cloud(p):
+        if not use_ghosts:
+            return p, np.zeros((0, 2))
+
+        if ghost_source == 'edge':
+            try:
+                eqs = ConvexHull(p).equations
+            except Exception:
+                return p, np.zeros((0, 2))   # degenerate cloud, skip ghosts this pass
+        else:
+            eqs = domain.hull.equations
+        g = mirror_across_hull(p, eqs, ghost_depth)
+        if len(g):
+            # drop ghosts sitting on top of a real point (hull-vertex self-images for 'edge')
+            d, _ = cKDTree(p).query(g)
+            g = g[d > 0.3 * ghost_depth]
+
+        return (np.vstack([p, g]), g) if len(g) else (p, np.zeros((0, 2)))
+
+    cloud, ghosts = build_cloud(pts)
+    edges = delaunay_edges(cloud, max_length_factor=1.8)
+
+    bond_dirs = np.asarray(bond_dirs, dtype=np.float64)
+
+    for it in range(max_iter):
+        if retriangulate_every and it > 0 and it % retriangulate_every == 0:
+            cloud, ghosts = build_cloud(pts)
+            edges = delaunay_edges(cloud, max_length_factor=1.8)
+        else:
+            # refresh the (moved) real block; ghosts stay frozen between retriangulations
+            cloud = np.vstack([pts, ghosts]) if use_ghosts else pts
+
+        n_all = len(cloud)
+        e0, e1 = edges[:, 0], edges[:, 1]
+
+        mid = 0.5 * (cloud[e0] + cloud[e1])
+        L = spacing_fn(mid).ravel()
+        th = theta_fn(mid).ravel()
+        c, s = np.cos(th), np.sin(th)
+
+        cur = cloud[e1] - cloud[e0]
+        # into the lattice's own frame: R(-theta) @ cur
+        loc = np.stack([c * cur[:, 0] + s * cur[:, 1],
+                        -s * cur[:, 0] + c * cur[:, 1]], axis=1)
+        u = loc / np.maximum(np.linalg.norm(loc, axis=1, keepdims=True), 1e-12)
+        ideal = bond_dirs[np.argmax(u @ bond_dirs.T, axis=1)]
+        # rest vector back in world frame: R(theta) @ (L * ideal)
+        rest = L[:, None] * np.stack([c * ideal[:, 0] - s * ideal[:, 1],
+                                      s * ideal[:, 0] + c * ideal[:, 1]], axis=1)
+
+        fpe = (cur - rest) / np.maximum(np.linalg.norm(rest, axis=1, keepdims=True), 1e-12)
+        fmag = np.linalg.norm(fpe, axis=1, keepdims=True)
+        fpe = np.where(fmag > force_cap, fpe * force_cap / fmag, fpe)
+
+        forces, deg = np.zeros((n_all, 2)), np.zeros(n_all)
+        np.add.at(forces, e0, fpe)
+        np.add.at(forces, e1, -fpe)
+        np.add.at(deg, e0, 1)
+        np.add.at(deg, e1, 1)
+
+        # ghosts are slaved to the real cloud: only the real block actually moves
+        forces, deg = forces[:n_real], deg[:n_real]
+
+        node_scale = spacing_fn(pts).ravel()
+        disp = dt * node_scale[:, None] * forces / np.maximum(deg, 1)[:, None]
+        norms = np.linalg.norm(disp, axis=1, keepdims=True)
+        cap = 0.5 * node_scale[:, None]
+        disp = np.where(norms > cap, disp * cap / np.maximum(norms, 1e-12), disp)
+        pts = pts + disp
+
+        if np.linalg.norm(disp, axis=1).mean() < convergence_tol * np.median(node_scale):
+            if verbose:
+                print(f"  spring relaxation converged at iter {it}")
+            return pts
+
+    if verbose:
+        print(f"  spring relaxation hit max_iter={max_iter}")
+    return pts
+
+
+def density_correct(
+        points2d: ArrayLike,
+        target_spacing_fn: 'Callable',
+        domain: Optional['Polygon2D'],
+        n_iter: int = 3,
+        relax: float = 0.6,
+        grid_n: int = 192,
+        pad: float = 0.2,
+        k: int = 6,
+        verbose: bool = False
+    ) -> np.ndarray:
+    """
+    Smooth, area-correcting transport (linearised optimal transport).
+
+    div(u) = 1 - (s_achieved / s_target)^2 : positive where the lattice is too dense (expand),
+    negative where too sparse (contract).
+    Then u = grad(phi) turns this into one Poisson solve per pass, which is solved on a grid by FFT.
+    """
+
+    pts = np.copy(points2d).astype(np.float64)
+
+    lo = domain.boundary.min(0) - pad
+    hi = domain.boundary.max(0) + pad
+
+    xs = np.linspace(lo[0], hi[0], grid_n)
+    ys = np.linspace(lo[1], hi[1], grid_n)
+    dx, dy = xs[1] - xs[0], ys[1] - ys[0]
+    gx, gy = np.meshgrid(xs, ys, indexing='ij')
+    grid_pts = np.column_stack([gx.ravel(), gy.ravel()])
+    inside = domain.inside(grid_pts).reshape(gx.shape)
+
+    KX, KY = np.meshgrid(2 * np.pi * fftfreq(grid_n, dx),
+                         2 * np.pi * fftfreq(grid_n, dy), indexing='ij')
+    K2 = KX ** 2 + KY ** 2
+    K2[0, 0] = 1.0   # 1.0 to avoid div by zero on the DC mode
+
+    for it in range(n_iter):
+
+        s_ach = mean_neighbour_distance(query_points=pts, k=k)
+        s_tgt = target_spacing_fn(pts).ravel()
+
+        # positive where the lattice is too dense (expand), negative where too sparse (contract)
+        src = 1.0 - (s_ach / np.maximum(s_tgt, 1e-12)) ** 2
+
+        G = griddata(pts, src, (gx, gy), method='linear', fill_value=0.0)
+        G = np.where(inside, np.nan_to_num(G), 0.0)
+        G = G - G.mean()                                     # FFT solvability
+
+        phi = np.real(ifft2(-fft2(G) / K2))                  # solves laplacian(phi) = G
+        ux, uy = np.gradient(phi, dx, dy)
+
+        fx = RegularGridInterpolator((xs, ys), ux, bounds_error=False, fill_value=0.0)
+        fy = RegularGridInterpolator((xs, ys), uy, bounds_error=False, fill_value=0.0)
+        u = np.column_stack([fx(pts), fy(pts)])
+
+        # Per-point capping at half the local spacing for safety on steep gradients
+        cap = 0.5 * s_tgt
+        un = np.linalg.norm(u, axis=1)
+        scale = np.where(un > cap, cap / np.maximum(un, 1e-12), 1.0)
+        pts = pts + relax * u * scale[:, None]
+
+        if verbose:
+            print(f"  density_correct iter {it}: mean |u| = {un.mean():.4f}")
 
     return pts

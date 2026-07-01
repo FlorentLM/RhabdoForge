@@ -3,7 +3,13 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 
-def resultant(angles, weights=None, axis=None, fold=1, degrees: bool = False):
+def resultant(
+        angles: ArrayLike,
+        weights: Optional[ArrayLike] = None,
+        axis: Optional[int] = None,
+        fold: int = 1,
+        degrees: bool = False
+    ) -> np.ndarray:
     """
     Mean resultant phasor z = <w * exp(i*kfold*theta)> (weights normalised), reduced along 'axis'.
     Rows whose weights sum to <= 0 return 0+0j.
@@ -12,7 +18,9 @@ def resultant(angles, weights=None, axis=None, fold=1, degrees: bool = False):
     fold=2 -> nematic
     fold=6 -> hexatic
     """
-    a = np.deg2rad(angles) if degrees else np.asarray(angles)
+    angles = np.asarray(angles, dtype=np.float64)
+
+    a = np.deg2rad(angles) if degrees else angles
     z = np.exp(1j * fold * a)
 
     if weights is None:

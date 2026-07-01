@@ -1,13 +1,12 @@
 """
 User-facing views of Model data buffers.
 
-Views:
-  BaseView      : Abstract base defining the ViewField descriptor properties
-  SpatialQueries: Mixin, shared spatial-queries (trees, graphs, knn)
-  OmmatidiumView: Indexes the Ommatidia axis
-  CartridgeView : Like OmmatidiumView, but rhabdomeres follow neural superposition
-  RhabdomereView  : Indexes the Rhabdomeres axis
-  EyeView       : An OmmatidiumView over one eye
+BaseView      : Abstract base defining the ViewField descriptor properties
+SpatialQueries: Mixin, shared spatial-queries (trees, graphs, knn)
+OmmatidiumView: Indexes the Ommatidia axis
+CartridgeView : Like OmmatidiumView, but rhabdomeres follow neural superposition
+RhabdomereView: Indexes the Rhabdomeres axis
+EyeView       : An OmmatidiumView over one eye
 """
 import logging
 from typing import TYPE_CHECKING, Optional, Tuple, Union
@@ -17,11 +16,10 @@ from scipy.spatial import cKDTree
 
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
 from insectvision.geometry.linalg import tangent_frames, local_to_world
-from insectvision.geometry.neighbours import knn, top_k_facing, beta_skeleton_neighbours
+from insectvision.geometry.neighbours import knn, top_k_facing, beta_skeleton_neighbours, first_ring_gap
 from insectvision.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo
 )
-from insectvision.geometry.circular import wrap_angle
 from insectvision.utils.shared import norm_l2
 
 if TYPE_CHECKING:
@@ -529,18 +527,7 @@ class SpatialQueries:
             pts2d, *_ = sphere_to_stereo(self.directions)
             adj = beta_skeleton_neighbours(pts2d, beta=self.model.lattice_beta)
 
-        # Largest empty angular sector between consecutive first-ring neighbour bearings:
-        #   Complete ring (incl 5- or 7-fold disclinations) should have ~ 2*pi/degree
-        #   Any lens missing a sector should be >= ~2*pi/3
-        max_gap = np.full(n, 2.0 * np.pi, dtype=np.float64)
-        if n >= 3:
-            for i_loc, a in enumerate(adj):
-                if a.size < 2:
-                    continue
-                d = pts2d[a] - pts2d[i_loc]
-                ang = np.sort(np.arctan2(d[:, 1], d[:, 0]))
-                wrap = (ang[0] + 2.0 * np.pi) - ang[-1]
-                max_gap[i_loc] = max(float(np.diff(ang).max()), float(wrap))
+        max_gap = first_ring_gap(pts2d, adj) if n >= 3 else np.full(n, 2.0 * np.pi)
 
         pair_keys = set()
         for i_loc, a in enumerate(adj):

@@ -524,7 +524,7 @@ def refine_chi(
         neighbours.append(nb)
 
     smoothed_err = smooth_field_partitioned(
-        lens_err, kind='scalar', groups=groups, neighbours=neighbours,
+        values=lens_err, kind='scalar', groups=groups, neighbours=neighbours,
         n_iter=smooth_iters, mask=measurable
     )
 
@@ -534,7 +534,7 @@ def refine_chi(
 
     if adjust_scale:
         smoothed_scale = smooth_field_partitioned(
-            lens_scale, kind='scalar', groups=groups, neighbours=neighbours,
+            values=lens_scale, kind='scalar', groups=groups, neighbours=neighbours,
             n_iter=smooth_iters, mask=measurable
         )
         final_scale = 1.0 + (smoothed_scale - 1.0) * relax

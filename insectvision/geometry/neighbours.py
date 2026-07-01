@@ -1,8 +1,55 @@
-from typing import List, Optional, Tuple, Sequence
+from typing import List, Optional, Tuple, Sequence, Callable
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree, Delaunay
 
 from insectvision.utils.shared import norm_l2
+
+
+# A neighbour graph, can be:
+#   ragged: a sequence (list / object-array) of per-point neighbour-index arrays
+#   dense: an (N, k) integer array with entries < 0 used as padding
+NeighbourGraph = np.ndarray | Sequence[ArrayLike]
+
+
+def _is_dense(neighbours: NeighbourGraph) -> bool:
+    """True for dense (N, k) array representation, False for ragged."""
+    return isinstance(neighbours, np.ndarray) and neighbours.ndim == 2
+
+
+def ragged_neighbours(neighbours: NeighbourGraph) -> List[np.ndarray]:
+    """
+    Normalise a NeighbourGraph to a list of per-point neighbour-index arrays.
+    Padding and any negative index are stripped.
+    """
+    if _is_dense(neighbours):
+        dense = np.asarray(neighbours, dtype=np.intp)
+        return [row[row >= 0] for row in dense]
+
+    out: List[np.ndarray] = []
+    for nb in neighbours:
+        nb = np.asarray(nb, dtype=np.intp)
+        out.append(nb[nb >= 0])
+    return out
+
+
+def padded_neighbours(neighbours: NeighbourGraph, pad_value: int = -1) -> np.ndarray:
+    """
+    Densify a NeighbourGraph to a (N, kmax) int array padded with 'pad_value'.
+
+    Ragged input is padded to the widest row, an already-dense array is returned
+    unchanged (cast to intp).
+    """
+    if _is_dense(neighbours):
+        return np.asarray(neighbours, dtype=np.intp)
+
+    n = len(neighbours)
+    kmax = max((len(nb) for nb in neighbours), default=0)
+    out = np.full((n, kmax), pad_value, dtype=np.intp)
+    for i, nb in enumerate(neighbours):
+        nb = np.asarray(nb, dtype=np.intp)
+        out[i, :nb.size] = nb
+    return out
 
 
 # 2D neighbour graphs
@@ -18,41 +65,31 @@ def _delaunay_pairs(points2d: np.ndarray) -> set:
     return pairs
 
 
-def _prune_long_edges(points2d: np.ndarray, edges: np.ndarray, max_length_factor: float) -> np.ndarray:
-    """
-    Boolean keep-mask for edges shorter than max_length_factor x local spacing.
-
-    Local spacing is the kNN mean distance at each endpoint; an edge survives iff
-    its length is below max_length_factor times the *mean* of its two endpoints'
-    spacing. The criterion is symmetric, so the surviving graph is symmetric too
-    (edge i-j is kept for both i and j, or for neither).
-    """
-    spacing = mean_neighbour_distance(
-        cKDTree(points2d), None, k=min(6, max(1, len(points2d) - 1))
-    )
-    lengths = np.linalg.norm(points2d[edges[:, 0]] - points2d[edges[:, 1]], axis=1)
-    mean_local = 0.5 * (spacing[edges[:, 0]] + spacing[edges[:, 1]])
-    return lengths < mean_local * max_length_factor
-
-
 def delaunay_edges(points2d: np.ndarray, max_length_factor: float = 0.0) -> np.ndarray:
     """
     Unique undirected Delaunay edges in the plane, as a sorted (E, 2) int array.
-
-    If max_length_factor > 0, prunes edges longer than max_length_factor x local
-    spacing (convex-hull boundary edges, not real neighbours). Disabled if <= 0.
+    max_length_factor > 0 prunes edges longer than max_length_factor x local spacing. Disabled if <= 0.
     """
     points2d = np.asarray(points2d)
     pairs = _delaunay_pairs(points2d)
     edges = np.array(sorted(pairs)) if pairs else np.zeros((0, 2), dtype=int)
 
     if max_length_factor > 0 and len(edges):
-        edges = edges[_prune_long_edges(points2d, edges, max_length_factor)]
+        # Local spacing is the kNN mean distance at each endpoint, an edge survives iff
+        # its length is below max_length_factor x the mean of its two endpoints' spacing.
+
+        # The criterion is symmetric, so the surviving graph is symmetric too
+        # (edge i-j is kept for both i and j, or for neither)
+        spacing = mean_neighbour_distance(cKDTree(points2d), None, k=min(6, max(1, len(points2d) - 1)))
+
+        lengths = np.linalg.norm(points2d[edges[:, 0]] - points2d[edges[:, 1]], axis=1)
+        mean_local = 0.5 * (spacing[edges[:, 0]] + spacing[edges[:, 1]])
+        edges = lengths < mean_local * max_length_factor
 
     return edges
 
 
-def delaunay_neighbours(points2d: np.ndarray, max_length_factor: float = 0.0) -> List[np.ndarray]:
+def delaunay_neighbours(points2d: ArrayLike, max_length_factor: float = 0.0) -> List[np.ndarray]:
     """
     One-ring neighbour lists from a 2D Delaunay triangulation.
 
@@ -60,7 +97,8 @@ def delaunay_neighbours(points2d: np.ndarray, max_length_factor: float = 0.0) ->
     max_length_factor pruning uses the exact same (symmetric) criterion: an edge
     is kept for both endpoints or for neither.
     """
-    points2d = np.asarray(points2d)
+
+    points2d = np.asarray(points2d, dtype=np.float64)
     neighbour_lists: List[list] = [[] for _ in range(len(points2d))]
 
     for a, b in delaunay_edges(points2d, max_length_factor=max_length_factor):
@@ -71,7 +109,7 @@ def delaunay_neighbours(points2d: np.ndarray, max_length_factor: float = 0.0) ->
     return [np.array(s, dtype=np.intp) for s in neighbour_lists]
 
 
-def beta_skeleton_edges(points2d: np.ndarray, beta: float = 1.0) -> np.ndarray:
+def beta_skeleton_edges(points2d: ArrayLike, beta: float = 1.0) -> np.ndarray:
     """
     β-skeleton restricted to Delaunay edges: a Delaunay subgraph for beta <= 1
         - beta = 1.0 is the Gabriel graph
@@ -116,12 +154,12 @@ def beta_skeleton_edges(points2d: np.ndarray, beta: float = 1.0) -> np.ndarray:
     return np.stack([good // n, good % n], axis=1).astype(int)
 
 
-def beta_skeleton_neighbours(points2d: np.ndarray, beta: float = 1.0) -> List[np.ndarray]:
+def beta_skeleton_neighbours(points2d: ArrayLike, beta: float = 1.0) -> List[np.ndarray]:
     """
     First-ring neighbour lists.
     """
 
-    points2d = np.asarray(points2d)
+    points2d = np.asarray(points2d, dtype=np.float64)
 
     nb: List[list] = [[] for _ in range(len(points2d))]
 
@@ -137,10 +175,10 @@ def beta_skeleton_neighbours(points2d: np.ndarray, beta: float = 1.0) -> List[np
 
 def knn(
         tree: Optional[cKDTree] = None,
-        query_points: Optional[np.ndarray] = None,
+        query_points: Optional[ArrayLike] = None,
         k: int = 6,
         drop_self: bool = True,
-        self_indices=None
+        self_indices: Optional[ArrayLike] = None
     ) -> Tuple[np.ndarray, np.ndarray]:
     """
     k-nearest-neighbour query against a prebuilt tree. Or not. Whatever.
@@ -167,7 +205,8 @@ def knn(
     if query_points is None:
         query_points = tree.data
         owns_data = True
-    query_points = np.atleast_2d(query_points)
+
+    query_points = np.atleast_2d(np.asarray(query_points, dtype=np.float64))
 
     if tree is None:
         tree = cKDTree(query_points)
@@ -193,7 +232,10 @@ def knn(
 
         if self_indices is None:  # External tree + explicit points
             idx, dist = idx[:, 1:], dist[:, 1:]
+
         else:
+            self_indices = np.asarray(self_indices, dtype=np.intp)
+
             is_self = idx == self_indices[:, None]  # <=1 True per row
             drop = is_self.copy()
             drop[~is_self.any(axis=1), -1] = True  # no self found: drop farthest
@@ -221,7 +263,13 @@ def mean_neighbour_distance(
     return dist.mean(axis=1)
 
 
-def top_k_facing(positions, directions, targets, k, exclude_mask=None):
+def top_k_facing(
+        positions: ArrayLike,
+        directions: ArrayLike,
+        targets: ArrayLike,
+        k: int,
+        exclude_mask: Optional[ArrayLike] = None
+    ) -> np.ndarray:
     """
     For each target, the indices of the k directed points that best face it.
 
@@ -230,21 +278,27 @@ def top_k_facing(positions, directions, targets, k, exclude_mask=None):
     the source to the target: +1 means it points straight at the target, -1 away.
 
     Args:
-        positions:    (M, 3) source positions.
-        directions:   (M, 3) source unit directions.
-        targets:      (Q, 3) target positions.
-        k:            number of sources to return per target.
-        exclude_mask: optional (M,) bool, True entries are never selected.
+        - positions: source positions, (M, 3)
+        - directions: source unit directions, (M, 3)
+        - targets: target positions, (Q, 3)
+        - k: number of sources to return per target
+        - exclude_mask: optional bool array, True entries are never selected, (M,)
 
     Returns:
         (Q, k_eff) int array of source indices, best-first per row,
         with k_eff = min(k, number of selectable sources).
     """
+
+    positions = np.asarray(positions, dtype=np.float32)
+    directions = np.asarray(directions, dtype=np.float32)
+    targets = np.asarray(targets, dtype=np.float32)
+
     desired = targets[:, None, :] - positions[None, :, :]
     desired = norm_l2(desired, axis=-1)
     dots = np.einsum('jk,ijk->ij', directions, desired)
 
     if exclude_mask is not None:
+        exclude_mask = np.asarray(exclude_mask, dtype=bool)
         dots[:, exclude_mask] = -np.inf
 
     k_clipped = max(0, min(k, dots.shape[1]))
@@ -256,40 +310,44 @@ def top_k_facing(positions, directions, targets, k, exclude_mask=None):
 
 # Neighbourhood-based smoothing
 
-def _masked_neighbours(neighbours: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """(valid, safe) for an (N, k) neighbour array using -1 (or any < 0) as padding.
+def _masked_neighbours(neighbours: NeighbourGraph) -> Tuple[np.ndarray, np.ndarray]:
+    """(valid, safe) for a neighbour graph.
 
-    'valid' is the boolean keep-mask, 'safe' is 'neighbours' with padding clamped
-    to 0 so it can be used for fancy-indexing without going out of bounds.
+    Ragged input is densified.
+    'valid' is the boolean keep-mask, 'safe' is the dense indices with padding
+    clamped to 0 so it can be used for fancy-indexing without going out of bounds.
     """
-    nb = np.asarray(neighbours, dtype=np.intp)
+    nb = padded_neighbours(neighbours) if not _is_dense(neighbours) else np.asarray(neighbours, dtype=np.intp)
     valid = nb >= 0
     safe = np.where(valid, nb, 0)
     return valid, safe
 
 
 def smooth_scalars(
-        values: np.ndarray,
-        neighbours: np.ndarray,
+        values: ArrayLike,
+        neighbours: NeighbourGraph,
         n_iter: int = 2,
-        mask: Optional[np.ndarray] = None,
+        mask: Optional[ArrayLike] = None,
         method: str = 'mean',
 ) -> np.ndarray:
     """
     Smooth a 1D scalar field over a precomputed neighbour graph.
 
     Args:
-        values: (N,) values to smooth
-        neighbours: (N, k) neighbour indices, entries < 0 are ignored (padding)
+        values: values to smooth, (N,)
+        neighbours: NeighbourGraph (ragged or dense, dense entries < 0 are padding)
         n_iter: smoothing passes
-        mask: (N,) bool. If given, only True entries are updated
+        mask: optional bool array, only True entries are updated, (N,)
         method: 'mean' (half-self half-neighbours) or 'median' (self + neighbours)
     """
-    out = np.asarray(values, dtype=np.float64).copy()
+
+    method = 'mean' if not method else str(method).lower()
+
+    out = np.copy(values).astype(np.float64)
     if n_iter <= 0:
         return out.astype(values.dtype)
 
-    update_mask = mask if mask is not None else np.ones(out.shape[0], dtype=bool)
+    update_mask = np.asarray(mask, dtype=bool) if mask is not None else np.ones(out.shape[0], dtype=bool)
     valid_nb, safe_nb = _masked_neighbours(neighbours)
 
     for _ in range(n_iter):
@@ -313,10 +371,10 @@ def smooth_scalars(
 
 
 def smooth_phasors(
-        values: np.ndarray,
-        neighbours: np.ndarray,
+        values: ArrayLike,
+        neighbours: NeighbourGraph,
         n_iter: int = 3,
-        weights: Optional[np.ndarray] = None,
+        weights: Optional[ArrayLike] = None,
         include_self: bool = True,
 ) -> np.ndarray:
     """
@@ -325,12 +383,13 @@ def smooth_phasors(
     Args:
         values: (N,) complex phasors (need not be unit). For a hexatic field these
             are exp(6i*theta), for a nematic field exp(2i*theta), etc.
-        neighbours: (N, k) int neighbour indices, entries < 0 are ignored (padding).
+        neighbours: NeighbourGraph (ragged or dense, dense entries < 0 are padding).
         n_iter: smoothing passes.
         weights: (N,) per-point confidence (e.g. |Psi|), None -> uniform.
         include_self: keep each point's own phasor in its average.
     """
-    z = np.asarray(values, dtype=np.complex128).copy()
+
+    z = np.copy(values).astype(np.complex128)
     w = np.ones(z.shape[0]) if weights is None else np.asarray(weights, dtype=np.float64)
 
     valid_nb, safe_nb = _masked_neighbours(neighbours)
@@ -350,8 +409,8 @@ def smooth_phasors(
 
 
 def smooth_nematic_vectors(
-        values: np.ndarray,
-        neighbours: np.ndarray,
+        values: ArrayLike,
+        neighbours: NeighbourGraph,
         n_iter: int = 10,
         include_self: bool = True,
 ) -> np.ndarray:
@@ -365,12 +424,13 @@ def smooth_nematic_vectors(
 
     Args:
         values: (M, D) unit vectors
-        neighbours: (M, k) neighbour indices, entries < 0 are ignored (padding).
+        neighbours: NeighbourGraph (ragged or dense, dense entries < 0 are padding).
             A dense knn() output (self dropped) is the typical input.
         n_iter: smoothing passes
         include_self: keep each vector's own value in its average
     """
-    out = np.asarray(values, dtype=np.float64).copy()
+
+    out = np.copy(values).astype(np.float64)
     if n_iter <= 0:
         return out
 
@@ -404,8 +464,7 @@ def smooth_nematic_vectors(
 
 
 def smooth_field_partitioned(
-        values: np.ndarray,
-        *,
+        values: ArrayLike,
         kind: str = 'scalar',
         partition: Optional[np.ndarray] = None,
         positions: Optional[np.ndarray] = None,
@@ -449,6 +508,10 @@ def smooth_field_partitioned(
     Returns:
         Smoothed field, same shape and dtype as 'values'.
     """
+
+    kind = 'scalar' if not kind else str(kind).lower()
+    method = 'mean' if not method else str(method).lower()
+
     if kind not in ('scalar', 'phasor', 'nematic'):
         raise ValueError(f"Unknown kind {kind!r}, expected 'scalar', 'phasor' or 'nematic'")
 
@@ -503,3 +566,115 @@ def smooth_field_partitioned(
         out[gi] = sm.astype(out.dtype, copy=False)
 
     return out
+
+
+# Lattice-row tracing and graph measures
+
+def graph_spacing(points2d: ArrayLike, neighbours: NeighbourGraph, reduce: Callable = np.mean) -> np.ndarray:
+    """
+    Local point spacing scale over a neighbour graph with choice of reduce function.
+    (as opposed to mean_neighbour_distance which measures over a kNN ball).
+
+    NaN for isolated points.
+    """
+    points2d = np.asarray(points2d, dtype=float)
+    nbr = ragged_neighbours(neighbours)
+    out = np.full(len(points2d), np.nan)
+    for i, nb in enumerate(nbr):
+        if nb.size:
+            out[i] = reduce(np.linalg.norm(points2d[nb] - points2d[i], axis=1))
+    return out
+
+
+def first_ring_gap(points2d: ArrayLike, neighbours: NeighbourGraph, degrees: bool = False) -> np.ndarray:
+    """
+    Largest empty angular sector between consecutive first-ring neighbour bearings
+
+    Complete ring (incl 5- or 7-fold disclinations) should have ~ 2*pi/degree
+    Any lens missing a sector should be >= ~2*pi/3
+    """
+
+    points2d = np.asarray(points2d, dtype=np.float64)
+    nbr = ragged_neighbours(neighbours)
+    gap = np.full(len(points2d), 2.0 * np.pi)
+
+    for i, nb in enumerate(nbr):
+        if nb.size < 2:
+            continue
+        d = points2d[nb] - points2d[i]
+        ang = np.sort(np.arctan2(d[:, 1], d[:, 0]))
+        diffs = np.diff(np.concatenate([ang, ang[:1] + 2.0 * np.pi]))
+        gap[i] = float(diffs.max())
+
+    return np.rad2deg(gap) if degrees else gap
+
+
+def _walk(
+        points2d: np.ndarray,
+        neighbours: Sequence[np.ndarray],
+        start: int,
+        heading: np.ndarray,
+        max_steps: int,
+        cos_step: float,
+        cos_global: float,
+    ) -> np.ndarray:
+    """
+    Greedy single-direction walk: step to the neighbour best aligned with the heading.
+    'neighbours' is the list-of-arrays form (ragged)
+    """
+    path, cur = [], start
+    h0 = heading / (np.linalg.norm(heading) + 1e-12)
+    h, visited = h0, {start}
+
+    for _ in range(max_steps):
+        nb = neighbours[cur]
+        if len(nb) == 0:
+            break
+
+        vec = points2d[nb] - points2d[cur]
+        u = vec / (np.linalg.norm(vec, axis=1, keepdims=True) + 1e-12)
+        dots = u @ h
+        j = int(np.argmax(dots))
+        if dots[j] < cos_step or (u[j] @ h0) < cos_global:
+            break
+        nxt = int(nb[j])
+        if nxt in visited:
+            break
+        path.append(nxt)
+        visited.add(nxt)
+        h, cur = u[j], nxt
+    return np.array(path, dtype=int)
+
+
+def walk_rows(
+        points2d: ArrayLike,
+        neighbours: NeighbourGraph,
+        seed: int,
+        bearings: ArrayLike,
+        max_steps: int = 500,
+        step_tol: float = 30.0,
+        global_tol: float = 70.0,
+    ) -> List[np.ndarray]:
+    """
+    Trace lattice rows out of 'seed' along each heading in 'bearings' (rad).
+    Each row is walked both ways and returned as an ordered (k, 2) array of the points.
+
+    Args:
+        - step_tol: float, caps the per-step turn (degrees)
+        - global_tol: float, cumulative drift from the initial heading (degrees)
+    """
+
+    fams: List[np.ndarray] = []
+    cos_step = np.cos(np.deg2rad(step_tol))
+    cos_global = np.cos(np.deg2rad(global_tol))
+
+    points2d = np.asarray(points2d, dtype=np.float64)
+    nbr = ragged_neighbours(neighbours)
+
+    for brg in bearings:
+        h0 = np.array([np.cos(brg), np.sin(brg)])
+        fwd = _walk(points2d, nbr, seed, h0, max_steps, cos_step, cos_global)
+        bwd = _walk(points2d, nbr, seed, -h0, max_steps, cos_step, cos_global)
+        fams.append(np.vstack([points2d[bwd[::-1]], points2d[[seed]], points2d[fwd]]))
+
+    return fams

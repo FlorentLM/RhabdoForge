@@ -1,9 +1,10 @@
-from typing import Tuple, Optional, Sequence, Callable
+from typing import Tuple, Optional, Sequence, Callable, List
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.spatial import ConvexHull, Delaunay, cKDTree, Voronoi
 
 
-def polygon_area(points2d, signed: bool = False) -> float:
+def polygon_area(points2d: ArrayLike, signed: bool = False) -> float:
     """
     Shoelace area of a 2D polygon whose vertices are given in order.
 
@@ -18,7 +19,7 @@ def polygon_area(points2d, signed: bool = False) -> float:
     return float(a) if signed else float(abs(a))
 
 
-def fan_decompose(points2d: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def fan_decompose(points2d: ArrayLike) -> Tuple[np.ndarray, np.ndarray]:
     """
     Triangle-fan decomposition of an ordered simple polygon.
 
@@ -40,7 +41,28 @@ def fan_decompose(points2d: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return centroids, areas
 
 
-def polygon_centroid(points2d: np.ndarray) -> np.ndarray:
+def triangle_areas(a: ArrayLike, b: ArrayLike, c: ArrayLike) -> np.ndarray:
+    """
+    Areas of triangles from their three vertex arrays.
+    2D uses the scalar cross (shoelace), 3D uses half the cross-product norm.
+
+    Args:
+        - a, b, c: each (..., D) with D in {2, 3}
+    """
+    a, b, c = (np.asarray(a, dtype=np.float64),
+               np.asarray(b, dtype=np.float64),
+               np.asarray(c, dtype=np.float64))
+    e1, e2 = b - a, c - a
+
+    if a.shape[-1] == 2:
+        return 0.5 * np.abs(e1[..., 0] * e2[..., 1] - e1[..., 1] * e2[..., 0])
+    if a.shape[-1] == 3:
+        return 0.5 * np.linalg.norm(np.cross(e1, e2), axis=-1)
+
+    raise ValueError(f'vertices must be 2D or 3D, got last-axis size {a.shape[-1]}')
+
+
+def polygon_centroid(points2d: ArrayLike) -> np.ndarray:
     """
     Area-weighted centroid of an ordered simple polygon
     (true centre of mass, not the vertex mean).
@@ -48,7 +70,7 @@ def polygon_centroid(points2d: np.ndarray) -> np.ndarray:
     Falls back to the vertex mean for a zero-area or degenerate polygon.
     """
     centroids, areas = fan_decompose(points2d)
-    total = float(areas.sum())
+    total = areas.sum()
     if total <= 1e-14:
         p = np.asarray(points2d, dtype=np.float64)
         return p.mean(axis=0) if p.shape[0] else np.full(2, np.nan)
@@ -57,8 +79,8 @@ def polygon_centroid(points2d: np.ndarray) -> np.ndarray:
 
 def weighted_polygon_centroids(
         cells: Sequence[Optional[np.ndarray]],
-        fallback: np.ndarray,
-        weight_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+        fallback: ArrayLike,
+        weight_fn: Optional['Callable'] = None,
         clip_equations: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
@@ -139,7 +161,7 @@ def order_polygon_ccw(points2d: np.ndarray) -> np.ndarray:
     return p[order]
 
 
-def clip_polygon(points2d: np.ndarray, hull_equations: np.ndarray) -> np.ndarray:
+def clip_polygon(points2d: Sequence[ArrayLike], hull_equations: ArrayLike) -> np.ndarray:
     """
     Clip a convex polygon against a convex region (Sutherland-Hodgman).
 
@@ -147,7 +169,8 @@ def clip_polygon(points2d: np.ndarray, hull_equations: np.ndarray) -> np.ndarray
     a point is interior where (normal . x + offset) <= 0.
     https://en.wikipedia.org/wiki/Sutherland%E2%80%93Hodgman_algorithm#Pseudocode
     """
-    out = list(points2d)
+    out = [np.asarray(p, dtype=np.float64) for p in points2d]
+    hull_equations = np.asarray(hull_equations, dtype=np.float64)
 
     for eq in hull_equations:
         normal, offset = eq[:2], eq[2]
@@ -179,7 +202,7 @@ def clip_polygon(points2d: np.ndarray, hull_equations: np.ndarray) -> np.ndarray
 
 # Voronoi / hull routines
 
-def mirror_across_hull(points2d: np.ndarray, equations: np.ndarray, depth: float) -> np.ndarray:
+def mirror_across_hull(points2d: ArrayLike, equations: ArrayLike, depth: float) -> np.ndarray:
     """
     Mirror points lying within 'depth' of the hull edges to the outside.
 
@@ -187,6 +210,9 @@ def mirror_across_hull(points2d: np.ndarray, equations: np.ndarray, depth: float
     against the boundary. 'equations' are scipy ConvexHull half-plane rows
     [nx, ny, offset] with outward-pointing normals.
     """
+    points2d = np.asarray(points2d, dtype=np.float64)
+    equations = np.asarray(equations, dtype=np.float64)
+
     mirrored = []
     for eq in equations:
         normal, offset = eq[:2], eq[2]
@@ -207,10 +233,11 @@ def mirror_across_hull(points2d: np.ndarray, equations: np.ndarray, depth: float
 
     if mirrored:
         return np.vstack(mirrored)
+
     return np.zeros((0, 2))
 
 
-def voronoi_cells(vor: Voronoi, n_cells: Optional[int] = None) -> list:
+def voronoi_cells(vor: 'Voronoi', n_cells: Optional[int] = None) -> List[np.ndarray]:
     """
     Ordered vertex arrays for the first 'n_cells' input points of a scipy Voronoi
     (all of them if None). Unbounded or empty cells become None.
@@ -223,12 +250,13 @@ def voronoi_cells(vor: Voronoi, n_cells: Optional[int] = None) -> list:
             cells.append(None)
         else:
             cells.append(vor.vertices[region])
+
     return cells
 
 
 def smooth_hull(
-        points2d: np.ndarray,
-        hull: ConvexHull = None,
+        points2d: ArrayLike,
+        hull: 'ConvexHull' = None,
         n: int = 300,
         smoothing: float = 0.0,
 ) -> np.ndarray:
@@ -239,7 +267,7 @@ def smooth_hull(
     """
     from scipy.interpolate import splprep, splev
 
-    points2d = np.asarray(points2d, dtype=float)
+    points2d = np.asarray(points2d, dtype=np.float32)
     if hull is None:
         hull = ConvexHull(points2d)
 
@@ -251,26 +279,87 @@ def smooth_hull(
     return np.column_stack([x, y])
 
 
+def hull_signed_distance(points2d: ArrayLike, hull: 'ConvexHull') -> np.ndarray:
+    """
+    Signed distance to the nearest convex-hull face (<0 inside, >0 outside).
+    """
+    points2d = np.atleast_2d(np.asarray(points2d, dtype=np.float64))
+    eq = hull.equations
+    return (points2d @ eq[:, :2].T + eq[:, 2]).max(axis=1)
+
+
+def resample_contour(boundary: ArrayLike, spacing_fn: 'Callable') -> np.ndarray:
+    """
+    Walk a closed contour and drop a point every local target spacing.
+
+    Greedy arc-length walk: spacing_fn is the step taken from point, so the ring
+    is dense where the target spacing is small and sparse where it is large.
+
+    Returns:
+        ordered ring of boundary points (R, 2)
+    """
+    b = np.asarray(boundary, dtype=np.float64)
+
+    closed = np.vstack([b, b[:1]])
+    seg = np.diff(closed, axis=0)
+    seglen = np.linalg.norm(seg, axis=1)
+    s = np.concatenate([[0.0], np.cumsum(seglen)])
+
+    total = float(s[-1])
+    if total <= 0:
+        return b.copy()
+
+    def pos_at(t):
+        t = t % total
+        k = int(np.searchsorted(s, t, side='right') - 1)
+        k = min(max(k, 0), len(seglen) - 1)
+        f = (t - s[k]) / max(seglen[k], 1e-12)
+        return closed[k] + f * seg[k]
+
+    out, t, guard = [], 0.0, 0
+    guard_max = int(50 * total / max(np.median(seglen), 1e-9)) + 1000
+    while t < total and guard < guard_max:
+        p = pos_at(t)
+        out.append(p)
+        step = float(np.ravel(spacing_fn(p[None]))[0])
+        t += max(step, total * 1e-4)
+        guard += 1
+
+    ring = np.asarray(out)
+    # Drop last point if the walk wrapped back to the first
+    if len(ring) > 2:
+        first_step = float(np.ravel(spacing_fn(ring[:1]))[0])
+        if np.linalg.norm(ring[-1] - ring[0]) < 0.5 * first_step:
+            ring = ring[:-1]
+    return ring
+
+
 class Polygon2D:
     """
     A 2D region with conveniences:
 
     - Delaunay triangulation for fast inside tests
     - cKDTree of the raw cloud for buffered tests
-    - ConvexHull (Lloyd needs its .points / .vertices / .equations)
+    - ConvexHull
     - Boundary polyline (for plotting)
     - Area
     """
 
-    def __init__(self, boundary_points2d: np.ndarray, raw_points2d: np.ndarray, hull: ConvexHull):
-        self.boundary = np.asarray(boundary_points2d, dtype=float)   # (M, 2) ordered polyline
-        self.hull = hull   # scipy ConvexHull (for Lloyd)
-        self.area = polygon_area(self.boundary)
-        self._delaunay = Delaunay(self.boundary)
-        self._tree = cKDTree(np.asarray(raw_points2d, dtype=float))
+    def __init__(self,
+            boundary: ArrayLike,
+            raw_points2d: ArrayLike,
+            hull: 'ConvexHull'
+        ):
+
+        self.boundary: np.ndarray = np.asarray(boundary, dtype=float)   # ordered polyline (M, 2)
+        self.hull: 'ConvexHull' = hull
+        self.area: float = polygon_area(self.boundary)
+
+        self._delaunay: 'Delaunay' = Delaunay(self.boundary)
+        self._tree: 'cKDTree' = cKDTree(np.asarray(raw_points2d, dtype=float))
 
     @classmethod
-    def from_points(cls, points2d: np.ndarray, smooth: bool = False, n_boundary: int = 300) -> 'Polygon2D':
+    def from_points(cls, points2d: ArrayLike, smooth: bool = False, n_boundary: int = 300) -> 'Polygon2D':
 
         points2d = np.asarray(points2d, dtype=float)
         hull = ConvexHull(points2d)
@@ -283,7 +372,7 @@ class Polygon2D:
 
         return cls(boundary, points2d, hull)
 
-    def inside(self, points2d: np.ndarray, buffer: float = 0.0) -> np.ndarray:
+    def inside(self, points2d: ArrayLike, buffer: float = 0.0) -> np.ndarray:
 
         points2d = np.atleast_2d(np.asarray(points2d, dtype=float))
         inside = self._delaunay.find_simplex(points2d) >= 0
@@ -293,3 +382,7 @@ class Polygon2D:
                 d, _ = self._tree.query(points2d[out])
                 inside[out] = d < buffer
         return inside
+
+    def signed_distance(self, points2d: ArrayLike) -> np.ndarray:
+        """Signed distance to the hull faces (<0 inside)."""
+        return hull_signed_distance(points2d=points2d, hull=self.hull)

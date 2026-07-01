@@ -187,7 +187,7 @@ class BundlesAligner:
                     (bilateral_sign > 0).astype(np.int32) * 2 + (equatorial_sign > 0).astype(np.int32)
             )
             alignment = smooth_field_partitioned(
-                alignment,
+                values=alignment,
                 kind='nematic',
                 partition=zone_labels,
                 positions=model.positions,
@@ -243,7 +243,7 @@ class BundlesAligner:
 
         if self.saccade_smoothing_iterations > 0:
             sacc = smooth_field_partitioned(
-                sacc,
+                values=sacc,
                 kind='nematic',
                 partition=model.eye_index,
                 positions=model.positions,

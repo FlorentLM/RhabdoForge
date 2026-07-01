@@ -1,35 +1,34 @@
-from typing import Sequence, Optional
+from typing import Optional, Callable
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.interpolate import RBFInterpolator
 
 from insectvision.geometry.circular import resultant
-from insectvision.geometry.neighbours import beta_skeleton_neighbours
+from insectvision.geometry.neighbours import beta_skeleton_neighbours, NeighbourGraph, ragged_neighbours
 
 
-def hexatic_axis_angle(z6) -> np.ndarray:
+def hexatic_axis_angle(z6: ArrayLike) -> np.ndarray:
     """Local axis angle theta = arg(z6)/6, in (-pi/6, pi/6]."""
     return (np.angle(z6) / 6.0).astype(np.float32)
 
 
-def hexatic_order(z6) -> np.ndarray:
+def hexatic_order(z6: ArrayLike) -> np.ndarray:
     """|Psi6| in [0, 1]."""
     return np.abs(z6).astype(np.float32)
 
 
-def phasor_from_points(points2d: np.ndarray, neighbours: Sequence[int] | Sequence[Sequence[int]]) -> np.ndarray:
+def phasor_from_points(points2d: ArrayLike, neighbours: 'NeighbourGraph') -> np.ndarray:
     """
-    Per-point 6-fold phasor from a 2D cloud + neighbour lists.
+    Per-point 6-fold phasor from a 2D cloud + neighbour graph.
 
-    'adj[i]' is an array/list of neighbour indices of point i (e.g. Delaunay one-ring).
-    Points with < 2 neighbours get 0+0j.
+    'neighbours' is a NeighbourGraph in either representation (ragged list-of-arrays
+    or dense (N, k) with entries < 0 as padding). Points with < 2 neighbours get 0+0j.
     """
-
     points2d = np.asarray(points2d, dtype=np.float64)
+    nbr = ragged_neighbours(neighbours)
     z6 = np.zeros(len(points2d), dtype=np.complex128)
 
-    for i, nb in enumerate(neighbours):
-        nb = np.asarray(nb, dtype=np.intp)
+    for i, nb in enumerate(nbr):
         if nb.size < 2:
             continue
         d = points2d[nb] - points2d[i]
@@ -44,7 +43,7 @@ def hexatic_axis_field(
         smoothing: float = 0.5,
         min_order: float = 0.5,
         return_confidence: bool = False
-    ):
+    ) -> 'Callable':
     """
     Continuous local hexatic-axis interpolant.
 

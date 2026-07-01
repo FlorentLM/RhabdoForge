@@ -1,15 +1,15 @@
-from typing import Optional, Union
+from typing import Optional, Tuple
 import numpy as np
 from numpy.typing import ArrayLike
 
 from insectvision.utils.shared import norm_l2
 
 
-def _match_batch(a, b):
+def _match_batch(a: ArrayLike, b: ArrayLike) -> Tuple[np.ndarray, np.ndarray]:
     """
     Ensures 'a' and 'b' can broadcast by injecting size-1 dimensions before the last dimension.
     """
-    a, b = np.asarray(a), np.asarray(b)
+    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
     while a.ndim < b.ndim:
         a = np.expand_dims(a, axis=-2)
     while b.ndim < a.ndim:
@@ -22,7 +22,7 @@ def tangent_frames(
         directions: ArrayLike,
         world_up: Optional[ArrayLike] = None,
         world_right: Optional[ArrayLike] = None,
-):
+    ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Orthonormal basis (right, up) for each direction vector.
 
@@ -36,7 +36,7 @@ def tangent_frames(
     if world_right is None:
         world_right = WORLD_RIGHT
 
-    dirs = np.asarray(directions, dtype=np.float32)
+    dirs = np.asarray(directions, dtype=np.float64)
     is_1d = (dirs.ndim == 1)
     if is_1d:
         dirs = dirs[np.newaxis, :]
@@ -107,17 +107,17 @@ def rotate_in_tangent_plane(
 
 # TODO: This one is unused, might get rid of
 def rotate_vectors(
-        vectors: Union[np.ndarray, list],
-        axes: Union[np.ndarray, list],
-        angles: Union[np.ndarray, float],
+        vectors: ArrayLike,
+        axes: ArrayLike,
+        angles: ArrayLike,
         degrees: bool = True,
         normalize_axes: bool = False,
 ) -> np.ndarray:
     """Rotate vectors around arbitrary axes (Rodrigues' formula)."""
 
-    v = np.asarray(vectors)
-    k = np.asarray(axes)
-    theta = np.asarray(angles)
+    v = np.asarray(vectors, dtype=np.float64)
+    k = np.asarray(axes, dtype=np.float64)
+    theta = np.asarray(angles, dtype=np.float64)
 
     if normalize_axes:
         k = k / np.linalg.norm(k, axis=-1, keepdims=True)
@@ -140,7 +140,6 @@ def local_to_world(coords: ArrayLike, *basis: ArrayLike) -> np.ndarray:
     Express local coordinates in world space against a set of basis vectors.
     The result is *not* renormalised.
     """
-
     out_coords = np.asarray(coords)
     if coords.shape[-1] != len(basis):
         raise ValueError(f'local_to_world: coords last axis must equal number of basis vectors')
@@ -152,3 +151,33 @@ def local_to_world(coords: ArrayLike, *basis: ArrayLike) -> np.ndarray:
         bi = _match_batch(out_coords, basis[i])[1]
         out = out + out_coords[..., i, None] * bi
     return out
+
+
+def rot2d(theta: float | ArrayLike, degrees: bool = False) -> np.ndarray:
+    """2x2 rotation matrix for a single angle or array of."""
+    theta = np.asarray(theta, dtype=np.float64)
+    if degrees:
+        theta = np.deg2rad(theta)
+    c, s = np.cos(theta), np.sin(theta)
+    out = np.stack([[c, -s], [s, c]]).squeeze()
+    return out if out.ndim == 2 else out.T
+
+
+def principal_axis_angle(points2d: ArrayLike, degrees: bool = False) -> float:
+    """
+    Orientation of the major principal axis of a 2D point set (PCA).
+    Sign-ambiguous (a line, not a ray).
+    """
+    points2d = np.asarray(points2d, dtype=float)
+
+    if len(points2d) < 2:
+        return np.nan
+
+    c = points2d - points2d.mean(axis=0)
+    evals, evecs = np.linalg.eigh(c.T @ c)
+    vec = evecs[:, int(np.argmax(evals))]
+
+    angle = float(np.arctan2(vec[1], vec[0]))
+
+    return np.rad2deg(angle) if degrees else angle
+
