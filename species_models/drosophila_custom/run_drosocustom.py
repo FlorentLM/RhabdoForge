@@ -1,5 +1,5 @@
 """
-Drosophila compound eye model fitted to measurements by Buchner
+Drosophila compound eye model fitted to measurements by Erich Büchner
     "Dunkelanregung des stationaeren flugs der fruchtfliege Drosophila", 1971, PhD thesis
 
 Plots were taken from Heisenberg and Wolff, 1984 (10.1007/978-3-642-69936-8) were manually
@@ -12,11 +12,12 @@ import numpy as np
 import xml.etree.ElementTree as ET
 from svg.path import parse_path, Line, Close
 
-from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere
+from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere, normals_to_ellipsoid
+from insectvision.lattice_fitting.algo import mirror_bilateral
 from insectvision.lattice_fitting.generator import FittingParameters, LatticeGenerator
-from insectvision.lattice_fitting.plots import plot_lattice, set_3d_equal_aspect, draw_gizmo
+from insectvision.lattice_fitting.plots import plot_lattice, set_3d_equal, draw_gizmo
 from insectvision.lattice_fitting.profile import EyeMeasurements
-from insectvision.lattice_fitting.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d
+from insectvision.lattice_fitting.plots import plot_eye_scaffold_3d, plot_lattice_3d, plot_density_3d
 
 
 # TODO: a GUI that replaces the svg + svg parsing
@@ -59,6 +60,73 @@ def _sample_path(path: np.ndarray, pts_per_segment: int = 20) -> np.ndarray:
                 points.append((p.real, p.imag))
     return np.array(points)
 
+
+def _stereo_to_sphere_buchner(points_2d: np.ndarray, center: np.ndarray, radius: float) -> np.ndarray:
+    """
+    Inverse stereographic projection using Buchner's convention.
+    Coordinate system: -Z = Anterior, +Y = Dorsal, +X = Right (left eye)
+    """
+    # TODO: make this a more generic math util?
+
+    # Center, flip, normalise
+    p = (points_2d - center) * -1
+    p = p * (2.0 / radius)
+
+    # Inverse stereographic projection
+    x, y = p[:, 0], p[:, 1]
+    rho = np.sqrt(x ** 2 + y ** 2)
+    c = 2 * np.arctan(rho / 2.0)
+
+    # Center is left pole (-90 deg longitude)
+    lon0 = -np.pi / 2
+    lat = np.arcsin(np.clip((y * np.sin(c)) / (rho + 1e-9), -1, 1))
+    lon = lon0 + np.arctan2(x * np.sin(c), rho * np.cos(c))
+
+    # Spherical to Cartesian
+    X = np.cos(lat) * np.sin(lon)
+    Y = np.sin(lat)
+    Z = -np.cos(lat) * np.cos(lon)
+
+    return np.column_stack([X, Y, Z])
+
+
+def _fig_buchner_3d(
+        ommatidia: np.ndarray,
+        fwd_markers: np.ndarray,
+        origin: np.ndarray,
+        axes: Dict[str, np.ndarray],
+        title: str='Drosophila eye (Buchner, 1971)'
+    ):
+    """3D version of the Buchner data svg."""
+
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(12, 12))
+    ax = fig.add_subplot(111, projection='3d')
+
+    ax.scatter(*ommatidia.T, c='grey', s=10, alpha=0.5, label='Ommatidia')
+    ax.scatter(*fwd_markers.T, c='red', s=150, marker='*', label='Forward', depthshade=False)
+    ax.scatter(*origin, c='black', s=50, marker='X', label='Origin', depthshade=False)
+
+    colors = {'axis-x': '#ff60b3', 'axis-y': '#00FF9B', 'axis-v': '#FFC400'}
+
+    for axis_id, points in axes.items():
+        ax.plot(*points.T, color=colors[axis_id], linewidth=2.5, label=f'Axis {axis_id[-1].upper()}')
+
+    ax.set_title(title, fontsize=16)
+
+    draw_gizmo(ax, length=0.5)
+
+    all_points = np.vstack([ommatidia, fwd_markers])
+    set_3d_equal(ax, all_points)
+
+    ax.view_init(elev=30, azim=45)
+    ax.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+# TODO: svg parsing module that is more generic
 
 def parse_buchner_svg(svg_file: str | Path) -> 'SVGContent':
     """
@@ -114,94 +182,6 @@ def parse_buchner_svg(svg_file: str | Path) -> 'SVGContent':
     )
 
 
-def stereo_to_sphere_buchner(points_2d: np.ndarray, center: np.ndarray, radius: float) -> np.ndarray:
-    """
-    Inverse stereographic projection using Buchner's convention.
-    Coordinate system: -Z = Anterior, +Y = Dorsal, +X = Right (left eye)
-    """
-    # TODO: make this a more generic math util?
-
-    # Center, flip, normalise
-    p = (points_2d - center) * -1
-    p = p * (2.0 / radius)
-
-    # Inverse stereographic projection
-    x, y = p[:, 0], p[:, 1]
-    rho = np.sqrt(x ** 2 + y ** 2)
-    c = 2 * np.arctan(rho / 2.0)
-
-    # Center is left pole (-90 deg longitude)
-    lon0 = -np.pi / 2
-    lat = np.arcsin(np.clip((y * np.sin(c)) / (rho + 1e-9), -1, 1))
-    lon = lon0 + np.arctan2(x * np.sin(c), rho * np.cos(c))
-
-    # Spherical to Cartesian
-    X = np.cos(lat) * np.sin(lon)
-    Y = np.sin(lat)
-    Z = -np.cos(lat) * np.cos(lon)
-
-    return np.column_stack([X, Y, Z])
-
-
-def normals_to_ellipsoid(directions: np.ndarray, rx: float, ry: float, rz: float) -> np.ndarray:
-    """
-    Map viewing directions to positions on an ellipsoid such that the
-    directions are the surface normals.
-
-    This yields larger facet diameters in flatter regions.
-    """
-    # TODO: make this a more generic math util
-    nx = directions[:, 0]
-    ny = directions[:, 1]
-    nz = directions[:, 2]
-
-    # Calculate the scale factor for the normal mapping
-    K = np.sqrt((nx * rx) ** 2 + (ny * ry) ** 2 + (nz * rz) ** 2)
-
-    x = (rx ** 2 * nx) / K
-    y = (ry ** 2 * ny) / K
-    z = (rz ** 2 * nz) / K
-
-    return np.column_stack([x, y, z])
-
-
-def plot_buchner_3d(
-        ommatidia: np.ndarray,
-        fwd_markers: np.ndarray,
-        origin: np.ndarray,
-        axes: Dict[str, np.ndarray],
-        title: str='Drosophila eye (Buchner, 1971)'
-    ):
-    """3D version of the Buchner data svg."""
-
-    import matplotlib.pyplot as plt
-
-    fig = plt.figure(figsize=(12, 12))
-    ax = fig.add_subplot(111, projection='3d')
-
-    ax.scatter(*ommatidia.T, c='grey', s=10, alpha=0.5, label='Ommatidia')
-    ax.scatter(*fwd_markers.T, c='red', s=150, marker='*', label='Forward', depthshade=False)
-    ax.scatter(*origin, c='black', s=50, marker='X', label='Origin', depthshade=False)
-
-    colors = {'axis-x': '#ff60b3', 'axis-y': '#00FF9B', 'axis-v': '#FFC400'}
-
-    for axis_id, points in axes.items():
-        ax.plot(*points.T, color=colors[axis_id], linewidth=2.5, label=f'Axis {axis_id[-1].upper()}')
-
-    ax.set_title(title, fontsize=16)
-
-    draw_gizmo(ax, length=0.5)
-
-    all_points = np.vstack([ommatidia, fwd_markers])
-    set_3d_equal_aspect(ax, all_points)
-
-    ax.view_init(elev=30, azim=45)
-    ax.legend()
-
-    plt.tight_layout()
-    plt.show()
-
-
 def reconstruct_buchner_data(
         svg_path: str | Path,
         apply_regularisation: bool = True,
@@ -218,10 +198,10 @@ def reconstruct_buchner_data(
 
     data = parse_buchner_svg(svg_path)
 
-    raw_dirs = stereo_to_sphere_buchner(data.ommatidia, data.hemisphere_center, data.hemisphere_radius)
+    raw_dirs = _stereo_to_sphere_buchner(data.ommatidia, data.hemisphere_center, data.hemisphere_radius)
 
     if apply_regularisation and len(data.forward_markers) > 0:
-        stars_3d = stereo_to_sphere_buchner(data.forward_markers, data.hemisphere_center, data.hemisphere_radius)
+        stars_3d = _stereo_to_sphere_buchner(data.forward_markers, data.hemisphere_center, data.hemisphere_radius)
 
         coeffs = np.polyfit(stars_3d[:, 1], stars_3d[:, 0], 2)
         deviation = np.poly1d(coeffs)
@@ -233,16 +213,16 @@ def reconstruct_buchner_data(
         raw_dirs = corrected / np.where(norms == 0, 1, norms)
 
     if show_plots:
-        stars_3d = stereo_to_sphere_buchner(data.forward_markers, data.hemisphere_center, data.hemisphere_radius)
-        position_3d = stereo_to_sphere_buchner(
+        stars_3d = _stereo_to_sphere_buchner(data.forward_markers, data.hemisphere_center, data.hemisphere_radius)
+        position_3d = _stereo_to_sphere_buchner(
             data.lattice_position[np.newaxis, :],
             data.hemisphere_center, data.hemisphere_radius,
         )[0]
         axes_3d = {
-            aid: stereo_to_sphere_buchner(pts, data.hemisphere_center, data.hemisphere_radius)
+            aid: _stereo_to_sphere_buchner(pts, data.hemisphere_center, data.hemisphere_radius)
             for aid, pts in data.axes.items()
         }
-        plot_buchner_3d(
+        _fig_buchner_3d(
             raw_dirs, stars_3d, position_3d, axes_3d,
             title="Drosophila ommatidia viewing directions (Büchner, 1971)",
         )
@@ -285,45 +265,44 @@ if __name__ == "__main__":
 
     # Back to sphere
     lattice_dirs = stereo_to_sphere(lattice2d, forward, right, up)
-    print(f'Generated {len(lattice_dirs)} ommatidia')
 
-    # Map directions to head ellipsoid
+    # Map directions to head ellipsoid (in µm)
     target_width = (HW - FW) / 2.0
     ry = EL / 2.0
     rz = ED / 2.0
     best_rx = target_width
     print(f'Ellipsoid fit: Rx = {best_rx:.2f} µm')
 
+    # Note: this yields larger facet diameters in flatter regions
     L_positions = normals_to_ellipsoid(lattice_dirs, best_rx, ry, rz)
 
-    # Align medial edge
+    # Align medial edge, then mirror across X=0 to build the right eye
     shift_x = -FW / 2.0 - np.max(L_positions[:, 0])
-    L_positions += np.array([shift_x, 0, 0])
 
-    # Mirror for right eye
-    R_positions = L_positions.copy()
-    R_positions[:, 0] *= -1
-    R_dirs = lattice_dirs.copy()
-    R_dirs[:, 0] *= -1
+    positions_both, directions_both, eye_ids_both = mirror_bilateral(
+        positions=L_positions,
+        directions=lattice_dirs,
+        shift=shift_x,
+        source_side='left'
+    )
 
-    all_positions = np.vstack([L_positions, R_positions])
-    all_directions = np.vstack([lattice_dirs, R_dirs])
-    eye_ids = np.concatenate([np.zeros(len(L_positions)), np.ones(len(R_positions))])
-
-    print(f"\nFinal model:  L={len(L_positions)}  R={len(R_positions)}")
+    n_right = int(eye_ids_both.sum())
+    print(f"\nFinal model:  L={len(positions_both) - n_right}  R={n_right}")
 
     np.savez_compressed(
         'species_models/drosophila_custom.npz',
-        directions=all_directions,
-        positions=all_positions,
-        eye_id=eye_ids,
+        positions=positions_both,
+        directions=directions_both,
+        eye_id=eye_ids_both,
     )
 
     if SHOW_PLOTS:
-        plot_eyes_3d(
-            all_positions, all_directions, eye_ids,
-            title='Drosophila eyes\n(parametric model fitted to Büchner, 1971)',
-            sphere_projection=True,
+        plot_eye_scaffold_3d(
+            positions=positions_both,
+            directions=directions_both,
+            eye_ids=eye_ids_both,
+            title='Drosophila eyes\n(fitted to Büchner, 1971)',
+            sphere_projection=True
         )
-        plot_density_3d(all_positions, all_directions)
+        plot_density_3d(positions_both, directions_both)
         plot_lattice_3d(lattice_dirs, wireframe=True, color_by='psi6', title='Hexatic order')

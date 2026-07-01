@@ -1,11 +1,41 @@
+from typing import Callable
 import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.axes import Axes
 from matplotlib.collections import EllipseCollection
 import matplotlib.patches as patches
 
 
-def fig7_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):
+def _to_cartesian_sturzl(
+        azimuth: np.ndarray,
+        elevation: np.ndarray,
+        radius: float = 1.0,
+        degrees: bool = False
+    ) -> np.ndarray:
+    """
+    Spherical -> Cartesian in Stürzl et al.'s paper convention.
+    Note: this is NOT the same as insectvision.geometry.spherical's canonical frame (right=+X, up=+Y, forward=-Z)
+    """
+    azimuth = np.array(azimuth, dtype=np.float64)
+    elevation = np.array(elevation, dtype=np.float64)
+    if degrees:
+        azimuth = np.deg2rad(azimuth)
+        elevation = np.deg2rad(elevation)
+
+    x = radius * np.cos(elevation) * np.cos(azimuth)
+    y = radius * np.cos(elevation) * np.sin(azimuth)
+    z = radius * np.sin(elevation)
+
+    return np.stack([x, y, z])
+
+
+def fig7_eye_zones(
+        ommatidia_dirs: np.ndarray,
+        interp_fn_12: Callable,
+        interp_fn_34: Callable,
+        raw_12: np.ndarray,
+        raw_34: np.ndarray
+    ):
     """
     2D equirectangular projection of ommatidia directions, overlaid with the 4 zones.
 
@@ -44,18 +74,16 @@ def fig7_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):
     plt.show()
 
 
-def fig8_ortho_projection(ommatidia_dirs):
+def fig8_ortho_projection(ommatidia_dirs: np.ndarray):
     """
     Orthographic projection of ommatidia directions.
 
     Reproduction of Fig. 8 from Stürzl et al., 2010.
     """
-    from species_models.bee_Sturzl2010.run_sturzl import spherical_to_cartesian_sturzl # TODO: This circular import is annoying
-
     az = ommatidia_dirs[:, 0]
     el = ommatidia_dirs[:, 1]
-    dirs = spherical_to_cartesian_sturzl(az, el, degrees=True)
-    x, y, z = dirs
+
+    x, y, z = _to_cartesian_sturzl(az, el, degrees=True)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=True)
 
@@ -100,7 +128,7 @@ def fig8_ortho_projection(ommatidia_dirs):
     plt.show()
 
 
-def fig10_receptive_fields(directions, delta_rhos):
+def fig10_receptive_fields(directions: np.ndarray, delta_rhos: np.ndarray):
     """
     Receptive fields.
 
@@ -116,7 +144,7 @@ def fig10_receptive_fields(directions, delta_rhos):
     widths = delta_rhos / cos_elev
     heights = delta_rhos
 
-    def add_ellipses(ax, x, y, w, h):
+    def add_ellipses(ax: Axes, x: np.ndarray, y: np.ndarray, w: np.ndarray, h: np.ndarray):
         ec = EllipseCollection(
             widths=w,
             heights=h,
@@ -139,11 +167,13 @@ def fig10_receptive_fields(directions, delta_rhos):
 
     add_ellipses(ax_main, azimuths, elevations, widths, heights)
     ax_main.scatter(azimuths, elevations, color='blue', marker='.', s=1)
+
     ax_main.set_xlim(-90, 270)
     ax_main.set_ylim(-95, 95)
     ax_main.set_xlabel(r'azimuth $\alpha$ [DEG]')
     ax_main.set_ylabel(r'elevation $\epsilon$ [DEG]')
     ax_main.set_title('(a) Viewing directions and receptive fields')
+
     ax_main.grid(True, linestyle='--', alpha=0.5)
 
     # Frontal region

@@ -12,15 +12,17 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.interpolate import interp1d
 
+from insectvision.lattice_fitting.algo import mirror_bilateral
+from insectvision.lattice_fitting.plots import plot_eye_scaffold_3d
+from insectvision.geometry.spherical import spherical_to_cartesian
 from insectvision.utils import akima_interp_fn
-from insectvision.lattice_fitting.plots import plot_eyes_3d
-
 
 IOA_H_MIN = 2.4
 IOA_H_MID = 3.7
 IOA_H_MAX = 4.6
 IOA_V_MIN = 1.5
 IOA_V_MAX = 4.5
+
 
 # TODO: Lookup more accurate values
 # Honeybee head ~4.5 mm, eye diameter ~2.5-3 mm?
@@ -29,27 +31,6 @@ BEE_EYE_RADIUS = 1250.0         # µm
 
 # Eye separation (centre-to-centre distance)
 BEE_EYE_SEPARATION = 3000.0     # µm
-
-
-def spherical_to_cartesian_sturzl(
-        azimuth: ArrayLike,
-        elevation: ArrayLike,
-        radius: float = 1.0,
-        degrees: bool = False
-    ) -> np.ndarray:
-    """
-    Converts spherical coordinates to cartesian coordinates (in the correct frame for this script).
-    """
-    # TODO: unify this with the rest of the codebase
-
-    az_rad = np.radians(azimuth) if degrees else np.array(azimuth, dtype=np.float64)
-    el_rad = np.radians(elevation) if degrees else np.array(elevation, dtype=np.float64)
-
-    x = radius * np.cos(el_rad) * np.cos(az_rad)
-    y = radius * np.cos(el_rad) * np.sin(az_rad)
-    z = radius * np.sin(el_rad)
-
-    return np.stack([x, y, z])
 
 
 def _get_azimuth_delta(ioa_h: ArrayLike, elevation: ArrayLike, degrees: bool = True) -> np.ndarray:
@@ -194,15 +175,15 @@ def reconstruct_sturzl_data(
         show_plots: bool = False
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Build a single eye in internal coordinate system (the right one).
+    Build a single eye (right eye) in Stürzl's coordinate system.
 
     Returns:
-        directions: (N, 2) array of (azimuth, elevation) in degrees
-        interommatidial_angles: (N, 2) array of (horizontal_IOA, vertical_IOA) in degrees
-        acceptance_angles: (N,) array of acceptance angles in degrees
+        directions: array of (azimuth, elevation) in degrees, (N, 2)
+        interommatidial_angles: array of (horizontal_IOA, vertical_IOA) in degrees, (N, 2)
+        acceptance_angles: array of acceptance angles in degrees, (N,)
     """
 
-    data = np.genfromtxt(csv_file, delimiter=',', encoding="utf-8")[1:]
+    data = np.genfromtxt(csv_file, delimiter=',', encoding='utf-8')[1:]
 
     zone_12 = data[:, :2]
     zone_34 = data[:, 2:]
@@ -255,43 +236,35 @@ if __name__ == "__main__":
         show_plots=SHOW_PLOTS
     )
 
-    # TODO: get rid of this
-    def to_opengl(coords: np.ndarray) -> np.ndarray:
-        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
-        return np.stack([y, z, -x], axis=1)
-
-    R_dirs = to_opengl(spherical_to_cartesian_sturzl(directions[:, 0], directions[:, 1], degrees=True).T)
+    # directions/elevations are in the paper's convention
+    R_dirs = spherical_to_cartesian(directions[:, 0], directions[:, 1], degrees=True)
     R_dirs /= np.linalg.norm(R_dirs, axis=1, keepdims=True)
+
+    # Generate positions (in µm)
     R_positions = R_dirs * BEE_EYE_RADIUS
 
-    # Offset right eye along X
-    offset = BEE_EYE_SEPARATION / 2
-    R_positions[:, 0] += offset
+    positions_both, directions_both, eye_ids_both = mirror_bilateral(
+        positions=R_positions,
+        directions=R_dirs,
+        shift=BEE_EYE_SEPARATION / 2,
+        source_side='right'
+    )
 
-    # Mirror for left eye
-    L_positions = R_positions.copy()
-    L_positions[:, 0] *= -1
-    L_dirs = R_dirs.copy()
-    L_dirs[:, 0] *= -1
-
-    all_directions = np.vstack([R_dirs, L_dirs])
-    all_positions = np.vstack([R_positions, L_positions])
-    eye_ids = np.concatenate([np.ones(len(R_dirs)), np.zeros(len(L_dirs))])
-
-    print(f"\nFinal model:  L={len(L_positions)}  R={len(R_positions)}")
+    n_right = int(eye_ids_both.sum())
+    print(f"\nFinal model:  L={len(positions_both) - n_right}  R={n_right}")
 
     np.savez_compressed(
         'species_models/bee_Sturzl.npz',
-        directions=all_directions,
-        positions=all_positions,
-        eye_id=eye_ids,
+        positions=positions_both,
+        directions=directions_both,
+        eye_id=eye_ids_both,
         acceptance_angles_rad=np.deg2rad(np.concatenate([acceptances, acceptances]))
     )
 
     if SHOW_PLOTS:
-        plot_eyes_3d(
-            all_positions,
-            all_directions,
-            eye_ids,
+        plot_eye_scaffold_3d(
+            positions=positions_both,
+            directions=directions_both,
+            eye_ids=eye_ids_both,
             title='Bee eyes (from Stürzl et al., 2010)'
         )

@@ -3,6 +3,7 @@ from typing import Optional
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
+from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from scipy.interpolate import griddata
 from scipy.spatial import cKDTree
@@ -16,24 +17,21 @@ from insectvision.lattice_fitting.profile import trace_lattice_rows, EyeMeasurem
 
 # Shared helpers
 
-def set_3d_equal_aspect(ax, points: np.ndarray) -> None:
+def set_3d_equal(ax: Axes3D, points: np.ndarray) -> None:
     """
     Equal-aspect 3D box with symmetric limits about the data centre.
-
-    Note: limits span the data centre +/- the *full* data range (i.e. twice the
-    data extent). That is the zoomed-out framing the original plots used; pass a
-    tighter multiple yourself if you want the cloud to fill the axes.
     """
     points = np.asarray(points, dtype=float)
     center = 0.5 * (points.max(axis=0) + points.min(axis=0))
-    ranges = np.maximum(np.ptp(points, axis=0), 1e-9)   # guard degenerate axes
+    ranges = np.maximum(np.ptp(points, axis=0), 1e-9)
+
     ax.set_box_aspect(tuple(ranges))
     ax.set_xlim(center[0] - ranges[0], center[0] + ranges[0])
     ax.set_ylim(center[1] - ranges[1], center[1] + ranges[1])
     ax.set_zlim(center[2] - ranges[2], center[2] + ranges[2])
 
 
-def draw_gizmo(ax, length: float, arrow_ratio: float = 0.1) -> None:
+def draw_gizmo(ax: Axes3D, length: float, arrow_ratio: float = 0.1) -> None:
     ax.quiver(0, 0, 0, length, 0, 0, color='r', arrow_length_ratio=arrow_ratio, linewidth=2, label='right (+X)')
     ax.quiver(0, 0, 0, 0, length, 0, color='g', arrow_length_ratio=arrow_ratio, linewidth=2, label='up (+Y)')
     ax.quiver(0, 0, 0, 0, 0, -length, color='b', arrow_length_ratio=arrow_ratio, linewidth=2, label='forward (-Z)')
@@ -335,53 +333,54 @@ def plot_lattice_3d(
             ax.add_collection3d(Line3DCollection(
                 dirs_3d[edges], colors=edge_color, linewidths=edge_linewidth, alpha=edge_alpha))
 
-    set_3d_equal_aspect(ax, dirs_3d)
     if title:
         ax.set_title(title, fontsize=12)
+
+    set_3d_equal(ax, dirs_3d)
+
     plt.tight_layout()
     plt.show()
 
 
 # Full eye model (3D)
 
-def plot_eyes_3d(
-        origins: np.ndarray,
+def plot_eye_scaffold_3d(
+        positions: np.ndarray,
         directions: np.ndarray,
-        eye_id: np.ndarray,
+        eye_ids: np.ndarray,
         title: Optional[str] = None,
         arrow_length: float = 0.1,
         sphere_projection: bool = False
     ):
     """
-    Plot an eye model in 3D with direction arrows or spherical projections.
+    Plot an eye model scaffold (positions, directions, eye ID) in 3D with direction arrows or spherical projections.
 
     Args:
-        - origins: ommatidium positions, (N, 3)
+        - positions: ommatidium positions, (N, 3)
         - directions: unit direction vectors, (N, 3)
         - eye_id: 0 for left eye, 1 for right eye, (N,)
         - arrow_length: length of direction arrows (used if sphere_projection=False)
         - sphere_projection: if True, extend direction vectors to a reference sphere
     """
-
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
 
-    right_mask = eye_id == 1
-    left_mask = eye_id == 0
+    right_mask = eye_ids == 1
+    left_mask = eye_ids == 0
 
-    ax.scatter(origins[right_mask, 0], origins[right_mask, 1], origins[right_mask, 2],
+    ax.scatter(positions[right_mask, 0], positions[right_mask, 1], positions[right_mask, 2],
                c='red', s=20, alpha=0.8, label='Right eye')
-    ax.scatter(origins[left_mask, 0], origins[left_mask, 1], origins[left_mask, 2],
+    ax.scatter(positions[left_mask, 0], positions[left_mask, 1], positions[left_mask, 2],
                c='blue', s=20, alpha=0.8, label='Left eye')
 
     if sphere_projection:
 
-        max_origin_dist = np.linalg.norm(origins, axis=1).max()
+        max_origin_dist = np.linalg.norm(positions, axis=1).max()
         sphere_radius = max_origin_dist * 2.5
         plot_scale = sphere_radius
 
-        dot_od = np.einsum('ij,ij->i', origins, directions)
-        dot_oo = np.einsum('ij,ij->i', origins, origins)
+        dot_od = np.einsum('ij,ij->i', positions, directions)
+        dot_oo = np.einsum('ij,ij->i', positions, positions)
 
         b = 2 * dot_od
         c = dot_oo - sphere_radius ** 2
@@ -389,7 +388,7 @@ def plot_eyes_3d(
         discriminant = b ** 2 - 4 * c
         t = (-b + np.sqrt(np.maximum(0, discriminant))) / 2.0
 
-        intersections = origins + directions * t[:, np.newaxis]
+        intersections = positions + directions * t[:, np.newaxis]
 
         ax.scatter(intersections[right_mask, 0], intersections[right_mask, 1], intersections[right_mask, 2],
                    c='red', s=5, alpha=0.3, marker='.', label='Right projections')
@@ -397,10 +396,10 @@ def plot_eyes_3d(
                    c='blue', s=5, alpha=0.3, marker='.', label='Left projections')
 
         # connecting lines (subsampled)
-        step = max(1, len(origins) // 100)
-        for i in range(0, len(origins), step):
-            pts = np.vstack((origins[i], intersections[i]))
-            color = 'red' if eye_id[i] == 1 else 'blue'
+        step = max(1, len(positions) // 100)
+        for i in range(0, len(positions), step):
+            pts = np.vstack((positions[i], intersections[i]))
+            color = 'red' if eye_ids[i] == 1 else 'blue'
             ax.plot(pts[:, 0], pts[:, 1], pts[:, 2], color=color, alpha=0.1, linewidth=0.5)
 
         # Wireframe reference sphere
@@ -412,13 +411,13 @@ def plot_eyes_3d(
         ax.plot_wireframe(x_sphere, y_sphere, z_sphere, color='gray', alpha=0.05, linewidth=0.5)
 
     else:
-        tips = origins + directions * arrow_length
+        tips = positions + directions * arrow_length
 
         def plot_sticks(mask, color, label_prefix):
             if not np.any(mask):
                 return
 
-            p_start = origins[mask]
+            p_start = positions[mask]
             p_end = tips[mask]
 
             ax.scatter(p_end[:, 0], p_end[:, 1], p_end[:, 2],
@@ -433,18 +432,16 @@ def plot_eyes_3d(
         plot_sticks(right_mask, 'red', 'Right')
         plot_sticks(left_mask, 'blue', 'Left')
 
-        max_range = np.ptp(origins, axis=0).max() / 2.0
+        max_range = np.ptp(positions, axis=0).max() / 2.0
         plot_scale = max_range
-
-    # Coordinate gizmo
-    gizmo_len = plot_scale * 0.5 if sphere_projection else 0.3
-    draw_gizmo(ax, length=gizmo_len)
 
     if title:
         ax.set_title(title)
 
     ax.legend(loc='upper right', fontsize=8)
-    set_3d_equal_aspect(ax, origins)
+
+    set_3d_equal(ax, positions)
+    draw_gizmo(ax, length=plot_scale * 0.5)
 
     plt.tight_layout()
     plt.show()
@@ -482,8 +479,10 @@ def plot_density_3d(
     if title:
         ax.set_title(title)
 
-    set_3d_equal_aspect(ax, positions)
-    draw_gizmo(ax, length=0.5 * np.ptp(positions, axis=0).max())
     ax.legend(loc='upper right', fontsize=8)
+
+    set_3d_equal(ax, positions)
+    draw_gizmo(ax, length=0.5 * np.ptp(positions, axis=0).max())
+
     plt.tight_layout()
     plt.show()

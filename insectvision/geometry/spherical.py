@@ -110,3 +110,23 @@ def angle_to_chord(angle_rad: ArrayLike) -> np.ndarray:
 def chord_to_angle(chord: ArrayLike) -> np.ndarray:
     """Euclidean chord length on the unit sphere -> great-circle angle (rad)."""
     return 2.0 * np.arcsin(np.clip(0.5 * np.asarray(chord, dtype=np.float64), -1.0, 1.0))
+
+
+def normals_to_ellipsoid(directions: ArrayLike, rx: float, ry: float, rz: float) -> np.ndarray:
+    """
+    Map viewing directions to positions on an ellipsoid such that the directions are the surface normals.
+    """
+    directions = np.asarray(directions, dtype=np.float64)
+
+    nx = directions[:, 0]
+    ny = directions[:, 1]
+    nz = directions[:, 2]
+
+    # Calculate the scale factor for the normal mapping
+    K = np.sqrt((nx * rx) ** 2 + (ny * ry) ** 2 + (nz * rz) ** 2)
+
+    x = (rx ** 2 * nx) / K
+    y = (ry ** 2 * ny) / K
+    z = (rz ** 2 * nz) / K
+
+    return np.column_stack([x, y, z])

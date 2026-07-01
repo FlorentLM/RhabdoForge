@@ -69,8 +69,8 @@ def _match_batch(a: ArrayLike, b: ArrayLike) -> Tuple[np.ndarray, np.ndarray]:
 
 def broadcast_to_shape(
         values: ArrayLike,
-        shape: Sequence[int, ...],
-        accepted: Sequence[Sequence[int, ...]],
+        shape: Sequence[int],
+        accepted: Sequence[Sequence[int]],
         name: str = 'value', dtype=np.float32
     ) -> np.ndarray:
 
