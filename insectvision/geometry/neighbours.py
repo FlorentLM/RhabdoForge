@@ -70,7 +70,8 @@ def delaunay_edges(points2d: np.ndarray, max_length_factor: float = 0.0) -> np.n
     Unique undirected Delaunay edges in the plane, as a sorted (E, 2) int array.
     max_length_factor > 0 prunes edges longer than max_length_factor x local spacing. Disabled if <= 0.
     """
-    points2d = np.asarray(points2d)
+
+    points2d = np.asarray(points2d, dtype=np.float64)
     pairs = _delaunay_pairs(points2d)
     edges = np.array(sorted(pairs)) if pairs else np.zeros((0, 2), dtype=int)
 
@@ -84,7 +85,8 @@ def delaunay_edges(points2d: np.ndarray, max_length_factor: float = 0.0) -> np.n
 
         lengths = np.linalg.norm(points2d[edges[:, 0]] - points2d[edges[:, 1]], axis=1)
         mean_local = 0.5 * (spacing[edges[:, 0]] + spacing[edges[:, 1]])
-        edges = lengths < mean_local * max_length_factor
+        keep = lengths < mean_local * max_length_factor
+        edges = edges[keep]
 
     return edges
 

@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Optional
 import numpy as np
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
@@ -9,95 +9,37 @@ from insectvision.geometry.hexatic import hexatic_order, phasor_from_points
 from insectvision.geometry.spherical import sphere_to_stereo
 
 
-def plot_fitted_comparison(
-        pts_2d_raw: np.ndarray,
-        pts_2d_lattice: np.ndarray,
-        density_fn: Callable,
-        title: str = "Fitted ommatidia vs. raw data",
-):
-
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(16, 5.5))
-
-    # Panel 1: density field
-    pad = 0.1
-    x_lo, x_hi = pts_2d_raw[:, 0].min() - pad, pts_2d_raw[:, 0].max() + pad
-    y_lo, y_hi = pts_2d_raw[:, 1].min() - pad, pts_2d_raw[:, 1].max() + pad
-    gx, gy = np.meshgrid(np.linspace(x_lo, x_hi, 100),
-                          np.linspace(y_lo, y_hi, 100))
-    grid_pts = np.column_stack([gx.ravel(), gy.ravel()])
-    Z = density_fn(grid_pts).reshape(gx.shape)
-
-    im = ax1.contourf(gx, gy, Z, levels=20, cmap='viridis')
-    ax1.scatter(*pts_2d_raw.T, c='red', s=2, alpha=0.5, label='Raw data')
-    ax1.set_title("Density field")
-    ax1.set_aspect('equal')
-    ax1.legend(fontsize=8)
-    fig.colorbar(im, ax=ax1, label='Relative density')
-
-    # Panel 2: Lattice vs. raw
-    ax2.scatter(*pts_2d_raw.T, c='grey', s=6, alpha=0.5, marker='x', label='Raw data')
-    ax2.scatter(*pts_2d_lattice.T, c='green', s=4, alpha=0.8, label='Lloyd lattice')
-    ax2.set_title(f"Lattice overlay ({len(pts_2d_lattice)} pts)")
-    ax2.set_aspect('equal')
-    ax2.legend(fontsize=8)
-    ax2.grid(True, alpha=0.2)
-
-    # Panel 3: local spacing comparison
-    if len(pts_2d_lattice) > 7:
-        tree_lat = cKDTree(pts_2d_lattice)
-        d_lat, _ = tree_lat.query(pts_2d_lattice, k=7)
-        spacing_lat = d_lat[:, 1:].mean(axis=1)
-
-        tree_raw = cKDTree(pts_2d_raw)
-        d_raw, _ = tree_raw.query(pts_2d_raw, k=7)
-        spacing_raw = d_raw[:, 1:].mean(axis=1)
-
-        r_raw = np.linalg.norm(pts_2d_raw - pts_2d_raw.mean(axis=0), axis=1)
-        r_lat = np.linalg.norm(pts_2d_lattice - pts_2d_lattice.mean(axis=0), axis=1)
-
-        ax3.scatter(r_raw, spacing_raw, c='grey', s=4, alpha=0.4, marker='x', label='Raw')
-        ax3.scatter(r_lat, spacing_lat, c='green', s=4, alpha=0.8, label='Lloyd')
-        ax3.set_xlabel('Distance from centre')
-        ax3.set_ylabel('Local spacing')
-        ax3.set_title('Spacing profile')
-        ax3.legend(fontsize=8)
-        ax3.grid(True, alpha=0.3)
-
-    fig.suptitle(title, fontsize=13)
-    plt.tight_layout()
-    plt.show()
-
-    return fig
+# TODO: These functions should be cleaned up and moced to the lattice_fitting.plot submodule
 
 
 def plot_lattice_3d(
         dirs_3d: np.ndarray,
         wireframe: bool = True,
         color_by: str = 'spacing',
-        title: str = None,
+        title: Optional[str] = None,
         point_size: float = 8.0,
         edge_color: str = '0.4',
         edge_alpha: float = 0.3,
         edge_linewidth: float = 0.5,
         max_edge_factor: float = 2.0,
         cmap: str = 'plasma_r',
-):
+    ):
     """
     3D scatter/wireframe plot of a lattice on the unit sphere.
 
     Args:
-        dirs_3d: (N, 3) Unit directions
-        wireframe (bool): If True, draw Delaunay edges between neighbours
-        color_by (str): Optional
+        - dirs_3d: Unit directions, (N, 3)
+        - wireframe: bool, if True, draw Delaunay edges between neighbours
+        - color_by: Optional str,
             'spacing': colour points by local inter-ommatidial spacing
-               'psi6': colour by local hexatic order parameter
-        title (str): Optional title
-        point_size: float
-        edge_color (str or color): Colour for wireframe edges
-        edge_alpha: float
-        edge_linewidth: float
-        max_edge_factor (float): Edges longer than this times local spacing are pruned (hull artifacts)
-        cmap (str): Colormap name for scalar colouring
+            'psi6': colour by local hexatic order parameter
+        - title: Optional str, plot title
+        - point_size: float
+        - edge_color (str or colour): Colour for wireframe edges
+        - edge_alpha: float
+        - edge_linewidth: float
+        - max_edge_factor: float, Edges longer than this times local spacing are pruned (hull artifacts)
+        - cmap: str, Colormap name for scalar colouring
     """
 
     fig = plt.figure(figsize=(9, 8))
@@ -149,7 +91,6 @@ def plot_lattice_3d(
 
         ax.add_collection3d(lc)
 
-    # Set up axes properly
     center = (dirs_3d.max(axis=0) + dirs_3d.min(axis=0)) / 2
     x_range = np.ptp(dirs_3d[:, 0])
     y_range = np.ptp(dirs_3d[:, 1])
@@ -164,20 +105,28 @@ def plot_lattice_3d(
     if title:
         ax.set_title(title, fontsize=12)
 
-    return fig, ax
+    plt.tight_layout()
+    plt.show()
 
 
-def plot_eyes_3d(origins, directions, eye_id, title, arrow_length=0.1, show_sphere_projection=False):
+def plot_eyes_3d(
+        origins: np.ndarray,
+        directions: np.ndarray,
+        eye_id: np.ndarray,
+        title: Optional[str] = None,
+        arrow_length: float = 0.1,
+        sphere_projection: bool = False
+    ):
     """
     Plot eye model in 3D with direction arrows or spherical projections.
 
     Args:
-        origins: (N, 3) ommatidium positions
-        directions: (N, 3) unit direction vectors
-        eye_id: (N,) array with 0 for left eye, 1 for right eye
-        title: Plot title
-        arrow_length: Length of direction arrows (used if show_sphere_projection=False)
-        show_sphere_projection: If True, extend direction vectors to sphere surface
+        - origins: ommatidium positions, (N, 3)
+        - directions: unit direction vectors, (N, 3)
+        - eye_id: array with 0 for left eye, 1 for right eye, (N,)
+        - title: optional plot title
+        - arrow_length: Length of direction arrows (used if show_sphere_projection=False)
+        - sphere_projection: If True, extend direction vectors to sphere surface
     """
 
     fig = plt.figure(figsize=(12, 10))
@@ -192,19 +141,14 @@ def plot_eyes_3d(origins, directions, eye_id, title, arrow_length=0.1, show_sphe
     ax.scatter(origins[left_mask, 0], origins[left_mask, 1], origins[left_mask, 2],
                c='blue', s=20, alpha=0.8, label='Left eye')
 
-    if show_sphere_projection:
+    if sphere_projection:
 
         max_origin_dist = np.linalg.norm(origins, axis=1).max()
-        sphere_radius = max_origin_dist * 2.5  # multiplier for sphere size
+        sphere_radius = max_origin_dist * 2.5
         plot_scale = sphere_radius
 
-        # Ray: P(t) = O + tD
-        # Sphere: |P|^2 = R^2  => t^2(D.D) + 2t(O.D) + (O.O - R^2) = 0
-        # Since D is unit vector, a = 1
-
-        # Dot products for b and c
-        dot_od = np.einsum('ij,ij->i', origins, directions)  # (N,)
-        dot_oo = np.einsum('ij,ij->i', origins, origins)  # (N,)
+        dot_od = np.einsum('ij,ij->i', origins, directions)
+        dot_oo = np.einsum('ij,ij->i', origins, origins)
 
         a = 1.0
         b = 2 * dot_od
@@ -215,13 +159,13 @@ def plot_eyes_3d(origins, directions, eye_id, title, arrow_length=0.1, show_sphe
 
         intersections = origins + directions * t[:, np.newaxis]
 
-        # Plot intersection points on sphere
+        # intersection points on sphere
         ax.scatter(intersections[right_mask, 0], intersections[right_mask, 1], intersections[right_mask, 2],
                    c='red', s=5, alpha=0.3, marker='.', label='Right projections')
         ax.scatter(intersections[left_mask, 0], intersections[left_mask, 1], intersections[left_mask, 2],
                    c='blue', s=5, alpha=0.3, marker='.', label='Left projections')
 
-        # Draw connecting lines (subsampled)
+        # connecting lines (subsampled)
         step = max(1, len(origins) // 100)
 
         for i in range(0, len(origins), step):
@@ -267,19 +211,21 @@ def plot_eyes_3d(origins, directions, eye_id, title, arrow_length=0.1, show_sphe
         plot_scale = max_range
 
     # Coordinate gizmo
-    gizmo_len = plot_scale * 0.5 if show_sphere_projection else 0.3
+    gizmo_len = plot_scale * 0.5 if sphere_projection else 0.3
     ax.quiver(0, 0, 0, gizmo_len, 0, 0, color='red', arrow_length_ratio=0.1, linewidth=2, label='X axis')
     ax.quiver(0, 0, 0, 0, gizmo_len, 0, color='green', arrow_length_ratio=0.1, linewidth=2, label='Y axis')
     ax.quiver(0, 0, 0, 0, 0, -gizmo_len, color='blue', arrow_length_ratio=0.1, linewidth=2, label='Z axis')
 
+    # TODO: this is wrong?
     ax.set_xlabel('← Insect\'s left | Insect\'s right →')
     ax.set_ylabel('← Insect\'s down | Insect\'s up →')
     ax.set_zlabel('← Insect\'s back | Insect\'s front →')
-    ax.set_title(title)
+
+    if title:
+        ax.set_title(title)
 
     ax.legend(loc='upper right', fontsize=8)
 
-    # Set up axes properly
     center = (origins.max(axis=0) + origins.min(axis=0)) / 2
     x_range = np.ptp(origins[:, 0])
     y_range = np.ptp(origins[:, 1])
@@ -295,37 +241,11 @@ def plot_eyes_3d(origins, directions, eye_id, title, arrow_length=0.1, show_sphe
     plt.show()
 
 
-def plot_density_2d(raw_pts_2d, lattice_pts_2d, rbf_func, mean_spacing):
-
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(14, 6))
-
-    padding = 0.1
-    x_min, x_max = raw_pts_2d[:, 0].min() - padding, raw_pts_2d[:, 0].max() + padding
-    y_min, y_max = raw_pts_2d[:, 1].min() - padding, raw_pts_2d[:, 1].max() + padding
-    gx, gy = np.meshgrid(np.linspace(x_min, x_max, 100), np.linspace(y_min, y_max, 100))
-    grid_pts = np.column_stack([gx.ravel(), gy.ravel()])
-
-    spacing_vals = rbf_func(grid_pts).reshape(gx.shape) * mean_spacing
-
-    im = ax1.contourf(gx, gy, spacing_vals, levels=20, cmap='viridis_r')
-    ax1.scatter(raw_pts_2d[:, 0], raw_pts_2d[:, 1], c='red', s=2, alpha=0.5, label='Raw data')
-    ax1.set_title("Inter-ommatidial spacing (stereographic)")
-    fig.colorbar(im, ax=ax1, label='Relative spacing')
-    ax1.legend()
-
-    ax2.scatter(lattice_pts_2d[:, 0], lattice_pts_2d[:, 1], s=5, c='black', edgecolors='none')
-    ax2.set_title(f"Procedural lattice")
-    ax2.set_aspect('equal')
-
-    ax3.scatter(raw_pts_2d[:, 0], raw_pts_2d[:, 1], c='black', s=2, alpha=0.5, label='Real ommatidia')
-    ax3.scatter(lattice_pts_2d[:, 0], lattice_pts_2d[:, 1], c='green', s=2, alpha=0.5, label='Procedural lattice')
-    ax3.legend()
-
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_density_3d(positions, directions, title="Ommatidia density"):
+def plot_density_3d(
+        positions: np.ndarray,
+        directions: np.ndarray,
+        title: Optional[str] = 'Ommatidia density'
+    ):
 
     tree = cKDTree(directions)
     dists, _ = tree.query(directions, k=7)
@@ -344,9 +264,9 @@ def plot_density_3d(positions, directions, title="Ommatidia density"):
     ax.set_xlabel('Lateral (X)')
     ax.set_ylabel('Anterior-Posterior (Z)')
     ax.set_zlabel('Dorsal-Ventral (Y)')
-    ax.set_title(title)
+    if title:
+        ax.set_title(title)
 
-    # Set up axes properly
     center = (positions.max(axis=0) + positions.min(axis=0)) / 2
     x_range = np.ptp(positions[:, 0])
     y_range = np.ptp(positions[:, 1])
@@ -358,37 +278,5 @@ def plot_density_3d(positions, directions, title="Ommatidia density"):
     ax.set_ylim(center[1] - y_range, center[1] + y_range)
     ax.set_zlim(center[2] - z_range, center[2] + z_range)
 
-    plt.show()
-
-
-def plot_lens_diameters_3d(positions, diameters, title="Lens diameters"):
-
-    # Lens diameters
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-
-    sc = ax.scatter(
-        positions[:, 0], positions[:, 1], positions[:, 2],
-        c=diameters, cmap='plasma', s=15, alpha=0.9
-    )
-
-    fig.colorbar(sc, ax=ax, label="Facet Diameter (µm)", fraction=0.03)
-
-    ax.set_xlabel('Lateral (X)')
-    ax.set_ylabel('Anterior-Posterior (Z)')
-    ax.set_zlabel('Dorsal-Ventral (Y)')
-    ax.set_title(title)
-
-    # Set up axes properly
-    center = (positions.max(axis=0) + positions.min(axis=0)) / 2
-    x_range = np.ptp(positions[:, 0])
-    y_range = np.ptp(positions[:, 1])
-    z_range = np.ptp(positions[:, 2])
-
-    ax.set_box_aspect((x_range, y_range, z_range))
-
-    ax.set_xlim(center[0] - x_range, center[0] + x_range)
-    ax.set_ylim(center[1] - y_range, center[1] + y_range)
-    ax.set_zlim(center[2] - z_range, center[2] + z_range)
-
+    plt.tight_layout()
     plt.show()

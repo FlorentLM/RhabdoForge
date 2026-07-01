@@ -1,34 +1,25 @@
 """
-Drosophila compound eye model fitted to measurements by Buchner, 1971.
+Drosophila compound eye model fitted to measurements by Buchner
+    "Dunkelanregung des stationaeren flugs der fruchtfliege Drosophila", 1971, PhD thesis
 
-"Dunkelanregung des stationaeren flugs der fruchtfliege Drosophila" (PhD thesis)
-
-Plots from Heisenberg and Wolff, 1984 (10.1007/978-3-642-69936-8) were manually
+Plots were taken from Heisenberg and Wolff, 1984 (10.1007/978-3-642-69936-8) were manually
 redigitised and are used as ground truth.
 """
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
-
 import numpy as np
 import xml.etree.ElementTree as ET
 from svg.path import parse_path, Line, Close
 
-from insectvision.compound_eyes.helpers.ommatidia_lattice import voronoi_estimation
+from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere
+from insectvision.lattice_fitting.generator import FittingParameters, LatticeGenerator
+from insectvision.lattice_fitting.plots import plot_lattice
+from insectvision.lattice_fitting.profile import EyeMeasurements
+from species_models.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d
 
-from species_models.drosophila_custom.plots_droso_custom import plot_buchner_3d
-from species_models.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d, plot_lens_diameters_3d
+# TODO: a GUI that replaces the svg + svg parsing
 
-# TODO: The SVG parsing needs to be made more generic
-
-
-# Defaults
-DENSITY_SCALE = 1.1
-LATTICE_ANGLE_DEG = 60.0
-REGULARISATION = True
-SHOW_DEBUG_PLOTS = True
-PHYS_SCALE = 1.0
 
 @dataclass
 class SVGContent:
@@ -40,18 +31,18 @@ class SVGContent:
     hemisphere_radius: float
 
 
-def _path_centroid(path) -> np.ndarray:
+def _path_centroid(path: np.ndarray) -> np.ndarray:
     """Calculate centroid of an SVG path"""
-
     if not path:
         return np.zeros(2)
+
     points = [(path[0].start.real, path[0].start.imag)]
     for seg in path:
         points.append((seg.end.real, seg.end.imag))
     return np.mean(points, axis=0)
 
 
-def _sample_path(path, pts_per_segment: int = 20) -> np.ndarray:
+def _sample_path(path: np.ndarray, pts_per_segment: int = 20) -> np.ndarray:
     """Sample points along an SVG path"""
 
     if not path:
@@ -68,12 +59,12 @@ def _sample_path(path, pts_per_segment: int = 20) -> np.ndarray:
     return np.array(points)
 
 
-def parse_drosophila_svg(svg_file: Path) -> SVGContent:
+def parse_drosophila_svg(svg_file: str | Path) -> 'SVGContent':
     """
-    Parse SVG file containing redigitised Buchner data.
+    Parse svg file containing redigitised Buchner data.
     """
 
-    tree = ET.parse(svg_file)
+    tree = ET.parse(Path(svg_file))
     root = tree.getroot()
     ns = {'svg': 'http://www.w3.org/2000/svg'}
 
@@ -86,7 +77,7 @@ def parse_drosophila_svg(svg_file: Path) -> SVGContent:
     # Extract hemisphere
     hemisphere = root.find(".//*[@id='hemisphere']", ns)
     if hemisphere is None:
-        raise ValueError("Hemisphere circle not found in SVG")
+        raise ValueError('Hemisphere circle not found in avg')
     hem_center = np.array([float(hemisphere.get('cx')), float(hemisphere.get('cy'))])
     hem_radius = float(hemisphere.get('r'))
 
@@ -125,7 +116,6 @@ def parse_drosophila_svg(svg_file: Path) -> SVGContent:
 def unproject(points_2d: np.ndarray, center: np.ndarray, radius: float) -> np.ndarray:
     """
     Inverse stereographic projection using Buchner's convention.
-
     Coordinate system: -Z = Anterior, +Y = Dorsal, +X = Right (left eye)
     """
     # TODO: make this a more generic math util
@@ -152,20 +142,6 @@ def unproject(points_2d: np.ndarray, center: np.ndarray, radius: float) -> np.nd
     return np.column_stack([X, Y, Z])
 
 
-def regularise(raw_dirs: np.ndarray, markers: np.ndarray) -> np.ndarray:
-    """
-    Correct distortion using Buchner's 'forward' markers.
-    """
-    coeffs = np.polyfit(markers[:, 1], markers[:, 0], 2)
-    deviation = np.poly1d(coeffs)
-
-    corrected = raw_dirs.copy()
-    corrected[:, 0] -= deviation(corrected[:, 1])
-
-    norms = np.linalg.norm(corrected, axis=1, keepdims=True)
-    return corrected / np.where(norms == 0, 1, norms)
-
-
 def normals_to_ellipsoid(directions: np.ndarray, rx: float, ry: float, rz: float) -> np.ndarray:
     """
     Map viewing directions to positions on an ellipsoid such that the
@@ -188,28 +164,84 @@ def normals_to_ellipsoid(directions: np.ndarray, rx: float, ry: float, rz: float
     return np.column_stack([x, y, z])
 
 
+def plot_buchner_3d(
+        ommatidia: np.ndarray,
+        fwd_markers: np.ndarray,
+        origin: np.ndarray,
+        axes: Dict[str, np.ndarray],
+        title: str='Drosophila eye (Buchner, 1971)'
+    ):
+    """3D version of the Buchner data svg."""
 
-def reconstruct_directions(
-        svg_path: Path,
-        regularize: bool = REGULARISATION,
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(12, 12))
+    ax = fig.add_subplot(111, projection='3d')
+
+    ax.scatter(*ommatidia.T, c='grey', s=10, alpha=0.5, label='Ommatidia')
+    ax.scatter(*fwd_markers.T, c='red', s=150, marker='*', label='Forward', depthshade=False)
+    ax.scatter(*origin, c='black', s=50, marker='X', label='Origin', depthshade=False)
+
+    colors = {'axis-x': '#ff60b3', 'axis-y': '#00FF9B', 'axis-v': '#FFC400'}
+
+    for axis_id, points in axes.items():
+        ax.plot(*points.T, color=colors[axis_id], linewidth=2.5, label=f'Axis {axis_id[-1].upper()}')
+
+    ax.set_title(title, fontsize=16)
+
+    ax.quiver(0, 0, 0, 0.5, 0, 0, color='r', label='Right (+X)')
+    ax.quiver(0, 0, 0, 0, 0.5, 0, color='g', label='Up (+Y)')
+    ax.quiver(0, 0, 0, 0, 0, -0.5, color='b', label='Forward (-Z)')
+
+    all_points = np.vstack([ommatidia, fwd_markers])
+
+    center = (all_points.max(axis=0) + all_points.min(axis=0)) / 2
+    x_range = np.ptp(all_points[:, 0])
+    y_range = np.ptp(all_points[:, 1])
+    z_range = np.ptp(all_points[:, 2])
+
+    ax.set_box_aspect((x_range, y_range, z_range))
+
+    ax.set_xlim(center[0] - x_range, center[0] + x_range)
+    ax.set_ylim(center[1] - y_range, center[1] + y_range)
+    ax.set_zlim(center[2] - z_range, center[2] + z_range)
+
+    ax.view_init(elev=30, azim=45)
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def reconstruct_buchner_data(
+        svg_path: str | Path,
+        apply_regularisation: bool = True,
         show_plots: bool = False
-) -> np.ndarray:
+    ) -> np.ndarray:
     """
-    Build Drosophila ommatidial directions from a Buchner SVG file.
+    Build Drosophila ommatidial directions from the svg file.
 
     Args:
-        svg_path : Path to digitised SVG
-        regularize : apply Buchner's forward-marker correction
-        show_plots : debug visualisations
+        - svg_path: Path to the svg
+        - apply_regularisation: apply Buchner's forward-marker correction
+        - show_plots: debug visualisations
     """
 
     data = parse_drosophila_svg(svg_path)
 
     raw_dirs = unproject(data.ommatidia, data.hemisphere_center, data.hemisphere_radius)
 
-    if regularize and len(data.forward_markers) > 0:
+    if apply_regularisation and len(data.forward_markers) > 0:
         stars_3d = unproject(data.forward_markers, data.hemisphere_center, data.hemisphere_radius)
-        raw_dirs = regularise(raw_dirs, stars_3d)
+
+        coeffs = np.polyfit(stars_3d[:, 1], stars_3d[:, 0], 2)
+        deviation = np.poly1d(coeffs)
+
+        corrected = raw_dirs.copy()
+        corrected[:, 0] -= deviation(corrected[:, 1])
+
+        norms = np.linalg.norm(corrected, axis=1, keepdims=True)
+        raw_dirs = corrected / np.where(norms == 0, 1, norms)
+
 
     if show_plots:
         stars_3d = unproject(data.forward_markers, data.hemisphere_center, data.hemisphere_radius)
@@ -231,51 +263,49 @@ def reconstruct_directions(
 
 if __name__ == "__main__":
 
-    PLOT = True
+    DENSITY_SCALE = 1.0
+    PHYS_SCALE = 1.0
+    SHOW_PLOT = True
 
     # Head dimensions from Posnien et al. 2012 (10.1371/journal.pone.0037346)
     HW = 830.0     # head width (µm)
     FW = 390.0     # frons width (µm)
     EL = 460.0     # eye length, vertical (µm)
+    ED = 370.0     # eye depth, anterior-posterior (µm)  (inferred from D. simulans)
 
-    # inferred from D. simulans eye shape (ap axis is ~0.8 dv axis)
-    ED = 370.0     # eye depth, anterior-posterior (µm)
-
-    svg_file = Path("species_models/drosophila_custom/drosophila_Buchner_1971_redigitized.svg")
+    svg_file = 'species_models/drosophila_custom/drosophila_Buchner_1971_redigitized.svg'
 
     HW *= PHYS_SCALE
     FW *= PHYS_SCALE
     EL *= PHYS_SCALE
     ED *= PHYS_SCALE
 
-    L_dirs = reconstruct_directions(
-        svg_file,
-        regularize=REGULARISATION,
-        show_plots=PLOT,
-    )
+    L_dirs = reconstruct_buchner_data(svg_file, show_plots=SHOW_PLOT)
 
-    lattice_dirs = fit_lattice(
-        L_dirs,
-        density_scale=DENSITY_SCALE,
-        lattice_angle=np.radians(LATTICE_ANGLE_DEG),
-        relaxation_max_iter=20,
-        verbose=True,
-        show_plots=PLOT,
-    )
+    pts2d, forward, right, up = sphere_to_stereo(L_dirs)
 
-    lattice_dirs /= np.linalg.norm(lattice_dirs, axis=1, keepdims=True)
+    # Measure source
+    profile = EyeMeasurements.from_points(pts2d)
 
-    print(f"Generated {len(lattice_dirs)} ommatidia")
+    # Generate
+    gen = LatticeGenerator(profile, FittingParameters(density_scale=DENSITY_SCALE))
+    lattice2d = gen.run(align=True, verbose=True)
 
+    if SHOW_PLOT:
+        plot_lattice(lattice2d, profile, density_scale=DENSITY_SCALE)
 
+    # Back to the sphere
+    lattice_dirs = stereo_to_sphere(lattice2d, forward, right, up)
+    print(f'Generated {len(lattice_dirs)} ommatidia')
+
+    # Map directions to head ellipsoid
     target_width = (HW - FW) / 2.0
     ry = EL / 2.0
     rz = ED / 2.0
-
     best_rx = target_width
-    print(f"Ellipsoid fit: Rx = {best_rx:.2f} µm")
+    print(f'Ellipsoid fit: Rx = {best_rx:.2f} µm')
 
-    L_positions = normals_to_ellipsoid(L_dirs, best_rx, ry, rz)
+    L_positions = normals_to_ellipsoid(lattice_dirs, best_rx, ry, rz)
 
     # Align medial edge
     shift_x = -FW / 2.0 - np.max(L_positions[:, 0])
@@ -284,37 +314,27 @@ if __name__ == "__main__":
     # Mirror for right eye
     R_positions = L_positions.copy()
     R_positions[:, 0] *= -1
-    R_dirs = L_dirs.copy()
+    R_dirs = lattice_dirs.copy()
     R_dirs[:, 0] *= -1
 
     all_positions = np.vstack([L_positions, R_positions])
-    all_directions = np.vstack([L_dirs, R_dirs])
+    all_directions = np.vstack([lattice_dirs, R_dirs])
     eye_ids = np.concatenate([np.zeros(len(L_positions)), np.ones(len(R_positions))])
-
-    # Facet diameter per lens, from the Voronoi cell (the dual of the lattice)
-    L_diam = voronoi_estimation(L_positions, L_dirs)
-    R_diam = voronoi_estimation(R_positions, R_dirs)
-    all_diameters = np.concatenate([L_diam, R_diam]).astype(np.float32)
-    print(f"Facet diameter: median {np.median(all_diameters):.2f} µm  "
-          f"IQR {np.percentile(all_diameters, 25):.2f}-{np.percentile(all_diameters, 75):.2f}  "
-          f"range {all_diameters.min():.2f}-{all_diameters.max():.2f}")
 
     print(f"\nFinal model:  L={len(L_positions)}  R={len(R_positions)}")
 
     np.savez_compressed(
-        "species_models/drosophila_custom.npz",
+        'species_models/drosophila_custom.npz',
         directions=all_directions,
         positions=all_positions,
         eye_id=eye_ids,
-        aperture_um=all_diameters,
     )
 
-    if PLOT:
+    if SHOW_PLOT:
         plot_eyes_3d(
             all_positions, all_directions, eye_ids,
             title='Drosophila eyes\n(parametric model fitted to Buchner, 1971)',
-            show_sphere_projection=True,
+            sphere_projection=True,
         )
         plot_density_3d(all_positions, all_directions)
-        plot_lattice_3d(L_dirs, wireframe=True, color_by='psi6', title="Hexatic order")
-        plot_lens_diameters_3d(all_positions, all_diameters)
+        plot_lattice_3d(lattice_dirs, wireframe=True, color_by='psi6', title='Hexatic order')

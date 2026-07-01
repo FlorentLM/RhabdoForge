@@ -22,9 +22,9 @@ def hexagonal_grid(
     Args:
         spacing: The length of the first basis vector (b1).
         angles:
-            - If float: The angle between b1 and b2 (standard hex = pi/3).
-            - If 3-item list: The three internal angles (alpha, beta, gamma) of the
-              lattice triangle. Sum is normalised to 180 degrees.
+            - if float: The angle between b1 and b2 (standard hex = pi/3).
+            - if 3-item list: The three internal angles (alpha, beta, gamma) of the lattice triangle.
+                Sum is normalised to 180 degrees.
         extent: The radius of the circular domain to cover.
     """
 
@@ -106,7 +106,6 @@ def align_grid(grid: ArrayLike, points2d: ArrayLike) -> np.ndarray:
     """
     Align a hex grid (rigid transform) to match a point cloud.
     """
-
     grid = np.asarray(grid, float)
     points2d = np.asarray(points2d, float)
 
@@ -158,10 +157,10 @@ def density_warp(
     Warp a point set so that local spacing matches a target density field.
 
     Args:
-        points2d: (N, 2)
-        spacing_fn: Target local spacing at each point (M, 2) -> (M,)
-        reference_spacing (float): The spacing of the uniform input grid
-        exponent (float): Warp strength. Lower value = keeps more points at the boundary
+        - points2d: (N, 2)
+        - spacing_fn: Target local spacing function at each point, (M, 2) -> (M,)
+        - reference_spacing: float, The spacing of the uniform input grid
+        - exponent: float, Warp strength. Lower value = keeps more points at the boundary
     """
 
     pts = np.copy(points2d).astype(np.float64)
@@ -218,6 +217,7 @@ def spring_relaxation(
         raise ValueError(f"ghost_source must be 'hull', 'edge' or 'none', got {ghost_source!r}")
 
     pts = np.copy(points2d).astype(np.float64)
+
     n_real = len(pts)
     use_ghosts = (ghost_depth > 0.0 and ghost_source != 'none'
                   and (ghost_source == 'edge' or domain is not None))
@@ -230,12 +230,12 @@ def spring_relaxation(
             try:
                 eqs = ConvexHull(p).equations
             except Exception:
-                return p, np.zeros((0, 2))   # degenerate cloud, skip ghosts this pass
+                return p, np.zeros((0, 2))   # degenerate cloud? skip ghosts this pass
         else:
             eqs = domain.hull.equations
         g = mirror_across_hull(p, eqs, ghost_depth)
         if len(g):
-            # drop ghosts sitting on top of a real point (hull-vertex self-images for 'edge')
+            # Drop ghosts sitting on top of a real point (self-images for 'edge')
             d, _ = cKDTree(p).query(g)
             g = g[d > 0.3 * ghost_depth]
 
@@ -254,27 +254,35 @@ def spring_relaxation(
             # refresh the (moved) real block; ghosts stay frozen between retriangulations
             cloud = np.vstack([pts, ghosts]) if use_ghosts else pts
 
-        n_all = len(cloud)
         e0, e1 = edges[:, 0], edges[:, 1]
 
         mid = 0.5 * (cloud[e0] + cloud[e1])
-        L = spacing_fn(mid).ravel()
+        cur = cloud[e1] - cloud[e0]
         th = theta_fn(mid).ravel()
         c, s = np.cos(th), np.sin(th)
 
-        cur = cloud[e1] - cloud[e0]
-        # into the lattice's own frame: R(-theta) @ cur
-        loc = np.stack([c * cur[:, 0] + s * cur[:, 1],
-                        -s * cur[:, 0] + c * cur[:, 1]], axis=1)
+        # Into lattice frame
+        loc = np.stack([
+            c * cur[:, 0] + s * cur[:, 1],
+            -s * cur[:, 0] + c * cur[:, 1]
+        ], axis=1)
+
         u = loc / np.maximum(np.linalg.norm(loc, axis=1, keepdims=True), 1e-12)
         ideal = bond_dirs[np.argmax(u @ bond_dirs.T, axis=1)]
-        # rest vector back in world frame: R(theta) @ (L * ideal)
-        rest = L[:, None] * np.stack([c * ideal[:, 0] - s * ideal[:, 1],
-                                      s * ideal[:, 0] + c * ideal[:, 1]], axis=1)
+
+        L = spacing_fn(mid).ravel()
+
+        # Rest vector back in world frame
+        rest = L[:, None] * np.stack([
+            c * ideal[:, 0] - s * ideal[:, 1],
+            s * ideal[:, 0] + c * ideal[:, 1]
+        ], axis=1)
 
         fpe = (cur - rest) / np.maximum(np.linalg.norm(rest, axis=1, keepdims=True), 1e-12)
         fmag = np.linalg.norm(fpe, axis=1, keepdims=True)
         fpe = np.where(fmag > force_cap, fpe * force_cap / fmag, fpe)
+
+        n_all = len(cloud)
 
         forces, deg = np.zeros((n_all, 2)), np.zeros(n_all)
         np.add.at(forces, e0, fpe)
@@ -282,7 +290,7 @@ def spring_relaxation(
         np.add.at(deg, e0, 1)
         np.add.at(deg, e1, 1)
 
-        # ghosts are slaved to the real cloud: only the real block actually moves
+        # Ghosts points are slaved to the real cloud (only the real block moves)
         forces, deg = forces[:n_real], deg[:n_real]
 
         node_scale = spacing_fn(pts).ravel()
@@ -294,11 +302,11 @@ def spring_relaxation(
 
         if np.linalg.norm(disp, axis=1).mean() < convergence_tol * np.median(node_scale):
             if verbose:
-                print(f"  spring relaxation converged at iter {it}")
+                print(f'  spring relaxation converged at iter {it}')
             return pts
 
     if verbose:
-        print(f"  spring relaxation hit max_iter={max_iter}")
+        print(f'  spring relaxation hit max_iter={max_iter}')
     return pts
 
 
@@ -316,8 +324,8 @@ def density_correct(
     """
     Smooth, area-correcting transport (linearised optimal transport).
 
-    div(u) = 1 - (s_achieved / s_target)^2 : positive where the lattice is too dense (expand),
-    negative where too sparse (contract).
+    div(u) = 1 - (s_achieved / s_target)^2
+        -> positive where the lattice is too dense (-> expand), negative where too sparse (-> contract)
     Then u = grad(phi) turns this into one Poisson solve per pass, which is solved on a grid by FFT.
     """
 
@@ -343,7 +351,7 @@ def density_correct(
         s_ach = mean_neighbour_distance(query_points=pts, k=k)
         s_tgt = target_spacing_fn(pts).ravel()
 
-        # positive where the lattice is too dense (expand), negative where too sparse (contract)
+        # Positive where the lattice is too dense, negative where too sparse
         src = 1.0 - (s_ach / np.maximum(s_tgt, 1e-12)) ** 2
 
         G = griddata(pts, src, (gx, gy), method='linear', fill_value=0.0)
@@ -364,6 +372,6 @@ def density_correct(
         pts = pts + relax * u * scale[:, None]
 
         if verbose:
-            print(f"  density_correct iter {it}: mean |u| = {un.mean():.4f}")
+            print(f'  density_correct iter {it}: mean |u| = {un.mean():.4f}')
 
     return pts
