@@ -6,10 +6,14 @@ Original code from Polster, 2017 (bachelor thesis): https://github.com/Bioroboti
 
 Reproduces figures from Stürlz et al., 2010
 """
+from pathlib import Path
+from typing import Callable, Tuple, List
+
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.interpolate import interp1d, Akima1DInterpolator
 from species_models.bee_Sturzl2010.plots_sturzl import plot_eye_zones, plot_ortho_projection, plot_receptive_fields
-from species_models.plots import plot_eyes_3d
+from insectvision.lattice_fitting.plots import plot_eyes_3d
 
 
 IOA_H_MIN = 2.4
@@ -21,20 +25,25 @@ IOA_V_MAX = 4.5
 # TODO: Lookup more accurate values
 # Honeybee head ~4.5 mm, compound eye diameter ~2.5-3 mm?
 # Eye radius ~ 1.25 mm?
-BEE_EYE_RADIUS = 1250.0  # micrometres
+BEE_EYE_RADIUS = 1250.0         # micrometres
 
-# Eye separation (center-to-center distance)
-BEE_EYE_SEPARATION = 3000.0  # micrometres
+# Eye separation (centre-to-centre distance)
+BEE_EYE_SEPARATION = 3000.0     # micrometres
 
 
-def sturzl_spherical_to_cartesian(azimuth, elevation, radius=1.0, degrees=False):
+def spherical_to_cartesian_sturzl(
+        azimuth: ArrayLike,
+        elevation: ArrayLike,
+        radius: float = 1.0,
+        degrees: bool = False
+    ) -> np.ndarray:
     """
     Converts spherical coordinates to cartesian coordinates (in the correct frame for this script).
     """
     # TODO: unify this with the rest of the codebase
 
-    az_rad = np.radians(azimuth) if degrees else np.array(azimuth)
-    el_rad = np.radians(elevation) if degrees else np.array(elevation)
+    az_rad = np.radians(azimuth) if degrees else np.array(azimuth, dtype=np.float64)
+    el_rad = np.radians(elevation) if degrees else np.array(elevation, dtype=np.float64)
 
     x = radius * np.cos(el_rad) * np.cos(az_rad)
     y = radius * np.cos(el_rad) * np.sin(az_rad)
@@ -43,13 +52,12 @@ def sturzl_spherical_to_cartesian(azimuth, elevation, radius=1.0, degrees=False)
     return np.stack([x, y, z])
 
 
-
-def akima_interpolator(x, y, fill_value: float):
+def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable':
     """
-    Akima interpolator that returns `fill_value` for queries outside range.
+    Akima interpolator that returns 'fill_value' for queries outside range.
     """
-    x = np.asarray(x)
-    y = np.asarray(y)
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
     akima_fn = Akima1DInterpolator(x, y)
 
     def wrapper(query_x):
@@ -61,68 +69,66 @@ def akima_interpolator(x, y, fill_value: float):
     return wrapper
 
 
-def load_azimuth_data(file_path):
-    data = np.genfromtxt(file_path, delimiter=',', encoding="utf-8")[1:]
+def _get_azimuth_delta(ioa_h: ArrayLike, elevation: ArrayLike, degrees: bool = True) -> np.ndarray:
 
-    zone_12 = data[:, :2]
-    zone_34 = data[:, 2:]
+    ioa_h = np.asarray(ioa_h, dtype=np.float64)
+    elevation = np.asarray(elevation, dtype=np.float64)
 
-    return zone_12, zone_34
+    if degrees:
+        ioa_h = np.deg2rad(ioa_h)
+        elevation = np.deg2rad(elevation)
 
+    cos_elev = np.cos(elevation)
 
-def get_azimuth_delta(ioa_h, elevation):
-
-    ioa_h_rad = np.radians(ioa_h)
-    elevation_rad = np.radians(elevation)
-
-    cos_elev = np.cos(elevation_rad)
-
-    # Avoid div by zero at the poles (if cos_elev is near 0, delta is undefined/180)
+    # if cos_elev is near 0, delta is undefined/180
     valid_mask = np.abs(cos_elev) > 1e-9
 
     cos_elev = np.where(valid_mask, cos_elev, 1.0)
 
-    arg = np.sin(ioa_h_rad / 2.0) / cos_elev
+    arg = np.sin(ioa_h / 2.0) / cos_elev
     arg = np.clip(arg, -1.0, 1.0) # clip arcsin to [-1, 1] to avoid errors near poles
 
-    delta = np.degrees(2 * np.arcsin(arg))
-    delta = np.where(valid_mask, delta, 180.0)
+    delta = 2 * np.arcsin(arg)
+    delta = np.where(valid_mask, delta, np.pi)
+
+    if degrees:
+        delta = np.rad2deg(delta)
 
     return delta
 
 
-def get_horizontal_IOA(a, e):
+def _get_horizontal_IOA(azim: ArrayLike, elev: ArrayLike) -> np.ndarray:
 
-    a = np.asarray(a)
-    e = np.asarray(e)
-    abs_e = np.abs(e)
-    abs_a = np.abs(a)
+    azim = np.asarray(azim, dtype=np.float64)
+    elev = np.asarray(elev, dtype=np.float64)
+    abs_e = np.abs(elev)
+    abs_a = np.abs(azim)
 
     factor_e_pos = np.where(abs_e > 50, (90 - abs_e) / 40.0, 1.0)
-    factor_e_neg = np.where((e > -50) & (e < 50), 1.0, (90 - e) / 40.0)
+    factor_e_neg = np.where((elev > -50) & (elev < 50), 1.0, (90 - elev) / 40.0)
 
     # Conditions for positive azimuth (a >= 0)
-    cond_p1 = (a >= 0) & (a <= 45)
-    val_p1 = IOA_H_MID + (a / 45.0) * (IOA_H_MIN - IOA_H_MID)
+    cond_p1 = (azim >= 0) & (azim <= 45)
+    val_p1 = IOA_H_MID + (azim / 45.0) * (IOA_H_MIN - IOA_H_MID)
 
-    cond_p2 = (a > 45) & (a <= 90)
-    val_p2 = IOA_H_MIN + ((a - 45.0) / 45.0) * (IOA_H_MID - IOA_H_MIN)
+    cond_p2 = (azim > 45) & (azim <= 90)
+    val_p2 = IOA_H_MIN + ((azim - 45.0) / 45.0) * (IOA_H_MID - IOA_H_MIN)
 
-    cond_p3 = (a > 90) & (a <= 150)
-    val_p3 = IOA_H_MID + ((a - 90.0) / 60.0) * (IOA_H_MAX - IOA_H_MID) * factor_e_pos
+    cond_p3 = (azim > 90) & (azim <= 150)
+    val_p3 = IOA_H_MID + ((azim - 90.0) / 60.0) * (IOA_H_MAX - IOA_H_MID) * factor_e_pos
 
-    cond_p4 = (a > 150) & (a <= 180)
+    cond_p4 = (azim > 150) & (azim <= 180)
     val_p4 = np.where(abs_e > 50, IOA_H_MID + (IOA_H_MAX - IOA_H_MID) * factor_e_pos, IOA_H_MAX)
 
-    cond_p5 = (a > 180) & (a <= 270)
+    cond_p5 = (azim > 180) & (azim <= 270)
     val_p5 = IOA_H_MAX
 
     # Conditions for negative azimuth (a < 0)
-    cond_n1 = (a >= -45) & (a < 0)
+    cond_n1 = (azim >= -45) & (azim < 0)
     val_n1 = IOA_H_MID + (abs_a / 45.0) * (IOA_H_MAX - IOA_H_MID) * factor_e_neg
 
-    cond_n2 = (a >= -90) & (a < -45)
-    factor_n2 = np.where(e <= -50, (90 - abs_e) / 40.0, 1.0)
+    cond_n2 = (azim >= -90) & (azim < -45)
+    factor_n2 = np.where(elev <= -50, (90 - abs_e) / 40.0, 1.0)
     val_n2 = IOA_H_MID + ((abs_a - 45.0) / 45.0) * (IOA_H_MAX - IOA_H_MID) * factor_n2
 
     # Choose
@@ -132,11 +138,17 @@ def get_horizontal_IOA(a, e):
     return np.select(conditions, choices, default=IOA_H_MID)  # default mostly for a < -90
 
 
-def get_vertical_IOA(e):
-    return IOA_V_MIN + (IOA_V_MAX - IOA_V_MIN) * (np.abs(e) / 90.0)
+def _get_vertical_IOA(elev: ArrayLike) -> float:
+    return IOA_V_MIN + (IOA_V_MAX - IOA_V_MIN) * (np.abs(elev) / 90.0)
 
 
-def generate_zone(zone, az_fn_12, az_fn_34, eye_factor=1.1, packing_f=np.sqrt(2) / 2.0):
+def _generate_zone(
+        zone: int,
+        az_fn_12: 'Callable',
+        az_fn_34: 'Callable',
+        eye_factor: float = 1.1,
+        packing_f: float = np.sqrt(2) / 2.0
+    ) -> List[np.ndarray]:
     """Generates ommatidia for a specific zone."""
 
     zone_ommatidia = []
@@ -153,7 +165,7 @@ def generate_zone(zone, az_fn_12, az_fn_34, eye_factor=1.1, packing_f=np.sqrt(2)
     while np.abs(e) <= 90:
 
         # Stagger rows
-        row_offset = get_azimuth_delta(IOA_H_MID, e) / 2.0
+        row_offset = _get_azimuth_delta(IOA_H_MID, e) / 2.0
         a = row_offset * sign_a if is_odd else 0.0
 
         def in_bounds(current_a, current_e):
@@ -169,14 +181,14 @@ def generate_zone(zone, az_fn_12, az_fn_34, eye_factor=1.1, packing_f=np.sqrt(2)
         while in_bounds(a, e):
 
             # IOA for current position
-            ioa_h = get_horizontal_IOA(a, e)
-            ioa_v = get_vertical_IOA(e)
+            ioa_h = _get_horizontal_IOA(a, e)
+            ioa_v = _get_vertical_IOA(e)
 
             delta_rho = eye_factor * np.sqrt(ioa_h * ioa_v)
 
             zone_ommatidia.append((a, e, ioa_h, ioa_v, delta_rho))
 
-            delta_a = get_azimuth_delta(ioa_h, e)
+            delta_a = _get_azimuth_delta(ioa_h, e)
 
             # Stop if step is negligible (pole convergence)
             if delta_a < 1e-6:
@@ -185,25 +197,19 @@ def generate_zone(zone, az_fn_12, az_fn_34, eye_factor=1.1, packing_f=np.sqrt(2)
             a += delta_a * sign_a
 
         # Move to next elevation
-        e += sign_e * get_vertical_IOA(e) * packing_f
+        e += sign_e * _get_vertical_IOA(e) * packing_f
         is_odd = not is_odd
 
     return zone_ommatidia
 
 
-def get_interp(zone_12, zone_34, interp='akima'):
-
-    if interp == 'akima':
-        interp_fn_12 = akima_interpolator(*zone_12.T, fill_value=300.0)
-        interp_fn_34 = akima_interpolator(*zone_34.T, fill_value=-200.0)
-    else:
-        interp_fn_12 = interp1d(*zone_12.T, kind=interp, bounds_error=False, fill_value=300.0)
-        interp_fn_34 = interp1d(*zone_34.T, kind=interp, bounds_error=False, fill_value=-200.0)
-
-    return interp_fn_12, interp_fn_34
-
-
-def reconstruct_sturzl_data(interp_fn_12, interp_fn_34, eye_factor=1.1, packing_f=np.sqrt(2) / 2.0):
+def reconstruct_sturzl_data(
+        csv_file: str | Path,
+        eye_factor: float = 1.1,
+        packing_f: float = np.sqrt(2) / 2.0,
+        interp: str = 'akima',
+        show_plots: bool = False
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Build a single eye in internal coordinate system (the right one).
 
@@ -213,8 +219,20 @@ def reconstruct_sturzl_data(interp_fn_12, interp_fn_34, eye_factor=1.1, packing_
         acceptance_angles: (N,) array of acceptance angles in degrees
     """
 
+    data = np.genfromtxt(csv_file, delimiter=',', encoding="utf-8")[1:]
+
+    zone_12 = data[:, :2]
+    zone_34 = data[:, 2:]
+
+    if interp == 'akima':
+        interp_fn_12 = akima_interp_fn(*zone_12.T, fill_value=300.0)
+        interp_fn_34 = akima_interp_fn(*zone_34.T, fill_value=-200.0)
+    else:
+        interp_fn_12 = interp1d(*zone_12.T, kind=interp, bounds_error=False, fill_value=300.0)
+        interp_fn_34 = interp1d(*zone_34.T, kind=interp, bounds_error=False, fill_value=-200.0)
+
     ommatidia_data = np.concatenate([
-        generate_zone(z, interp_fn_12, interp_fn_34, eye_factor=eye_factor, packing_f=packing_f)
+        _generate_zone(z, interp_fn_12, interp_fn_34, eye_factor=eye_factor, packing_f=packing_f)
         for z in [1, 2, 3, 4]
     ])
 
@@ -226,88 +244,74 @@ def reconstruct_sturzl_data(interp_fn_12, interp_fn_34, eye_factor=1.1, packing_
     interommatidial_angles = ommatidia_data[:, 2:4]
     acceptance_angles = ommatidia_data[:, 4]
 
+    if show_plots:
+
+        # Fig. 7 of their paper
+        plot_eye_zones(directions, interp_fn_12, interp_fn_34, zone_12, zone_34)
+        # Fig. 8 of their paper
+        plot_ortho_projection(directions)
+        # Fig. 10 of their paper
+        plot_receptive_fields(directions, acceptance_angles)
+
     return directions, interommatidial_angles, acceptance_angles
-
-
-def generate_eyes(right_eye_dirs):
-    """
-    Generate both eyes in OpenGL coordinate system (X=right, Y=up, Z=back).
-    """
-
-    pts_internal = sturzl_spherical_to_cartesian(
-        right_eye_dirs[:, 0],
-        right_eye_dirs[:, 1],
-        degrees=True
-    ).T
-
-    def to_opengl(coords):
-        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
-        return np.stack([y, z, -x], axis=1)
-
-    r_dir = to_opengl(pts_internal)
-
-    r_dir /= np.linalg.norm(r_dir, axis=1, keepdims=True)
-    r_ori = r_dir * BEE_EYE_RADIUS
-
-    # Offset right eye along X
-    offset = BEE_EYE_SEPARATION / 2
-    r_ori[:, 0] += offset
-
-    # Generate left eye by mirroring right eye
-    l_ori = r_ori.copy()
-    l_ori[:, 0] *= -1
-
-    l_dir = r_dir.copy()
-    l_dir[:, 0] *= -1
-
-    directions = np.vstack([r_dir, l_dir])
-    positions = np.vstack([r_ori, l_ori])
-    eye_id = np.concatenate([np.ones(len(r_dir)), np.zeros(len(l_dir))])
-
-    return directions, positions, eye_id
 
 
 if __name__ == "__main__":
 
-    SHOW_PLOT = True
+    SHOW_PLOTS = True
 
     csv_file = 'species_models/bee_Sturzl2010/sturzl2010_azimuth_max.csv'
 
-    zone_12, zone_34 = load_azimuth_data(csv_file)
-    interp_fn_12, interp_fn_34 = get_interp(zone_12, zone_34, interp='akima')
-
     # Ommatidia packing seems to be inconsistent in various figures of the paper:
+
     # packing_f = 0.5  # significant overlap, needed to get ~5420 om, which is what the paper says it generates
     packing_f = np.sqrt(2) / 2.0  # ~ 45 degree lattice, generates ~3840 om, and is what the paper shows in Fig. 10
     # packing_f = np.sqrt(3) / 2.0    # ~ 60 degree lattice (hexagon), generates ~3150 om
 
-    right_eye_dirs, right_eye_ioas, right_eye_acceptance = reconstruct_sturzl_data(
-        interp_fn_12, interp_fn_34,
-        eye_factor=1.1,  # parameter p
-        packing_f=packing_f
+    directions, ioas, acceptances = reconstruct_sturzl_data(
+        csv_file=csv_file,
+        eye_factor=1.1,         # eye parameter p
+        packing_f=packing_f,
+        show_plots=SHOW_PLOTS
     )
 
-    if SHOW_PLOT:
-        plot_eye_zones(right_eye_dirs, interp_fn_12, interp_fn_34, zone_12, zone_34)  # Fig. 7
-        plot_ortho_projection(right_eye_dirs)  # Fig. 8
-        plot_receptive_fields(right_eye_dirs, right_eye_acceptance)  # Fig. 10
+    # TODO: get rid of this
+    def to_opengl(coords: np.ndarray) -> np.ndarray:
+        x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+        return np.stack([y, z, -x], axis=1)
 
-    # Create the other eye
-    directions, positions, eye_id = generate_eyes(right_eye_dirs)
+    R_dirs = to_opengl(spherical_to_cartesian_sturzl(directions[:, 0], directions[:, 1], degrees=True).T)
+    R_dirs /= np.linalg.norm(R_dirs, axis=1, keepdims=True)
+    R_positions = R_dirs * BEE_EYE_RADIUS
 
-    output_filename = 'species_models/bee_Sturzl.npz'
+    # Offset right eye along X
+    offset = BEE_EYE_SEPARATION / 2
+    R_positions[:, 0] += offset
+
+    # Mirror for left eye
+    L_positions = R_positions.copy()
+    L_positions[:, 0] *= -1
+    L_dirs = R_dirs.copy()
+    L_dirs[:, 0] *= -1
+
+    all_directions = np.vstack([R_dirs, L_dirs])
+    all_positions = np.vstack([R_positions, L_positions])
+    eye_ids = np.concatenate([np.ones(len(R_dirs)), np.zeros(len(L_dirs))])
+
+    print(f"\nFinal model:  L={len(L_positions)}  R={len(R_positions)}")
+
     np.savez_compressed(
-        output_filename,
-        directions=directions,
-        positions=positions,
-        eye_id=eye_id,
-        acceptance_angles_rad=np.deg2rad(np.concatenate([right_eye_acceptance, right_eye_acceptance]))
+        'species_models/bee_Sturzl.npz',
+        directions=all_directions,
+        positions=all_positions,
+        eye_id=eye_ids,
+        acceptance_angles_rad=np.deg2rad(np.concatenate([acceptances, acceptances]))
     )
 
-    if SHOW_PLOT:
+    if SHOW_PLOTS:
         plot_eyes_3d(
-            positions,
-            directions,
-            eye_id,
+            all_positions,
+            all_directions,
+            eye_ids,
             title='Bee eyes (from Stürzl et al., 2010)'
         )

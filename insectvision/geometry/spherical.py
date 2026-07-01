@@ -15,7 +15,7 @@ def cartesian_to_spherical(directions: ArrayLike, degrees: bool = False) -> Tupl
     az = np.arctan2(d[..., 0], -d[..., 2])
     el = np.arcsin(np.clip(d[..., 1], -1.0, 1.0))
     if degrees:
-        return np.degrees(az), np.degrees(el)
+        return np.rad2deg(az), np.rad2deg(el)
     return az, el
 
 
@@ -46,7 +46,7 @@ def spherical_gradients(azimuth: ArrayLike, elevation: ArrayLike, degrees: bool 
     el_grad = np.column_stack([-sin_az * sin_el, cos_el, cos_az * sin_el])
 
     if degrees:
-        return np.degrees(az_grad), np.degrees(el_grad)
+        return np.rad2deg(az_grad), np.rad2deg(el_grad)
     return az_grad, el_grad
 
 

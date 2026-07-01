@@ -46,11 +46,11 @@ def plot_ortho_projection(ommatidia_dirs):
     """
     Orthographic projection of ommatidia directions, reproduces Figure 8 from Stürzl et al., 2010.
     """
-    from species_models.bee_Sturzl2010.run import sturzl_spherical_to_cartesian
+    from species_models.bee_Sturzl2010.run import spherical_to_cartesian_sturzl
 
     az = ommatidia_dirs[:, 0]
     el = ommatidia_dirs[:, 1]
-    dirs = sturzl_spherical_to_cartesian(az, el, degrees=True)
+    dirs = spherical_to_cartesian_sturzl(az, el, degrees=True)
     x, y, z = dirs
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=True)

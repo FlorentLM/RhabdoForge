@@ -3,7 +3,7 @@ Replica of model from Kemppainen et al., 2022 (10.1073/pnas.2109717119)
 """
 import numpy as np
 from scipy.spatial import cKDTree as KDTree
-from species_models.plots import plot_eyes_3d
+from insectvision.lattice_fitting.plots import plot_eyes_3d
 
 
 # Parameters from original code:
@@ -17,7 +17,7 @@ OMMATIDIA_LIMIT = 800
 
 # TODO: These three should go to the utils module, but need to deal with the various reference frames
 
-def cart_to_sph(pts):
+def cartesian_to_spherical_kemppainen(pts):
     """
     Cartesian to spherical (internal coordinate system for eye construction).
     """
@@ -27,7 +27,7 @@ def cart_to_sph(pts):
     return r, theta, phi
 
 
-def sph_to_cart(r, theta, phi):
+def spherical_to_cartesian_kemppainen(r, theta, phi):
     """
     Spherical to cartesian (internal coordinate system for eye construction).
     """
@@ -42,7 +42,7 @@ def local_to_global(local_pts, center_pt):
     """
     Rotates local points into global space.
     """
-    _, otheta, ophi = cart_to_sph(center_pt[None, :])
+    _, otheta, ophi = cartesian_to_spherical_kemppainen(center_pt[None, :])
     ot, op = otheta[0], ophi[0]
 
     # Rotation Z: ophi - pi/2
@@ -82,7 +82,7 @@ def build_kemppainen_data():
     Build a single eye in internal coordinate system (the right one).
     Returns ommatidia locations in µm.
     """
-    start_p = sph_to_cart(np.array([EYE_RADIUS]), np.array([np.pi / 2]), np.array([0.0]))[0]
+    start_p = spherical_to_cartesian_kemppainen(np.array([EYE_RADIUS]), np.array([np.pi / 2]), np.array([0.0]))[0]
     points = [start_p]
 
     # Initiate 'star' (6 main branches)
@@ -141,9 +141,9 @@ def build_kemppainen_data():
             break
 
     # Project onto ellipsoid surface
-    r_vals, theta_vals, phi_vals = cart_to_sph(points_arr)
+    r_vals, theta_vals, phi_vals = cartesian_to_spherical_kemppainen(points_arr)
     actual_radii = EYE_HORIZONTAL_R - (EYE_HORIZONTAL_R - EYE_RADIUS) * np.abs(np.sin(theta_vals))
-    locations = sph_to_cart(actual_radii, theta_vals, phi_vals)
+    locations = spherical_to_cartesian_kemppainen(actual_radii, theta_vals, phi_vals)
 
     # Rotation and filtering
     rot_y = np.radians(-30)
@@ -161,36 +161,28 @@ def build_kemppainen_data():
 
     # Center Y
     locations[:, 1] -= np.mean(locations[:, 1])
+
     return locations
 
 
-def generate_eyes():
-    """
-    Generate both eyes in OpenGL coordinate system (X=right, Y=up, Z=back/into screen).
+if __name__ == "__main__":
 
-    Returns:
-        directions: (N, 3) array of unit direction vectors in Cartesian coordinates
-        positions: (N, 3) array of ommatidium positions in Cartesian coordinates (in mm if scale_to_mm=True)
-        eye_id: (N,) array of eye identifiers (1=right, 0=left)
-    """
+    SHOW_PLOTS = True
 
     # Build right eye in internal coordinate system
-    right_eye_internal = build_kemppainen_data()
+    positions = build_kemppainen_data()
 
     # Mirror for left eye
-    left_eye_internal = right_eye_internal.copy()
+    left_eye_internal = positions.copy()
     left_eye_internal[:, 0] *= -1
 
     offset = EYE_HEAD_CP_DISTANCE
 
-    right_eye_internal[:, 0] += offset
+    positions[:, 0] += offset
     left_eye_internal[:, 0] -= offset
 
-    # Convert to OpenGL:
-    # Internal: X = lateral, Y = up, Z = front
-    # OpenGL: X = lateral(right), Y = up, Z = back
-    right_eye = right_eye_internal.copy()
-    right_eye[:, 2] = -right_eye_internal[:, 2]
+    right_eye = positions.copy()
+    right_eye[:, 2] = -positions[:, 2]
 
     left_eye = left_eye_internal.copy()
     left_eye[:, 2] = -left_eye_internal[:, 2]
@@ -199,32 +191,23 @@ def generate_eyes():
     right_center = np.array([offset, 0, 0])
     left_center = np.array([-offset, 0, 0])
 
-    r_dir = right_eye - right_center
-    r_dir /= np.linalg.norm(r_dir, axis=1, keepdims=True)
+    R_dirs = right_eye - right_center
+    R_dirs /= np.linalg.norm(R_dirs, axis=1, keepdims=True)
 
-    l_dir = left_eye - left_center
-    l_dir /= np.linalg.norm(l_dir, axis=1, keepdims=True)
+    L_dirs = left_eye - left_center
+    L_dirs /= np.linalg.norm(L_dirs, axis=1, keepdims=True)
 
-    directions = np.vstack([r_dir, l_dir])
-    positions = np.vstack([right_eye, left_eye])
-    eye_id = np.concatenate([np.ones(len(right_eye)), np.zeros(len(left_eye))])
+    all_directions = np.vstack([R_dirs, L_dirs])
+    all_positions = np.vstack([right_eye, left_eye])
+    eye_ids = np.concatenate([np.ones(len(right_eye)), np.zeros(len(left_eye))])
 
-    return directions, positions, eye_id
-
-
-if __name__ == "__main__":
-
-    SHOW_PLOT = True
-
-    directions, positions, eye_id = generate_eyes()
-
-    output_filename = "species_models/drosophila_Kemppainen.npz"
     np.savez_compressed(
-        output_filename,
-        directions=directions,
-        positions=positions,
-        eye_id=eye_id
+        'species_models/drosophila_Kemppainen.npz',
+        directions=all_directions,
+        positions=all_positions,
+        eye_id=eye_ids
     )
 
-    if SHOW_PLOT:
-        plot_eyes_3d(positions, directions, eye_id, title='Drosophila eyes (from Kemppainen et al., 2022)')
+    if SHOW_PLOTS:
+        plot_eyes_3d(all_positions, all_directions, eye_ids,
+                     title='Drosophila eyes (from Kemppainen et al., 2022)')

@@ -14,9 +14,10 @@ from svg.path import parse_path, Line, Close
 
 from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere
 from insectvision.lattice_fitting.generator import FittingParameters, LatticeGenerator
-from insectvision.lattice_fitting.plots import plot_lattice
+from insectvision.lattice_fitting.plots import plot_lattice, set_3d_equal_aspect, draw_gizmo
 from insectvision.lattice_fitting.profile import EyeMeasurements
-from species_models.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d
+from insectvision.lattice_fitting.plots import plot_eyes_3d, plot_lattice_3d, plot_density_3d
+
 
 # TODO: a GUI that replaces the svg + svg parsing
 
@@ -59,7 +60,7 @@ def _sample_path(path: np.ndarray, pts_per_segment: int = 20) -> np.ndarray:
     return np.array(points)
 
 
-def parse_drosophila_svg(svg_file: str | Path) -> 'SVGContent':
+def parse_buchner_svg(svg_file: str | Path) -> 'SVGContent':
     """
     Parse svg file containing redigitised Buchner data.
     """
@@ -113,12 +114,12 @@ def parse_drosophila_svg(svg_file: str | Path) -> 'SVGContent':
     )
 
 
-def unproject(points_2d: np.ndarray, center: np.ndarray, radius: float) -> np.ndarray:
+def stereo_to_sphere_buchner(points_2d: np.ndarray, center: np.ndarray, radius: float) -> np.ndarray:
     """
     Inverse stereographic projection using Buchner's convention.
     Coordinate system: -Z = Anterior, +Y = Dorsal, +X = Right (left eye)
     """
-    # TODO: make this a more generic math util
+    # TODO: make this a more generic math util?
 
     # Center, flip, normalise
     p = (points_2d - center) * -1
@@ -189,25 +190,14 @@ def plot_buchner_3d(
 
     ax.set_title(title, fontsize=16)
 
-    ax.quiver(0, 0, 0, 0.5, 0, 0, color='r', label='Right (+X)')
-    ax.quiver(0, 0, 0, 0, 0.5, 0, color='g', label='Up (+Y)')
-    ax.quiver(0, 0, 0, 0, 0, -0.5, color='b', label='Forward (-Z)')
+    draw_gizmo(ax, length=0.5)
 
     all_points = np.vstack([ommatidia, fwd_markers])
-
-    center = (all_points.max(axis=0) + all_points.min(axis=0)) / 2
-    x_range = np.ptp(all_points[:, 0])
-    y_range = np.ptp(all_points[:, 1])
-    z_range = np.ptp(all_points[:, 2])
-
-    ax.set_box_aspect((x_range, y_range, z_range))
-
-    ax.set_xlim(center[0] - x_range, center[0] + x_range)
-    ax.set_ylim(center[1] - y_range, center[1] + y_range)
-    ax.set_zlim(center[2] - z_range, center[2] + z_range)
+    set_3d_equal_aspect(ax, all_points)
 
     ax.view_init(elev=30, azim=45)
     ax.legend()
+
     plt.tight_layout()
     plt.show()
 
@@ -226,12 +216,12 @@ def reconstruct_buchner_data(
         - show_plots: debug visualisations
     """
 
-    data = parse_drosophila_svg(svg_path)
+    data = parse_buchner_svg(svg_path)
 
-    raw_dirs = unproject(data.ommatidia, data.hemisphere_center, data.hemisphere_radius)
+    raw_dirs = stereo_to_sphere_buchner(data.ommatidia, data.hemisphere_center, data.hemisphere_radius)
 
     if apply_regularisation and len(data.forward_markers) > 0:
-        stars_3d = unproject(data.forward_markers, data.hemisphere_center, data.hemisphere_radius)
+        stars_3d = stereo_to_sphere_buchner(data.forward_markers, data.hemisphere_center, data.hemisphere_radius)
 
         coeffs = np.polyfit(stars_3d[:, 1], stars_3d[:, 0], 2)
         deviation = np.poly1d(coeffs)
@@ -242,15 +232,14 @@ def reconstruct_buchner_data(
         norms = np.linalg.norm(corrected, axis=1, keepdims=True)
         raw_dirs = corrected / np.where(norms == 0, 1, norms)
 
-
     if show_plots:
-        stars_3d = unproject(data.forward_markers, data.hemisphere_center, data.hemisphere_radius)
-        position_3d = unproject(
+        stars_3d = stereo_to_sphere_buchner(data.forward_markers, data.hemisphere_center, data.hemisphere_radius)
+        position_3d = stereo_to_sphere_buchner(
             data.lattice_position[np.newaxis, :],
             data.hemisphere_center, data.hemisphere_radius,
         )[0]
         axes_3d = {
-            aid: unproject(pts, data.hemisphere_center, data.hemisphere_radius)
+            aid: stereo_to_sphere_buchner(pts, data.hemisphere_center, data.hemisphere_radius)
             for aid, pts in data.axes.items()
         }
         plot_buchner_3d(
@@ -265,7 +254,7 @@ if __name__ == "__main__":
 
     DENSITY_SCALE = 1.0
     PHYS_SCALE = 1.0
-    SHOW_PLOT = True
+    SHOW_PLOTS = True
 
     # Head dimensions from Posnien et al. 2012 (10.1371/journal.pone.0037346)
     HW = 830.0     # head width (µm)
@@ -280,7 +269,7 @@ if __name__ == "__main__":
     EL *= PHYS_SCALE
     ED *= PHYS_SCALE
 
-    L_dirs = reconstruct_buchner_data(svg_file, show_plots=SHOW_PLOT)
+    L_dirs = reconstruct_buchner_data(svg_file, show_plots=SHOW_PLOTS)
 
     pts2d, forward, right, up = sphere_to_stereo(L_dirs)
 
@@ -291,7 +280,7 @@ if __name__ == "__main__":
     gen = LatticeGenerator(profile, FittingParameters(density_scale=DENSITY_SCALE))
     lattice2d = gen.run(align=True, verbose=True)
 
-    if SHOW_PLOT:
+    if SHOW_PLOTS:
         plot_lattice(lattice2d, profile, density_scale=DENSITY_SCALE)
 
     # Back to the sphere
@@ -330,7 +319,7 @@ if __name__ == "__main__":
         eye_id=eye_ids,
     )
 
-    if SHOW_PLOT:
+    if SHOW_PLOTS:
         plot_eyes_3d(
             all_positions, all_directions, eye_ids,
             title='Drosophila eyes\n(parametric model fitted to Buchner, 1971)',
