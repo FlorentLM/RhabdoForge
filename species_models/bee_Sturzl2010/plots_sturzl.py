@@ -7,7 +7,9 @@ import matplotlib.patches as patches
 
 def plot_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):
     """
-    2D equirectangular projection of ommatidia directions, overlaid with the 4 zones from Stürzl et al., 2010.
+    2D equirectangular projection of ommatidia directions, overlaid with the 4 zones.
+
+    Reproduction of Fig. 7 from Stürzl et al., 2010.
     """
     fig, ax = plt.subplots(figsize=(10, 7))
 
@@ -44,7 +46,9 @@ def plot_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):
 
 def plot_ortho_projection(ommatidia_dirs):
     """
-    Orthographic projection of ommatidia directions, reproduces Figure 8 from Stürzl et al., 2010.
+    Orthographic projection of ommatidia directions.
+
+    Reproduction of Fig. 8 from Stürzl et al., 2010.
     """
     from species_models.bee_Sturzl2010.run import spherical_to_cartesian_sturzl
 
@@ -98,7 +102,9 @@ def plot_ortho_projection(ommatidia_dirs):
 
 def plot_receptive_fields(directions, delta_rhos):
     """
-    Receptive fields, reproduces Figure 10 from Stürzl et al., 2010.
+    Receptive fields.
+    
+    Reproduction of Fig. 10 from Stürzl et al., 2010.
     """
     azimuths = directions[:, 0]
     elevations = directions[:, 1]
