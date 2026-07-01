@@ -1,10 +1,11 @@
+"""
+Replica of model from Kemppainen et al., 2022 (10.1073/pnas.2109717119)
+"""
 import numpy as np
 from scipy.spatial import cKDTree as KDTree
 from species_models.plots import plot_eyes_3d
 
 
-# Replica of model from Kemppainen et al., 2022 (10.1073/pnas.2109717119).
-#
 # Parameters from original code:
 EYE_RADIUS = 1.1 * 1000 * (400 * (0.8 / 985)) / 2           # R_z ~ 178.68 µm
 EYE_HORIZONTAL_R = 1.1 * 1000 * (470 * (0.8 / 985)) / 2     # R_wide ~ 209.95 µm
@@ -76,7 +77,7 @@ def hex_neighbours(center_pt):
     return local_to_global(local_nodes, center_pt)
 
 
-def build_eye():
+def build_kemppainen_data():
     """
     Build a single eye in internal coordinate system (the right one).
     Returns ommatidia locations in µm.
@@ -174,7 +175,7 @@ def generate_eyes():
     """
 
     # Build right eye in internal coordinate system
-    right_eye_internal = build_eye()
+    right_eye_internal = build_kemppainen_data()
 
     # Mirror for left eye
     left_eye_internal = right_eye_internal.copy()
@@ -213,7 +214,7 @@ def generate_eyes():
 
 if __name__ == "__main__":
 
-    PLOT_EYES = True
+    SHOW_PLOT = True
 
     directions, positions, eye_id = generate_eyes()
 
@@ -225,5 +226,5 @@ if __name__ == "__main__":
         eye_id=eye_id
     )
 
-    if PLOT_EYES:
+    if SHOW_PLOT:
         plot_eyes_3d(positions, directions, eye_id, title='Drosophila eyes (from Kemppainen et al., 2022)')

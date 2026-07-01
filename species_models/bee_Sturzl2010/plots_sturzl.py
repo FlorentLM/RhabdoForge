@@ -9,17 +9,16 @@ def plot_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):
     """
     2D equirectangular projection of ommatidia directions, overlaid with the 4 zones from Stürzl et al., 2010.
     """
-
     fig, ax = plt.subplots(figsize=(10, 7))
 
-    ax.scatter(ommatidia_dirs[:, 0], ommatidia_dirs[:, 1], color='darkblue', alpha=0.3, s=2, label="Ommatidia")
+    ax.scatter(ommatidia_dirs[:, 0], ommatidia_dirs[:, 1], color='darkblue', alpha=0.3, s=2, label='Ommatidia')
 
     # Boundaries
     elevations = np.linspace(-90, 90, 500)
-    plt.plot(interp_fn_12(elevations), elevations, color='limegreen', lw=2, label="Eye boundaries (interp.)")
+    plt.plot(interp_fn_12(elevations), elevations, color='limegreen', lw=2, label='Eye boundaries (interp.)')
     plt.plot(interp_fn_34(elevations), elevations, color='limegreen', lw=2)
 
-    plt.plot(raw_12[:, 1], raw_12[:, 0], 'o', color='darkgreen', markersize=5, label="Boundary datapoints")
+    plt.plot(raw_12[:, 1], raw_12[:, 0], 'o', color='darkgreen', markersize=5, label='Boundary datapoints')
     plt.plot(raw_34[:, 1], raw_34[:, 0], 'o', color='darkgreen', markersize=5)
 
     plt.xlim(-90, 270)
@@ -28,16 +27,16 @@ def plot_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):
     ax.axhline(0, color='black', linewidth=1.5, alpha=0.7)
     ax.axvline(0, color='black', linewidth=1.5, alpha=0.7)
 
-    ax.text(125, 50, "1", fontsize=30, color='gray', ha='center', va='center', weight='bold')
-    ax.text(125, -50, "2", fontsize=30, color='gray', ha='center', va='center', weight='bold')
-    ax.text(-50, -50, "3", fontsize=30, color='gray', ha='center', va='center', weight='bold')
-    ax.text(-50, 50, "4", fontsize=30, color='gray', ha='center', va='center', weight='bold')
+    ax.text(125, 50, '1', fontsize=30, color='gray', ha='center', va='center', weight='bold')
+    ax.text(125, -50, '2', fontsize=30, color='gray', ha='center', va='center', weight='bold')
+    ax.text(-50, -50, '3', fontsize=30, color='gray', ha='center', va='center', weight='bold')
+    ax.text(-50, 50, '4', fontsize=30, color='gray', ha='center', va='center', weight='bold')
 
     ax.set_xlim(-100, 270)
     ax.set_ylim(-100, 100)
-    ax.set_xlabel("Azimuth α (degrees)")
-    ax.set_ylabel("Elevation ε (degrees)")
-    ax.set_title("Equirectangular projection of ommatidia directions")
+    ax.set_xlabel('Azimuth α (degrees)')
+    ax.set_ylabel('Elevation ε (degrees)')
+    ax.set_title('Equirectangular projection of ommatidia directions')
 
     plt.tight_layout()
     plt.show()
@@ -47,8 +46,7 @@ def plot_ortho_projection(ommatidia_dirs):
     """
     Orthographic projection of ommatidia directions, reproduces Figure 8 from Stürzl et al., 2010.
     """
-
-    from species_models.bee_Sturzl2010.bee_procedural_Sturzl_2010 import sturzl_spherical_to_cartesian
+    from species_models.bee_Sturzl2010.run import sturzl_spherical_to_cartesian
 
     az = ommatidia_dirs[:, 0]
     el = ommatidia_dirs[:, 1]
@@ -93,7 +91,7 @@ def plot_ortho_projection(ommatidia_dirs):
         ax.spines['right'].set_visible(False)
         ax.grid(False)
 
-    plt.suptitle("Orthographic projections of viewing directions")
+    plt.suptitle('Orthographic projections of viewing directions')
     plt.tight_layout()
     plt.show()
 
@@ -102,13 +100,12 @@ def plot_receptive_fields(directions, delta_rhos):
     """
     Receptive fields, reproduces Figure 10 from Stürzl et al., 2010.
     """
-
     azimuths = directions[:, 0]
     elevations = directions[:, 1]
 
     # width stretched by 1/cos(elevation) because equirectangular projection
     cos_elev = np.cos(np.radians(elevations))
-    cos_elev = np.maximum(cos_elev, 0.001)  # avoid div/0
+    cos_elev = np.maximum(cos_elev, 0.001)
 
     widths = delta_rhos / cos_elev
     heights = delta_rhos
@@ -138,9 +135,9 @@ def plot_receptive_fields(directions, delta_rhos):
     ax_main.scatter(azimuths, elevations, color='blue', marker='.', s=1)
     ax_main.set_xlim(-90, 270)
     ax_main.set_ylim(-95, 95)
-    ax_main.set_xlabel(r"azimuth $\alpha$ [DEG]")
-    ax_main.set_ylabel(r"elevation $\epsilon$ [DEG]")
-    ax_main.set_title("(a) Viewing directions and receptive fields")
+    ax_main.set_xlabel(r'azimuth $\alpha$ [DEG]')
+    ax_main.set_ylabel(r'elevation $\epsilon$ [DEG]')
+    ax_main.set_title('(a) Viewing directions and receptive fields')
     ax_main.grid(True, linestyle='--', alpha=0.5)
 
     # Frontal region
@@ -169,7 +166,7 @@ def plot_receptive_fields(directions, delta_rhos):
     ax_b.scatter(azimuths[mask_b], elevations[mask_b], color='blue', marker='.', s=1)
     ax_b.set_xlim(zoom_b_x)
     ax_b.set_ylim(zoom_b_y)
-    ax_b.set_title(r"(b) Frontal region ($\alpha \approx 0^\circ$)")
+    ax_b.set_title(r'(b) Frontal region ($\alpha \approx 0^\circ$)')
     ax_b.grid(True, linestyle='--', alpha=0.5)
 
     # Acute zoom
@@ -181,7 +178,7 @@ def plot_receptive_fields(directions, delta_rhos):
     ax_c.scatter(azimuths[mask_c], elevations[mask_c], color='blue', marker='.', s=1)
     ax_c.set_xlim(zoom_c_x)
     ax_c.set_ylim(zoom_c_y)
-    ax_c.set_title(r"(c) Acute region ($\alpha \approx 45^\circ$)")
+    ax_c.set_title(r'(c) Acute region ($\alpha \approx 45^\circ$)')
     ax_c.grid(True, linestyle='--', alpha=0.5)
 
     plt.tight_layout()

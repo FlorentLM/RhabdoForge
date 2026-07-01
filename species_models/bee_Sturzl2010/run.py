@@ -1,12 +1,15 @@
+"""
+Exact replica of model from Stürlz et al., 2010 (10.1088/1748-3182/5/3/036002) with smooth boundary interpolation.
+
+Azimuth values taken from https://github.com/BioroboticsLab/bee_view/blob/master/data/azimuth_max.csv
+Original code from Polster, 2017 (bachelor thesis): https://github.com/BioroboticsLab/bee_view/blob/master/data/calc_ommatidial_array.R
+
+Reproduces figures from Stürlz et al., 2010
+"""
 import numpy as np
 from scipy.interpolate import interp1d, Akima1DInterpolator
-from species_models.bee_Sturzl2010.plots_Sturzl2010 import plot_eye_zones, plot_ortho_projection, plot_receptive_fields
+from species_models.bee_Sturzl2010.plots_sturzl import plot_eye_zones, plot_ortho_projection, plot_receptive_fields
 from species_models.plots import plot_eyes_3d
-
-# Exact replica of model from Stürlz et al., 2010 (10.1088/1748-3182/5/3/036002) with smooth boundary interpolation.
-# Azimuth values taken from https://github.com/BioroboticsLab/bee_view/blob/master/data/azimuth_max.csv
-# Original code from Polster, 2017 (bachelor thesis): https://github.com/BioroboticsLab/bee_view/blob/master/data/calc_ommatidial_array.R
-# Reproduces figures from Stürlz et al., 2010
 
 
 IOA_H_MIN = 2.4
@@ -22,9 +25,6 @@ BEE_EYE_RADIUS = 1250.0  # micrometres
 
 # Eye separation (center-to-center distance)
 BEE_EYE_SEPARATION = 3000.0  # micrometres
-
-
-##
 
 
 def sturzl_spherical_to_cartesian(azimuth, elevation, radius=1.0, degrees=False):
@@ -203,7 +203,7 @@ def get_interp(zone_12, zone_34, interp='akima'):
     return interp_fn_12, interp_fn_34
 
 
-def build_eye(interp_fn_12, interp_fn_34, eye_factor=1.1, packing_f=np.sqrt(2) / 2.0):
+def reconstruct_sturzl_data(interp_fn_12, interp_fn_34, eye_factor=1.1, packing_f=np.sqrt(2) / 2.0):
     """
     Build a single eye in internal coordinate system (the right one).
 
@@ -212,6 +212,7 @@ def build_eye(interp_fn_12, interp_fn_34, eye_factor=1.1, packing_f=np.sqrt(2) /
         interommatidial_angles: (N, 2) array of (horizontal_IOA, vertical_IOA) in degrees
         acceptance_angles: (N,) array of acceptance angles in degrees
     """
+
     ommatidia_data = np.concatenate([
         generate_zone(z, interp_fn_12, interp_fn_34, eye_factor=eye_factor, packing_f=packing_f)
         for z in [1, 2, 3, 4]
@@ -268,12 +269,11 @@ def generate_eyes(right_eye_dirs):
 
 if __name__ == "__main__":
 
-    PLOT_EYES = True
-    REPRODUCE_PAPERS_PLOT = False
+    SHOW_PLOT = True
 
-    file_path = "species_models/bee_Sturzl2010/sturzl2010_azimuth_max.csv"
+    csv_file = 'species_models/bee_Sturzl2010/sturzl2010_azimuth_max.csv'
 
-    zone_12, zone_34 = load_azimuth_data(file_path)
+    zone_12, zone_34 = load_azimuth_data(csv_file)
     interp_fn_12, interp_fn_34 = get_interp(zone_12, zone_34, interp='akima')
 
     # Ommatidia packing seems to be inconsistent in various figures of the paper:
@@ -281,13 +281,13 @@ if __name__ == "__main__":
     packing_f = np.sqrt(2) / 2.0  # ~ 45 degree lattice, generates ~3840 om, and is what the paper shows in Fig. 10
     # packing_f = np.sqrt(3) / 2.0    # ~ 60 degree lattice (hexagon), generates ~3150 om
 
-    right_eye_dirs, right_eye_ioas, right_eye_acceptance = build_eye(
+    right_eye_dirs, right_eye_ioas, right_eye_acceptance = reconstruct_sturzl_data(
         interp_fn_12, interp_fn_34,
         eye_factor=1.1,  # parameter p
         packing_f=packing_f
     )
 
-    if REPRODUCE_PAPERS_PLOT:
+    if SHOW_PLOT:
         plot_eye_zones(right_eye_dirs, interp_fn_12, interp_fn_34, zone_12, zone_34)  # Fig. 7
         plot_ortho_projection(right_eye_dirs)  # Fig. 8
         plot_receptive_fields(right_eye_dirs, right_eye_acceptance)  # Fig. 10
@@ -295,7 +295,7 @@ if __name__ == "__main__":
     # Create the other eye
     directions, positions, eye_id = generate_eyes(right_eye_dirs)
 
-    output_filename = "species_models/bee_Sturzl.npz"
+    output_filename = 'species_models/bee_Sturzl.npz'
     np.savez_compressed(
         output_filename,
         directions=directions,
@@ -304,7 +304,7 @@ if __name__ == "__main__":
         acceptance_angles_rad=np.deg2rad(np.concatenate([right_eye_acceptance, right_eye_acceptance]))
     )
 
-    if PLOT_EYES:
+    if SHOW_PLOT:
         plot_eyes_3d(
             positions,
             directions,
