@@ -136,11 +136,11 @@ class VisualOutput:
         if self.shape[-1] == 1:
             return self.per_ommatidium[..., 0, :]
 
-        indices = getattr(self._model.bundle, 'peripheral_indices', None)
-        if indices is None or len(indices) == 0:
+        periph_indices = self._model.bundle.peripheral_indices
+        if len(periph_indices) == 0:
             return self.per_cartridge[..., 0, :]
 
-        return np.mean(self.per_cartridge[..., indices, :], axis=-2)
+        return np.mean(self.per_cartridge[..., periph_indices, :], axis=-2)
 
     @property
     def central_signal(self) -> np.ndarray:

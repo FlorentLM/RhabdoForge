@@ -40,7 +40,7 @@ from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
 
 # Load a Drosophila model with a custom rhabdomere bundle
 model = Model.from_file(
-    'species_models/drosophila_custom.npz',
+    'morphological_scaffolds/drosophila_custom.npz',
     bundle=drosophila_bundle()
 )
 

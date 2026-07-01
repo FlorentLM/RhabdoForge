@@ -4,7 +4,7 @@ from insectvision.geometry.spherical import sphere_to_stereo
 from insectvision.lattice_fitting.profile import EyeMeasurements
 from insectvision.lattice_fitting.generator import LatticeGenerator, FittingParameters
 from insectvision.lattice_fitting.plots import plot_lattice, lattice_diagnostics
-from species_models.drosophila_custom.run_drosocustom import reconstruct_buchner_data
+from morphological_scaffolds.drosophila.run import reconstruct_buchner_data
 
 
 SVG = 'species_models/drosophila_custom/drosophila_Buchner_1971_redigitized.svg'

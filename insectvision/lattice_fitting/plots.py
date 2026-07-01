@@ -342,8 +342,6 @@ def plot_lattice_3d(
     plt.show()
 
 
-# Full eye model (3D)
-
 def plot_eye_scaffold_3d(
         positions: np.ndarray,
         directions: np.ndarray,
@@ -438,10 +436,10 @@ def plot_eye_scaffold_3d(
     if title:
         ax.set_title(title)
 
-    ax.legend(loc='upper right', fontsize=8)
-
     set_3d_equal(ax, positions)
     draw_gizmo(ax, length=plot_scale * 0.5)
+
+    ax.legend(loc='upper right', fontsize=8)
 
     plt.tight_layout()
     plt.show()
@@ -479,10 +477,10 @@ def plot_density_3d(
     if title:
         ax.set_title(title)
 
-    ax.legend(loc='upper right', fontsize=8)
-
     set_3d_equal(ax, positions)
     draw_gizmo(ax, length=0.5 * np.ptp(positions, axis=0).max())
+
+    ax.legend(loc='upper right', fontsize=8)
 
     plt.tight_layout()
     plt.show()

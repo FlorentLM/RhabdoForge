@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
-
 import matplotlib
 import numpy as np
 import matplotlib.pyplot as plt
@@ -63,8 +62,8 @@ class Configuration:
 
     # Eyes param
     tau_membrane: float = 0.012
-    eye_model_path: str = 'species_models/drosophila_custom.npz'
-    # eye_model_path: str = 'species_models/bee_Sturzl.npz'
+    eye_model_path: str = 'assets/drosophila_scaffold.npz'
+    # eye_model_path: str = 'assets/honeybee_scaffold_s10.npz'
 
     # EMD params
     emd_pooling: int = 1

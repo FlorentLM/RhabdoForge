@@ -108,7 +108,7 @@ def build_eye(extra_narrowing):
     )
 
     model = Model.from_file(
-        'species_models/drosophila_custom.npz',
+        'assets/drosophila_scaffold.npz',
         bundle=bundle, orientation=aligner, acceptance=SnyderAcceptance(),
         neural_superposition=True
     )
@@ -207,7 +207,7 @@ def simulate(model, sep_deg):
     rec = {'agent_y': [], 'cond': [], 'mdir': [], 'cart': []}
 
     t_start, phase = None, -1
-    while context.run_interactive(renderer=renderer, use_dashboard=False):
+    while context.run_interactive(renderer=renderer):
 
         context.input()
         if t_start is None:

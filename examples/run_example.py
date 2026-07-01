@@ -59,9 +59,9 @@ def main():
         context.debug.add(DebugBox(dynamic_crate))
 
     # Setup eye model
-    eye_file_path = 'species_models/drosophila_custom.npz'
-    # eye_file_path = 'species_models/bee_Sturzl.npz'
-    # eye_file_path = 'species_models/drosophila_Kemppainen.npz'
+    eye_file_path = 'assets/drosophila_scaffold.npz'
+    # eye_file_path = 'assets/honeybee_scaffold_s10.npz'
+    # eye_file_path = 'assets/drosophila_scaffold_k22.npz'
 
     model = Model.from_file(
         eye_file_path,
