@@ -50,7 +50,7 @@ def fig8_ortho_projection(ommatidia_dirs):
 
     Reproduction of Fig. 8 from Stürzl et al., 2010.
     """
-    from species_models.bee_Sturzl2010.run import spherical_to_cartesian_sturzl # TODO: This circular import is annoying
+    from species_models.bee_Sturzl2010.run_sturzl import spherical_to_cartesian_sturzl # TODO: This circular import is annoying
 
     az = ommatidia_dirs[:, 0]
     el = ommatidia_dirs[:, 1]

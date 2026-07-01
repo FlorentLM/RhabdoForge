@@ -1,4 +1,4 @@
-from typing import Callable, Sequence, Optional
+from typing import Callable, Sequence, Optional, Tuple
 import numpy as np
 from numpy.typing import ArrayLike
 from numpy.fft import fft2, ifft2, fftfreq
@@ -375,3 +375,41 @@ def density_correct(
             print(f'  density_correct iter {it}: mean |u| = {un.mean():.4f}')
 
     return pts
+
+
+def mirror_bilateral(
+        positions: ArrayLike,
+        directions: ArrayLike,
+        shift: float = 0.0,
+        source_side: str = 'right'
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Translate one eye's positions along X by 'shift', then mirror across X=0 to build the other side.
+    """
+
+    positions = np.asarray(positions, dtype=np.float32)
+    directions = np.asarray(directions, dtype=np.float32)
+
+    src_pos = positions.copy()
+    src_dir = directions.copy()
+
+    src_pos[:, 0] += shift
+
+    mir_pos = src_pos.copy()
+    mir_pos[:, 0] *= -1
+
+    mir_dir = src_dir.copy()
+    mir_dir[:, 0] *= -1
+
+    if str(source_side).lower()[:1] == 'r':
+        R_pos, L_pos, R_dir, L_dir = src_pos, mir_pos, src_dir, mir_dir
+    elif str(source_side).lower()[:1] == 'l':
+        L_pos, R_pos, L_dir, R_dir = src_pos, mir_pos, src_dir, mir_dir
+    else:
+        raise ValueError(f"Unknown source_side '{source_side!r}'")
+
+    both_eyes_pos = np.vstack([L_pos, R_pos])
+    both_eyes_dirs = np.vstack([L_dir, R_dir])
+    both_eyes_ids = np.concatenate([np.zeros(len(L_pos)), np.ones(len(R_pos))])
+
+    return both_eyes_pos, both_eyes_dirs, both_eyes_ids

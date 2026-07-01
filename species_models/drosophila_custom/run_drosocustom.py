@@ -244,7 +244,7 @@ def reconstruct_buchner_data(
         }
         plot_buchner_3d(
             raw_dirs, stars_3d, position_3d, axes_3d,
-            title="Drosophila ommatidia viewing directions (Buchner, 1971)",
+            title="Drosophila ommatidia viewing directions (Büchner, 1971)",
         )
 
     return raw_dirs
@@ -260,7 +260,7 @@ if __name__ == "__main__":
     HW = 830.0     # head width (µm)
     FW = 390.0     # frons width (µm)
     EL = 460.0     # eye length, vertical (µm)
-    ED = 370.0     # eye depth, anterior-posterior (µm)  (inferred from D. simulans)
+    ED = 370.0     # eye depth, anterior-posterior (µm)  (inferred from Drosophila simulans)
 
     svg_file = 'species_models/drosophila_custom/drosophila_Buchner_1971_redigitized.svg'
 
@@ -283,7 +283,7 @@ if __name__ == "__main__":
     if SHOW_PLOTS:
         plot_lattice(lattice2d, profile, density_scale=DENSITY_SCALE)
 
-    # Back to the sphere
+    # Back to sphere
     lattice_dirs = stereo_to_sphere(lattice2d, forward, right, up)
     print(f'Generated {len(lattice_dirs)} ommatidia')
 
@@ -322,7 +322,7 @@ if __name__ == "__main__":
     if SHOW_PLOTS:
         plot_eyes_3d(
             all_positions, all_directions, eye_ids,
-            title='Drosophila eyes\n(parametric model fitted to Buchner, 1971)',
+            title='Drosophila eyes\n(parametric model fitted to Büchner, 1971)',
             sphere_projection=True,
         )
         plot_density_3d(all_positions, all_directions)

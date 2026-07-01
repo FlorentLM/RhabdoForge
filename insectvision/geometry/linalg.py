@@ -2,20 +2,8 @@ from typing import Optional, Tuple
 import numpy as np
 from numpy.typing import ArrayLike
 
+from insectvision.geometry.various import _match_batch
 from insectvision.utils.shared import norm_l2
-
-
-def _match_batch(a: ArrayLike, b: ArrayLike) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Ensures 'a' and 'b' can broadcast by injecting size-1 dimensions before the last dimension.
-    """
-    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
-    while a.ndim < b.ndim:
-        a = np.expand_dims(a, axis=-2)
-    while b.ndim < a.ndim:
-        b = np.expand_dims(b, axis=-2)
-    return a, b
-
 
 
 def tangent_frames(

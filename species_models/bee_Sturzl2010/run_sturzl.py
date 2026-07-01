@@ -8,10 +8,11 @@ Reproduces figures from Stürlz et al., 2010
 """
 from pathlib import Path
 from typing import Callable, Tuple, List
-
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.interpolate import interp1d, Akima1DInterpolator
+from scipy.interpolate import interp1d
+
+from insectvision.geometry.various import akima_interp_fn
 from insectvision.lattice_fitting.plots import plot_eyes_3d
 
 
@@ -22,12 +23,12 @@ IOA_V_MIN = 1.5
 IOA_V_MAX = 4.5
 
 # TODO: Lookup more accurate values
-# Honeybee head ~4.5 mm, compound eye diameter ~2.5-3 mm?
-# Eye radius ~ 1.25 mm?
-BEE_EYE_RADIUS = 1250.0         # micrometres
+# Honeybee head ~4.5 mm, eye diameter ~2.5-3 mm?
+# Eye radius ~1.25 mm?
+BEE_EYE_RADIUS = 1250.0         # µm
 
 # Eye separation (centre-to-centre distance)
-BEE_EYE_SEPARATION = 3000.0     # micrometres
+BEE_EYE_SEPARATION = 3000.0     # µm
 
 
 def spherical_to_cartesian_sturzl(
@@ -49,23 +50,6 @@ def spherical_to_cartesian_sturzl(
     z = radius * np.sin(el_rad)
 
     return np.stack([x, y, z])
-
-
-def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable':
-    """
-    Akima interpolator that returns 'fill_value' for queries outside range.
-    """
-    x = np.asarray(x, dtype=np.float64)
-    y = np.asarray(y, dtype=np.float64)
-    akima_fn = Akima1DInterpolator(x, y)
-
-    def wrapper(query_x):
-        query_x = np.asarray(query_x)
-        mask_oob = (query_x < x.min()) | (query_x > x.max())
-        vals = akima_fn(query_x)
-        return np.where(mask_oob, fill_value, vals)
-
-    return wrapper
 
 
 def _get_azimuth_delta(ioa_h: ArrayLike, elevation: ArrayLike, degrees: bool = True) -> np.ndarray:
