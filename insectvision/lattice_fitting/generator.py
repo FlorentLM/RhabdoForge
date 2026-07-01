@@ -15,7 +15,7 @@ from scipy.spatial import cKDTree
 from insectvision.geometry.linalg import rot2d
 from insectvision.geometry.polygons import resample_contour, Polygon2D
 from insectvision.geometry.neighbours import delaunay_neighbours, first_ring_gap, mean_neighbour_distance
-from insectvision.compound_eyes.helpers.ommatidia_lattice import (
+from insectvision.lattice_fitting.algo import (
     hexagonal_grid, align_grid, density_warp, hex_cell_area_factor, base_bond_dirs, spring_relaxation, density_correct
 )
 from insectvision.lattice_fitting.profile import EyeMeasurements
