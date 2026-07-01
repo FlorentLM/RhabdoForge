@@ -5,7 +5,7 @@ from matplotlib.collections import LineCollection
 from scipy.interpolate import griddata
 
 from insectvision.geometry.hexatic import phasor_from_points, hexatic_order
-from insectvision.geometry.neighbours import delaunay_edges, delaunay_neighbours, mean_neighbour_distance, walk_rows
+from insectvision.geometry.neighbours import delaunay_edges, delaunay_neighbours, ball_spacing, walk_rows
 from insectvision.geometry.linalg import principal_axis_angle
 from insectvision.lattice_fitting.profile import trace_lattice_rows, EyeMeasurements
 
@@ -105,7 +105,7 @@ def lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diagnosti
     # B. Density residual map
     ax = axs[1, 0]
 
-    ach_pts = mean_neighbour_distance(query_points=final, k=6)
+    ach_pts = ball_spacing(query_points=final, k=6)
     tgt_pts = target_spacing_fn(final).ravel()
 
     inside = domain.signed_distance(final) < -hide_margin * gen_ms
@@ -142,7 +142,7 @@ def lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diagnosti
 
     ax.set_aspect('auto')
     for lat, color, label in [(init, '0.6', 'after warp'), (final, '#1f77b4', 'final')]:
-        ach = mean_neighbour_distance(query_points=lat, k=6)
+        ach = ball_spacing(query_points=lat, k=6)
         tgt = target_spacing_fn(lat).ravel()
 
         inside = domain.signed_distance(lat) < -hide_margin * gen_ms

@@ -7,7 +7,7 @@ from scipy.spatial import cKDTree, ConvexHull
 from scipy.interpolate import RegularGridInterpolator, griddata
 
 from insectvision.geometry.polygons import Polygon2D, mirror_across_hull
-from insectvision.geometry.neighbours import delaunay_edges, mean_neighbour_distance
+from insectvision.geometry.neighbours import delaunay_edges, ball_spacing
 
 
 def hexagonal_grid(
@@ -348,7 +348,7 @@ def density_correct(
 
     for it in range(n_iter):
 
-        s_ach = mean_neighbour_distance(query_points=pts, k=k)
+        s_ach = ball_spacing(query_points=pts, k=k)
         s_tgt = target_spacing_fn(pts).ravel()
 
         # Positive where the lattice is too dense, negative where too sparse

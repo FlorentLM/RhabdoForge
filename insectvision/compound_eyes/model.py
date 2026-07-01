@@ -517,7 +517,7 @@ class Model(SpatialQueries, BaseView):
                 is_edge[eye.indices] = True
                 continue
 
-            local_s = graph_spacing(pts, adj, reduce=np.median)
+            local_spacing = graph_spacing(pts, adj, reduce=np.median)
 
             tri = Delaunay(pts).simplices
             a, b, c = pts[tri[:, 0]], pts[tri[:, 1]], pts[tri[:, 2]]
@@ -527,7 +527,7 @@ class Model(SpatialQueries, BaseView):
             area = triangle_areas(a, b, c)
             circumradius = (ab * bc * ca) / (4.0 * area + 1e-300)
 
-            kept = tri[circumradius <= ALPHA * local_s[tri].mean(axis=1)]  # alpha-complex
+            kept = tri[circumradius <= ALPHA * local_spacing[tri].mean(axis=1)]  # alpha-complex
 
             # Boundary = belongs to exactly one kept triangle
             e = np.sort(np.concatenate([kept[:, [0, 1]], kept[:, [1, 2]], kept[:, [2, 0]]]), axis=1)
@@ -639,8 +639,7 @@ class Model(SpatialQueries, BaseView):
                 e_tilts = np.where(sparse_mask, 0.0, e_tilts).astype(np.float32)
 
             # Ommatidia spacing: median first-ring distance (in world units)
-            with np.errstate(all='ignore'):
-                e_spacing = np.nanmedian(np.where(is_immediate, np.linalg.norm(delta_pos, axis=2), np.nan), axis=1).astype(np.float32)
+            e_spacing = graph_spacing(home_pos, eye._get_first_ring_graph()['adjacency'], reduce=np.median)
 
             # Smooth lattice axis as a 6-fold phasor
             g2l = np.full(self._N, -1, dtype=np.intp)
@@ -652,7 +651,7 @@ class Model(SpatialQueries, BaseView):
             ioa_major[eye.indices] = np.where(np.isfinite(e_ioa_major), e_ioa_major, 0.0)
             ioa_tilts[eye.indices] = e_tilts
             ioa_order[eye.indices] = e_psi6_mag
-            spacing[eye.indices] = np.where(np.isfinite(e_spacing), e_spacing, 0.0)
+            spacing[eye.indices] = e_spacing
 
             logger.debug(f"Eye {eye.eye_index} lattice |Ψ6|: {float(np.mean(e_psi6_mag)):.3f}, median spacing: {float(np.median(e_spacing)):.3f}")
 

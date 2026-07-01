@@ -81,7 +81,7 @@ def delaunay_edges(points2d: np.ndarray, max_length_factor: float = 0.0) -> np.n
 
         # The criterion is symmetric, so the surviving graph is symmetric too
         # (edge i-j is kept for both i and j, or for neither)
-        spacing = mean_neighbour_distance(cKDTree(points2d), None, k=min(6, max(1, len(points2d) - 1)))
+        spacing = ball_spacing(cKDTree(points2d), None, k=min(6, max(1, len(points2d) - 1)))
 
         lengths = np.linalg.norm(points2d[edges[:, 0]] - points2d[edges[:, 1]], axis=1)
         mean_local = 0.5 * (spacing[edges[:, 0]] + spacing[edges[:, 1]])
@@ -248,21 +248,48 @@ def knn(
     return dist, idx.astype(np.intp)
 
 
-def mean_neighbour_distance(
+# Two ways to measure local spacing:
+#
+#   ball_spacing: metric (kNN ball), robust to topology/defects
+#   graph_spacing: topological (explicit edges), reflects actual bond lengths
+
+def ball_spacing(
         tree: Optional[cKDTree] = None,
         query_points: Optional[np.ndarray] = None,
         k: int = 6,
+        reduce: 'Callable' = np.mean,
 ) -> np.ndarray:
     """
-    Per-point mean distance to its k nearest neighbours (the local point-spacing scale).
-    If 'query_pts' is None the tree's own data is used (i.e. the mean spacing of this cloud).
-    Returns NaN for points with no available neighbours.
+    Local spacing as the reduce (mean by default) of distances to the k nearest
+    neighbours (metric kNN ball, robust to mesh topology/defects)
+
+    'reduce' must accept an 'axis' argument (np.mean, np.median, np.min, np.max...)
+    NaN for points with no available neighbours.
     """
     dist, _ = knn(tree, query_points, k, drop_self=True)
     if dist.shape[1] == 0:
         return np.full(dist.shape[0], np.nan)
+    return reduce(dist, axis=1)
 
-    return dist.mean(axis=1)
+
+def graph_spacing(
+        points2d: ArrayLike,
+        neighbours: 'NeighbourGraph',
+        reduce: 'Callable' = np.mean
+    ) -> np.ndarray:
+    """
+    Local point spacing over a neighbour graph with choice of reduce function (mean by default).
+
+    'reduce' must accept an 'axis' argument (np.mean, np.median, np.min, np.max...)
+    NaN for isolated points.
+    """
+    points2d = np.asarray(points2d, dtype=float)
+    nbr = ragged_neighbours(neighbours)
+    out = np.full(len(points2d), np.nan)
+    for i, nb in enumerate(nbr):
+        if nb.size:
+            out[i] = reduce(np.linalg.norm(points2d[nb] - points2d[i], axis=1), axis=-1)
+    return out
 
 
 def top_k_facing(
@@ -571,21 +598,6 @@ def smooth_field_partitioned(
 
 
 # Lattice-row tracing and graph measures
-
-def graph_spacing(points2d: ArrayLike, neighbours: NeighbourGraph, reduce: Callable = np.mean) -> np.ndarray:
-    """
-    Local point spacing scale over a neighbour graph with choice of reduce function.
-    (as opposed to mean_neighbour_distance which measures over a kNN ball).
-
-    NaN for isolated points.
-    """
-    points2d = np.asarray(points2d, dtype=float)
-    nbr = ragged_neighbours(neighbours)
-    out = np.full(len(points2d), np.nan)
-    for i, nb in enumerate(nbr):
-        if nb.size:
-            out[i] = reduce(np.linalg.norm(points2d[nb] - points2d[i], axis=1))
-    return out
 
 
 def first_ring_gap(points2d: ArrayLike, neighbours: NeighbourGraph, degrees: bool = False) -> np.ndarray:

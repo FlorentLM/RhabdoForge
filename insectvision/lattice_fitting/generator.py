@@ -14,7 +14,7 @@ from scipy.spatial import cKDTree
 
 from insectvision.geometry.linalg import rot2d
 from insectvision.geometry.polygons import resample_contour, Polygon2D
-from insectvision.geometry.neighbours import delaunay_neighbours, first_ring_gap, mean_neighbour_distance
+from insectvision.geometry.neighbours import delaunay_neighbours, first_ring_gap, ball_spacing
 from insectvision.lattice_fitting.algo import (
     hexagonal_grid, align_grid, density_warp, hex_cell_area_factor, base_bond_dirs, spring_relaxation, density_correct
 )
@@ -41,28 +41,28 @@ def warp_init(
     rot0 = np.asarray(rot0, dtype=np.float64)
 
     factor = hex_cell_area_factor(lattice_angles)
-    current = float(np.sqrt(domain.area / (n_target * factor)))
+    current_spacing = float(np.sqrt(domain.area / (n_target * factor)))
 
     for _ in range(6):
-        grid = hexagonal_grid(spacing=current, angles=lattice_angles, extent=extent) @ rot0.T
+        grid = hexagonal_grid(spacing=current_spacing, angles=lattice_angles, extent=extent) @ rot0.T
         surv = grid[domain.inside(grid, buffer=buffer)]
-        surv = density_warp(surv, target_spacing_fn, reference_spacing=current,
+        surv = density_warp(surv, target_spacing_fn, reference_spacing=current_spacing,
                             exponent=warp_exponent)
         count_inside = domain.inside(surv, buffer=0.0).sum()
         if count_inside == 0:
-            current *= 0.7
+            current_spacing *= 0.7
             continue
         ratio = n_target / count_inside
-        current *= 1.0 / np.sqrt(ratio)
+        current_spacing *= 1.0 / np.sqrt(ratio)
         if abs(ratio - 1.0) < 0.03:
             break
 
-    grid = hexagonal_grid(spacing=current, angles=lattice_angles, extent=extent) @ rot0.T
+    grid = hexagonal_grid(spacing=current_spacing, angles=lattice_angles, extent=extent) @ rot0.T
     if align_points is not None:
         grid = align_grid(grid, align_points)
 
     lattice = grid[domain.inside(grid, buffer=buffer)]
-    return density_warp(lattice, target_spacing_fn, reference_spacing=current,
+    return density_warp(lattice, target_spacing_fn, reference_spacing=current_spacing,
                         exponent=warp_exponent)
 
 
@@ -97,7 +97,7 @@ def _cull_junk(
     gap = first_ring_gap(pts, neighbours)
     deg = np.array([len(nb) for nb in neighbours])
 
-    s_ratio = mean_neighbour_distance(query_points=pts, k=6) / np.maximum(target_spacing_fn(pts).ravel(), 1e-12)
+    s_ratio = ball_spacing(query_points=pts, k=6) / np.maximum(target_spacing_fn(pts).ravel(), 1e-12)
     d_hull = domain.signed_distance(pts)
 
     is_boundary = gap > np.deg2rad(boundary_gap_deg)

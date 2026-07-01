@@ -45,8 +45,8 @@ def get_spacing_field(
     rbf = RBFInterpolator(points2d, spacing / mean_spacing, kernel='thin_plate_spline', smoothing=smoothing)
 
     def spacing_fn(q):
-        s = rbf(np.atleast_2d(np.asarray(q, dtype=np.float64))).ravel()
-        return np.clip(s, clip_norm[0], clip_norm[1]) * mean_spacing
+        spacing = rbf(np.atleast_2d(np.asarray(q, dtype=np.float64))).ravel()
+        return np.clip(spacing, clip_norm[0], clip_norm[1]) * mean_spacing
 
     return mean_spacing, spacing_fn
 
