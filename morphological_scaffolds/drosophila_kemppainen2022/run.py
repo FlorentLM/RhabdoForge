@@ -10,7 +10,7 @@ from insectvision.lattice_fitting.plots import plot_eye_scaffold_3d
 
 
 # Parameters from original Kemppainen code:
-# https://github.com/JuusolaLab/Hyperacute_Stereopsis_paper/blob/main/CG-Compound-Eye/model_init.py
+# https://github.com/JuusolaLab/Hyperacute_Stereopsis_paper/blob/main/CG-Compound-Eye
 
 EYE_POLAR_RADIUS = 1.1 * 1000 * (400 * (0.8 / 985)) / 2         # Main eye radius ~178.68 µm
 EYE_EQUATORIAL_RADIUS = 1.1 * 1000 * (470 * (0.8 / 985)) / 2    # Eye radius (in Blender XY plane) ~209.95 µm
@@ -20,8 +20,12 @@ INNER_DISTANCE = 193.4                  # Distance between L and R eye inner cor
 OMMATIDIA_LIMIT = 800                   # Maximum number of ommatidia
 
 
+# TODO: Coords are kind of weird here, should be rewritten
+
 def _cts_blender(pts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Cartesian to spherical in Kemppainen's coordinate frame (Blender, Z-up)."""
+    """
+    Cartesian to spherical in this module's own internal frame (Z is the spherical pole here).
+    """
     r = np.linalg.norm(pts, axis=1)
     theta = np.arccos(np.clip(pts[:, 2] / r, -1.0, 1.0))
     phi = np.arctan2(pts[:, 1], pts[:, 0])
@@ -29,7 +33,9 @@ def _cts_blender(pts: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def _stc_blender(r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarray:
-    """Spherical to cartesian in Kemppainen's coordinate frame (Blender, Z-up)."""
+    """
+    Spherical to cartesian in this module's own internal frame (Z is the spherical pole here).
+    """
     return np.stack([
         r * np.sin(theta) * np.cos(phi),
         r * np.sin(theta) * np.sin(phi),
@@ -38,7 +44,7 @@ def _stc_blender(r: np.ndarray, theta: np.ndarray, phi: np.ndarray) -> np.ndarra
 
 
 def _local_to_global(local_pts: np.ndarray, center_pt: np.ndarray) -> np.ndarray:
-    """Rotates local points into global space (in Kemppainen's coordinate frame, Blender, Z-up)."""
+    """Rotates local points into global space (still this module's own internal frame)."""
 
     _, otheta, ophi = _cts_blender(center_pt[None, :])
     ot, op = otheta[0], ophi[0]
@@ -57,10 +63,11 @@ def _local_to_global(local_pts: np.ndarray, center_pt: np.ndarray) -> np.ndarray
 
 def _local_to_canonical(pts: np.ndarray) -> np.ndarray:
     """
-    Convert from Kemppainen's coordinate frame to this project's canonical frame (OpenGL, right=+X, up=+Y, forward=-Z).
+    Convert from this module's internal frame to this project's canonical frame
+    (OpenGL, right=+X, up=+Y, forward=-Z).
     """
     canonical = pts.copy()
-    canonical[:, 2] *= -1     # forward (-Z) <- Blender's depth (Y is already up)
+    canonical[:, 2] *= -1     # forward (-Z) <- this module's depth (Y is already up)
     return canonical
 
 
@@ -80,7 +87,7 @@ def _bfs_hex_neighbours(center_pt: np.ndarray) -> np.ndarray:
 
 def build_kemppainen_data() -> np.ndarray:
     """
-    Build a single eye (right eye) in Blender coordinate system (as in Kemppainen's code).
+    Build a single eye (right eye) in this module's internal coordinate system.
     Returns ommatidia positions (in µm).
     """
     start_p = _stc_blender(np.array([EYE_POLAR_RADIUS]), np.array([np.pi / 2]), np.array([0.0]))[0]
