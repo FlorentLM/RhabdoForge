@@ -12,8 +12,8 @@ from insectvision.lattice_fitting.plots import plot_eye_scaffold_3d
 # Parameters from original Kemppainen code:
 # https://github.com/JuusolaLab/Hyperacute_Stereopsis_paper/blob/main/CG-Compound-Eye/model_init.py
 
-EYE_RADIUS = 1.1 * 1000 * (400 * (0.8 / 985)) / 2           # Main eye radius ~178.68 µm
-EYE_HORIZONTAL_R = 1.1 * 1000 * (470 * (0.8 / 985)) / 2     # Eye radius (in Blender XY plane) ~209.95 µm
+EYE_POLAR_RADIUS = 1.1 * 1000 * (400 * (0.8 / 985)) / 2         # Main eye radius ~178.68 µm
+EYE_EQUATORIAL_RADIUS = 1.1 * 1000 * (470 * (0.8 / 985)) / 2    # Eye radius (in Blender XY plane) ~209.95 µm
 R_OMMATIDIA = 8.0                       # Nominal facet radius (µm)
 EYE_LOWER_ANGLE = np.deg2rad(60.0)      # Maximum OA angle in coronal plane from top (rad)
 INNER_DISTANCE = 193.4                  # Distance between L and R eye inner corners (µm)
@@ -59,10 +59,8 @@ def _local_to_canonical(pts: np.ndarray) -> np.ndarray:
     """
     Convert from Kemppainen's coordinate frame to this project's canonical frame (OpenGL, right=+X, up=+Y, forward=-Z).
     """
-    canonical = np.empty_like(pts)
-    canonical[:, 0] = pts[:, 0]     # lateral, unchanged
-    canonical[:, 1] = pts[:, 2]     # up (+Y) <- Blender's vertical (Z)
-    canonical[:, 2] = -pts[:, 1]    # forward (-Z) <- Blender's depth (Y)
+    canonical = pts.copy()
+    canonical[:, 2] *= -1     # forward (-Z) <- Blender's depth (Y is already up)
     return canonical
 
 
@@ -85,7 +83,7 @@ def build_kemppainen_data() -> np.ndarray:
     Build a single eye (right eye) in Blender coordinate system (as in Kemppainen's code).
     Returns ommatidia positions (in µm).
     """
-    start_p = _stc_blender(np.array([EYE_RADIUS]), np.array([np.pi / 2]), np.array([0.0]))[0]
+    start_p = _stc_blender(np.array([EYE_POLAR_RADIUS]), np.array([np.pi / 2]), np.array([0.0]))[0]
     points = [start_p]
 
     # Initiate 'star' (6 main branches)
@@ -145,7 +143,7 @@ def build_kemppainen_data() -> np.ndarray:
 
     # Project onto ellipsoid surface
     r_vals, theta_vals, phi_vals = _cts_blender(points_arr)
-    actual_radii = EYE_HORIZONTAL_R - (EYE_HORIZONTAL_R - EYE_RADIUS) * np.abs(np.sin(theta_vals))
+    actual_radii = EYE_POLAR_RADIUS + (EYE_EQUATORIAL_RADIUS - EYE_POLAR_RADIUS) * np.abs(np.sin(theta_vals))
     locations = _stc_blender(actual_radii, theta_vals, phi_vals)
 
     # Rotation and filtering

@@ -1043,7 +1043,7 @@ if __name__ == "__main__":
     )
 
     model = Model.from_file(
-        'species_models/drosophila_custom.npz',
+        'assets/drosophila_scaffold.npz',
         bundle=drosophila_bundle(),
         orientation=aligner,
         neural_superposition=True,    # superposition eyes
@@ -1061,7 +1061,7 @@ if __name__ == "__main__":
     # )
     #
     # model = Model.from_file(
-    #     'species_models/bee_Sturzl.npz',
+    #     'assets/honeybee_scaffold_s10.npz',
     #     bundle=honeybee_bundle(),
     #     orientation=aligner,
     #     neural_superposition=False,     # Apposition eyes
