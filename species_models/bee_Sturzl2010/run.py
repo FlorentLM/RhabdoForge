@@ -12,7 +12,7 @@ from typing import Callable, Tuple, List
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.interpolate import interp1d, Akima1DInterpolator
-from species_models.bee_Sturzl2010.plots_sturzl import plot_eye_zones, plot_ortho_projection, plot_receptive_fields
+from species_models.bee_Sturzl2010._sturzl_figures import fig7_eye_zones, fig8_ortho_projection, fig10_receptive_fields
 from insectvision.lattice_fitting.plots import plot_eyes_3d
 
 
@@ -245,13 +245,9 @@ def reconstruct_sturzl_data(
     acceptance_angles = ommatidia_data[:, 4]
 
     if show_plots:
-
-        # Fig. 7 of their paper
-        plot_eye_zones(directions, interp_fn_12, interp_fn_34, zone_12, zone_34)
-        # Fig. 8 of their paper
-        plot_ortho_projection(directions)
-        # Fig. 10 of their paper
-        plot_receptive_fields(directions, acceptance_angles)
+        fig7_eye_zones(directions, interp_fn_12, interp_fn_34, zone_12, zone_34)
+        fig8_ortho_projection(directions)
+        fig10_receptive_fields(directions, acceptance_angles)
 
     return directions, interommatidial_angles, acceptance_angles
 

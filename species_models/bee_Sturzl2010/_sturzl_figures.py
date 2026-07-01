@@ -5,7 +5,7 @@ from matplotlib.collections import EllipseCollection
 import matplotlib.patches as patches
 
 
-def plot_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):
+def fig7_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):
     """
     2D equirectangular projection of ommatidia directions, overlaid with the 4 zones.
 
@@ -44,13 +44,13 @@ def plot_eye_zones(ommatidia_dirs, interp_fn_12, interp_fn_34, raw_12, raw_34):
     plt.show()
 
 
-def plot_ortho_projection(ommatidia_dirs):
+def fig8_ortho_projection(ommatidia_dirs):
     """
     Orthographic projection of ommatidia directions.
 
     Reproduction of Fig. 8 from Stürzl et al., 2010.
     """
-    from species_models.bee_Sturzl2010.run import spherical_to_cartesian_sturzl
+    from species_models.bee_Sturzl2010.run import spherical_to_cartesian_sturzl # TODO: This circular import is annoying
 
     az = ommatidia_dirs[:, 0]
     el = ommatidia_dirs[:, 1]
@@ -100,10 +100,10 @@ def plot_ortho_projection(ommatidia_dirs):
     plt.show()
 
 
-def plot_receptive_fields(directions, delta_rhos):
+def fig10_receptive_fields(directions, delta_rhos):
     """
     Receptive fields.
-    
+
     Reproduction of Fig. 10 from Stürzl et al., 2010.
     """
     azimuths = directions[:, 0]
