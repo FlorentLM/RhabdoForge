@@ -9,7 +9,7 @@ from numpy.typing import ArrayLike
 from scipy.spatial import Delaunay
 
 from insectvision.geometry.polygons import triangle_areas
-from insectvision.utils.shared import norm_l2, broadcast_1d, broadcast_to_shape
+from insectvision.utils import norm_l2, broadcast_to_shape, broadcast_1d
 from insectvision.engine.meshes import icosphere, fibonacci_sphere
 from insectvision.engine.world_utils import WORLD_FORWARD
 from insectvision.geometry.circular import resultant

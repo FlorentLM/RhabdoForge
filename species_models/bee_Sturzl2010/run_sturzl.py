@@ -12,7 +12,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.interpolate import interp1d
 
-from insectvision.geometry.various import akima_interp_fn
+from insectvision.utils import akima_interp_fn
 from insectvision.lattice_fitting.plots import plot_eyes_3d
 
 

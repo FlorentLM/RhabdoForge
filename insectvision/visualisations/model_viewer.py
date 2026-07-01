@@ -11,7 +11,7 @@ from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD
 from insectvision.geometry.spherical import sphere_to_stereo
-from insectvision.utils.shared import norm_l2
+from insectvision.utils import norm_l2
 
 CHIRALITY_NEG_COLOR = '#B95D21'
 CHIRALITY_POS_COLOR = '#FF9800'

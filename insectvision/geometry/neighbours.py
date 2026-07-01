@@ -3,8 +3,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree, Delaunay
 
-from insectvision.utils.shared import norm_l2
-
+from insectvision.utils import norm_l2
 
 # A neighbour graph, can be:
 #   ragged: a sequence (list / object-array) of per-point neighbour-index arrays

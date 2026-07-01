@@ -7,7 +7,7 @@ from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
 from insectvision.renderers import Renderer
 from insectvision.interactive.debug import DebugBox, AxesGizmo
 from insectvision.renderers.helpers import VisualOutput
-from insectvision.utils.shared import RandomnessMode
+from insectvision.utils import RandomnessMode
 
 
 def main():

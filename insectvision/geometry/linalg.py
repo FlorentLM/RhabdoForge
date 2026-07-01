@@ -2,8 +2,7 @@ from typing import Optional, Tuple
 import numpy as np
 from numpy.typing import ArrayLike
 
-from insectvision.geometry.various import _match_batch
-from insectvision.utils.shared import norm_l2
+from insectvision.utils import _match_batch, norm_l2
 
 
 def tangent_frames(

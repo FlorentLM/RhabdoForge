@@ -3,7 +3,7 @@ from typing import Optional, Tuple, TYPE_CHECKING
 import numpy as np
 from numpy.typing import ArrayLike
 
-from insectvision.utils.shared import norm_l2, broadcast_1d
+from insectvision.utils import norm_l2, broadcast_1d
 from insectvision.geometry.linalg import tangent_frames, rotate_in_tangent_plane, local_to_world
 from insectvision.geometry.neighbours import smooth_field_partitioned
 from insectvision.geometry.circular import wrap_angle

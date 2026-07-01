@@ -10,7 +10,7 @@ from insectvision.compound_eyes import Model
 from insectvision.engine.world_utils import WORLD_FORWARD
 from insectvision.renderers import Renderer
 from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.utils.shared import Colormap, norm_minmax
+from insectvision.utils import Colormap, norm_minmax
 from insectvision.engine.meshes import plane_geom
 from insectvision.engine.materials_utils import checkerboard_texture
 from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD, GradientFlowDetector

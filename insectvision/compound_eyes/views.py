@@ -20,7 +20,7 @@ from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_neighb
 from insectvision.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo
 )
-from insectvision.utils.shared import norm_l2
+from insectvision.utils import norm_l2
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes.model import Model

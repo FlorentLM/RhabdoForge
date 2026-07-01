@@ -9,7 +9,7 @@ import numpy as np
 from pyglm import glm
 from pytinybvh import BVH
 
-from insectvision.utils.shared import (
+from insectvision.utils import (
     EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode, airy_sensitivity_lut
 )
 from insectvision.engine.meshes import CONE_VERTICES, SPHERE_VERTICES

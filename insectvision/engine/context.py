@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Optional, Tuple, Callable, Dict, List, Union
 from collections import deque
 
 from insectvision.engine.agent import OrbitCamera
-from insectvision.utils.shared import DisplayMode
+from insectvision.utils import DisplayMode
 from insectvision.interactive.controls import Controls, ActionRegistry
 from insectvision.interactive.hud import HUD
 from insectvision.interactive.debug import DebugOverlay
@@ -287,7 +287,7 @@ class Context:
         self.renderer.tiled_mode = not self.renderer.tiled_mode
 
     def toggle_projection_mode(self):
-        from insectvision.utils.shared import OmmatidiaProjection
+        from insectvision.utils import OmmatidiaProjection
 
         self.renderer.projection_mode = (
             OmmatidiaProjection.Position

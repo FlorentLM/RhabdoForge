@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Protocol,runtime_checkable
 import numpy as np
 
-from insectvision.utils.shared import broadcast_to_shape
+from insectvision.utils import broadcast_to_shape
 
 
 # Inputs an acceptance model may read

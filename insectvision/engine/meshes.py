@@ -1,5 +1,5 @@
 import numpy as np
-from insectvision.utils.shared import norm_l2
+from insectvision.utils import norm_l2
 
 
 # TODO: these functions could be cleaned up a bit

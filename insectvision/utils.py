@@ -1,6 +1,9 @@
 from enum import IntEnum
+from typing import Tuple, Callable, Sequence, Optional
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.interpolate import Akima1DInterpolator
+from scipy.special import j1
 
 
 class EyeOutput(IntEnum):
@@ -50,21 +53,85 @@ class SamplingMode(IntEnum):
     Airy = 1        # Physical diffraction pattern
 
 
+# Shared utils
 
-# TODO: These below will live here for now...
+def _match_batch(a: ArrayLike, b: ArrayLike) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Ensures 'a' and 'b' can broadcast by injecting size-1 dimensions before the last dimension.
+    """
+    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    while a.ndim < b.ndim:
+        a = np.expand_dims(a, axis=-2)
+    while b.ndim < a.ndim:
+        b = np.expand_dims(b, axis=-2)
+    return a, b
 
 
-from scipy.special import j1
+def broadcast_to_shape(
+        values: ArrayLike,
+        shape: Sequence[int, ...],
+        accepted: Sequence[Sequence[int, ...]],
+        name: str = 'value', dtype=np.float32
+    ) -> np.ndarray:
 
-def airy_sensitivity_lut(size=256):
-    # map x from 0.0 (centre) to 4.0 (deep in the tails)
-    # where x is normalised such that x=0.5 is the half-max
+    arr = np.asarray(values, dtype=dtype)
+
+    target = tuple(shape)
+    for in_shape, axes in accepted:
+        if arr.shape == tuple(in_shape):
+            view = [1] * len(target)
+            for src_ax, tgt_ax in enumerate(axes):
+                view[tgt_ax] = arr.shape[src_ax]
+            return np.ascontiguousarray(np.broadcast_to(arr.reshape(view), target), dtype=dtype)
+
+    allowed = ', '.join(str(tuple(s)) for s, _ in accepted)
+    raise ValueError(f'{name} must have one of shapes [{allowed}], got {arr.shape}')
+
+
+def broadcast_1d(
+        values: ArrayLike,
+        n: int,
+        name: str = 'value'
+    ) -> np.ndarray:
+
+    return broadcast_to_shape(
+        values=values, shape=(n,),
+        accepted=[((), ()), ((1,), (0,)), ((n,), (0,))],
+        name=name,
+        dtype=np.float32
+    )
+
+
+def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable':
+    """
+    Akima interpolator that returns 'fill_value' for queries outside range.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    akima_fn = Akima1DInterpolator(x, y)
+
+    def wrapper(query_x):
+        query_x = np.asarray(query_x)
+        mask_oob = (query_x < x.min()) | (query_x > x.max())
+        vals = akima_fn(query_x)
+        return np.where(mask_oob, fill_value, vals)
+
+    return wrapper
+
+
+# TODO: Other luts for other sensitivity profiles
+
+def airy_sensitivity_lut(size: int = 256) -> np.ndarray:
+    """
+    Map x from 0.0 (centre) to 4.0 (deep in the tails)
+    where x is normalised such that x=0.5 is the half max
+    """
 
     x_vals = np.linspace(0, 4.0, size)
     lut_data = []
 
     for x_norm in x_vals:
-        # scale for Airy FWHM logic
+        # Scale for Airy FWHM
         x = 3.232 * x_norm
         if x < 1e-6:
             val = 1.0
@@ -73,12 +140,11 @@ def airy_sensitivity_lut(size=256):
         lut_data.append(float(val))
 
     return np.array(lut_data, dtype=np.float32)
-# TODO: Other sensitivity profiles?
 
 
 def norm_minmax(
         array: ArrayLike,
-        axis=None,
+        axis: Optional[int] = None,
         inplace: bool = False,
         eps: float = 1e-9,
 ) -> np.ndarray:
@@ -123,28 +189,3 @@ def norm_l2(
     np.divide(arr, norms, out=arr, where=norms > eps)
 
     return arr
-
-
-def broadcast_to_shape(values, shape, accepted, name='value', dtype=np.float32):
-    arr = np.asarray(values, dtype=dtype)
-
-    target = tuple(shape)
-    for in_shape, axes in accepted:
-        if arr.shape == tuple(in_shape):
-            view = [1] * len(target)
-            for src_ax, tgt_ax in enumerate(axes):
-                view[tgt_ax] = arr.shape[src_ax]
-            return np.ascontiguousarray(np.broadcast_to(arr.reshape(view), target), dtype=dtype)
-
-    allowed = ', '.join(str(tuple(s)) for s, _ in accepted)
-
-    raise ValueError(f'{name} must have one of shapes [{allowed}], got {arr.shape}')
-
-
-def broadcast_1d(values, n, name='value'):
-    return broadcast_to_shape(
-        values=values, shape=(n,),
-        accepted=[((), ()), ((1,), (0,)), ((n,), (0,))],
-        name=name,
-        dtype=np.float32
-    )
