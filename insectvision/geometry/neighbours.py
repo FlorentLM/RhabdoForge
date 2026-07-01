@@ -292,7 +292,7 @@ def graph_spacing(
     return out
 
 
-def top_k_facing(
+def k_lookat(
         positions: ArrayLike,
         directions: ArrayLike,
         targets: ArrayLike,

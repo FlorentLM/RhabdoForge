@@ -16,7 +16,7 @@ from scipy.spatial import cKDTree
 
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
 from insectvision.geometry.linalg import tangent_frames, local_to_world
-from insectvision.geometry.neighbours import knn, top_k_facing, beta_skeleton_neighbours, first_ring_gap
+from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_neighbours, first_ring_gap
 from insectvision.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo
 )
@@ -764,7 +764,7 @@ class SpatialQueries:
             return self._empty()
 
         conflict = self.has_conflicts if avoid_conflicts else None
-        best = top_k_facing(self.positions, self.directions, query, k, conflict)
+        best = k_lookat(self.positions, self.directions, query, k, conflict)
 
         return OmmatidiumView(self.model, self.omm_indices[best].ravel())
 
