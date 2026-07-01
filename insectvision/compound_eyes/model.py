@@ -17,7 +17,7 @@ from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world, tangent_bearing
 from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned, graph_spacing
 from insectvision.geometry.spherical import angle_to_chord
-from insectvision.compound_eyes.buffers import Buffer
+from insectvision.compound_eyes.buffers import Buffer, _BIT_LAYOUT
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
 from insectvision.compound_eyes.helpers.neural_superposition import (
     wire_neural_superposition, get_conflict_masks, get_noconflict_masks, refine_chi
@@ -25,7 +25,9 @@ from insectvision.compound_eyes.helpers.neural_superposition import (
 from insectvision.compound_eyes.helpers.acceptance import (
     AcceptanceModel, SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
 )
-from insectvision.compound_eyes.helpers.alignment import BundlesAligner, AlignmentResult, apply_chirality, trivial_alignment
+from insectvision.compound_eyes.helpers.alignment import (
+    BundlesAligner, AlignmentResult, apply_chirality, trivial_alignment
+)
 from insectvision.compound_eyes.views import SpatialQueries, BaseView, logger, OmmatidiumView, EyeView, RhabdomereView
 
 
@@ -105,11 +107,13 @@ class Model(SpatialQueries, BaseView):
         if eye_indices is not None:
             arr = np.asarray(eye_indices, dtype=np.uint32).reshape(-1)
 
-            max_eyes = self._buf.max_value('eye_id') # 3 bits, so 0-7 eyes
+            _, eye_id_bits = _BIT_LAYOUT['eye_id']
+            max_eyes = self._buf.max_value('eye_id')
+
             if arr.size != self._N:
-                raise ValueError(f"eye_indices size {arr.size} must equal N={self._N}")
+                raise ValueError(f'eye_indices size {arr.size} must equal N={self._N}')
             if int(arr.max()) >= max_eyes + 1:
-                raise ValueError(f"eye_indices exceed {max_eyes} (3-bit field)")
+                raise ValueError(f'eye_indices exceed {max_eyes} ({eye_id_bits}-bit field)')
 
             eye_membership = eye_indices
         else:
