@@ -519,10 +519,10 @@ def wire_neural_superposition(
     """
 
     N, R = model.shape
-    cartridge_map = np.full((N, R), UNWIRED_SRC, dtype=np.intp)
+    cartridge_map = np.full((N, R), -1, dtype=np.intp)
 
     if R == 1:
-        return cartridge_map, np.ones((N, R), bool)
+        return cartridge_map, np.ones((N, 1), bool)
 
     center = model.bundle.center_index
     cartridge_map[:, center] = model.omm_indices
