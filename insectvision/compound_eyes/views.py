@@ -134,6 +134,19 @@ class BaseView:
     right = ViewField('right', 'ommatidia')
     up = ViewField('up', 'ommatidia')
 
+    @property
+    def frame(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Subview-level (e.g. eye-level) reference frame (forward, right, up), world-anchored.
+        forward = mean viewing direction, right/up via tangent frames
+
+        (i.e. the same OpenGL convention (+X right, +Y up, -Z fwd) as the per-ommatidium frames).
+        """
+        if self.N == 0:
+            raise ValueError('frame undefined for an empty view')
+        _, f, r, u = sphere_to_stereo(self.directions)
+        return f, r, u
+
     # Transformation methods
 
     def translate(self, offset: ArrayLike) -> 'Model':
