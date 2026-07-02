@@ -274,7 +274,11 @@ class EyeViewer:
     ##
 
     def show(self):
-        pv.allow_new_attributes()
+        try:
+            pv.allow_new_attributes()   # needed to prevent errors on Windows and macOS...
+            # ...in a try-except because Linux errors on allow_new_attributes() call...
+        except AttributeError:
+            pass
 
         self.plotter = pv.Plotter(
             shape=(2, 4),
