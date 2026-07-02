@@ -7,7 +7,7 @@ from insectvision.geometry.circular import wrap_angle
 
 class VisualOutput:
     """
-    Per-receptor output array with various biological pathway mappings conveniences.
+    Per-rhabdomere output array with various biological pathway mappings conveniences.
 
     The renderers return a float array where the last axis is (R/UV, G, B, radiance).
     This class supports both single snapshots (shape: N, 4) and timeseries (shape: T, N, 4).
@@ -15,7 +15,7 @@ class VisualOutput:
     Layouts / pathways:
         .per_ommatidium    -> (..., N, R, 4) Physical ommatidia grouping.
         .per_cartridge     -> (..., N, R, 4) Neural superposition grouping.
-        .per_receptor(i)   -> (..., N, 4)    Specific receptor type across all cartridges.
+        .per_rhabdomere(i) -> (..., N, 4)    Specific rhabdomere type across all cartridges.
         .peripheral_signal -> (..., N, 4)    Pooled R1-R6 (LMC pathway for motion).
         .central_signal    -> (..., N, 4)    Central R7/R8 (Medulla colour pathway).
         .lmc_input         -> (..., N, 4)    Alias for peripheral_signal.
@@ -69,20 +69,20 @@ class VisualOutput:
 
     @property
     def data(self) -> np.ndarray:
-        """The raw per-receptor array."""
+        """The raw per-rhabdomere array."""
         return self._data
 
     # Channel helpers
 
     @property
     def colours(self) -> np.ndarray:
-        """The adapted spectral response (Photoreceptor output)."""
+        """The adapted spectral response (Rhabdomere output)."""
         return self._data[..., :3]
 
     @property
     def adaptation(self) -> np.ndarray:
         """
-        The adaptation state (gain factor) of the receptors.
+        The adaptation state (gain factor) of the rhabdomeres.
         This is the value calculated by the Naka-Rushton equations (0.0 to 1.0+).
         """
         return self._data[..., 3]
@@ -111,12 +111,12 @@ class VisualOutput:
     # Level 1: raw grids
     @property
     def per_ommatidium(self) -> np.ndarray:
-        """Returns (..., N, R, 4) array of all receptor outputs, per ommatidium."""
+        """Returns (..., N, R, 4) array of all rhabdomere outputs, per ommatidium."""
         return self._data.reshape(*self.shape, 4)
 
     @property
     def per_cartridge(self) -> np.ndarray:
-        """Returns (..., N, R, 4) array of all receptor outputs, per cartridge."""
+        """Returns (..., N, R, 4) array of all rhabdomere outputs, per cartridge."""
         if not self._model.neural_superposition:
             return self.per_ommatidium   # fallback for R=1 models
 
@@ -125,8 +125,8 @@ class VisualOutput:
         return self._data[:, self._model.cartridge_indices, :]
 
     # Level 2: type-based access
-    def per_receptor(self, index: int) -> np.ndarray:
-        """Returns (..., N, 4) array for a specific receptor index (e.g. 0 for R1)."""
+    def per_rhabdomere(self, index: int) -> np.ndarray:
+        """Returns (..., N, 4) array for a specific rhabdomere index (e.g. 0 for R1)."""
         return self.per_cartridge[..., index, :]
 
     # Level 3: biological pathways
@@ -194,8 +194,8 @@ class VisualOutput:
         # Extract spatial data and colour
         if pathway == 'all':
             rgb = self.colours[-1] if is_ts else self.colours
-            az = self._model.receptors.azimuth
-            el = self._model.receptors.elevation
+            az = self._model.rhabdomeres.azimuth
+            el = self._model.rhabdomeres.elevation
 
         elif pathway in ('peripheral', 'central', 'ommatidium', 'cartridge'):
             match pathway:
@@ -286,7 +286,7 @@ class VisualOutput:
 
         if pathway == 'all':
             data = self.colours
-            az = self._model.receptors.azimuth
+            az = self._model.rhabdomeres.azimuth
 
         elif pathway in ('peripheral', 'central', 'ommatidium', 'cartridge'):
 
@@ -327,7 +327,7 @@ class VisualOutput:
 
         ylabel = 'Items'
         if pathway == 'all':
-            ylabel = 'Receptors'
+            ylabel = 'Rhabdomeres'
         elif pathway in ('cartridge', 'peripheral', 'central'):
             ylabel = 'Cartridges'
         elif pathway == 'ommatidium':
