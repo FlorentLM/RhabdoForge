@@ -722,7 +722,7 @@ class Scene:
         self._lights_rev: int = 0
 
         if skybox_path is not None:
-            self.add_skybox(skybox_path)
+            self.add_sky(skybox_path)
         else:
             default_sun = Sun(intensity=1.0, angular_size=0.05)
             default_sun.azimuth = 4.84
@@ -798,7 +798,7 @@ class Scene:
 
         self._lights_rev += 1
 
-    def add_skybox(self, texture_path: str | Path):
+    def add_sky(self, texture_path: str | Path):
         """Creates and loads a skybox from a directory of textures."""
 
         self._skybox = Skybox(texture_path)

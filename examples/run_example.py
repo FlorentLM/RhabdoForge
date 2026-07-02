@@ -1,5 +1,4 @@
 import numpy as np
-
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.engine.meshes import CUBE_VERTICES, CUBE_INDICES
 from insectvision.compound_eyes import Model
@@ -12,7 +11,6 @@ from insectvision.utils import RandomnessMode
 
 if __name__ == "__main__":
 
-    USE_POINT_CLOUD = True
     SAMPLES_PER_RHABDOMERE = 64
     HEADLESS = False
     BATCH_SIZE = 1000
@@ -24,78 +22,75 @@ if __name__ == "__main__":
     # This always needs to be the first thing called
     context = Context()
 
-    # # Example: use a gamepad
+    # # If you want to use a gamepad
     # from insectvision.interactive import Gamepad
     # context.controls = Gamepad()
 
     scene = Scene(background_color=(0.15, 0.15, 0.3))
 
-    if USE_POINT_CLOUD:
-        # Create a point cloud asset from a file
-        point_cloud_asset = Asset.from_file(name='seville', file_path='assets/seville_filtered.ply', radii=0.01)
-        scene.add_instance(point_cloud_asset)
+    # Add a sky
+    scene.add_sky('assets/textures/kloppenheim_05_4k.exr')  # from https://polyhaven.com/a/kloppenheim_05
 
-    cube_positions, cube_uvs = np.split(CUBE_VERTICES.reshape(-1, 5), [3], axis=1)
-    cube_faces = CUBE_INDICES.reshape(-1, 3)
+    # Create a point cloud asset from a file
+    seville = Asset.from_file(name='seville', file_path='assets/seville_filtered.ply', radii=0.01)
+    scene.add_instance(seville)
+
 
     # Create a mesh asset from raw vertex and index data
-    crate_asset = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='assets/textures/wood.jpg', sRGB=False)
+    cube_positions, cube_uvs = np.split(CUBE_VERTICES.reshape(-1, 5), [3], axis=1)
+    cube_faces = CUBE_INDICES.reshape(-1, 3)
+    crate = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='assets/textures/wood.jpg', sRGB=False)
+
 
     # Add multiple instances of the same asset
-    static_crate_1 = scene.add_instance(asset=crate_asset, transform=(-3.0, 0.0, 0.0))
-    static_crate_2 = scene.add_instance(asset=crate_asset, transform=(3.0, 0.0, 0.0))
+    crate_instance_1 = scene.add_instance(asset=crate, transform=(-3.0, 0.0, 0.0))
+    crate_instance_2 = scene.add_instance(asset=crate, transform=(3.0, 0.0, 0.0))
+    crate_instance_3 = scene.add_instance(asset=crate, transform=(0.0, 0.0, 2.0), dynamic=True)  # this one can move
 
-    # A crate that will move
-    dynamic_crate = scene.add_instance(asset=crate_asset, dynamic=True, transform=(0.0, 0.0, 2.0))
 
-    # Add a skybox
-    scene.add_skybox('assets/textures/kloppenheim_05_4k.exr')   # from https://polyhaven.com/a/kloppenheim_05
-
-    # Example debug objects (wireframes, grid etc)
-    if SHOW_DEBUG_OBJECTS:
-        context.debug.add(AxesGizmo(size=0.4))
-        context.debug.add(DebugBox(static_crate_1))
-        context.debug.add(DebugBox(static_crate_2))
-        context.debug.add(DebugBox(dynamic_crate))
-
-    # Setup eye model
-    eye_file_path = 'assets/drosophila_scaffold.npz'
-    # eye_file_path = 'assets/honeybee_scaffold_s10.npz'
-    # eye_file_path = 'assets/drosophila_scaffold_k22.npz'
+    # Setup compound eyes model
+    scaffold_file = 'assets/drosophila_scaffold.npz'
+    # scaffold_file = 'assets/honeybee_scaffold_s10.npz'
+    # scaffold_file = 'assets/drosophila_scaffold_k22.npz'
 
     model = Model.from_file(
-        eye_file_path,
+        scaffold_file,
         # bundle=drosophila_bundle() if USE_NEURAL_SUPERPOSITION else None,
         # neural_superposition=USE_NEURAL_SUPERPOSITION
     )
     model.scale(1e-6)
 
-    # Example setting time adaptation
+    # Example: setting time adaptation (generates motion blur)
     model.tau_membrane = 0.012   # 12 ms is good for Drosophila
 
-    # It is also possible to unlock CPU writes persistently
-    # model.allow_receptor_writes = True
-
-    # Setup Agent
+    # Setup the agent
     agent = Agent(position=(0.0, 0.0, 4.0))
 
-    # Setup renderer
-    renderer = Renderer(model=model, scene=scene, agent=agent, context=context,
-                         nb_samples=SAMPLES_PER_RHABDOMERE,
-                         time_dithering=True,
-                         randomness_mode=RandomnessMode.Halton,
-                         enable_microsaccades=True,
-                         enable_direct=True, enable_shadows=True, enable_ambient=True)
+    # Setup the renderer
+    renderer = Renderer(
+        model=model, scene=scene, agent=agent,
+        nb_samples=SAMPLES_PER_RHABDOMERE,
+        time_dithering=True,
+        randomness_mode=RandomnessMode.Halton,
+        enable_microsaccades=True,
+        enable_direct=True, enable_shadows=True, enable_ambient=True
+    )
 
-    renderer.photon_concentration = 0.5
 
-    # The BVH can also be displayed in debug
+    # Example: add debug objects (wireframes, grid etc)
     if SHOW_DEBUG_OBJECTS:
+        context.debug.add(AxesGizmo(size=0.4))
+        context.debug.add(DebugBox(crate_instance_1))
+        context.debug.add(DebugBox(crate_instance_2))
+        context.debug.add(DebugBox(crate_instance_3))
+
+        # The BVH can also be displayed in debug
         for blas in renderer.blases:
             context.debug.add(DebugBox(blas, color=(1.0, 1.0, 0.0)))
 
 
-    # Example custom key binding:
+
+    # Example: define your own custom key binding
     def cycle_randomness():
         current = renderer.randomness_mode
         modes = list(RandomnessMode)
@@ -106,13 +101,11 @@ if __name__ == "__main__":
 
 
 
-    # Example fixed timing: simulation steps by exactly 10 ms regardless of render speed
-    # context.time_step = 1/100.0
-    # Note: with 1/100.0, nb_samples needs to be high enough (32 or 64 or more),
-    # or tau_fast should be at least 2x the dt (set tau_fast to 0.02s)
-    # Biological 5 ms responses are difficult to simulate cleanly with Monte Carlo noise at 100 Hz
+    # # Example: Set a fixed simulation step
+    context.time_step = 1/100.0       # each simulated step will correspond to exactly 10 ms regardless of framerate
 
-    context.time_step = 1 / 100.0
+    # Note: with 1/100.0, nb_samples needs to be high enough (64 or more), or tau_fast should be at least 2x the dt
+    # (set tau_fast to 0.02s)
 
 
     # Tune / disable luminance boost on RF narrowing
@@ -121,54 +114,48 @@ if __name__ == "__main__":
 
 
     # Run
-    all_timesteps = []
-
     if not HEADLESS:
 
-        while context.run_interactive(renderer=renderer, use_dashboard=True):
+        while context.run_interactive(use_dashboard=True):
 
-            context.input()  # Processes mouse and keyboard, optional
+            context.input()  # processes inputs from keyboard / gamepad etc (optional)
 
-            # Rotate dynamic test crate at 45 deg/s (framerate-independent)
-            dynamic_crate.rotate_axis(45 * context.dt, 'up')
+            # Rotate dynamic test crate at 45 deg/s
+            crate_instance_3.rotate_axis(45 * context.dt, 'up')
 
             # Render one biological step
-            visual_output = renderer.step()
+            output = renderer.step()
 
-            context.draw(visual_output)  # draws to the viewport, also optional
+            context.display()  # displays to the viewport (also optional)
     
     else:
         # Headless and batched mode
 
         print(f"Running headless simulation for {BATCH_SIZE} steps...")
 
-        for i in range(BATCH_SIZE):
+        all_data = []
 
-            # Important: clock must be advanced manually in headless mode
-            context.tick()
+        for dt in context.run_headless(BATCH_SIZE):
 
-            # Move the agent at 0.5 m/s and yaw at 25 deg/s (framerate-independent)
-            agent.translate(agent.forward * 0.5 * context.dt).rotate(yaw=25.0 * context.dt, degrees=True)
+            # Move the agent forward at 0.5 m/s and yaw at 25 deg/s
+            agent.translate(agent.forward * 0.5 * dt).rotate(yaw=25.0 * dt, degrees=True)
 
             # Render one biological step
-            visual_output = renderer.step()
+            output = renderer.step()
 
             # If the return value is not None, it's a valid chunk of data (either a single frame or a full batch)
-            if visual_output is not None:
-                all_timesteps.append(visual_output)
+            if output is not None:
+                all_data.append(output)
 
-        # After the loop, flush() gets the last partial batch from async mode
-        # (this is harmless in sync mode, it will just return None)
+        # Grab the final partial batch (harmless in sync mode, it will just return None)
         final_chunk = renderer.flush()
-
         if final_chunk is not None:
-            all_timesteps.append(final_chunk)
+            all_data.append(final_chunk)
+
+        full_dataset = VisualOutput.from_history(all_data)
+        print(f"Final concatenated dataset shape: {full_dataset.shape}")
 
     print(f'Ran for {context.frame_count} frames in {context.wall_time:.2f}s (avg. {context.frame_count / context.wall_time:.2f} fps).')
-
-    if all_timesteps:
-        full_dataset = VisualOutput.from_history(all_timesteps)
-        print(f"Final concatenated dataset shape: {full_dataset.shape}")
 
     # Cleanup
     context.free()

@@ -5,7 +5,7 @@ from insectvision.compound_eyes import Model
 from insectvision.renderers import Renderer
 
 
-def main():
+if __name__ == "__main__":
 
     context = Context()
 
@@ -14,16 +14,9 @@ def main():
     example_obj = Path().home() / 'Desktop/gapArray.obj'
     scene.load(example_obj)
 
-    scene.add_skybox('assets/textures/bright_day_nosun')
+    scene.add_sky('assets/textures/bright_day_nosun')
 
-    eye_file_path = 'assets/drosophila_scaffold.npz'
-    # eye_file_path = 'assets/honeybee_scaffold_s10.npz'
-    # eye_file_path = 'assets/drosophila_scaffold_k22.npz'
-
-    eye_model = Model.from_file(eye_file_path)
-    eye_model.scale(1e-6)
-
-    eye_model = Model.from_sphere(n=1962, force_isotropic=True)
+    eye_model = Model.from_sphere(n=2000, force_isotropic=True)
 
     agent = Agent(position=(0.0, 0.0, 4.0))
 
@@ -31,7 +24,6 @@ def main():
         model=eye_model,
         scene=scene,
         agent=agent,
-        context=context,
         nb_samples=16,
         time_dithering=False,
         enable_shadows=True
@@ -46,7 +38,8 @@ def main():
     curve = Curve(curve_coords)
     agent_path = Trajectory(curve, speed=2.5, loop=True)
 
-    while context.run_interactive(renderer=renderer):
+    while context.run_interactive():
+
         context.input()
 
         # Make the agent follow the trajectory
@@ -54,12 +47,6 @@ def main():
 
         output = renderer.step()
 
-        context.draw()
+        context.display()
 
-    renderer.free()
-    scene.free()
     context.free()
-
-
-if __name__ == "__main__":
-    main()

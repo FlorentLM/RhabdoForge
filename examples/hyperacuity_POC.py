@@ -187,7 +187,7 @@ def simulate(model, sep_deg):
     agent = Agent(position=(0.0, 0.0, 0.0))
 
     renderer = Renderer(
-        model=model, scene=scene, agent=agent, context=context,
+        model=model, scene=scene, agent=agent,
         nb_samples=512, time_dithering=True, randomness_mode='Halton',
         enable_microsaccades=True, enable_ambient=True, enable_direct=True, enable_shadows=False)
 
@@ -207,7 +207,7 @@ def simulate(model, sep_deg):
     rec = {'agent_y': [], 'cond': [], 'mdir': [], 'cart': []}
 
     t_start, phase = None, -1
-    while context.run_interactive(renderer=renderer):
+    while context.run_interactive():
 
         context.input()
         if t_start is None:
@@ -232,7 +232,8 @@ def simulate(model, sep_deg):
         rec['mdir'].append(mdir)
         rec['cart'].append(out.per_cartridge[selected, :, :3].mean(axis=-1))
 
-        context.draw(out)
+        context.display()
+
         if elapsed >= RUN_DURATION:
             break
 

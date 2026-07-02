@@ -6,7 +6,7 @@ import numpy as np
 from pyglm import glm
 import glfw
 import time
-from typing import TYPE_CHECKING, Optional, Tuple, Callable, Dict, List, Union
+from typing import TYPE_CHECKING, Optional, Tuple, Callable, Dict, List, Union, Generator
 from collections import deque
 
 from insectvision.engine.agent import OrbitCamera
@@ -18,7 +18,13 @@ from insectvision.interactive.dashboard import Dashboard
 
 if TYPE_CHECKING:
     from insectvision.renderers.base import Renderer
-    from insectvision.renderers.helpers import VisualOutput
+
+
+_ACTIVE_CONTEXT = None
+
+def get_context():
+    return _ACTIVE_CONTEXT
+
 
 
 class Context:
@@ -36,6 +42,11 @@ class Context:
                  vsync: bool = False,
                  controls: Optional['Controls'] = None
                  ):
+
+        global _ACTIVE_CONTEXT
+        if _ACTIVE_CONTEXT is not None:
+            print('Warning: Multiple Contexts created. The latest one is now active.')
+        _ACTIVE_CONTEXT = self
 
         self._viewport_size: Tuple[int, int] = window_size if window_size is not None else (1280, 720)
         self._fps_limit = fps_limit if fps_limit is not None else 0
@@ -61,7 +72,7 @@ class Context:
         glEnable(GL_FRAMEBUFFER_SRGB)  # hardware sRGB-encode on the final present
 
         # Things the Context renders (engine + orbit/observer for 3rd person)
-        self.renderer: Optional['Renderer'] = None
+        self._renderer: Optional['Renderer'] = None
         self.observer: Optional['OrbitCamera'] = None
         self.display_mode: Optional['DisplayMode'] = None
 
@@ -284,14 +295,14 @@ class Context:
         self.display_mode = DisplayMode(next_mode)
 
     def toggle_tiled_mode(self):
-        self.renderer.tiled_mode = not self.renderer.tiled_mode
+        self._renderer.tiled_mode = not self._renderer.tiled_mode
 
     def toggle_projection_mode(self):
         from insectvision.utils import OmmatidiaProjection
 
-        self.renderer.projection_mode = (
+        self._renderer.projection_mode = (
             OmmatidiaProjection.Position
-            if self.renderer.projection_mode == OmmatidiaProjection.OpticalAxis
+            if self._renderer.projection_mode == OmmatidiaProjection.OpticalAxis
             else OmmatidiaProjection.OpticalAxis
         )
 
@@ -300,7 +311,7 @@ class Context:
             self.hud.show = not self.hud.show
 
     def toggle_overlay(self):
-        self.renderer.overlay_enabled = not self.renderer.overlay_enabled
+        self._renderer.overlay_enabled = not self._renderer.overlay_enabled
 
     def toggle_sun_control(self):
         self.sun_control_mode = not self.sun_control_mode
@@ -308,44 +319,44 @@ class Context:
         print(f"Mouse control: {mode_name}")
 
     def toggle_time_dithering(self):
-        self.renderer.time_dithering = not self.renderer.time_dithering
+        self._renderer.time_dithering = not self._renderer.time_dithering
 
     def dither_once(self):
-        self.renderer.dither()
+        self._renderer.dither()
 
     def increase_samples(self):
-        self.renderer.nb_samples *= 2
+        self._renderer.nb_samples *= 2
 
     def decrease_samples(self):
-        self.renderer.nb_samples = max(1, self.renderer.nb_samples // 2)
+        self._renderer.nb_samples = max(1, self._renderer.nb_samples // 2)
 
     def increase_pixel_samples(self):
-        self.renderer.pixel_samples *= 2
+        self._renderer.pixel_samples *= 2
 
     def decrease_pixel_samples(self):
-        self.renderer.pixel_samples = max(1, self.renderer.pixel_samples // 2)
+        self._renderer.pixel_samples = max(1, self._renderer.pixel_samples // 2)
 
     def toggle_debug(self):
         if self.debug is not None:
             self.debug.enabled = not self.debug.enabled
 
     def toggle_microsaccades(self):
-        self.renderer.microsaccades_enabled = not self.renderer.microsaccades_enabled
+        self._renderer.microsaccades_enabled = not self._renderer.microsaccades_enabled
 
     def reset_position(self):
-        self.renderer.agent.position = (0.0, 0.0, 0.0)
+        self._renderer.agent.position = (0.0, 0.0, 0.0)
 
     def reset_rotation(self):
-        self.renderer.agent.set_rotation(0.0, 0.0, 0.0)
+        self._renderer.agent.set_rotation(0.0, 0.0, 0.0)
 
     def pick_ommatidium(self, ndc_x: float, ndc_y: float) -> Optional[int]:
         """Calculates closest ommatidium based on active display projection."""
-        if self.renderer is None or self.renderer.model is None:
+        if self._renderer is None or self._renderer.model is None:
             return None
         if self.display_mode not in (DisplayMode.Compound, DisplayMode.Third_person):
             return None
 
-        model = self.renderer.model
+        model = self._renderer.model
         p_local = model.positions
 
         if self.display_mode == DisplayMode.Compound:
@@ -367,7 +378,7 @@ class Context:
                 return int(best_idx)
 
         elif self.display_mode == DisplayMode.Third_person:
-            eye_to_world = np.array(glm.inverse(self.renderer.agent.view))
+            eye_to_world = np.array(glm.inverse(self._renderer.agent.view))
             p_local_h = np.column_stack((p_local, np.ones(model.N)))
             p_world_h = p_local_h @ eye_to_world
 
@@ -394,18 +405,20 @@ class Context:
 
     # Interactive loop
 
-    def _attach_renderer(self, renderer: 'Renderer'):
-        """Bind a renderer and (re)build the observer that orbits its agent."""
-        self.renderer = renderer
-        renderer.context = self            # bidirectional bind (renderer.step needs ctx.dt)
-        renderer.runs_interactive = True
+    def _update_observer(self) -> None:
+        """Internal helper to (re)build the observer that orbits the agent if needed."""
+        if self._renderer is None:
+            return
+
+        if self.observer is not None and self.observer.target is self._renderer.agent:
+            return
+
         self.observer = OrbitCamera(
-            target=renderer.agent, distance=0.1, near=0.001,     # TODO: Needs to be sized by eye dimensions
+            target=self._renderer.agent, distance=0.1, near=0.001,     # TODO: Needs to be sized by eye dimensions
             ratio=self._viewport_size[0] / self._viewport_size[1],
         )
 
-    def run_interactive(self, renderer: 'Renderer',
-                        window_size=None, fps_limit=None, vsync=None, use_dashboard=False):
+    def run_interactive(self, renderer: Optional['Renderer'] = None, use_dashboard=False) -> bool:
         """
         On first call, initialises and shows the window. Then reports whether the
         interactive loop should continue.
@@ -413,19 +426,9 @@ class Context:
 
         if not self._interactive_initialised:
 
-            if window_size is not None:
-                self.viewport_size = window_size
-
-            if fps_limit is not None:
-                self.fps_limit = fps_limit
-
-            if vsync is not None:
-                self._vsync = bool(vsync)
-
             glfw.swap_interval(int(self._vsync))
             glfw.show_window(self.window)
 
-            self._attach_renderer(renderer)
             self.display_mode = DisplayMode.Compound
             self.hud = HUD(self, font_size=18)
 
@@ -444,27 +447,31 @@ class Context:
             self._last_wall_time = glfw.get_time()
             self._interactive_initialised = True
 
-        # Check if user wants to quit
+        # Support swapping or setting renderer at runtime
+        if renderer is not None and renderer is not self._renderer:
+            self.renderer = renderer
+
+        if self._renderer is None:
+            raise RuntimeError('run_interactive() called, but no Renderer has been initialised.')
+
         if glfw.window_should_close(self.window):
             return False
 
-        # Advance the clocks
         self.tick()
 
-        # Pick up a renderer swap (rare but might happen)
-        if renderer is not self.renderer:
-            self._attach_renderer(renderer)
-
-        # and keep observer camera aimed at the agent
-        elif self.observer.target is not renderer.agent:
-            self.observer = OrbitCamera(
-                target=renderer.agent, distance=0.1, near=0.001,     # TODO: Needs to be sized by eye dimensions
-                ratio=self._viewport_size[0] / self._viewport_size[1],
-            )
+        # Update camera target if agent changed
+        self._update_observer()
 
         return True
 
-    def input(self):
+    def run_headless(self, steps: Optional[int] = None) -> Generator[float]:
+        """Generator for a headless loop (ticks the clock and returns dt)."""
+        start_frame = self.frame_count
+        while steps is None or (self.frame_count - start_frame) < steps:
+            self.tick()
+            yield self.dt
+
+    def input(self) -> None:
 
         if not self._interactive_initialised:
             return
@@ -478,7 +485,7 @@ class Context:
         if self._controls is not None:
             self._controls.poll(self)
 
-    def draw(self, view_data: Optional['VisualOutput'] = None):
+    def display(self) -> None:
 
         if not self._interactive_initialised:
             return
@@ -488,9 +495,9 @@ class Context:
             self.observer.update()
             pov = self.observer
         else:
-            pov = self.renderer.agent
+            pov = self._renderer.agent
 
-        self.renderer.draw(self.display_mode, pov)
+        self._renderer.draw(self.display_mode, pov)
 
         # Overlays in display space (not tonemapped)
         if self.debug is not None and self.display_mode != DisplayMode.Panoramic:
@@ -501,7 +508,7 @@ class Context:
         glfw.swap_buffers(self.window)
 
         if self.dashboard:
-            if not self.dashboard.render(view_data):
+            if not self.dashboard.render(self._renderer.latest_output):
                 self.dashboard.free()
                 self.dashboard = None
             glfw.make_context_current(self.window)
@@ -515,7 +522,9 @@ class Context:
             if wait_time > 0:
                 time.sleep(wait_time)
 
-    def free(self):
+    def free(self) -> None:
+        global _ACTIVE_CONTEXT
+
         if self._controls:
             self._controls.free()
         if self.debug:
@@ -524,26 +533,30 @@ class Context:
             self.hud.free()
         if self.dashboard:
             self.dashboard.free()
-        if self.renderer:
-            self.renderer.free()
+        if self._renderer:
+            self._renderer.free()
+
         glfw.terminate()
 
-    def take_snapshot(self, filepath: Optional[str] = None, transparent: bool = True):
+        if _ACTIVE_CONTEXT is self:
+            _ACTIVE_CONTEXT = None
+
+    def take_snapshot(self, filepath: Optional[str] = None, transparent: bool = True) -> None:
         import time
 
-        if self.renderer:
+        if self._renderer:
             if filepath is None:
                 filepath = f'snapshot_{int(time.time())}.png'
 
-            pov = self.observer if self.display_mode == DisplayMode.Third_person else self.renderer.agent
-            self.renderer.take_snapshot(filepath, self.display_mode, pov, transparent=transparent)
+            pov = self.observer if self.display_mode == DisplayMode.Third_person else self._renderer.agent
+            self._renderer.take_snapshot(filepath, self.display_mode, pov, transparent=transparent)
 
     @property
     def viewport_size(self) -> Tuple[int, int]:
         return self._viewport_size
 
     @viewport_size.setter
-    def viewport_size(self, value: Tuple[int, int]):
+    def viewport_size(self, value: Tuple[int, int]) -> None:
         self._viewport_size = int(value[0]), int(value[1])
         if self.window:
             glfw.set_window_size(self.window, value[0], value[1])
@@ -555,7 +568,7 @@ class Context:
         return self._fps_limit
 
     @fps_limit.setter
-    def fps_limit(self, value: Optional[int] = None):
+    def fps_limit(self, value: Optional[int] = None) -> None:
         self._fps_limit = max(0, value) if value else 0
 
     @property
@@ -563,5 +576,24 @@ class Context:
         return self._vsync
 
     @vsync.setter
-    def vsync(self, value: bool):
+    def vsync(self, value: bool) -> None:
         self._vsync = bool(value)
+
+    @property
+    def renderer(self) -> Optional['Renderer']:
+        return self._renderer
+
+    @renderer.setter
+    def renderer(self, new_renderer: 'Renderer') -> None:
+        if self._renderer is new_renderer:
+            return
+
+        self._renderer = new_renderer
+
+        if self._renderer is not None:
+            # Tell the renderer it's now in an interactive session
+            self._renderer.runs_interactive = True
+
+            # If the window is already up, may need to update the OrbitCamera
+            if self._interactive_initialised:
+                self._update_observer()

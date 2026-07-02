@@ -40,7 +40,7 @@ from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
 
 # Load a Drosophila model with a custom rhabdomere bundle
 model = Model.from_file(
-    'morphological_scaffolds/drosophila_custom.npz',
+    'assets/drosophila_scaffold.npz',
     bundle=drosophila_bundle()
 )
 
@@ -59,46 +59,80 @@ model.ommatidia.ampl_ax_um = 8.0  # Axial contraction
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.renderers import Renderer
 
+# The context always has to be the first thing you create
 context = Context()
+
 scene = Scene(background_color=(0.1, 0.1, 0.1))
 
 # Load environment geometry
 your_asset = Asset.from_file(name='some name', file_path='assets/some_asset.obj')
 scene.add_instance(asset=your_asset, transform=(0.0, 0.0, 5.0))
 
-# Initialize Agent (the insect)
+# Initialise Agent (the insect)
 agent = Agent(position=(0.0, 0.0, 0.0))
 
-# Initialize the Renderer
+# Initialise the Renderer
 renderer = Renderer(
     model=model, 
     scene=scene, 
     agent=agent, 
-    context=context,
     nb_samples=128  # Monte-Carlo samples per rhabdomere
 )
+
+# [run your loop... (see examples below)]
+
+# Always cleanup to release GPU resources and reset global context
+context.free()
 ```
 
-### 3. Running a Biological Simulation Step
+### 3. Running a simulation
 In closed-loop simulations, the rendering loop updates both the physical position of the agent and the internal biological state of the sensors.
 
+You can run in interactive mode, using a controller or mouse and keyboard inputs:
 ```python
-# Use a fixed biological time step
-context.time_step = 1/1000.0  # 1 ms resolution
+# Interactive mode
+while context.run_interactive(use_dashboard=True):
+    context.input()     # processes inputs from keyboard / gamepad etc
 
-while context.run_interactive(agent=agent, scene=scene, renderer=renderer):
-    # Update agent state
-    agent.translate(agent.forward * 1.0 * context.dt)
-    
-    # Compute one biological step
-    # This processes optics, rhabdomere dynamics, and adaptation
-    visual_output = renderer.step()
-    
-    # visual_output.per_cartridge provides the neural-superposition signal
-    # visual_output.per_lens provides the physical ommatidial signal
-    l2_signals = visual_output.per_cartridge[:, :6, 3] # R1-R6 radiance
-    
-    context.draw()
+    agent.translate(agent.forward * 0.5 * context.dt)
+    output = renderer.step()
+
+    context.display()      # displays to the screen
+```
+
+Headless mode:
+```python
+# Headless mode
+all_data = []
+for dt in context.run_headless(steps=1000):
+    agent.translate(agent.forward * 0.5 * dt)
+    output = renderer.step()
+    if output: 
+        all_data.append(output)
+
+# Grab the final partial batch
+final_batch = renderer.flush()
+if final_batch:
+    all_data.append(final_batch)
+```
+
+You can also run defer timing completely to your calling loop, either by passing the dt:
+```python
+dt = 1/100.0
+
+for _ in range(BATCH_SIZE):
+    agent.translate(agent.forward * 0.5 * dt)
+    output = renderer.step(dt)
+```
+
+Or tick the clock explicitely:
+```python
+for i in range(500):
+
+    dt = context.tick()
+
+    agent.translate(agent.forward * 0.5 * dt)
+    output = renderer.step()
 ```
 
 ### 4. Advanced usage

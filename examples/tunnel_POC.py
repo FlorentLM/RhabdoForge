@@ -121,7 +121,7 @@ def build_tunnel(cfg: Configuration, wall_condition: str) -> Scene:
     right_bs = cfg.block_size * cfg.asym_factor if wall_condition == WALL_ASYMMETRIC else cfg.block_size
 
     scene = Scene(background_color=(0.15, 0.15, 0.3))
-    scene.add_skybox('assets/textures/kloppenheim_05_4k.exr')
+    scene.add_sky('assets/textures/kloppenheim_05_4k.exr')
 
     _add_wall(scene, 'left_wall',
               ([-w/2, 0.0, -l], [-w/2, h, -l], [-w/2, h, 0.0], [-w/2, 0.0, 0.0]),
@@ -192,18 +192,18 @@ def run_trial(cfg: Configuration, context: Context, renderer: 'Renderer',
 
     summ_ref = 0.001
 
-    while context.run_interactive(renderer=renderer):
+    while context.run_interactive():
 
         context.input()
         dt = context.dt
 
-        visual_output = renderer.step()
+        output = renderer.step()
 
-        if visual_output is None:
+        if output is None:
             continue
 
-        left_motion = left_emd.process(visual_output, dt)
-        right_motion = right_emd.process(visual_output, dt)
+        left_motion = left_emd.process(output, dt)
+        right_motion = right_emd.process(output, dt)
 
         left_estim = left_emd.last_estimate
         right_estim = right_emd.last_estimate
@@ -252,7 +252,7 @@ def run_trial(cfg: Configuration, context: Context, renderer: 'Renderer',
                 {left_eye: left_motion, right_eye: right_motion},
                 colormap=Colormap.Diverging, compression=0.8)
 
-            context.draw()
+            context.display()
 
         log.time.append(context.total_time)
         log.x.append(float(agent.position.x))
@@ -294,7 +294,7 @@ def run_all_trials(cfg: Configuration) -> Results:
         scene.sun.elevation, scene.sun.azimuth, scene.sun.color = 0.0, 0.0, (1.0, 1.0, 1.0)
 
         renderer = Renderer(
-            model=model, scene=scene, agent=agent, context=context,
+            model=model, scene=scene, agent=agent,
             nb_samples=cfg.nb_samples, time_dithering=True,
             randomness_mode='Halton', enable_shadows=False
         )

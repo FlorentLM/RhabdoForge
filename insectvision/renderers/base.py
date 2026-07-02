@@ -26,7 +26,7 @@ from insectvision.compound_eyes.buffers import OMM_STATIC_DTYPE, OMM_DYNAMIC_DTY
 if TYPE_CHECKING:
     from insectvision.engine.scene import Scene
     from insectvision.engine.agent import Agent, OrbitCamera
-    from insectvision.engine.context import Context
+    from insectvision.engine.context import Context, get_context
     from insectvision.compound_eyes import Model, Eye
 
 
@@ -96,9 +96,12 @@ class Renderer:
         self.agent: 'Agent' = agent
 
         # Context reference
-        self._context: Optional['Context'] = None
-        if context is not None:
-            self.context = context  # register through property
+        self._context = context or get_context()
+        if self._context is None:
+            raise RuntimeError('Renderer created before a Context was initialized. Call context = Context() first.')
+        self._context.renderer = self
+
+        self._latest_output: Optional['VisualOutput'] = None    # only for dashboard, etc
 
         # Main sampling parameters
         self._max_bounces: int = max_bounces
@@ -742,20 +745,6 @@ class Renderer:
         glDepthMask(GL_TRUE)
         glEnable(GL_DEPTH_TEST)
 
-    def _main_render(self):
-        """Shared pipeline: tick -> upload updated uniforms -> scene-specific sampling -> reduce -> actuate."""
-
-        # Update uniforms that change every frame
-        self._eye_uniforms.update(
-            dt=self._context.dt,
-            frame_offset=self._frame_index % self._batch_size,
-            dither_counter=self._dither_counter,
-        )
-
-        self._dispatch()
-        self._reduction()
-        self._dynamics()
-
     # Internal render calls for optional visualisation modes
 
     def _render_subjective_view(self):
@@ -957,19 +946,17 @@ class Renderer:
 
         self._tonemap_pass()
 
-    def step(self, readback: bool = True) -> Optional['VisualOutput']:
+    def step(self, dt: Optional[float] = None, readback: bool = True) -> Optional['VisualOutput']:
         """
-        Advance biological dynamics by one time step and update the eyes.
-        The time step is taken from the attached Context (context.dt).
+        Advance biological time by one step and render everything.
 
-        Behaviour by batch size:
-            - batch_size == 1: blocks (via ping-pong PBO) and returns this frame's VisualOutput.
-            - batch_size > 1: queues the frame on the GPU. Returns None until the batch is full,
-              then returns a VisualOutput wrapping the whole batch.
+        batch_size == 1: blocks (via ping-pong PBO) and returns this frame's VisualOutput.
+        batch_size > 1: queues the frame on the GPU. Returns None until the batch is full,
+            then returns a VisualOutput wrapping the whole batch.
 
         Args:
-            readback: If False, skip the CPU readback. Only the colour download is skipped.
-            The frame is still rendered and biological state still advances.
+            - dt: Optional timestep override (for external control)
+            - readback: if False, skip the data download to CPU (time and simulation still advance)
         """
 
         if self._context is None:
@@ -978,43 +965,54 @@ class Renderer:
         # Sync any CPU-side changes to the eye model
         self.sync_cpu()
 
+        step_dt = dt if dt is not None else self._context.dt
+
         # Advance dithering for Monte-Carlo noise decorrelation
         if self._time_dithering:
             self._dither_counter += 1
 
-        # GPU dispatch
+        # Render
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
-        self._main_render()
+
+        self._eye_uniforms.update(
+            dt=step_dt,
+            frame_offset=self._frame_index % self._batch_size,
+            dither_counter=self._dither_counter,
+        )
+
+        self._dispatch()
+        self._reduction()
+        self._dynamics()
 
         self._frame_index += 1
 
         # No readback, work here is done, return
         if not readback:
-            return None
+            self._latest_output = None
+            return self._latest_output
 
         if self.runs_interactive or self._batch_size == 1:
             # Interactive path: return previous frame via ping-pong PBO
             out_array = self._readback_async()
-
             if out_array.size == 0:
-                return None
-
-            return VisualOutput(out_array, self._model)
-
+                self._latest_output = None
+                return self._latest_output
+            self._latest_output = VisualOutput(out_array, self._model)
         else:
             # Batched path: return full block (only when batch is full)
             if self._frame_index >= self._batch_size:
                 print(f"  > GPU batch is full. Flushing {self._batch_size} frames...")
+                self._latest_output = self.flush()
 
-            return self.flush()
+        return self._latest_output
 
     def set_overlay(self,
-                    values: Optional[Union[Dict['EyeView', np.array], np.array]] = None,
-                    range: Optional[Tuple[float, float]] = None,
-                    colormap: 'Colormap' = Colormap.Thermal,
-                    compression: float = 0.5,
-                    autorange_perc: int = 98
-                    ):
+            values: Optional[Union[Dict['EyeView', np.array], np.array]] = None,
+            range: Optional[Tuple[float, float]] = None,
+            colormap: 'Colormap' = Colormap.Thermal,
+            compression: float = 0.5,
+            autorange_perc: int = 98
+        ):
         """
         Upload data for overlay visualisation.
 
@@ -1143,6 +1141,10 @@ class Renderer:
 
         print(f'Snapshot saved to {filepath}')
 
+    @property
+    def latest_output(self) -> Optional['VisualOutput']:
+        return self._latest_output
+
     # Public properties and methods
 
     @property
@@ -1205,18 +1207,8 @@ class Renderer:
 
     @property
     def context(self) -> Optional['Context']:
-        """The Context this renderer is attached to (if any)."""
+        """The Context this renderer is attached to."""
         return self._context
-
-    @context.setter
-    def context(self, new_context: 'Context') -> None:
-        """
-        Bind this renderer to a Context. Needed so step() can be called without an explicit dt.
-        """
-        if self._context is new_context:
-            return
-        self._context = new_context
-        self._context.renderer = self
 
     @property
     def screen_surface(self):
