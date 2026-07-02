@@ -705,6 +705,7 @@ class Renderer:
         fence = self._fences[next_pbo_index]
 
         if fence:
+
             with self.eye_buffers[f'pbo_{next_pbo_index}'].bind(mode_override=GL_PIXEL_PACK_BUFFER):
                 ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
 
@@ -713,7 +714,8 @@ class Renderer:
                     glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
                     out_array = self._colours_cpu_buffer.copy()
                 else:
-                    print("Warning: Failed to map PBO. Context lost?")
+                    print('Warning: Failed to map PBO. Context lost?')
+                    out_array = np.zeros_like(self._colours_cpu_buffer)
         else:
             out_array = np.zeros_like(self._colours_cpu_buffer)
 

@@ -504,6 +504,7 @@ class Context:
             if not self.dashboard.render(view_data):
                 self.dashboard.free()
                 self.dashboard = None
+            glfw.make_context_current(self.window)
 
         # Update FPS throttling check
         if self._fps_limit > 0:
