@@ -103,8 +103,8 @@ def build_eye(extra_narrowing):
         flow_direction=optic_flow,
         diagonal_strength=1.0,
         diagonal_angle_deg=45.0,
-        alignment_smoothing_iterations=4,
-        saccade_smoothing_iterations=15,
+        alignment_smoothing_iter=4,
+        saccade_smoothing_iter=15,
     )
 
     model = Model.from_file(

@@ -115,15 +115,15 @@ class BundlesAligner:
         - strength: float, Overall weighting of the combed target vs. raw flow projection.
     """
     def __init__(self,
-            flow_direction: ArrayLike,
-            diagonal_strength: float = 1.0,
-            diagonal_angle_deg: float = 45.0,
-            alignment_smoothing_iterations: int = 5,
-            saccade_smoothing_iterations: int = 5,
-            equatorial_discontinuity: bool = True,
-            falloff: float = 0.7,
-            strength: float = 1.0,
-        ):
+             flow_direction: ArrayLike,
+             diagonal_strength: float = 1.0,
+             diagonal_angle_deg: float = 45.0,
+             alignment_smoothing_iter: int = 5,
+             saccade_smoothing_iter: int = 5,
+             equatorial_discontinuity: bool = True,
+             falloff: float = 0.7,
+             strength: float = 1.0,
+         ):
 
         S = np.asarray(flow_direction, dtype=np.float32).reshape(-1)
 
@@ -139,8 +139,8 @@ class BundlesAligner:
         self.diagonal_strength = float(diagonal_strength)
         self.diagonal_angle_deg = float(diagonal_angle_deg)
 
-        self.alignment_smoothing_iterations = int(alignment_smoothing_iterations)
-        self.saccade_smoothing_iterations = int(saccade_smoothing_iterations)
+        self.alignment_smoothing_iterations = int(alignment_smoothing_iter)
+        self.saccade_smoothing_iterations = int(saccade_smoothing_iter)
 
         self.falloff = float(falloff)
         self.strength = float(strength)
