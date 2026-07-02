@@ -11,7 +11,7 @@ from scipy.spatial import Delaunay
 from insectvision.geometry.polygons import triangle_areas
 from insectvision.utils import norm_l2, broadcast_to_shape, broadcast_1d
 from insectvision.engine.meshes import icosphere, fibonacci_sphere
-from insectvision.engine.world_utils import WORLD_FORWARD
+from insectvision.utils import WORLD_FORWARD
 from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world, tangent_bearing

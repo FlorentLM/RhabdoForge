@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 from insectvision.compound_eyes import Model
-from insectvision.engine.world_utils import WORLD_FORWARD
+from insectvision.utils import WORLD_FORWARD
 from insectvision.renderers import Renderer
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.utils import Colormap, norm_minmax

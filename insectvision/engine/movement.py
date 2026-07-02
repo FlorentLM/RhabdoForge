@@ -4,7 +4,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from pyglm import glm
 
-from .world_utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
+from ..utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
 from insectvision.geometry.linalg import tangent_frames
 
 

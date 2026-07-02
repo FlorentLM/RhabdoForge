@@ -9,7 +9,7 @@ from PIL import Image
 from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
-from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD
+from insectvision.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD
 from insectvision.geometry.spherical import sphere_to_stereo
 from insectvision.utils import norm_l2
 

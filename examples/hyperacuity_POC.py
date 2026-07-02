@@ -32,7 +32,7 @@ from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, RHAB_COLOU
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.engine.meshes import plane_geom
-from insectvision.engine.world_utils import WORLD_FORWARD
+from insectvision.utils import WORLD_FORWARD
 from insectvision.renderers import Renderer
 
 # Config ----------------------------------------------------------

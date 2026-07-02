@@ -1,5 +1,5 @@
 from pyglm import glm
-from .world_utils import WORLD_UP
+from ..utils import WORLD_UP
 from .movement import TransformMixin
 
 

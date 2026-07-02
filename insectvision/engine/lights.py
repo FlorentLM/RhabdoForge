@@ -5,7 +5,7 @@ from numpy.typing import ArrayLike
 import numpy as np
 from pyglm import glm
 
-from .world_utils import WORLD_UP
+from ..utils import WORLD_UP
 from .movement import TransformMixin
 
 DIR_LIGHT_DTYPE = np.dtype([

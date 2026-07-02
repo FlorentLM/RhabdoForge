@@ -16,7 +16,7 @@ def tangent_frames(
     Handles poles / gimbal lock by blending the reference vector near the
     singularity. Accepts a single (3,) vector or an (N, 3) batch.
     """
-    from insectvision.engine.world_utils import WORLD_UP, WORLD_RIGHT
+    from insectvision.utils import WORLD_UP, WORLD_RIGHT
 
     if world_up is None:
         world_up = WORLD_UP
