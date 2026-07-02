@@ -106,18 +106,24 @@ class Context:
         self.actions = ActionRegistry(self)
         self._controls: Optional[Controls] = controls
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         mode = f"Fixed ({self.time_step * 1000:.1f}ms)" if self.time_step else "Variable (wall-clock)"
         return (f"<Context | Mode: {mode} | "
                 f"Biol. sim time: {self.total_time:.3f}s | "
                 f"Hardware: {self.fps:.1f} FPS>")
+
+    def __enter__(self) -> 'Context':
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.free()
 
     @property
     def mouse_captured(self) -> bool:
         return self._mouse_captured
 
     @mouse_captured.setter
-    def mouse_captured(self, value: bool):
+    def mouse_captured(self, value: bool) -> None:
         self._mouse_captured = value
         if self.window:
             mode = glfw.CURSOR_DISABLED if value else glfw.CURSOR_NORMAL
@@ -131,7 +137,7 @@ class Context:
         return self._controls
 
     @controls.setter
-    def controls(self, new_controls: Optional[Controls]):
+    def controls(self, new_controls: Optional[Controls]) -> None:
         """Swap the active controller (safe to call at any time)."""
         if self._controls is not None:
             self._controls.free()
@@ -205,7 +211,7 @@ class Context:
         if isinstance(key, int):
             return key
 
-        attr = f"KEY_{key.upper()}"
+        attr = f'KEY_{key.upper()}'
         code = getattr(glfw, attr, None)
 
         if code is None:
@@ -216,7 +222,7 @@ class Context:
             )
         return code
 
-    def bind_key(self, key: Union[int, str], callback: Callable, action: int = None, description: str = None):
+    def bind_key(self, key: Union[int, str], callback: Callable, action: int = None, description: str = None) -> None:
         """
         Register a callback for a key event.
 
@@ -249,7 +255,7 @@ class Context:
         if callback not in self._key_bindings[binding]:
             self._key_bindings[binding].append(callback)
 
-    def unbind_key(self, key: Union[int, str], callback: Callable = None, action: int = None):
+    def unbind_key(self, key: Union[int, str], callback: Callable = None, action: int = None) -> None:
         """
         Remove one or all callbacks for a key event.
 
@@ -290,14 +296,14 @@ class Context:
 
     # Actions
 
-    def cycle_display_mode(self):
+    def cycle_display_mode(self) -> None:
         next_mode = (self.display_mode.value + 1) % len(DisplayMode)
         self.display_mode = DisplayMode(next_mode)
 
-    def toggle_tiled_mode(self):
+    def toggle_tiled_mode(self) -> None:
         self._renderer.tiled_mode = not self._renderer.tiled_mode
 
-    def toggle_projection_mode(self):
+    def toggle_projection_mode(self) -> None:
         from insectvision.utils import OmmatidiaProjection
 
         self._renderer.projection_mode = (
@@ -306,47 +312,47 @@ class Context:
             else OmmatidiaProjection.OpticalAxis
         )
 
-    def toggle_hud(self):
+    def toggle_hud(self) -> None:
         if self.hud:
             self.hud.show = not self.hud.show
 
-    def toggle_overlay(self):
+    def toggle_overlay(self) -> None:
         self._renderer.overlay_enabled = not self._renderer.overlay_enabled
 
-    def toggle_sun_control(self):
+    def toggle_sun_control(self) -> None:
         self.sun_control_mode = not self.sun_control_mode
         mode_name = "Sun" if self.sun_control_mode else "View"
         print(f"Mouse control: {mode_name}")
 
-    def toggle_time_dithering(self):
+    def toggle_time_dithering(self) -> None:
         self._renderer.time_dithering = not self._renderer.time_dithering
 
-    def dither_once(self):
+    def dither_once(self) -> None:
         self._renderer.dither()
 
-    def increase_samples(self):
+    def increase_samples(self) -> None:
         self._renderer.nb_samples *= 2
 
-    def decrease_samples(self):
+    def decrease_samples(self) -> None:
         self._renderer.nb_samples = max(1, self._renderer.nb_samples // 2)
 
-    def increase_pixel_samples(self):
+    def increase_pixel_samples(self) -> None:
         self._renderer.pixel_samples *= 2
 
-    def decrease_pixel_samples(self):
+    def decrease_pixel_samples(self) -> None:
         self._renderer.pixel_samples = max(1, self._renderer.pixel_samples // 2)
 
-    def toggle_debug(self):
+    def toggle_debug(self) -> None:
         if self.debug is not None:
             self.debug.enabled = not self.debug.enabled
 
-    def toggle_microsaccades(self):
+    def toggle_microsaccades(self) -> None:
         self._renderer.microsaccades_enabled = not self._renderer.microsaccades_enabled
 
-    def reset_position(self):
+    def reset_position(self) -> None:
         self._renderer.agent.position = (0.0, 0.0, 0.0)
 
-    def reset_rotation(self):
+    def reset_rotation(self) -> None:
         self._renderer.agent.set_rotation(0.0, 0.0, 0.0)
 
     def pick_ommatidium(self, ndc_x: float, ndc_y: float) -> Optional[int]:
