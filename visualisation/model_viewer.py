@@ -274,11 +274,6 @@ class EyeViewer:
     ##
 
     def show(self):
-        try:
-            pv.allow_new_attributes()   # needed to prevent errors on Windows and macOS...
-            # ...in a try-except because Linux errors on allow_new_attributes() call...
-        except AttributeError:
-            pass
 
         self.plotter = pv.Plotter(
             shape=(2, 4),
@@ -286,6 +281,13 @@ class EyeViewer:
             window_size=list((2400, 1100)),
             border=True,
         )
+
+        try:
+            pv.set_new_attribute(self.plotter, 'pickpoint', None)   # needed to prevent errors on Windows and macOS...
+            # ...in a try-except because Linux errors on allow_new_attributes() call...
+        except AttributeError:
+            pass
+
         self.plotter.set_background('white')
 
         self._debugger_subplot = (1, 2)
