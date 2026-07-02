@@ -151,10 +151,10 @@ def make_bars(sep_deg):
 def apply_condition(renderer, model, actuation, ampl_lat, ampl_ax):
     """Set actuation + microsaccade amplitudes and reset the per-lens dynamic state."""
 
-    renderer.microsaccades_enabled = actuation
-
     model.ommatidia.lateral_amplitude = ampl_lat
     model.ommatidia.axial_amplitude = ampl_ax
+
+    renderer.microsaccades_enabled = actuation
 
     model.buffer.ommatidia_dynamic['curr_lateral_disp'] = 0.0
     model.buffer.ommatidia_dynamic['curr_axial_disp'] = 0.0
