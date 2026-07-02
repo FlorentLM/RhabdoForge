@@ -232,6 +232,7 @@ class Model(SpatialQueries, BaseView):
         self._buf['is_binocular'] = self._identify_binocular_ommatidia()
 
         # ============ Neural superposition ============
+        self._wiring_trace = None
 
         if neural_superposition and self._R > 1:
 
@@ -956,6 +957,10 @@ class Model(SpatialQueries, BaseView):
     @lattice_beta.setter
     def lattice_beta(self, value: float):
         self._lattice_beta = float(max(0.0, value))
+
+    @property
+    def wiring_trace(self) -> Optional[dict]:
+        return self._wiring_trace
 
     # High-level physiological and architectural properties
 

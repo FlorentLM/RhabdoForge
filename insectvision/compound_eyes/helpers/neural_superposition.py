@@ -1,7 +1,6 @@
 import logging
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Tuple
-
+from typing import TYPE_CHECKING, Tuple, NamedTuple, Optional, List, Set, Sequence, Hashable
 import numpy as np
 from scipy.optimize import linear_sum_assignment, LinearConstraint, milp, Bounds
 from scipy.sparse import coo_matrix
@@ -11,6 +10,7 @@ from insectvision.geometry.neighbours import smooth_field_partitioned
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes.model import Model
+    from insectvision.compound_eyes.views import OmmatidiumView, NeighbourResult
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,15 @@ logger = logging.getLogger(__name__)
 UNWIRED_SRC = np.uint32(0xFFFFFFFF)
 
 
-def get_conflict_masks(cartridge_map: np.ndarray, peripheral_indices: np.ndarray) -> SimpleNamespace:
+class WiringCandidate(NamedTuple):
+    cost: float
+    slots: np.ndarray
+    donors: np.ndarray      # global ommatidia indices
+    dists: np.ndarray
+    w: complex = 1.0 + 0j   # similarity transform that produced this snap (for debug trace only)
+
+
+def get_conflict_masks(cartridge_map: np.ndarray, peripheral_indices: np.ndarray) -> 'SimpleNamespace':
     """
     Per-ommatidium conflict / completeness masks.
 
@@ -35,6 +43,7 @@ def get_conflict_masks(cartridge_map: np.ndarray, peripheral_indices: np.ndarray
 
     receiving = np.zeros(N, dtype=bool)
     donation = np.zeros(N, dtype=bool)
+
     for r in periph:
         col = cartridge_map[:, r]
         receiving |= (col == own)
@@ -43,6 +52,7 @@ def get_conflict_masks(cartridge_map: np.ndarray, peripheral_indices: np.ndarray
             donation |= np.bincount(col[valid], minlength=N) > 1
 
     unwired_slots = cartridge_map[:, periph] < 0
+
     return SimpleNamespace(
         receiving=receiving,
         donation=donation,
@@ -53,7 +63,7 @@ def get_conflict_masks(cartridge_map: np.ndarray, peripheral_indices: np.ndarray
     )
 
 
-def get_noconflict_masks(N: int, R: int) -> SimpleNamespace:
+def get_noconflict_masks(N: int, R: int) -> 'SimpleNamespace':
     """Masks for unwired model (no superposition)."""
 
     return SimpleNamespace(
@@ -66,15 +76,16 @@ def get_noconflict_masks(N: int, R: int) -> SimpleNamespace:
     )
 
 
-def _too_similar(new_key, existing_keys, threshold=0.8):
-
+def _too_similar(
+        new_key: Tuple[Hashable, ...] | Set,
+        existing_keys: Tuple[Hashable, ...] | Set,
+        threshold: float = 0.8
+    ) -> bool:
     new_set = set(new_key)
-
     for existing in existing_keys:
         shared = len(new_set.intersection(set(existing)))
         if shared / len(new_set) >= threshold:
             return True
-
     return False
 
 
@@ -90,8 +101,7 @@ def _make_solver_context(model: 'Model', **p) -> 'SimpleNamespace':
     rot = model.buffer['rest_offset']
     rot_dx, rot_dy = rot[..., 0], rot[..., 1]
 
-    k_scale = float(np.mean(np.linalg.norm(
-        model.bundle.offsets_um[periph] - model.bundle.offsets_um[center], axis=1))) or 1.0
+    k_scale = np.mean(np.linalg.norm(model.bundle.offsets_um[periph] - model.bundle.offsets_um[center], axis=1)) or 1.0
 
     return SimpleNamespace(
         periph=periph,
@@ -103,33 +113,39 @@ def _make_solver_context(model: 'Model', **p) -> 'SimpleNamespace':
         up=model.buffer['up'],
         ang_gate=np.radians(p['angular_dev']),
         **{k: p[k] for k in (
-            'assign_radius', 'scale_dev', 'min_snap_matches',
-            'k_search', 'top_k', 'identity_bias', 'unassigned_penalty',
-            'allow_plasticity', 'plasticity_radius', 'time_limit_s',
-            'assume_aligned'
+            'assign_radius', 'scale_dev', 'min_snap_matches', 'k_search',
+            'top_k', 'identity_bias', 'unassigned_penalty', 'allow_plasticity',
+            'plasticity_radius', 'time_limit_s', 'collect_trace'
         )}
     )
 
 
-def _enumerate_candidates(zone, neighb, ctx):
+def _enumerate_candidates(
+        zone: 'OmmatidiumView',
+        neighb: 'NeighbourResult',
+        solver_context: 'SimpleNamespace'
+    ) -> Tuple[List[List['WiringCandidate']], List[dict]]:
     """
-    Wiring stage 1, scoped to one zone. Returns List[List[candidate]] per lens.
+    Wiring stage 1, scoped to one zone.
     """
 
-    n_e = len(zone)
-    periph = ctx.periph
-    candidates = [[] for _ in range(n_e)]
+    o_count = len(zone)
+    periph = solver_context.periph
+    candidates = [[] for _ in range(o_count)]
+    trace = getattr(solver_context, 'collect_trace', False)
+    omm_geo = []
 
-    for i_loc in range(n_e):
+    for i_loc in range(o_count):
         i_glob = int(zone.indices[i_loc])
-        tpl_i = ctx.tpl_dx[i_glob] + 1j * ctx.tpl_dy[i_glob]
+        tpl_i = solver_context.tpl_dx[i_glob] + 1j * solver_context.tpl_dy[i_glob]
 
-        nb_dirs = ctx.forward[neighb.indices[i_loc]] - ctx.forward[i_glob]
-        nb_uv = nb_dirs @ np.stack([ctx.right[i_glob], ctx.up[i_glob]], axis=1)
+        neighb_dirs = solver_context.forward[neighb.indices[i_loc]] - solver_context.forward[i_glob]
+        neighb_uv = neighb_dirs @ np.stack([solver_context.right[i_glob], solver_context.up[i_glob]], axis=1)
 
-        # Normalise the neighbour cloud by the local first-ring metric
+        # Whitening: normalise the neighbour cloud by the local first-ring metric
         imm = neighb.immediate[i_loc] & (neighb.indices[i_loc] != i_glob)
-        ring = nb_uv[imm]
+        ring = neighb_uv[imm]
+
         if ring.shape[0] >= 4:
             C = (ring.T @ ring) / ring.shape[0]
             evals, evecs = np.linalg.eigh(C)
@@ -137,45 +153,61 @@ def _enumerate_candidates(zone, neighb, ctx):
             # Cap per-axis stretch (3:1) so a one-sided boundary ring can't blow up
             evals = np.maximum(evals, evals.max() / 9.0)
             W = evecs @ np.diag(evals ** -0.5) @ evecs.T
-            nb_w = nb_uv @ W.T
-            scale = np.nanmedian(np.linalg.norm(nb_w[imm], axis=1))
+            neighb_w = neighb_uv @ W.T
+            scale = np.nanmedian(np.linalg.norm(neighb_w[imm], axis=1))
         else:
-            nb_w = nb_uv  # too few first-ring neighbours: isotropic
+            neighb_w = neighb_uv  # too few first-ring neighbours: isotropic
             scale = np.nanmedian(np.linalg.norm(ring, axis=1)) if ring.size else 1.0
 
         if not np.isfinite(scale) or scale < 1e-9:
             scale = 1.0
-        nb_i = (nb_w[:, 0] + 1j * nb_w[:, 1]) / scale
 
-        valid_nb = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
+        neighb_i = (neighb_w[:, 0] + 1j * neighb_w[:, 1]) / scale
+
+        if trace:
+            omm_geo.append({
+                'i_glob': i_glob,
+                'neighb_indices': np.asarray(neighb.indices[i_loc]).copy(),
+                'neighb_uv': np.column_stack([neighb_i.real, neighb_i.imag]),  # whitened, normalised cloud
+                'immediate': np.asarray(neighb.immediate[i_loc]).copy(),
+                'same_chir': np.asarray(neighb.same_chirality[i_loc]).copy(),
+                'template_uv': np.column_stack([tpl_i[periph].real, tpl_i[periph].imag]),
+            })
+
+        valid_neighb = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
+
+        # Guard for if a zone has fewer finite (same-chirality, non-self) columns than peripheral slots
+        if int(valid_neighb.sum()) < len(periph):
+            candidates[i_loc] = []
+            continue
 
         # Dedup candidates that are essentially the same
 
         ws_dedup = {(1.0, 0.0)}     # set can't contain complex numbers so stored as tuple of floats
 
-        if not ctx.assume_aligned and (mag_ok := np.abs(tpl_i) > 1e-8).any():
+        if (mag_ok := np.abs(tpl_i) > 1e-8).any():
 
-            nb_valid_idx = np.flatnonzero(valid_nb)
+            neighb_valid_idx = np.flatnonzero(valid_neighb)
 
             for i_a in np.flatnonzero(mag_ok):
-                ws = nb_i[nb_valid_idx] / tpl_i[i_a]
-                ok = (np.abs(np.angle(ws)) <= ctx.ang_gate) & (np.abs(np.abs(ws) - 1.0) <= ctx.scale_dev)
+                ws = neighb_i[neighb_valid_idx] / tpl_i[i_a]
+                ok = (np.abs(np.angle(ws)) <= solver_context.ang_gate) & (np.abs(np.abs(ws) - 1.0) <= solver_context.scale_dev)
 
                 for w in ws[ok]:
                     # Rounding for dedup
                     ws_dedup.add((float(np.round(w.real, 3)), float(np.round(w.imag, 2))))
 
-        lens_cands, seen = [], set()
+        omm_cands, seen = [], set()
 
         for wr, wi in ws_dedup:
             w = wr + 1j * wi    # Rebuild the complex number from the tuple key
 
-            d = np.where(valid_nb[None, :], np.abs((w * tpl_i[periph])[:, None] - nb_i[None, :]), np.inf)
+            d = np.where(valid_neighb[None, :], np.abs((w * tpl_i[periph])[:, None] - neighb_i[None, :]), np.inf)
             r_idx, c_idx = linear_sum_assignment(d)
             md = d[r_idx, c_idx]
-            keep = (md < ctx.assign_radius) & np.isfinite(md)
+            keep = (md < solver_context.assign_radius) & np.isfinite(md)
 
-            if int(keep.sum()) >= ctx.min_snap_matches:
+            if int(keep.sum()) >= solver_context.min_snap_matches:
                 donors_g = neighb.indices[i_loc][c_idx[keep]].astype(int).tolist()
                 slots_g = periph[r_idx[keep]].astype(int).tolist()
 
@@ -183,127 +215,178 @@ def _enumerate_candidates(zone, neighb, ctx):
 
                 if topo not in seen and not _too_similar(topo, seen):
                     seen.add(topo)
-                    lens_cands.append((ctx.identity_bias * float(np.abs(w - 1.0)),
-                                       np.array(slots_g), np.array(donors_g), md[keep]))
+                    omm_cands.append(
+                        WiringCandidate(
+                            solver_context.identity_bias * float(np.abs(w - 1.0)),
+                            np.array(slots_g),
+                            np.array(donors_g),
+                            md[keep],
+                            w
+                        )
+                    )
 
-        lens_cands.sort(key=lambda t: t[0])
-        candidates[i_loc] = lens_cands[:ctx.top_k]
+        if not omm_cands and solver_context.allow_plasticity:
 
-        if not lens_cands and ctx.allow_plasticity:
-
-            d = np.where(valid_nb[None, :], np.abs(tpl_i[periph][:, None] - nb_i[None, :]), np.inf)
+            d = np.where(valid_neighb[None, :], np.abs(tpl_i[periph][:, None] - neighb_i[None, :]), np.inf)
             r_idx, c_idx = linear_sum_assignment(d)
             md = d[r_idx, c_idx]
-            keep = (md < ctx.plasticity_radius) & np.isfinite(md)
+            keep = (md < solver_context.plasticity_radius) & np.isfinite(md)
 
             if keep.any():
-                lens_cands.append((ctx.unassigned_penalty * 0.5,
-                                   periph[r_idx[keep]], neighb.indices[i_loc][c_idx[keep]], md[keep]))
+                omm_cands.append(
+                    WiringCandidate(
+                        solver_context.unassigned_penalty * 0.5,
+                        periph[r_idx[keep]],
+                        neighb.indices[i_loc][c_idx[keep]],
+                        md[keep],
+                        1.0 + 0j
+                    )
+                )
 
-        lens_cands.sort(key=lambda t: t[0])
-        candidates[i_loc] = lens_cands[:ctx.top_k]
+        omm_cands.sort(key=lambda t: t.cost)
+        candidates[i_loc] = omm_cands[:solver_context.top_k]
 
-    return candidates
+    return candidates, omm_geo
 
 
-def _coupling_components(candidates, n_e):
+def _coupling_components(
+        o_count: int,
+        candidates: Sequence[Sequence['WiringCandidate']]
+    ) -> List[np.ndarray]:
     """
-    Connected components of the lens graph: two lenses are coupled iff they share a
-    candidate (donor, slot) pair. MILP is separable across these, so each is solved independently.
+    Connected components of the ommatidia graph.
+    Two ommatidia are coupled iff they share a candidate (donor, slot) pair.
+    MILP is separable across these, so each is solved independently.
     """
 
-    jr_to_lenses = {}
+    jr_to_ommatidia = {}
 
     for i_loc, cands in enumerate(candidates):
-        for _, slots_g, donors_g, _ in cands:
-            for r, j in zip(np.asarray(slots_g, dtype=int).tolist(),
-                            np.asarray(donors_g, dtype=int).tolist()):
-                jr_to_lenses.setdefault((j, r), []).append(i_loc)
+        for c in cands:
+            for r, j in zip(np.asarray(c.slots, dtype=int).tolist(),
+                            np.asarray(c.donors, dtype=int).tolist()):
+                jr_to_ommatidia.setdefault((j, r), []).append(i_loc)
 
     rows, cols = [], []
-    for lenses in jr_to_lenses.values():
-        l0 = lenses[0]
-        for l in lenses[1:]:
-            rows.append(l0)
-            cols.append(l)
+    for ommatidia in jr_to_ommatidia.values():
+        o0 = ommatidia[0]
+        for o in ommatidia[1:]:
+            rows.append(o0)
+            cols.append(o)
 
     if rows:
-        A = coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(n_e, n_e))
+        A = coo_matrix((np.ones(len(rows)), (rows, cols)), shape=(o_count, o_count))
     else:
-        A = coo_matrix((n_e, n_e))
+        A = coo_matrix((o_count, o_count))
 
     _, labels = connected_components(A, directed=False)
 
-    return [np.flatnonzero(labels == c) for c in range(labels.max() + 1)] if n_e else []
+    return [np.flatnonzero(labels == c) for c in range(labels.max() + 1)] if o_count else []
 
 
-def _solve_lens_subset(lens_order, candidates, zone, ctx):
+def _solve_omm_subset(
+        omm_in_subset: np.ndarray,
+        candidates: Sequence[Sequence['WiringCandidate']],
+        zone: 'OmmatidiumView',
+        solver_context: 'SimpleNamespace'
+    ) -> Tuple[Optional[list], Optional[dict]]:
     """
     Build + solve the MILP for one component.
     Returns assignment triples, or None if solver failed.
     """
 
-    periph = ctx.periph
-    m = len(lens_order)
+    periph = solver_context.periph
+    m = len(omm_in_subset)
 
     costs, z_vars, x_vars, d_vars = [], [], [], []
     var_count = 0
 
-    for i_loc in lens_order:
-        cands = candidates[i_loc] or [(0.0, np.array([]), np.array([]), np.array([]))]
-
+    for i_loc in omm_in_subset:
+        cands = candidates[i_loc] or [WiringCandidate(0.0, np.array([]), np.array([]), np.array([]))]
         i_z, i_x = [], []
-        for w_cost, slots_g, donors_g, dists in cands:
-            i_z.append(var_count); costs.append(w_cost); var_count += 1
+
+        for cand in cands:
+            i_z.append(var_count)
+            costs.append(cand.cost)
+            var_count += 1
             c_x = {}
-            for r, j, dist in zip(slots_g, donors_g, dists):
-                c_x[int(r)] = (var_count, int(j)); costs.append(dist); var_count += 1
+
+            for r, j, dist in zip(cand.slots, cand.donors, cand.dists):
+                c_x[int(r)] = (var_count, int(j))
+                costs.append(dist)
+                var_count += 1
             i_x.append(c_x)
-        z_vars.append(i_z); x_vars.append(i_x)
+
+        z_vars.append(i_z)
+        x_vars.append(i_x)
 
         i_d = {}
         for r in periph:
-            i_d[int(r)] = var_count; costs.append(ctx.unassigned_penalty); var_count += 1
+            i_d[int(r)] = var_count
+            costs.append(solver_context.unassigned_penalty)
+            var_count += 1
+
         d_vars.append(i_d)
 
     if var_count == 0:
-        return []
+        return [], {}
 
     rows_eq, cols_eq, data_eq, b_eq = [], [], [], []
     rows_ub, cols_ub, data_ub, b_ub = [], [], [], []
     eq_row = ub_row = 0
 
-    for t in range(m):                    # Constraint 1: one candidate per lens
+    for t in range(m):                    # Constraint 1: one candidate per ommatidium
         for z_idx in z_vars[t]:
-            rows_eq.append(eq_row); cols_eq.append(z_idx); data_eq.append(1.0)
-        b_eq.append(1.0); eq_row += 1
+            rows_eq.append(eq_row)
+            cols_eq.append(z_idx)
+            data_eq.append(1.0)
+        b_eq.append(1.0)
+        eq_row += 1
 
     for t in range(m):                   # Constraint 2: each slot wired or dropped
         for r in periph:
             r = int(r)
             for c_x in x_vars[t]:
                 if r in c_x:
-                    rows_eq.append(eq_row); cols_eq.append(c_x[r][0]); data_eq.append(1.0)
-            rows_eq.append(eq_row); cols_eq.append(d_vars[t][r]); data_eq.append(1.0)
-            b_eq.append(1.0); eq_row += 1
+                    rows_eq.append(eq_row)
+                    cols_eq.append(c_x[r][0])
+                    data_eq.append(1.0)
+
+            rows_eq.append(eq_row)
+            cols_eq.append(d_vars[t][r])
+            data_eq.append(1.0)
+            b_eq.append(1.0)
+            eq_row += 1
 
     for t in range(m):                    # Constraint 3: x <= z
         for c_idx, c_x in enumerate(x_vars[t]):
             z_idx = z_vars[t][c_idx]
+
             for r, (x_idx, _) in c_x.items():
-                rows_ub.append(ub_row); cols_ub.append(x_idx); data_ub.append(1.0)
-                rows_ub.append(ub_row); cols_ub.append(z_idx); data_ub.append(-1.0)
-                b_ub.append(0.0); ub_row += 1
+                rows_ub.append(ub_row)
+                cols_ub.append(x_idx)
+                data_ub.append(1.0)
+                rows_ub.append(ub_row)
+                cols_ub.append(z_idx)
+                data_ub.append(-1.0)
+                b_ub.append(0.0)
+                ub_row += 1
 
     jr_to_x = {}                           # Constraint 4: each (donor, slot) used only once
     for t in range(m):
         for c_x in x_vars[t]:
             for r, (x_idx, j) in c_x.items():
                 jr_to_x.setdefault((j, r), []).append(x_idx)
+
     for x_list in jr_to_x.values():
+
         for x_idx in x_list:
-            rows_ub.append(ub_row); cols_ub.append(x_idx); data_ub.append(1.0)
-        b_ub.append(1.0); ub_row += 1
+            rows_ub.append(ub_row)
+            cols_ub.append(x_idx)
+            data_ub.append(1.0)
+
+        b_ub.append(1.0)
+        ub_row += 1
 
     constraints = []
     if b_eq:
@@ -318,47 +401,82 @@ def _solve_lens_subset(lens_order, candidates, zone, ctx):
         constraints=constraints,
         bounds=Bounds(0, 1),
         integrality=np.ones(var_count, dtype=int),
-        options={'time_limit': ctx.time_limit_s, 'mip_rel_gap': 0.01, 'disp': False}
+        options={'time_limit': solver_context.time_limit_s, 'mip_rel_gap': 0.01, 'disp': False}
     )
 
     if not result.success:
-        return None
+        return None, None
 
     chosen = set(np.flatnonzero(result.x > 0.5))
+    chosen_cand = {}
+    if getattr(solver_context, 'collect_trace', False):
+        for t, i_loc in enumerate(omm_in_subset):
+            chosen_cand[i_loc] = next((c for c, z in enumerate(z_vars[t]) if z in chosen), None)
+
     out = []
-    for t, i_loc in enumerate(lens_order):
+    for t, i_loc in enumerate(omm_in_subset):
         i_glob = int(zone.indices[i_loc])
         for c_x in x_vars[t]:
             for r, (x_idx, j) in c_x.items():
                 if x_idx in chosen:
                     out.append((i_glob, r, j))
-    return out
+    return out, chosen_cand
 
 
-def solve_zone(zone, ctx):
+def solve_zone(zone: 'OmmatidiumView', solver_context: 'SimpleNamespace') -> Tuple[list, int, Optional[dict]]:
     """
-    Wire one chirality zone. Returns (triples, n_failed_components).
+    Wire one chirality zone.
     """
 
-    n_e = len(zone)
-    if n_e < 2:
-        return [], 0
+    trace = getattr(solver_context, 'collect_trace', False)
+    o_count = len(zone)
+    if o_count < 2:
+        return [], 0, ({} if trace else None)
 
-    neighb = zone.neighbours(query=zone.indices, k=min(ctx.k_search, n_e - 1))
+    neighb = zone.neighbours(query=zone.indices, k=min(solver_context.k_search, o_count - 1))
     if not neighb:
-        return [], 0
+        return [], 0, ({} if trace else None)
 
-    candidates = _enumerate_candidates(zone, neighb, ctx)
-    components = _coupling_components(candidates, n_e)
+    candidates, omm_geo = _enumerate_candidates(zone=zone, neighb=neighb, solver_context=solver_context)
+    components = _coupling_components(o_count=o_count, candidates=candidates)
 
-    triples, n_failed = [], 0
-    for comp in components:
-        res = _solve_lens_subset(comp, candidates, zone, ctx)
+    triples, n_failed, chosen_all = [], 0, {}
+    for cid, comp in enumerate(components):
+        res, chosen = _solve_omm_subset(omm_in_subset=comp, candidates=candidates, zone=zone, solver_context=solver_context)
+
         if res is None:
             n_failed += 1
         else:
             triples.extend(res)
-    return triples, n_failed
+            if trace:
+                for i_loc in comp:
+                    chosen_all[i_loc] = (cid, chosen.get(i_loc))
+
+    if not trace:
+        return triples, n_failed, None
+
+    wired = {}
+    for i_glob, r, j in triples:
+        wired.setdefault(i_glob, {})[int(r)] = int(j)
+
+    zone_trace = {}
+    for i_loc in range(o_count):
+        geo = omm_geo[i_loc]
+
+        i_glob = geo['i_glob']
+        cid, c_idx = chosen_all.get(i_loc, (None, None))
+        assignment = {int(r): None for r in solver_context.periph}
+        assignment.update(wired.get(i_glob, {}))
+
+        zone_trace[i_glob] = {
+            **geo,
+            'candidates': [{'w': c.w, 'slots': c.slots, 'donors': c.donors,
+                            'dists': c.dists, 'cost': c.cost} for c in candidates[i_loc]],
+            'chosen': c_idx,
+            'assignment': assignment,
+            'component': cid,
+        }
+    return triples, n_failed, zone_trace
 
 
 def wire_neural_superposition(
@@ -374,8 +492,8 @@ def wire_neural_superposition(
         allow_plasticity: bool = True,
         plasticity_radius: float = 2.0,
         time_limit_s: float = 60.0,
-        assume_aligned: bool = False,
-        n_jobs: int = -1
+        n_jobs: int = -1,
+        collect_trace: bool = False
     ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Neural-superposition wiring allowing for local distortions and missing connections.
@@ -385,33 +503,35 @@ def wire_neural_superposition(
     regions where a rigid transform would fail.
 
     Args:
-        - assign_radius: Max distance (μm) for standard rhabdomere-to-lens assignment.
+        - assign_radius: Max distance (μm) for standard rhabdomere-to-ommaditium assignment.
         - angular_dev: Max angular deviation (deg) allowed for bundle rotation.
         - scale_dev: Max scaling allowed (fraction) relative to the bundle size.
         - min_snap_matches: Minimum number of rhabdomeres that must align for a valid candidate.
         - k_search: Number of nearest neighbours to search for candidates.
-        - top_k: Number of best-scoring candidates per lens to pass to the MILP solver.
+        - top_k: Number of best-scoring candidates per ommatidium to pass to the MILP solver.
         - identity_bias: Preference for the "default" orientation (0 rotation, 1 scale).
         - unassigned_penalty: Cost incurred for every receptor slot left unwired.
         - allow_plasticity: If True, allows 'best-effort' wiring in distorted regions.
         - plasticity_radius: Increased search radius (μm) used when in plastic mode.
         - time_limit_s: Hard timeout for the MILP solver.
         - n_jobs: Number of jobs to run in parallel, -1 for auto.
+        - collect_trace: bool, whether to save the wiring algorithm steps (for diagnostics).
     """
 
     N, R = model.shape
+    cartridge_map = np.full((N, R), UNWIRED_SRC, dtype=np.intp)
+
     if R == 1:
-        return np.full((N, 1), -1, dtype=np.intp)
+        return cartridge_map, np.ones((N, R), bool)
 
     center = model.bundle.center_index
-    cartridge_map = np.full((N, R), -1, dtype=np.intp)
     cartridge_map[:, center] = model.omm_indices
 
-    solver_ctx = _make_solver_context(
+    solver_context = _make_solver_context(
         model=model, angular_dev=angular_dev, assign_radius=assign_radius, scale_dev=scale_dev,
         min_snap_matches=min_snap_matches, k_search=k_search, top_k=top_k, identity_bias=identity_bias,
         unassigned_penalty=unassigned_penalty, allow_plasticity=allow_plasticity,
-        plasticity_radius=plasticity_radius, time_limit_s=time_limit_s, assume_aligned=assume_aligned
+        plasticity_radius=plasticity_radius, time_limit_s=time_limit_s, collect_trace=collect_trace
     )
 
     zones = [(eye.eye_index, sign, zv)
@@ -419,18 +539,29 @@ def wire_neural_superposition(
              for sign, zv in eye.ommatidia_by_chirality().items()]
 
     if n_jobs == 1:
-        results = [solve_zone(zv, solver_ctx) for _, _, zv in zones]
+        results = [solve_zone(zone=zv, solver_context=solver_context) for _, _, zv in zones]
     else:
         from joblib import Parallel, delayed
-        results = Parallel(n_jobs=n_jobs, prefer='threads')(
-            delayed(solve_zone)(zv, solver_ctx) for _, _, zv in zones)
 
-    for (eye_idx, sign, _), (triples, n_failed) in zip(zones, results):
+        results = Parallel(n_jobs=n_jobs, prefer='threads')(
+            delayed(solve_zone)(zv, solver_context) for _, _, zv in zones)
+
+    full_trace = {} if collect_trace else None
+    for (eye_idx, sign, _), (triples, n_failed, ztrace) in zip(zones, results):
         if n_failed:
             logger.warning(f"Eye {eye_idx} (chirality {sign:+d}): {n_failed} MILP "
-                           f"component(s) failed; affected slots left unwired.")
+                           f"component(s) failed, affected slots left unwired.")
+
         for i_glob, r, j in triples:
             cartridge_map[i_glob, r] = j
+
+        if collect_trace and ztrace:
+            for i_glob, rec in ztrace.items():
+                rec['zone'] = (int(eye_idx), int(sign))
+                full_trace[i_glob] = rec
+
+    if collect_trace:
+        model._wiring_trace = full_trace
 
     cs_signed = cartridge_map * R + np.arange(R)
     unwired_mask = (cartridge_map < 0).astype(bool)
@@ -490,24 +621,24 @@ def refine_chi(
     tpl_ang = np.arctan2(tdy, tdx)[i_idx, p_idx]
     tpl_rad = np.hypot(tdx, tdy)[i_idx, p_idx]
 
-    #Per-lens rotation error and scale ratio
+    # Per-ommatidium rotation error and scale ratio
     weights = tpl_rad
 
     ang_err = wrap_angle(act_ang - tpl_ang)
 
     sum_sin = np.bincount(i_idx, weights=np.sin(ang_err) * weights, minlength=N)
     sum_cos = np.bincount(i_idx, weights=np.cos(ang_err) * weights, minlength=N)
-    lens_err = np.arctan2(sum_sin, sum_cos)
+    omm_err = np.arctan2(sum_sin, sum_cos)
 
     scale_ratios = act_rad / np.clip(tpl_rad, 1e-9, None)
     sum_scale = np.bincount(i_idx, weights=scale_ratios * weights, minlength=N)
     sum_w = np.bincount(i_idx, weights=weights, minlength=N)
-    lens_scale = np.where(sum_w > 0, sum_scale / sum_w, 1.0)
+    omm_scale = np.where(sum_w > 0, sum_scale / sum_w, 1.0)
 
     # Mask and smooth
     measurable = np.bincount(i_idx, minlength=N) >= min_donors
-    lens_err[~measurable] = 0.0
-    lens_scale[~measurable] = 1.0
+    omm_err[~measurable] = 0.0
+    omm_scale[~measurable] = 1.0
 
     groups = []
     neighbours = []
@@ -524,7 +655,7 @@ def refine_chi(
         neighbours.append(nb)
 
     smoothed_err = smooth_field_partitioned(
-        values=lens_err, kind='scalar', groups=groups, neighbours=neighbours,
+        values=omm_err, kind='scalar', groups=groups, neighbours=neighbours,
         n_iter=smooth_iters, mask=measurable
     )
 
@@ -534,12 +665,17 @@ def refine_chi(
 
     if adjust_scale:
         smoothed_scale = smooth_field_partitioned(
-            values=lens_scale, kind='scalar', groups=groups, neighbours=neighbours,
-            n_iter=smooth_iters, mask=measurable
+            values=omm_scale,
+            kind='scalar',
+            groups=groups,
+            neighbours=neighbours,
+            n_iter=smooth_iters,
+            mask=measurable
         )
+
         final_scale = 1.0 + (smoothed_scale - 1.0) * relax
-        # Safety clamp for scale (+-20%)
-        final_scale = np.clip(final_scale, 0.8, 1.2)
+        final_scale = np.clip(final_scale, 0.8, 1.2)    # safety clamp (+/- 20%)
+
     else:
         final_scale = 1.0
 
@@ -552,17 +688,20 @@ def refine_chi(
     # Update microsaccade vectors to stay aligned with the new chi
     # TODO: Make this optional?
     sacc_vecs = model.buffer['saccade_dxdy']
+
     c, s = np.cos(smoothed_err), np.sin(smoothed_err)
+
     new_sacc = np.empty_like(sacc_vecs)
     new_sacc[:, 0] = c * sacc_vecs[:, 0] - s * sacc_vecs[:, 1]
     new_sacc[:, 1] = s * sacc_vecs[:, 0] + c * sacc_vecs[:, 1]
+
     model.buffer['saccade_dxdy'] = new_sacc.astype(np.float32)
 
     tip_local = np.stack([new_dx, new_dy, np.broadcast_to(-focal[:, None], (N, R))], axis=-1)
     new_dirs_world = (
-            tip_local[..., 0, None] * model.right[:, None, :] +
-            tip_local[..., 1, None] * model.up[:, None, :] +
-            tip_local[..., 2, None] * model.directions[:, None, :]
+        tip_local[..., 0, None] * model.right[:, None, :] +
+        tip_local[..., 1, None] * model.up[:, None, :] +
+        tip_local[..., 2, None] * model.directions[:, None, :]
     )
 
     view_dirs = -new_dirs_world
