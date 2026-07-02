@@ -10,7 +10,7 @@ from insectvision.renderers.helpers import VisualOutput
 from insectvision.utils import RandomnessMode
 
 
-def main():
+if __name__ == "__main__":
 
     USE_POINT_CLOUD = True
     SAMPLES_PER_RHABDOMERE = 64
@@ -136,7 +136,7 @@ def main():
             visual_output = renderer.step()
 
             context.draw(visual_output)  # draws to the viewport, also optional
-
+    
     else:
         # Headless and batched mode
 
@@ -172,7 +172,3 @@ def main():
 
     # Cleanup
     context.free()
-
-
-if __name__ == "__main__":
-    main()
