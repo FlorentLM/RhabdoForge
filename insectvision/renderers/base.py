@@ -77,6 +77,7 @@ class Renderer:
                  sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
                  panoramic_resolution: Optional[Tuple[int, int]] = (1024, 512),
                  batch_size: int = 1,
+                 track_history: bool = False,
                  max_bounces: int = 0,
                  enable_microsaccades: bool = False,
                  enable_direct: bool = True,
@@ -136,6 +137,8 @@ class Renderer:
         self._batch_size, self._samples_per_rhab = self._safe_samples_lim(
             batch_size, nb_samples, prioritize_batch=True
         )
+        self._track_history: bool = track_history
+        self._history: List['VisualOutput'] = []
 
         # Initialise the registries
         self._eye_uniforms = UniformRegistry()
@@ -222,13 +225,13 @@ class Renderer:
 
         self._update_selected_ommatidia()
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         loop_mode = 'Open-loop (batched)' if self._batch_size > 1 else 'Closed-loop / Interactive'
         return (f"<{self.__class__.__name__} | Mode: {loop_mode} | "
                 f"Batch size: {self._batch_size} | "
                 f"{self.nb_samples} samples/rhabdomere>")
 
-    def _init_model_resources(self):
+    def _init_model_resources(self) -> None:
 
         # Allocate GPU buffers
         rays_elements = self._model.N if self._model.bundle.fused_rhabdoms else self._model.size
@@ -344,7 +347,7 @@ class Renderer:
             extra_narrowing_ratio=float(self._model.bundle.extra_narrowing_ratio),
         )
 
-    def _free_model_resources(self):
+    def _free_model_resources(self) -> None:
         """
         Tear down everything sized by or derived from the model
         """
@@ -395,7 +398,7 @@ class Renderer:
             **self._update_visualisation_scales()
         )
 
-    def _update_selected_ommatidia(self):
+    def _update_selected_ommatidia(self) -> None:
         sel_omm_indices = self._selected_omm_indices.copy()
 
         if self._output_mode == EyeOutput.Raw:
@@ -406,7 +409,7 @@ class Renderer:
 
         self._eye_uniforms.update(selected_ommatidia=sel_omm_indices)
 
-    def _invalidate_shaders(self):
+    def _invalidate_shaders(self) -> None:
         """Invalidates all shaders that need be when defines change."""
 
         self.dispatch_shader.free()
@@ -630,7 +633,7 @@ class Renderer:
 
     # Main internal rendering calls: Dispatch -> Reduction -> Dynamics
 
-    def _dispatch(self):
+    def _dispatch(self) -> None:
 
         self._baker.update()
 
@@ -659,7 +662,7 @@ class Renderer:
 
                     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
-    def _reduction(self):
+    def _reduction(self) -> None:
 
         with self.reduction_shader as shader:
 
@@ -671,7 +674,7 @@ class Renderer:
 
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
-    def _dynamics(self):
+    def _dynamics(self) -> None:
 
         with self.dynamics_shader as shader:
 
@@ -725,7 +728,7 @@ class Renderer:
         self._pbo_index = next_pbo_index
         return out_array
 
-    def _tonemap_pass(self):
+    def _tonemap_pass(self) -> None:
 
         shader = self._tonemap_shader
 
@@ -747,7 +750,7 @@ class Renderer:
 
     # Internal render calls for optional visualisation modes
 
-    def _render_subjective_view(self):
+    def _render_subjective_view(self) -> None:
         """First-person compound-eye view (colours or scalar overlay)."""
 
         shader = self._get_eyemesh_shader('subjective', self.overlay_enabled)
@@ -779,7 +782,7 @@ class Renderer:
 
             glDisable(GL_DEPTH_TEST)
 
-    def _render_external_view(self, observer_camera):
+    def _render_external_view(self, observer_camera) -> None:
         """Third-person eye model (colours or scalar overlay)."""
 
         shader = self._get_eyemesh_shader('external', self.overlay_enabled)
@@ -816,7 +819,7 @@ class Renderer:
             glDisable(GL_BLEND)
             glDisable(GL_DEPTH_TEST)
 
-    def _raytrace_thirdperson(self, view_name: str, pov: Union['Agent', 'OrbitCamera']):
+    def _raytrace_thirdperson(self, view_name: str, pov: Union['Agent', 'OrbitCamera']) -> None:
         """Shared dispatch for panoramic / perspective ray-traced views."""
 
         tex_id, res = self._get_projection_texture(view_name)
@@ -865,9 +868,9 @@ class Renderer:
             data_np = np.frombuffer(data_bytes, dtype=np.float32).reshape(frames_to_read, self._model.size, 4)
 
         self._frame_index = 0
-        return VisualOutput(data_np, self._model)
+        return VisualOutput(data=data_np, model=self._model)
 
-    def sync_cpu(self, force_all=False):
+    def sync_cpu(self, force_all=False) -> None:
         """
         CPU data sync (contiguous block synchronisation).
         Checks the high-level flag first, then walks the mask for surgical uploads.
@@ -986,25 +989,26 @@ class Renderer:
 
         self._frame_index += 1
 
-        # No readback, work here is done, return
-        if not readback:
-            self._latest_output = None
-            return self._latest_output
+        # Grab the output (either single frame or full batch)
+        out = None
+        if readback:
+            if self.runs_interactive or self._batch_size == 1:
+                # Interactive path: return previous frame via ping-pong PBO
+                out_array = self._readback_async()
+                if out_array.size > 0:
+                    out = VisualOutput(out_array, self._model)
 
-        if self.runs_interactive or self._batch_size == 1:
-            # Interactive path: return previous frame via ping-pong PBO
-            out_array = self._readback_async()
-            if out_array.size == 0:
-                self._latest_output = None
-                return self._latest_output
-            self._latest_output = VisualOutput(out_array, self._model)
-        else:
-            # Batched path: return full block (only when batch is full)
-            if self._frame_index >= self._batch_size:
-                print(f"  > GPU batch is full. Flushing {self._batch_size} frames...")
-                self._latest_output = self.flush()
+            elif self._frame_index >= self._batch_size:
+                # Batched path: return full block (only when batch is full)
+                out = self.flush()
 
-        return self._latest_output
+        self._latest_output = out
+
+        # Collection if history is enabled
+        if self._track_history and out is not None:
+            self._history.append(out)
+
+        return out
 
     def set_overlay(self,
             values: Optional[Union[Dict['EyeView', np.array], np.array]] = None,
@@ -1012,7 +1016,7 @@ class Renderer:
             colormap: 'Colormap' = Colormap.Thermal,
             compression: float = 0.5,
             autorange_perc: int = 98
-        ):
+        ) -> None:
         """
         Upload data for overlay visualisation.
 
@@ -1105,7 +1109,7 @@ class Renderer:
             width: Optional[int] = None,
             height: Optional[int] = None,
             transparent: bool = True
-            ):
+            ) -> None:
         """
         Renders the current view to an off-screen buffer and saves it as a transparent PNG.
         """
@@ -1144,6 +1148,31 @@ class Renderer:
     @property
     def latest_output(self) -> Optional['VisualOutput']:
         return self._latest_output
+
+    @property
+    def history(self) -> Optional['VisualOutput']:
+        """
+        Returns the full concatenated history of all rendered frames.
+        """
+        # Drain GPU pipe of any leftover frames
+        remainder = self.flush()
+        if remainder is not None:
+            self._history.append(remainder)
+
+        # Combine and return
+        if not self._history:
+            return None
+
+        full_dataset = VisualOutput.from_history(self._history)
+
+        # self.clear_history()  # TODO: decide whether this should be done or not
+
+        return full_dataset
+
+    def clear_history(self) -> None:
+        """Reset the internal history buffer."""
+        self._history = []
+        self._frame_index = 0
 
     # Public properties and methods
 
@@ -1211,7 +1240,7 @@ class Renderer:
         return self._context
 
     @property
-    def screen_surface(self):
+    def screen_surface(self) -> Optional['TextureViewer']:
         if self._screen_surface is None:
             self._screen_surface = TextureViewer()
         return self._screen_surface
@@ -1221,30 +1250,50 @@ class Renderer:
         return self._exposure
 
     @exposure.setter
-    def exposure(self, value: float):
+    def exposure(self, value: float) -> None:
         self._exposure = float(value)
 
     @property
-    def batch_size(self):
+    def batch_size(self) -> int:
         return self._batch_size
 
-    # @batch_size.setter
-    # def batch_size(self, value):
-    #     safe_batch, _ = self._safe_samples_lim(value, self._samples_per_rhab, prioritize_batch=False)
-    #
-    #     if safe_batch == self._batch_size:
-    #         return
-    #
-    #     self._batch_size = safe_batch
-    #     self.eye_buffers['colors'].resize(self._model.size * self._batch_size)
-    # TODO: Finish this: need to re-init/resize the PBOs
+    @batch_size.setter
+    def batch_size(self, value: int) -> None:
+
+        new_batch = max(1, int(value))
+        if new_batch == self._batch_size:
+            return
+
+        # Important: flush any partial batch before resizing buffers
+        if self._frame_index > 0:
+            leftover = self.flush()
+            if self._track_history and leftover:
+                self._history.append(leftover)
+
+        # Recalculate safe limits (VRAM check)
+        safe_batch, _ = self._safe_samples_lim(new_batch, self._samples_per_rhab)
+        self._batch_size = safe_batch
+
+        # Resize colours SSBO
+        self.eye_buffers['colors'].resize(self._model.size * self._batch_size)
+
+        # Reallocate PBOs
+        self._pbo_index = 0
+        for i in range(2):
+            self.eye_buffers.allocate(f'pbo_{i}',
+                                      dtype=np.uint8,
+                                      count=self._model.size * 16,
+                                      target=GL_PIXEL_PACK_BUFFER,
+                                      usage=GL_STREAM_READ)
+
+        print(f'Renderer batch size updated to: {self._batch_size}')
 
     @property
-    def nb_samples(self):
+    def nb_samples(self) -> int:
         return self._samples_per_rhab
 
     @nb_samples.setter
-    def nb_samples(self, value):
+    def nb_samples(self, value: int)  -> None:
         _, safe_samples = self._safe_samples_lim(self._batch_size, value, prioritize_batch=False)
         if safe_samples == self._samples_per_rhab:
             return
@@ -1264,7 +1313,7 @@ class Renderer:
         return self._samples_per_px
 
     @pixel_samples.setter
-    def pixel_samples(self, value: int):
+    def pixel_samples(self, value: int) -> None:
         self._samples_per_px = max(1, int(value))
 
     @property
@@ -1273,7 +1322,7 @@ class Renderer:
         return self._max_bounces
 
     @max_bounces.setter
-    def max_bounces(self, value: int):
+    def max_bounces(self, value: int) -> None:
         val = max(0, int(value))
         if val == self._max_bounces:
             return
@@ -1299,30 +1348,30 @@ class Renderer:
         return self._max_bounces > 0
 
     @property
-    def output_mode(self):
+    def output_mode(self) -> 'EyeOutput':
         return self._output_mode
 
     @output_mode.setter
-    def output_mode(self, value):
+    def output_mode(self, value) -> None:
         self._output_mode = value
         self._eye_uniforms.update(output_mode=self._output_mode)
         self._update_selected_ommatidia()
 
     @property
-    def projection_mode(self):
+    def projection_mode(self) -> 'OmmatidiaProjection':
         return self._projection_mode
 
     @projection_mode.setter
-    def projection_mode(self, value):
+    def projection_mode(self, value) -> None:
         self._projection_mode = value
         self._eye_uniforms.update(projection_mode=self._projection_mode)
 
     @property
-    def tiled_mode(self):
+    def tiled_mode(self) -> bool:
         return self._tiled_mode
 
     @tiled_mode.setter
-    def tiled_mode(self, value):
+    def tiled_mode(self, value: bool) -> None:
         self._tiled_mode = bool(value)
         self._eye_uniforms.update(tiled_mode=self._tiled_mode)
 
@@ -1332,17 +1381,17 @@ class Renderer:
         return self._use_hybrid_sampling
 
     @hybrid_sampling.setter
-    def hybrid_sampling(self, value: bool):
+    def hybrid_sampling(self, value: bool) -> None:
         self._use_hybrid_sampling = bool(value)
         self._eye_uniforms.update(use_hybrid_sampling=self._use_hybrid_sampling)
 
     @property
-    def sampling_mode(self) -> SamplingMode:
+    def sampling_mode(self) -> 'SamplingMode':
         """The sensitivity profile used for weighting: 'gaussian' or 'airy'."""
         return self._sampling_mode
 
     @sampling_mode.setter
-    def sampling_mode(self, value: Union[int, str, SamplingMode]):
+    def sampling_mode(self, value: Union[int, str, 'SamplingMode']) -> None:
         self._sampling_mode = self._to_enum(value, SamplingMode)
         self._eye_uniforms.update(sampling_mode=int(self._sampling_mode))
         print(f"Sampling Mode: {self._sampling_mode.name}")
@@ -1352,8 +1401,8 @@ class Renderer:
         return self._eyes_exaggeration
 
     @model_exaggeration.setter
-    def model_exaggeration(self, v: float):
-        self._eyes_exaggeration = float(v)
+    def model_exaggeration(self, value: float) -> None:
+        self._eyes_exaggeration = float(value)
         self._eye_uniforms.update(**self._update_visualisation_scales())
 
     @property
@@ -1361,8 +1410,8 @@ class Renderer:
         return self._rf_exaggeration
 
     @receptive_field_exaggeration.setter
-    def receptive_field_exaggeration(self, v: float):
-        self._rf_exaggeration = float(v)
+    def receptive_field_exaggeration(self, value: float) -> None:
+        self._rf_exaggeration = float(value)
         self._eye_uniforms.update(**self._update_visualisation_scales())
 
     @property
@@ -1370,54 +1419,54 @@ class Renderer:
         return self._saccade_exaggeration
 
     @saccade_exaggeration.setter
-    def saccade_exaggeration(self, v: float):
-        self._saccade_exaggeration = float(v)
+    def saccade_exaggeration(self, value: float) -> None:
+        self._saccade_exaggeration = float(value)
         self._eye_uniforms.update(**self._update_visualisation_scales())
 
     @property
-    def reference_luminance(self):
+    def reference_luminance(self) -> float:
         return self._lum_ref
 
     @reference_luminance.setter
-    def reference_luminance(self, value):
+    def reference_luminance(self, value) -> None:
         self._lum_ref = float(value)
         self._eye_uniforms.update(lum_ref=self._lum_ref)
 
     @property
-    def noise_threshold(self):
+    def noise_threshold(self) -> float:
         return self._noise_threshold
 
     @noise_threshold.setter
-    def noise_threshold(self, value):
+    def noise_threshold(self, value: float) -> None:
         self._noise_threshold = float(value)
         self._eye_uniforms.update(noise_threshold=self._noise_threshold)
 
     @property
-    def time_dithering(self):
+    def time_dithering(self) -> bool:
         return self._time_dithering
 
     @time_dithering.setter
-    def time_dithering(self, value: bool):
+    def time_dithering(self, value: bool) -> None:
         self._time_dithering = bool(value)
         print(f"Time dithering: {'Enabled' if self._time_dithering else 'Disabled'}.")
 
     @property
-    def randomness_mode(self) -> RandomnessMode:
+    def randomness_mode(self) -> 'RandomnessMode':
         """The randomness mode used for sampling: 'pseudorandom', 'halton' or 'stratified'."""
         return self._randomness_mode
 
     @randomness_mode.setter
-    def randomness_mode(self, value: Union[int, str, RandomnessMode]):
+    def randomness_mode(self, value: Union[int, str, RandomnessMode]) -> None:
         self._randomness_mode = self._to_enum(value, RandomnessMode)
         self._eye_uniforms.update(randomness_mode=int(self._randomness_mode))
         print(f"Randomness Mode: {self._randomness_mode.name}")
 
     @property
-    def photon_concentration(self):
-        return self._eye_uniforms['photon_concentration_factor']
+    def photon_concentration(self) -> float:
+        return float(self._eye_uniforms['photon_concentration_factor'])
 
     @photon_concentration.setter
-    def photon_concentration(self, value: float):
+    def photon_concentration(self, value: float) -> None:
         self._eye_uniforms.update(photon_concentration_factor=float(value))
 
     @property
@@ -1425,7 +1474,7 @@ class Renderer:
         return self._overlay_enabled and 'overlay' in self.eye_buffers and self.eye_buffers['overlay'].count > 0
 
     @overlay_enabled.setter
-    def overlay_enabled(self, value: bool):
+    def overlay_enabled(self, value: bool) -> None:
         enable = bool(value)
         self._overlay_enabled = enable
         if enable:
@@ -1444,7 +1493,7 @@ class Renderer:
         return self._false_colours
 
     @false_colours.setter
-    def false_colours(self, v: bool):
+    def false_colours(self, v: bool) -> None:
         self._false_colours = bool(v)
         self._eye_uniforms.update(false_colors=self._false_colours and not self.uv_encoded_textures)
 
@@ -1454,7 +1503,7 @@ class Renderer:
         return active if active else None
 
     @selected_ommatidia.setter
-    def selected_ommatidia(self, values: Optional[Union[int, Sequence[int], np.ndarray]]):
+    def selected_ommatidia(self, values: Optional[Union[int, Sequence[int], np.ndarray]]) -> None:
         self._selected_omm_indices.fill(-1)
 
         if values is not None:
@@ -1471,11 +1520,11 @@ class Renderer:
         self._update_selected_ommatidia()
 
     @property
-    def microsaccades_enabled(self):
+    def microsaccades_enabled(self) -> bool:
         return self._microsaccades_enabled
 
     @microsaccades_enabled.setter
-    def microsaccades_enabled(self, value: bool):
+    def microsaccades_enabled(self, value: bool) -> None:
         value = bool(value)
         if value and not self._model.has_microsaccades:
             print("Can't enable microsaccades. This eye model has 0.0 microsaccade amplitude.")
@@ -1483,7 +1532,7 @@ class Renderer:
         self._microsaccades_enabled = value
         self._eye_uniforms.update(enable_actuation=self._microsaccades_enabled)
 
-    def dither(self):
+    def dither(self) -> None:
         """Dither once (reshuffle the dither counter)"""
         self._dither_counter = random.randint(0, 1024)
 
@@ -1498,29 +1547,29 @@ class Renderer:
         return self._baker.blases
 
     @property
-    def sky_intensity(self):
+    def sky_intensity(self) -> float:
         return self._sky_intensity
 
     @sky_intensity.setter
-    def sky_intensity(self, value):
+    def sky_intensity(self, value) -> None:
         self._sky_intensity = float(value)
         self._lights_uniforms.update(sky_intensity=self._sky_intensity)
 
     @property
-    def ambient_intensity(self):
+    def ambient_intensity(self) -> float:
         return self._ambient_intensity
 
     @ambient_intensity.setter
-    def ambient_intensity(self, value):
+    def ambient_intensity(self, value) -> None:
         self._ambient_intensity = float(value)
         self._lights_uniforms.update(ambient_intensity=self._ambient_intensity)
 
     @property
-    def enable_ambient(self):
+    def enable_ambient(self) -> bool:
         return self._enable_ambient
 
     @enable_ambient.setter
-    def enable_ambient(self, value):
+    def enable_ambient(self, value) -> None:
         self._enable_ambient = bool(value)
         self._lights_uniforms.update(enable_ambient=self._enable_ambient)
 
@@ -1529,16 +1578,16 @@ class Renderer:
         return self._enable_direct
 
     @enable_direct.setter
-    def enable_direct(self, value):
+    def enable_direct(self, value) -> None:
         self._enable_direct = bool(value)
         self._lights_uniforms.update(enable_direct=self._enable_direct)
 
     @property
-    def enable_shadows(self):
+    def enable_shadows(self) -> bool:
         return self._enable_shadows
 
     @enable_shadows.setter
-    def enable_shadows(self, value):
+    def enable_shadows(self, value) -> None:
         self._enable_shadows = bool(value)
         self._lights_uniforms.update(enable_shadows=self._enable_shadows)
 
