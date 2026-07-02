@@ -15,8 +15,8 @@ from insectvision.utils import WORLD_FORWARD
 from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world, tangent_bearing
-from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned, graph_spacing
-from insectvision.geometry.spherical import angle_to_chord
+from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned, graph_spacing, ball_spacing
+from insectvision.geometry.spherical import angle_to_chord, sphere_to_stereo
 from insectvision.compound_eyes.buffers import Buffer, _BIT_LAYOUT
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
 from insectvision.compound_eyes.helpers.neural_superposition import (
@@ -120,6 +120,8 @@ class Model(SpatialQueries, BaseView):
             eye_membership = self._identify_distinct_eyes()
 
         self._buf['eye_id'] = eye_membership
+
+        self._apply_canonical_order()
 
         self._eyes = self._instantiate_eyes()
 
@@ -436,6 +438,44 @@ class Model(SpatialQueries, BaseView):
 
     def _bump_spatial_ver(self) -> None:
         self._spatial_version += 1
+
+    def _apply_canonical_order(self) -> None:
+        """
+        Permute all buffers in place into a deterministic canonical order.
+
+        Sorted by eye, then a serpentine latitude raster within each eye.
+        Stable lexsort + using original index as tiebreaker -> identical inputs give bitwise-identical order
+
+        Bands are anchored at the projected eye centre (function of the eye's mean direction), so
+        only ommatidia within ~1 spacing of a band edge can move in the ordering (and they move by at most ~1 row)
+        """
+
+        eye_id = np.asarray(self._buf['eye_id']).reshape(self._N, self._R)[:, 0]
+        directions = np.asarray(self._buf['forward']).reshape(self._N, 3)
+
+        blocks = []
+        for e in np.unique(eye_id):
+            loc = np.flatnonzero(eye_id == e)  # Global indices, ascending
+            if loc.size <= 2:
+                blocks.append(loc)
+                continue
+
+            # Stereographic projection about the eye's mean direction
+            pts2d, *_ = sphere_to_stereo(directions[loc])
+            py = pts2d[:, 1]
+
+            # Band width ~1 ommatidial spacing (median nearest-neighbour gap)
+            w = np.nanmedian(ball_spacing(query_points=pts2d, k=1))
+            if not np.isfinite(w) or w <= 0.0:
+                w = 1.0
+
+            band  = np.floor(py / w).astype(np.int64)  # latitude bands anchored at 0
+            sweep = np.where(band % 2 == 0, pts2d[:, 0], -pts2d[:, 0])  # serpent: alternate sweep
+
+            order = np.lexsort((loc, sweep, band))  # band > sweep > original idx
+            blocks.append(loc[order])
+
+        self._buf.reorder(np.concatenate(blocks).astype(np.intp))
 
     # Private - Rhabdomere bundle orientation backwrite
 

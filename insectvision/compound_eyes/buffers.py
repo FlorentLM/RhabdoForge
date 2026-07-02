@@ -1,7 +1,7 @@
 """
 Packed data container for compound-eye buffers.
 """
-from typing import Tuple
+from typing import Tuple, Sequence
 import numpy as np
 
 # Per-ommatidium data
@@ -263,6 +263,32 @@ class Buffer:
 
             arr[idx] = values
             self._mark_stale(level, idx)
+
+    def reorder(self, permutation_indices: Sequence[int]) -> None:
+        """
+        Permute every buffer in place by a given order.
+
+        'permutation_indices' is a length-N array: new row i takes old row permutation_indices[i].
+        Rhabdomere rows follow their parent ommatidium. All arrays are left
+        C-contiguous and flagged stale for re-upload.
+        """
+        N, R = self._shape
+        perm = np.asarray(permutation_indices, dtype=np.intp).reshape(-1)
+
+        if perm.shape != (N,):
+            raise ValueError(f'permutation_indices must have shape ({N},), got {perm.shape}')
+
+        if not np.array_equal(np.bincount(perm, minlength=N), np.ones(N, dtype=np.intp)):
+            raise ValueError(f'permutation_indices is not a valid permutation of range(N={N})')
+
+        rperm = (perm[:, None] * R + np.arange(R, dtype=np.intp)).reshape(-1)
+
+        for level, idx in (('ommatidium', perm), ('rhabdomere', rperm)):
+            sa = self.structured_arrays[level]
+            sa['static'] = np.ascontiguousarray(sa['static'][idx])
+            sa['dynamic'] = np.ascontiguousarray(sa['dynamic'][idx])
+            sa['stale_mask'] = np.ascontiguousarray(sa['stale_mask'][idx])
+            sa['stale'] = True
 
     @property
     def ommatidia_static(self):
