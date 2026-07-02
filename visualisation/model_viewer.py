@@ -274,6 +274,8 @@ class EyeViewer:
     ##
 
     def show(self):
+        pv.allow_new_attributes()
+
         self.plotter = pv.Plotter(
             shape=(2, 4),
             groups=[(1, slice(2, 4))],
