@@ -39,7 +39,7 @@ struct InstanceInfo {
 
 // ================================== Textures (fixed bindings) =====================================
 
-layout(binding = 0) uniform sampler2D skybox;
+layout(binding = 0) uniform sampler2D sky_texture;
 layout(binding = 1) uniform sampler2DArray scene_textures;
 
 // ====================================== Scene uniforms ============================================
@@ -139,7 +139,7 @@ vec3 sample_env(vec3 dir) {
     const float MAX_ENV = 1.0e4;
 
     vec2 uv = vec2(atan(dir.x, dir.z) / TWOPI + 0.5, 0.5 - asin(clamp(dir.y, -1.0, 1.0)) / PI);
-    return min(texture(skybox, uv).rgb, vec3(MAX_ENV));
+    return min(texture(sky_texture, uv).rgb, vec3(MAX_ENV));
 }
 
 // ================================ Primitive intersection functions ================================

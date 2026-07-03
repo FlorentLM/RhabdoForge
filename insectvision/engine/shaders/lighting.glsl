@@ -49,7 +49,7 @@ struct AreaLightData {
 // =================================== Uniforms =========================================
 
 uniform vec3 background_color;
-uniform bool use_skybox;
+uniform bool use_sky;
 uniform float sky_intensity;        // intensity for sky color and sun disk
 uniform bool enable_ambient;        // toggle ambient/fill lighting from sky
 uniform bool enable_direct;         // toggle all direct lighting
@@ -193,7 +193,7 @@ vec3 get_sun_disk_color(vec3 direction) {
 }
 
 vec3 get_sky_color(vec3 direction, bool with_sun) {
-    vec3 sky = use_skybox ? sample_env(direction) * sky_intensity
+    vec3 sky = use_sky ? sample_env(direction) * sky_intensity
                           : background_color * sky_intensity;
     if (with_sun) sky += get_sun_disk_color(direction);
     return sky;

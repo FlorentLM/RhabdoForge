@@ -197,16 +197,16 @@ class Renderer:
 
         # TODO: Add multiple selectable overlay modes: luminance, adaptation state, etc, and custom (the set_data one)
 
-        using_skybox = self.scene.skybox is not None
+        using_sky = self.scene.sky is not None
         self._scene_uniforms.update(
             nb_tlas_nodes=len(self._baker.cpu_tlas_nodes),
             background_color=self.scene.background_color,
             max_bounces=self._max_bounces,
 
-            # Skybox params
-            use_skybox=using_skybox,
-            skybox=self._baker.scene_textures['skybox'].unit if using_skybox else 0,
-            sh_irradiance_coeffs=self.scene.skybox.sh_coeffs if using_skybox else constant_sh(self.scene.background_color),
+            # Sky params
+            use_sky=using_sky,
+            sky_texture=self._baker.scene_textures['sky_texture'].unit if using_sky else 0,
+            sh_irradiance_coeffs=self.scene.sky.sh_coeffs if using_sky else constant_sh(self.scene.background_color),
 
             # If any texture is used
             scene_textures=self._baker.scene_textures['materials'].unit if 'materials' in self._baker.scene_textures else 0
@@ -1226,13 +1226,13 @@ class Renderer:
         self._baker = SceneBaker(new_scene, self._resource_manager)
         self._invalidate_shaders()  # light-count #defines might have changed
 
-        using_skybox = new_scene.skybox is not None
+        using_sky = new_scene.sky is not None
         self._scene_uniforms.update(
             nb_tlas_nodes=len(self._baker.cpu_tlas_nodes),
             background_color=new_scene.background_color,
-            use_skybox=using_skybox,
-            skybox=self._baker.scene_textures['skybox'].unit if using_skybox else 0,
-            sh_irradiance_coeffs=(new_scene.skybox.sh_coeffs if using_skybox
+            use_sky=using_sky,
+            sky_texture=self._baker.scene_textures['sky_texture'].unit if using_sky else 0,
+            sh_irradiance_coeffs=(new_scene.sky.sh_coeffs if using_sky
                                   else constant_sh(new_scene.background_color)),
         )
         self._lights_uniforms.update(

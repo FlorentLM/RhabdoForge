@@ -673,8 +673,8 @@ class Instance(TransformMixin):
     is_visible = visible
 
 
-class Skybox:
-    def __init__(self, texture_path: str | Path = 'textures/sky.exr', max_height: int = 2048):
+class Sky:
+    def __init__(self, texture_path: str | Path = 'assets/textures/sky.exr', max_height: int = 2048):
 
         self._texture_path = Path(texture_path)
         data = load_exr_equirect(self._texture_path, max_height=max_height)
@@ -695,7 +695,7 @@ class Skybox:
         self.texture_id = texture_id
 
     def __repr__(self):
-        return f"<Skybox '{self._texture_path.name}'>"
+        return f"<Sky '{self._texture_path.name}'>"
 
 
 class Scene:
@@ -703,10 +703,10 @@ class Scene:
     The logical scene representation. A simple container for assets and instances.
     """
 
-    def __init__(self, background_color: Sequence[float] = (0.0, 0.0, 0.0), skybox_path: Optional[str | Path] = None):
+    def __init__(self, background_color: Sequence[float] = (0.0, 0.0, 0.0), sky_texture: Optional[str | Path] = None):
 
         self.background_color = background_color
-        self._skybox: Optional['Skybox'] = None
+        self._sky: Optional['Sky'] = None
 
         self._assets: Dict[str, 'Asset'] = {}
 
@@ -721,8 +721,8 @@ class Scene:
         self._topology_rev: int = 0
         self._lights_rev: int = 0
 
-        if skybox_path is not None:
-            self.add_sky(skybox_path)
+        if sky_texture is not None:
+            self.add_sky(sky_texture)
         else:
             default_sun = Sun(intensity=1.0, angular_size=0.05)
             default_sun.azimuth = 4.84
@@ -734,7 +734,7 @@ class Scene:
     def __repr__(self):
         return (f"<Scene | {len(self._mesh_instances)} mesh + {len(self._point_instances)} point instances "
                 f"| {len(self.assets)} assets | {len(self.lights)} lights"
-                f"{' | skybox' if self._skybox else ''}>")
+                f"{f' | Sky={self._sky._texture_path.name}' if self._sky else ''}>")
 
     def touch_topology(self) -> None:
         self._topology_rev += 1
@@ -799,15 +799,15 @@ class Scene:
         self._lights_rev += 1
 
     def add_sky(self, texture_path: str | Path):
-        """Creates and loads a skybox from a directory of textures."""
+        """Creates and loads a sky texture."""
 
-        self._skybox = Skybox(texture_path)
+        self._sky = Sky(texture_path)
 
         if self._sun_ref:
 
             self.remove_light(self._sun_ref)    # TODO: using _sun_ref is kinda crappy
 
-            azim, elev, col, intensity, ang_radius = get_exr_sun(self._skybox._texture_path)
+            azim, elev, col, intensity, ang_radius = get_exr_sun(self._sky._texture_path)
             # TODO: intensity is whack, must fix it
             sun = Sun(azimuth=azim, elevation=elev, intensity=1.0, angular_size=ang_radius, color=col)
             self._sun_ref = sun
@@ -863,8 +863,8 @@ class Scene:
 
         self._lights_rev += 1
 
-    def clear_skybox(self):
-        self._skybox = None
+    def clear_sky(self):
+        self._sky = None
 
     def clear_instances(self, prune_assets: bool = False):
         self._mesh_instances.clear()
@@ -993,8 +993,8 @@ class Scene:
         return list(self._area_lights)
 
     @property
-    def skybox(self):
-        return self._skybox
+    def sky(self):
+        return self._sky
 
     @property
     def total_triangles(self) -> int:
@@ -1026,4 +1026,3 @@ class Scene:
         self.assets.clear()
         self.clear_instances()
         self.clear_lights()
-        # Note: GPU resources tied to skybox/assets are freed by the bakers/renderers

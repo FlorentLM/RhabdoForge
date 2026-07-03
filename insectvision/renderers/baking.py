@@ -74,8 +74,8 @@ class SceneBaker:
         # Upload everything to GPU
         self._push_to_gpu()
 
-        if self.scene.skybox:
-            self.scene_textures.register_existing('skybox', self.scene.skybox.texture_id, GL_TEXTURE_2D)
+        if self.scene.sky:
+            self.scene_textures.register_existing('sky_texture', self.scene.sky.texture_id, GL_TEXTURE_2D)
 
     def __repr__(self):
         return (f"<SceneBaker | {len(self._blases)} BLAS"
