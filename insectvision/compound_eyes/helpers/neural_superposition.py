@@ -24,6 +24,7 @@ class WiringCandidate(NamedTuple):
     donors: np.ndarray      # global ommatidia indices
     dists: np.ndarray
     w: complex = 1.0 + 0j   # similarity transform that produced this snap (for debug trace only)
+    is_plastic: bool = False
 
 
 def get_conflict_masks(cartridge_map: np.ndarray, peripheral_indices: np.ndarray) -> 'SimpleNamespace':
@@ -155,9 +156,12 @@ def _enumerate_candidates(
             W = evecs @ np.diag(evals ** -0.5) @ evecs.T
             neighb_w = neighb_uv @ W.T
             scale = np.nanmedian(np.linalg.norm(neighb_w[imm], axis=1))
+
         else:
             neighb_w = neighb_uv  # too few first-ring neighbours: isotropic
             scale = np.nanmedian(np.linalg.norm(ring, axis=1)) if ring.size else 1.0
+
+            W = np.eye(2) # just for the trace storage
 
         if not np.isfinite(scale) or scale < 1e-9:
             scale = 1.0
@@ -168,10 +172,13 @@ def _enumerate_candidates(
             omm_geo.append({
                 'i_glob': i_glob,
                 'neighb_indices': np.asarray(neighb.indices[i_loc]).copy(),
-                'neighb_uv': np.column_stack([neighb_i.real, neighb_i.imag]),  # whitened, normalised cloud
+                'raw_neighb_uv': neighb_uv.copy(),
+                'whitened_neighb_uv': np.column_stack([neighb_i.real, neighb_i.imag]),
                 'immediate': np.asarray(neighb.immediate[i_loc]).copy(),
                 'same_chir': np.asarray(neighb.same_chirality[i_loc]).copy(),
                 'template_uv': np.column_stack([tpl_i[periph].real, tpl_i[periph].imag]),
+                'scale': float(scale),
+                'W': W.copy()
             })
 
         valid_neighb = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
@@ -225,6 +232,7 @@ def _enumerate_candidates(
                         )
                     )
 
+        # Plastic matching fallback
         if not omm_cands and solver_context.allow_plasticity:
 
             d = np.where(valid_neighb[None, :], np.abs(tpl_i[periph][:, None] - neighb_i[None, :]), np.inf)
@@ -239,7 +247,8 @@ def _enumerate_candidates(
                         periph[r_idx[keep]],
                         neighb.indices[i_loc][c_idx[keep]],
                         md[keep],
-                        1.0 + 0j
+                        1.0 + 0j,
+                        is_plastic=True
                     )
                 )
 
@@ -471,7 +480,8 @@ def solve_zone(zone: 'OmmatidiumView', solver_context: 'SimpleNamespace') -> Tup
         zone_trace[i_glob] = {
             **geo,
             'candidates': [{'w': c.w, 'slots': c.slots, 'donors': c.donors,
-                            'dists': c.dists, 'cost': c.cost} for c in candidates[i_loc]],
+                            'dists': c.dists, 'cost': c.cost,
+                            'is_plastic': c.is_plastic} for c in candidates[i_loc]],
             'chosen': c_idx,
             'assignment': assignment,
             'component': cid,
