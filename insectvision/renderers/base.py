@@ -2,6 +2,7 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
+import glfw
 from pathlib import Path
 import random
 from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple, Sequence, Any, List
@@ -848,18 +849,22 @@ class Renderer:
                     glDispatchCompute((res[0] + 15) // 16, (res[1] + 15) // 16, 1)
                     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
 
-    # TODO: The following public methods should probably be all under the hood
-
     def flush(self) -> Optional['VisualOutput']:
         """
         Blocks until all queued frames on the GPU are rendered, downloads the data, and resets the counter.
-        This is used to retrieve a full batch, or the final partial batch at the end of a simulation.
         """
-
         if self._frame_index == 0:
             return None
 
-        glFinish()  # Block until all rendering commands are complete
+        # Block until all rendering commands are complete
+        t0 = glfw.get_time()
+        glFinish()
+        stall_time = glfw.get_time() - t0
+
+        # Account for GPU stall time in the context clock
+        if self._context is not None:
+            self._context._total_wall_time += stall_time
+            self._context._last_wall_time = glfw.get_time()
 
         frames_to_read = min(int(self._frame_index), self._batch_size)
 

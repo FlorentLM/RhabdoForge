@@ -174,6 +174,15 @@ class Context:
         """Total number of ticks/frames processed."""
         return self._frame_count
 
+    def reset_timers(self) -> None:
+        """Resets all simulation and hardware frame counters and clocks."""
+        now = glfw.get_time()
+        self._last_wall_time = now
+        self._total_wall_time = 0.0
+        self._total_time = 0.0
+        self._frame_count = 0
+        self._frame_times.clear()
+
     def tick(self) -> float:
         """
         Advance both clocks by one step.
@@ -466,12 +475,21 @@ class Context:
 
         return True
 
-    def run_headless(self, steps: Optional[int] = None) -> Generator:
+    def run_headless(self, steps: Optional[int] = None, reset_timers: bool = False) -> Generator:
         """Generator for a headless loop (ticks the clock and returns dt)."""
+        if reset_timers:
+            self.reset_timers()
+
+        # Anchor wall clock right before the first tick
+        self._last_wall_time = glfw.get_time()
+
         start_frame = self.frame_count
         while steps is None or (self.frame_count - start_frame) < steps:
             self.tick()
             yield self.dt
+
+        # Anchor again so any post-loop CPU processing doesn't corrupt subsequent runs
+        self._last_wall_time = glfw.get_time()
 
     def input(self) -> None:
 

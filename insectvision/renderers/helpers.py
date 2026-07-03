@@ -7,115 +7,60 @@ from insectvision.compound_eyes import Model
 from insectvision.geometry.circular import wrap_angle
 
 
-class VisualOutput:
+class SignalView:
     """
-    Per-rhabdomere output array with various biological pathway mappings conveniences.
-
-    The renderers return a float array where the last axis is (R/UV, G, B, radiance).
-    This class supports both single snapshots (shape: N, 4) and timeseries (shape: T, N, 4).
-
-    Layouts / pathways:
-        .per_ommatidium    -> (..., N, R, 4) Physical ommatidia grouping.
-        .per_cartridge     -> (..., N, R, 4) Neural superposition grouping.
-        .per_rhabdomere(i) -> (..., N, 4)    Specific rhabdomere type across all cartridges.
-        .peripheral_signal -> (..., N, 4)    Pooled R1-R6 (LMC pathway for motion).
-        .central_signal    -> (..., N, 4)    Central R7/R8 (Medulla colour pathway).
-        .lmc_input         -> (..., N, 4)    Alias for peripheral_signal.
-        .pale_input        -> (..., N, 4)    Alias for central_signal.
-
-    Signal analysis:
-        .colours      -> (..., 3) The adapted spectral response.
-        .adaptation   -> (..., )  The gain factor (state of the biological system).
-        .radiance     -> (..., )  Adapted intensity (mean of adapted RGB).
-        .raw_radiance -> (..., )  Physical light intensity recovered by 'un-baking'
-                                  the adaptation factor.
+    Thin wrapper around any array ending in (R, G, B, gain).
+    (allows channel extraction chaining, e.g. 'output.per_cartridge.radiance')
     """
-    __slots__ = ('_data', '_model', '_shape', '_is_time_series')
+    __slots__ = ('_data',)
 
-    def __init__(self, data: np.ndarray, model: 'Model'):
-
-        if data.shape[-2] % model.shape[1] != 0:
-            raise ValueError(f'data length {data.shape[-2]} not divisible by R={model.shape[1]}')
-
+    def __init__(self, data: np.ndarray):
         self._data = data
-        self._model = model
-
-        if data.ndim == 3:
-            self._is_time_series = True
-            self._shape = int(data.shape[0]), int(data.shape[-2] // model.shape[1]), int(model.shape[1])
-        else:
-            self._is_time_series = False
-            self._shape = int(data.shape[-2] // model.shape[1]), int(model.shape[1])
 
     def __repr__(self) -> str:
-        t_str = f'Time={self.shape[0]}, ' if self._is_time_series else ''
-        return f'VisualOutput({t_str}N={self.shape[-2]}, R={self.shape[-1]})'
+        return f'SignalView(shape={self.shape})'
+
+    def __len__(self) -> int:
+        return self._data.shape[0]
 
     def __bool__(self) -> bool:
         return self._data is not None and self._data.size > 0
 
-    def __getitem__(self, s: Any) -> Union['VisualOutput', np.ndarray]:
-        sliced_data = self._data[s]
-        if isinstance(sliced_data, np.ndarray) and sliced_data.ndim >= 2:
-            # Check if last axis is still 4 (RGB + gain) and second to last is still rhabdomere count
-            if sliced_data.shape[-1] == self._data.shape[-1] and sliced_data.shape[-2] == self._data.shape[-2]:
-                return VisualOutput(sliced_data, self._model)
-        # For arbitrary slices (e.g. getting a specific rhabdomere or channel) fallback to returning a raw array
-        return sliced_data
+    def copy(self) -> 'SignalView':
+        """Returns a deep copy of the view and its data."""
+        return SignalView(self._data.copy())
 
-    def __len__(self) -> int:
-        return self.shape[0]
+    def __eq__(self, other: Any) -> Union[bool, np.ndarray]:
+        other_data = other._data if isinstance(other, SignalView) else other
+        return self._data == other_data
 
-    def __array__(self,
-            dtype: npt.DTypeLike = None,
-            copy: Optional[bool] = None
-        ) -> np.ndarray:
-        if dtype:
+    def __array__(self, dtype: npt.DTypeLike = None, copy: Optional[bool] = None) -> np.ndarray:
+        if dtype is not None or copy is not None:
             return np.array(object=self._data, dtype=dtype, copy=copy)
         return self._data
 
-    @property
-    def shape(self) -> Tuple[int, int] | Tuple[int, int, int]:
-        return self._shape
-
-    @property
-    def size(self) -> int:
-        return int(np.prod(self._shape))
-
-    @property
-    def ndim(self) -> int:
-        return len(self._shape)
-
-    @classmethod
-    def from_history(cls, history: Sequence['VisualOutput'] | Sequence[np.ndarray], model: Optional['Model'] = None) -> 'VisualOutput':
-        """
-        Stacks or concatenates multiple inputs into a single timeseries VisualOutput.
-        """
-        if not history:
-            raise ValueError('History is empty')
-
-        arrays = [np.asarray(item) for item in history]
-        normalized = [a[np.newaxis, ...] if a.ndim == 2 else a for a in arrays]
-
-        # Discovery: find the model from the first VisualOutput in the list
-        found_model = model
-        if found_model is None:
-            for item in history:
-                if isinstance(item, VisualOutput):
-                    found_model = item._model
-                    break
-
-        if found_model is None:
-            raise ValueError('A Model must be provided if the history consists only of raw arrays.')
-
-        combined_data = np.concatenate(normalized, axis=0)
-
-        return cls(combined_data, found_model)
+    def __getitem__(self, idx: Any) -> Union['SignalView', np.ndarray]:
+        res = self._data[idx]
+        if isinstance(res, np.ndarray) and res.ndim >= 1 and res.shape[-1] == 4:
+            return SignalView(res)
+        return res
 
     @property
     def data(self) -> np.ndarray:
         """The raw per-rhabdomere array."""
         return self._data
+
+    @property
+    def shape(self) -> Tuple[int, ...]:
+        return self._data.shape
+
+    @property
+    def size(self) -> int:
+        return self._data.size
+
+    @property
+    def ndim(self) -> int:
+        return self._data.ndim
 
     # Channel helpers
 
@@ -140,7 +85,7 @@ class VisualOutput:
     @property
     def raw_radiance(self) -> np.ndarray:
         """
-        Light intensity hitting the eye before adaptation.
+        The light intensity hitting the eye before adaptation.
         Recovered by 'un-baking' the adaptation factor.
         """
         return np.mean(self.colours, axis=-1) / (self.adaptation + 1e-6)
@@ -148,63 +93,166 @@ class VisualOutput:
     @property
     def radiance(self) -> np.ndarray:
         """
-        Intensity of the adapted signal (mean of the 3 colour channels).
+        The mean intensity of the adapted signal (mean of the colour channels).
         """
         return np.mean(self.colours, axis=-1)
 
-    # Level 1: raw grids
+    def normalized(self) -> 'SignalView':
+        """Returns the signal scaled to [0, 1] based on its own min/max."""
+        d = self._data
+        low, high = d.min(), d.max()
+        return SignalView((d - low) / (high - low + 1e-8))
+
+
+class VisualOutput(SignalView):
+    """
+    Per-rhabdomere output array with various biological pathway mappings conveniences.
+
+    The renderers return a float array where the last axis is (R/UV, G, B, radiance).
+    This class supports both single snapshots (shape: N, 4) and timeseries (shape: T, N, 4).
+
+    Layouts / pathways:
+        .per_ommatidium    -> (..., N, R, 4) Physical ommatidia grouping.
+        .per_cartridge     -> (..., N, R, 4) Neural superposition grouping.
+        .per_rhabdomere(i) -> (..., N, 4)    Specific rhabdomere type across all cartridges.
+        .peripheral_signal -> (..., N, 4)    Pooled R1-R6 (LMC pathway for motion).
+        .central_signal    -> (..., N, 4)    Central R7/R8 (Medulla colour pathway).
+        .lmc_input         -> (..., N, 4)    Alias for peripheral_signal.
+        .pale_input        -> (..., N, 4)    Alias for central_signal.
+
+    Signal analysis:
+        .colours      -> (..., 3) The adapted spectral response.
+        .adaptation   -> (..., )  The gain factor (state of the biological system).
+        .radiance     -> (..., )  Adapted intensity (mean of adapted RGB).
+        .raw_radiance -> (..., )  Physical light intensity recovered by 'un-baking'
+                                  the adaptation factor.
+    """
+    __slots__ = ('_model', '_coords', '_is_time_series')
+
+    def __init__(self, data: Any, model: 'Model', coords: str = 'rhabdomeres', is_time_series: Optional[bool] = None):
+        super().__init__(np.asarray(data))
+        self._model = model
+        self._coords = coords
+
+        if data.shape[-2] % model.shape[1] != 0 and coords == 'rhabdomeres':
+            raise ValueError(f'data length {data.shape[-2]} not divisible by R={model.shape[1]}')
+
+        if is_time_series is None:
+            self._is_time_series = (self.ndim == 3 and self._coords == 'rhabdomeres') or (
+                        self.ndim == 4 and self._coords == 'ommatidia')
+        else:
+            self._is_time_series = is_time_series
+
+    def __repr__(self) -> str:
+        t_str = f'Time={self.shape[0]}, ' if self._is_time_series else ''
+        return f'VisualOutput({t_str}N={self.shape[-2]}, coords={self._coords})'
+
+    def __getitem__(self, idx: Any) -> Union['VisualOutput', SignalView, np.ndarray]:
+        res = self._data[idx]
+        if isinstance(res, np.ndarray) and res.ndim >= 1:
+            if res.shape[-1] == 4:
+                # Check if spatial dimension matches Model layout
+                expected_spatial = self._model.shape[0] if self._coords == 'ommatidia' else self._model.size
+                if res.ndim >= 2 and res.shape[-2] == expected_spatial:
+                    return VisualOutput(res, self._model, self._coords, is_time_series=None)
+                # Degrade to SignalView if spatial dimension broke
+                return SignalView(res)
+        return res
+
+    def copy(self) -> 'VisualOutput':
+        """Returns a deep copy of the visual output, preserving the model."""
+        return VisualOutput(self._data.copy(), self._model, self._coords, self._is_time_series)
+
+    @classmethod
+    def from_history(cls, history: Sequence['VisualOutput'] | Sequence[np.ndarray],
+                     model: Optional['Model'] = None) -> 'VisualOutput':
+        """
+        Stacks or concatenates multiple inputs into a single timeseries VisualOutput.
+        """
+        if not history:
+            raise ValueError('History is empty')
+
+        arrays = [np.asarray(item) for item in history]
+        normalized = [a[np.newaxis, ...] if a.ndim == 2 else a for a in arrays]
+
+        # find the model from the first VisualOutput in the list
+        found_model = model
+        if found_model is None:
+            for item in history:
+                if isinstance(item, VisualOutput):
+                    found_model = item._model
+                    break
+
+        if found_model is None:
+            raise ValueError('A Model must be provided if the history consists only of raw arrays.')
+
+        combined_data = np.concatenate(normalized, axis=0)
+
+        return cls(combined_data, found_model, coords='rhabdomeres', is_time_series=True)
+
     @property
-    def per_ommatidium(self) -> np.ndarray:
+    def latest(self) -> 'VisualOutput':
+        """Returns the last frame as a 2D VisualOutput."""
+        if self._is_time_series:
+            return VisualOutput(self._data[-1], self._model, self._coords, is_time_series=False)
+        return self
+
+    @property
+    def per_ommatidium(self) -> 'VisualOutput':
         """Returns (..., N, R, 4) array of all rhabdomere outputs, per ommatidium."""
-        return self._data.reshape(*self.shape, 4)
+        if self._coords == 'ommatidia':
+            return self
+
+        N, R = self._model.shape[0], self._model.shape[1]
+        prefix = self.shape[:-2]
+        data = self._data.reshape(*prefix, N, R, 4)
+        return VisualOutput(data, self._model, coords='ommatidia', is_time_series=self._is_time_series)
 
     @property
-    def per_cartridge(self) -> np.ndarray:
+    def per_cartridge(self) -> 'VisualOutput':
         """Returns (..., N, R, 4) array of all rhabdomere outputs, per cartridge."""
-
         if not self._model.neural_superposition:
             return self.per_ommatidium
 
-        if self._data.ndim == 2:
-            return self._data[self._model.cartridge_indices]
-        return self._data[:, self._model.cartridge_indices, :]
+        idx = self._model.cartridge_indices
+        data = self._data[:, idx] if self._is_time_series else self._data[idx]
 
-    # Level 2: type-based access
-    def per_rhabdomere(self, index: int) -> np.ndarray:
+        N, R = self._model.shape[0], self._model.shape[1]
+        prefix = data.shape[:-2]
+        data = data.reshape(*prefix, N, R, 4)
+        return VisualOutput(data, self._model, coords='ommatidia', is_time_series=self._is_time_series)
+
+    def per_rhabdomere(self, index: int) -> 'VisualOutput':
         """Returns (..., N, 4) array for a specific rhabdomere index (e.g. 0 for R1)."""
-        return self.per_cartridge[..., index, :]
+        data = self.per_cartridge.data[..., index, :]
+        return VisualOutput(data, self._model, coords='ommatidia', is_time_series=self._is_time_series)
 
-    # Level 3: biological pathways
     @property
-    def peripheral_signal(self) -> np.ndarray:
+    def peripheral_signal(self) -> 'VisualOutput':
         """The pooled response of all peripheral rhabdomeres (LMC-pathway)."""
         if self.shape[-1] == 1:
-            return self.per_ommatidium[..., 0, :]
+            return VisualOutput(self.per_ommatidium.data[..., 0, :], self._model, coords='ommatidia',
+                                is_time_series=self._is_time_series)
 
-        periph_indices = self._model.bundle.peripheral_indices
-        if len(periph_indices) == 0:
-            return self.per_cartridge[..., 0, :]
-
-        return np.mean(self.per_cartridge[..., periph_indices, :], axis=-2)
+        periph_idx = self._model.bundle.peripheral_indices
+        data = np.mean(self.per_cartridge.data[..., periph_idx, :], axis=-2)
+        return VisualOutput(data, self._model, coords='ommatidia', is_time_series=self._is_time_series)
 
     @property
-    def central_signal(self) -> np.ndarray:
+    def central_signal(self) -> 'VisualOutput':
         """The response of the central rhabdomere (Medulla colour pathway)."""
-        if self.shape[-1] == 1:
-            return self.per_ommatidium[..., 0, :]
-        return self.per_cartridge[..., getattr(self._model.bundle, 'center_index', 0), :]
+        c_idx = getattr(self._model.bundle, 'center_index', 0)
+        return self.per_rhabdomere(c_idx)
 
     @property
-    def lmc_input(self) -> np.ndarray:
+    def lmc_input(self) -> 'VisualOutput':
         """Alias to peripheral_signal"""
         return self.peripheral_signal
 
     @property
-    def pale_input(self) -> np.ndarray:
+    def pale_input(self) -> 'VisualOutput':
         """Alias to central_signal"""
         return self.central_signal
-
-    # Plotting methods
 
     def plot(self,
              ax: Optional['Axes'] = None,
@@ -213,7 +261,7 @@ class VisualOutput:
              uv_encoding: bool = False,
              draw_edges: bool = False,
              projection: str = 'equirectangular'
-        ) -> 'Axes':
+             ) -> 'Axes':
         """
         Displays the visual output as a gapless Voronoi tessellation (like in the first person shader).
         If this VisualOutput contains multiple timesteps, this plots the last one.
@@ -232,34 +280,41 @@ class VisualOutput:
                 fig = plt.figure(figsize=(10, 5))
                 ax = fig.add_subplot(111, projection=projection)
 
+        # Resolve pathway using self's own properties
         if pathway == 'all':
-            rgb = self.colours[-1] if self._is_time_series else self.colours
-            az = self._model.rhabdomeres.azimuth
-            el = self._model.rhabdomeres.elevation
+            view = self
+            az, el = self._model.rhabdomeres.azimuth, self._model.rhabdomeres.elevation
+        else:
+            if self._coords != 'rhabdomeres':
+                raise ValueError("Cannot derive pathways from data already grouped by ommatidia.")
 
-        elif pathway in ('peripheral', 'periph', 'central', 'ommatidium', 'omm', 'cartridge'):
             match pathway:
                 case 'peripheral' | 'periph':
-                    sig = self.peripheral_signal
+                    view = self.peripheral_signal
                 case 'central':
-                    sig = self.central_signal
+                    view = self.central_signal
                 case 'ommatidium' | 'omm':
-                    sig = np.mean(self.per_ommatidium, axis=-2)
+                    view = self.per_ommatidium
                 case 'cartridge':
-                    sig = np.mean(self.per_cartridge, axis=-2)
+                    view = self.per_cartridge
+                case _:
+                    raise ValueError(
+                        "Invalid pathway, must be 'all', 'peripheral', 'central', 'ommatidium', or 'cartridge'")
 
-            rgb = sig[-1, :, :3] if self._is_time_series else sig[:, :3]
-            az = self._model.ommatidia.azimuth
-            el = self._model.ommatidia.elevation
+            az, el = self._model.ommatidia.azimuth, self._model.ommatidia.elevation
 
-            # Peripheral is greyscale
-            if 'periph' in pathway:
-                rgb = np.repeat(np.mean(rgb, axis=-1, keepdims=True), 3, axis=-1)   # TODO: use weights?
-        else:
-            raise ValueError("Invalid pathway, must be must be 'all', 'peripheral', 'central', 'ommatidium', or 'cartridge'")
+        # Get latest data
+        data = view.data[-1] if view._is_time_series else view.data
+        if data.ndim == 3:  # if shape is (N, R, 4), condense to (N, 4)
+            data = np.mean(data, axis=-2)
+
+        rgb = np.clip(data[..., :3], 0.0, 1.0).copy()
+
+        # Peripheral is greyscale
+        if 'periph' in pathway:
+            rgb = np.repeat(np.mean(rgb, axis=-1, keepdims=True), 3, axis=-1)  # TODO: use weights?
 
         # False colour modes
-        rgb = np.clip(rgb, 0.0, 1.0).copy()
         if uv_encoding:
             rgb[:, 2] = np.clip(rgb[:, 2] + rgb[:, 0], 0.0, 1.0)
         elif false_colors:
@@ -267,12 +322,9 @@ class VisualOutput:
 
         # Voronoi cells on the unwrapped cylinder
         pts = np.column_stack((az, el))
-
         pts_left = np.column_stack((az - 2 * np.pi, el))
         pts_right = np.column_stack((az + 2 * np.pi + 1e-6, el))
-
         cap_x = np.linspace(-2 * np.pi, 2 * np.pi, max(100, len(az) // 10))
-
         pts_top = np.column_stack((cap_x, np.full_like(cap_x, np.pi / 2 + 0.5)))
         pts_bot = np.column_stack((cap_x, np.full_like(cap_x, -np.pi / 2 - 0.5)))
 
@@ -296,18 +348,19 @@ class VisualOutput:
 
         # Anti-aliasing workaround: 'face' draws a mini border of the polygon's colour over the gaps left by matplotlib
         edge_c = 'white' if draw_edges else 'face'
-        ax.add_collection(PolyCollection(polygons, facecolors=rgb, edgecolors=edge_c, linewidths=0.5, antialiaseds=True))
+        ax.add_collection(
+            PolyCollection(polygons, facecolors=rgb, edgecolors=edge_c, linewidths=0.5, antialiaseds=True))
 
         return ax
 
     def plot_timeseries(self,
-            ax: Optional['Axes'] = None,
-            pathway: str = 'peripheral',
-            false_colors: bool = False,
-            uv_encoding: bool = False,
-            max_items: int = 100,
-            sort_by: str = 'azimuth',
-        ) -> 'Axes':
+                        ax: Optional['Axes'] = None,
+                        pathway: str = 'peripheral',
+                        false_colors: bool = False,
+                        uv_encoding: bool = False,
+                        max_items: int = 100,
+                        sort_by: str = 'azimuth',
+                        ) -> 'Axes':
         """
         Plots a spatio-temporal heatmap of the visual output over time.
         """
@@ -322,26 +375,38 @@ class VisualOutput:
             fig, ax = plt.subplots(figsize=(10, max(4, min(10, max_items * 0.1))))
 
         if pathway == 'all':
-            data = self.colours
+            view = self
             az = self._model.rhabdomeres.azimuth
+        else:
+            if self._coords != 'rhabdomeres':
+                raise ValueError('Cannot derive pathways from data already grouped by ommatidia.')
 
-        elif pathway in ('peripheral', 'periph', 'central', 'ommatidium', 'omm', 'cartridge'):
             match pathway:
                 case 'peripheral' | 'periph':
-                    data = np.repeat(np.mean(self.peripheral_signal[..., :3], axis=-1, keepdims=True), 3, axis=-1)
+                    view = self.peripheral_signal
                 case 'central':
-                    data = self.central_signal[..., :3]
+                    view = self.central_signal
                 case 'ommatidium' | 'omm':
-                    data = np.mean(self.per_ommatidium, axis=-2)[..., :3]
+                    view = self.per_ommatidium
                 case 'cartridge':
-                    data = np.mean(self.per_cartridge, axis=-2)[..., :3]
+                    view = self.per_cartridge
+                case _:
+                    raise ValueError(
+                        "Invalid pathway, must be 'all', 'peripheral', 'central', 'ommatidium', or 'cartridge'")
 
             az = self._model.ommatidia.azimuth
 
-        else:
-            raise ValueError("Invalid pathway, must be 'all', 'peripheral', 'central', 'ommatidium', or 'cartridge'")
+        data = view.data
+        if data.ndim == 4:  # (T, N, R, 4)
+            data = np.mean(data, axis=-2)
 
-        data = np.clip(data, 0.0, 1.0)
+        data = np.clip(data[..., :3], 0.0, 1.0)
+
+        # Peripheral is greyscale
+        if 'periph' in pathway:
+            data = np.repeat(np.mean(data, axis=-1, keepdims=True), 3, axis=-1)
+
+        # False colour modes
         if uv_encoding:
             data[..., 2] = np.clip(data[..., 2] + data[..., 0], 0.0, 1.0)
         elif false_colors:

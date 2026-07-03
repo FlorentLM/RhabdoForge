@@ -113,9 +113,11 @@ if __name__ == "__main__":
     # renderer.photon_concentration = 0.2
 
 
-    # Run
-    if not HEADLESS:
 
+    # Run simulation
+
+    if not HEADLESS:
+        # Interactive mode
         while context.run_interactive(use_dashboard=True):
 
             context.input()  # processes inputs from keyboard / gamepad etc (optional)
@@ -127,10 +129,9 @@ if __name__ == "__main__":
             output = renderer.step()
 
             context.display()  # displays to the viewport (also optional)
-    
+
     else:
         # Headless and batched mode
-
         print(f"Running headless simulation for {BATCH_SIZE} steps...")
 
         all_data = []
