@@ -176,7 +176,16 @@ class SceneBaker:
         """Initial material data packing for all mesh assets into GPU buffers."""
 
         mesh_assets = {inst.asset for inst in self.scene.mesh_instances}
+
+        # allocate a dummy buffer when there are no meshes
         if not mesh_assets:
+            self._material_assets = []
+            dummy_data = np.zeros((1, 4), dtype=np.uint32)
+            self.bvh_buffers.allocate('materials',
+                                      dtype=np.uint32,
+                                      count=dummy_data.size,
+                                      data=dummy_data,
+                                      usage=GL_STATIC_DRAW)
             return
 
         self._material_assets = list(mesh_assets)
