@@ -5,6 +5,7 @@ const int RNG_PSEUDO     = 0;
 const int RNG_HALTON     = 1;
 const int RNG_STRATIFIED = 2;
 const int RNG_FIBONACCI  = 3;
+const int RNG_HAMMERSLEY = 4;
 
 const int MODE_GAUSSIAN  = 0;
 const int MODE_AIRY      = 1;
@@ -127,6 +128,16 @@ float halton_sequence(uint index, uint base) {
     return r;
 }
 
+// Radical-inverse for Hammersley
+float radical_inverse_v2(uint bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10; // / 0x100000000
+}
+
 uint pcg_hash(uint seed) {
     uint state = seed * 747796405u + 2891336453u;
     uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
@@ -175,6 +186,21 @@ Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rhab_idx, u
 
         // Ensure u1 never hits 0.0 to avoid log(0) in importance sampling
         s.u1 = clamp(1.0 - s.u1, 1e-6, 1.0);
+    }
+   else if (mode == RNG_HAMMERSLEY) {
+        uint scramble_seed = pcg_hash(rhab_idx * 1973u + dither_counter * 26699u);
+        float offset1 = random_float(scramble_seed);
+        float offset2 = random_float(scramble_seed);
+
+        float u1_base = float(sample_idx) / float(nb_samples);
+        float u2_base = radical_inverse_v2(sample_idx);
+
+        // Cranley-Patterson rotation
+        s.u1 = fract(u1_base + offset1);
+        s.u2 = fract(u2_base + offset2);
+
+        // Clamp u1 for the Gaussian/Airy log math
+        s.u1 = clamp(s.u1, 1e-6, 1.0);
     }
     else { // RNG_PSEUDO
         uint rng_state = seed;
