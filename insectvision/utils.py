@@ -55,6 +55,9 @@ class RandomnessMode(IntEnum):
     Pseudo = 0      # Standard PCG White Noise
     Halton = 1      # Quasi-random low-discrepancy
     Stratified = 2  # Grid-based jittered sampling
+    Fibonacci = 3   # Fibonacci disk (Vogel's method), a spiral pattern based on the golden ratio
+    # Poisson = 4     # TODO
+    # Hammersley = 5  # TODO
 
 
 class SamplingMode(IntEnum):
@@ -128,7 +131,7 @@ def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable'
     return wrapper
 
 
-# TODO: Other luts for other sensitivity profiles
+# TODO: Other luts for other sensitivity profiles?
 
 def airy_sensitivity_lut(size: int = 256) -> np.ndarray:
     """
@@ -149,6 +152,31 @@ def airy_sensitivity_lut(size: int = 256) -> np.ndarray:
         lut_data.append(float(val))
 
     return np.array(lut_data, dtype=np.float32)
+
+
+def lorentzian_sensitivity_lut(size: int = 256) -> np.ndarray:
+    """
+    Lorentzian (Cauchy) profile.
+    Heavy tails: stays brighter further from the centre compared to a Gaussian.
+    """
+    x_vals = np.linspace(0, 4.0, size)
+    # At x=0.5, val = 1 / (1 + (0.5/0.5)^2) = 0.5
+    lut_data = 1.0 / (1.0 + (x_vals / 0.5) ** 2)
+    return np.array(lut_data, dtype=np.float32)
+
+
+def leakage_sensitivity_lut(size: int = 256, pedestal_height: float = 0.05, pedestal_width: float = 3.0) -> np.ndarray:
+    """
+    Sum-of-Gaussians.
+    Simulates a narrow optical core with a wide 'pedestal' caused by
+    light leakage between ommatidia (common in insect eye measurements).
+    """
+    x_vals = np.linspace(0, 4.0, size)
+    core = np.exp(-2.77258872224 * x_vals ** 2) # Core Gaussian (standard GAUSS_K)
+    wide = np.exp(-2.77258872224 * (x_vals / pedestal_width) ** 2)   # wide Gaussian pedestal
+    # re-normalised so peak is 1.0
+    combined = (core + pedestal_height * wide) / (1.0 + pedestal_height)
+    return np.array(combined, dtype=np.float32)
 
 
 def norm_minmax(

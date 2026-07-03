@@ -4,16 +4,16 @@
 const int RNG_PSEUDO     = 0;
 const int RNG_HALTON     = 1;
 const int RNG_STRATIFIED = 2;
+const int RNG_FIBONACCI  = 3;
 
 const int MODE_GAUSSIAN  = 0;
 const int MODE_AIRY      = 1;
 
-const float PI = 3.14159265359;
-const float HPI = PI * 0.5;
-const float TWOPI = 2.0 * PI;
-
-// Constant k = 4 * log(2) for a Gaussian with FWHM = acceptance_angle
-const float GAUSS_CONSTANT_K = 2.77258872224;
+const float PI = 3.141592653589793;
+const float HPI = 1.5707963267948966;
+const float TWOPI = 6.283185307179586;
+const float GOLDEN_RATIO_ANGL = 2.399963229728653; // pi * (3.0 - sqrt(5.0))
+const float GAUSS_CONSTANT_K = 2.772588722239781;  // 4 * log(2), for a Gaussian with FWHM = acceptance_angle
 
 struct Material {
     uint texture_idx;       // 0xFFFFFFFF means no texture (use base_color)
@@ -162,6 +162,20 @@ Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rhab_idx, u
         s.u1 = (cell_x + random_float(rng_state)) / grid_size;
         s.u2 = (cell_y + random_float(rng_state)) / grid_size;
     }
+    else if (mode == RNG_FIBONACCI) {
+        // Vogel's Method
+        // u1: normalized radius [0, 1]
+        // u2: normalized rotation [0, 1] (will be multiplied by 2*pi later)
+
+        // rotate the whole spiral per frame
+        float rotation_offset = float(dither_counter % 64u) / 64.0;
+
+        s.u1 = (float(sample_idx) + 0.5) / float(nb_samples);
+        s.u2 = fract((float(sample_idx) * GOLDEN_RATIO_ANGL / TWOPI) + rotation_offset);
+
+        // Ensure u1 never hits 0.0 to avoid log(0) in importance sampling
+        s.u1 = clamp(1.0 - s.u1, 1e-6, 1.0);
+    }
     else { // RNG_PSEUDO
         uint rng_state = seed;
         s.u1 = random_float(rng_state);
@@ -175,17 +189,24 @@ Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rhab_idx, u
 float get_sensitivity(int mode, float dx, float dy,
                       RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os) {
 
-    // Radial distance in 'elliptical space' (to handle anisotropy)
     float g_min = dx / max(rd.curr_acc_angles.x, 1e-15);
     float g_maj = dy / max(rd.curr_acc_angles.y, 1e-15);
     float radial_dist = sqrt(g_min*g_min + g_maj*g_maj);
 
-     if (mode == MODE_AIRY) {
-        // The LUT goes from 0.0 to 4.0 FWHM
-        float lut_index = radial_dist * (255.0 / 4.0);
+    if (mode == MODE_AIRY) {
+        // Map 0.0 -> 4.0 FWHM to 0.0 -> 255.0 index
+        float float_idx = radial_dist * (255.0 / 4.0);
 
-        // Clamp and return
-        return airy_lut[int(clamp(lut_index, 0.0, 255.0))];
+        // Linear interpolation
+        int i0 = int(floor(float_idx));
+        int i1 = i0 + 1;
+        float t = fract(float_idx);
+
+        // Clamp to stay within 256-element array
+        i0 = clamp(i0, 0, 255);
+        i1 = clamp(i1, 0, 255);
+
+        return mix(airy_lut[i0], airy_lut[i1], t);
     }
     else { // MODE_GAUSSIAN
         return exp(-GAUSS_CONSTANT_K * (radial_dist * radial_dist));
