@@ -47,7 +47,7 @@ class SignalView:
 
     @property
     def data(self) -> np.ndarray:
-        """The raw per-rhabdomere array."""
+        """The raw array."""
         return self._data
 
     @property
@@ -134,29 +134,44 @@ class VisualOutput(SignalView):
         self._model = model
         self._coords = coords
 
-        if data.shape[-2] % model.shape[1] != 0 and coords == 'rhabdomeres':
-            raise ValueError(f'data length {data.shape[-2]} not divisible by R={model.shape[1]}')
+        if self._data.shape[-2] % model.shape[1] != 0 and coords == 'rhabdomeres':
+            raise ValueError(f'data length {self._data.shape[-2]} not divisible by R={model.shape[1]}')
 
         if is_time_series is None:
-            self._is_time_series = (self.ndim == 3 and self._coords == 'rhabdomeres') or (
-                        self.ndim == 4 and self._coords == 'ommatidia')
+            self._is_time_series = (self.ndim == 3 and self._coords == 'rhabdomeres') or \
+                                   (self.ndim == 4 and self._coords == 'ommatidia') or \
+                                   (self.ndim == 3 and self._coords == 'ommatidia' and self._data.shape[-2] ==
+                                    model.shape[0])
         else:
             self._is_time_series = is_time_series
 
     def __repr__(self) -> str:
         t_str = f'Time={self.shape[0]}, ' if self._is_time_series else ''
-        return f'VisualOutput({t_str}N={self.shape[-2]}, coords={self._coords})'
+        if self._coords == 'rhabdomeres':
+            g_str = ''
+            N = self.shape[-2] // self._model.shape[1]
+        else:
+            g_str = ', group=omm/cart'
+            N = self._model.shape[0]
+        return f'VisualOutput({t_str}N={N}, R={self._model.shape[1]}{g_str})'
 
     def __getitem__(self, idx: Any) -> Union['VisualOutput', SignalView, np.ndarray]:
         res = self._data[idx]
-        if isinstance(res, np.ndarray) and res.ndim >= 1:
-            if res.shape[-1] == 4:
-                # Check if spatial dimension matches Model layout
-                expected_spatial = self._model.shape[0] if self._coords == 'ommatidia' else self._model.size
-                if res.ndim >= 2 and res.shape[-2] == expected_spatial:
-                    return VisualOutput(res, self._model, self._coords, is_time_series=None)
-                # Degrade to SignalView if spatial dimension broke
-                return SignalView(res)
+        if isinstance(res, np.ndarray) and res.ndim >= 1 and res.shape[-1] == 4:
+            N = self._model.shape[0]
+            R = self._model.shape[1]
+
+            # Pattern 1: (..., N*R, 4)
+            if res.shape[-2] == N * R:
+                return VisualOutput(res, self._model, coords='rhabdomeres', is_time_series=res.ndim == 3)
+            # Pattern 2: (..., N, R, 4)
+            elif res.ndim >= 2 and res.shape[-3:-1] == (N, R):
+                return VisualOutput(res, self._model, coords='ommatidia', is_time_series=res.ndim == 4)
+            # Pattern 3: (..., N, 4) -> Pooled pathway
+            elif res.shape[-2] == N:
+                return VisualOutput(res, self._model, coords='ommatidia', is_time_series=res.ndim == 3)
+
+            return SignalView(res)
         return res
 
     def copy(self) -> 'VisualOutput':
@@ -201,7 +216,9 @@ class VisualOutput(SignalView):
     def per_ommatidium(self) -> 'VisualOutput':
         """Returns (..., N, R, 4) array of all rhabdomere outputs, per ommatidium."""
         if self._coords == 'ommatidia':
-            return self
+            if self._data.ndim >= 3 and self._data.shape[-3:-1] == (self._model.shape[0], self._model.shape[1]):
+                return self
+            raise ValueError('Data is already pooled/flattened and cannot be unpacked to ommatidia.')
 
         N, R = self._model.shape[0], self._model.shape[1]
         prefix = self.shape[:-2]
@@ -214,12 +231,18 @@ class VisualOutput(SignalView):
         if not self._model.neural_superposition:
             return self.per_ommatidium
 
-        idx = self._model.cartridge_indices
-        data = self._data[:, idx] if self._is_time_series else self._data[idx]
+        # convert back to a flat (..., N*R, 4) representation first so indices apply correctly
+        if self._coords == 'rhabdomeres':
+            flat_data = self._data
+        elif self._coords == 'ommatidia' and self._data.ndim >= 3 and self._data.shape[-3:-1] == (self._model.shape[0],
+                                                                                                  self._model.shape[1]):
+            prefix = self._data.shape[:-3]
+            flat_data = self._data.reshape(*prefix, self._model.size, 4)
+        else:
+            raise ValueError("Data cannot be grouped into cartridges from its current pooled shape.")
 
-        N, R = self._model.shape[0], self._model.shape[1]
-        prefix = data.shape[:-2]
-        data = data.reshape(*prefix, N, R, 4)
+        idx = self._model.cartridge_indices
+        data = np.take(flat_data, idx, axis=-2)
         return VisualOutput(data, self._model, coords='ommatidia', is_time_series=self._is_time_series)
 
     def per_rhabdomere(self, index: int) -> 'VisualOutput':
@@ -230,12 +253,17 @@ class VisualOutput(SignalView):
     @property
     def peripheral_signal(self) -> 'VisualOutput':
         """The pooled response of all peripheral rhabdomeres (LMC-pathway)."""
-        if self.shape[-1] == 1:
-            return VisualOutput(self.per_ommatidium.data[..., 0, :], self._model, coords='ommatidia',
-                                is_time_series=self._is_time_series)
+        if self._model.shape[1] == 1:
+            return self.per_ommatidium.per_rhabdomere(0)
 
-        periph_idx = self._model.bundle.peripheral_indices
-        data = np.mean(self.per_cartridge.data[..., periph_idx, :], axis=-2)
+        periph_idx = getattr(self._model.bundle, 'peripheral_indices', [])
+
+        pc = self.per_cartridge.data  # (..., N, R, 4)
+        if len(periph_idx) == 0:
+            data = pc[..., 0, :]
+        else:
+            data = np.mean(pc[..., periph_idx, :], axis=-2)
+
         return VisualOutput(data, self._model, coords='ommatidia', is_time_series=self._is_time_series)
 
     @property
@@ -263,8 +291,7 @@ class VisualOutput(SignalView):
              projection: str = 'equirectangular'
              ) -> 'Axes':
         """
-        Displays the visual output as a gapless Voronoi tessellation (like in the first person shader).
-        If this VisualOutput contains multiple timesteps, this plots the last one.
+        Displays the visual output as a gapless Voronoi tessellation.
         """
         import matplotlib.pyplot as plt
         from matplotlib.collections import PolyCollection
@@ -280,14 +307,9 @@ class VisualOutput(SignalView):
                 fig = plt.figure(figsize=(10, 5))
                 ax = fig.add_subplot(111, projection=projection)
 
-        # Resolve pathway using self's own properties
-        if pathway == 'all':
-            view = self
-            az, el = self._model.rhabdomeres.azimuth, self._model.rhabdomeres.elevation
-        else:
+        if pathway != 'all':
             if self._coords != 'rhabdomeres':
-                raise ValueError("Cannot derive pathways from data already grouped by ommatidia.")
-
+                raise ValueError(f"Cannot apply pathway '{pathway}' on data that is already grouped.")
             match pathway:
                 case 'peripheral' | 'periph':
                     view = self.peripheral_signal
@@ -300,19 +322,36 @@ class VisualOutput(SignalView):
                 case _:
                     raise ValueError(
                         "Invalid pathway, must be 'all', 'peripheral', 'central', 'ommatidium', or 'cartridge'")
-
-            az, el = self._model.ommatidia.azimuth, self._model.ommatidia.elevation
+        else:
+            view = self
 
         # Get latest data
         data = view.data[-1] if view._is_time_series else view.data
-        if data.ndim == 3:  # if shape is (N, R, 4), condense to (N, 4)
-            data = np.mean(data, axis=-2)
 
-        rgb = np.clip(data[..., :3], 0.0, 1.0).copy()
+        N = self._model.shape[0]
+        R = self._model.shape[1]
+
+        # determine spatial dim and coordinates
+        if data.ndim == 3 and data.shape[-3:-1] == (N, R):
+            # (N, R, 4) -> grouped for plotting
+            plot_data = np.mean(data, axis=-2)
+            az, el = self._model.ommatidia.azimuth, self._model.ommatidia.elevation
+        elif data.ndim == 2 and data.shape[-2] == N:
+            # (N, 4)
+            plot_data = data
+            az, el = self._model.ommatidia.azimuth, self._model.ommatidia.elevation
+        elif data.ndim == 2 and data.shape[-2] == N * R:
+            # (N*R, 4)
+            plot_data = data
+            az, el = self._model.rhabdomeres.azimuth, self._model.rhabdomeres.elevation
+        else:
+            raise ValueError(f'Unsupported shape for plotting: {data.shape}')
+
+        rgb = np.clip(plot_data[..., :3], 0.0, 1.0).copy()
 
         # Peripheral is greyscale
         if 'periph' in pathway:
-            rgb = np.repeat(np.mean(rgb, axis=-1, keepdims=True), 3, axis=-1)  # TODO: use weights?
+            rgb = np.repeat(np.mean(rgb, axis=-1, keepdims=True), 3, axis=-1)
 
         # False colour modes
         if uv_encoding:
@@ -374,10 +413,7 @@ class VisualOutput(SignalView):
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, max(4, min(10, max_items * 0.1))))
 
-        if pathway == 'all':
-            view = self
-            az = self._model.rhabdomeres.azimuth
-        else:
+        if pathway != 'all':
             if self._coords != 'rhabdomeres':
                 raise ValueError('Cannot derive pathways from data already grouped by ommatidia.')
 
@@ -391,44 +427,57 @@ class VisualOutput(SignalView):
                 case 'cartridge':
                     view = self.per_cartridge
                 case _:
-                    raise ValueError(
-                        "Invalid pathway, must be 'all', 'peripheral', 'central', 'ommatidium', or 'cartridge'")
-
-            az = self._model.ommatidia.azimuth
+                    raise ValueError(f"Invalid pathway: {pathway}")
+        else:
+            view = self
 
         data = view.data
-        if data.ndim == 4:  # (T, N, R, 4)
-            data = np.mean(data, axis=-2)
+        N = self._model.shape[0]
+        R = self._model.shape[1]
 
-        data = np.clip(data[..., :3], 0.0, 1.0)
+        if data.ndim == 4 and data.shape[-3:-1] == (N, R):
+            plot_data = np.mean(data, axis=-2)
+            az = self._model.ommatidia.azimuth
+            ylabel_default = 'Grouped items'
+        elif data.ndim == 3 and data.shape[-2] == N:
+            plot_data = data
+            az = self._model.ommatidia.azimuth
+            ylabel_default = 'Pathways'
+        elif data.ndim == 3 and data.shape[-2] == N * R:
+            plot_data = data
+            az = self._model.rhabdomeres.azimuth
+            ylabel_default = 'Rhabdomeres'
+        else:
+            raise ValueError(f"Unsupported shape for timeseries: {data.shape}")
 
-        # Peripheral is greyscale
+        plot_data = np.clip(plot_data[..., :3], 0.0, 1.0)
+
         if 'periph' in pathway:
-            data = np.repeat(np.mean(data, axis=-1, keepdims=True), 3, axis=-1)
+            plot_data = np.repeat(np.mean(plot_data, axis=-1, keepdims=True), 3, axis=-1)
 
         # False colour modes
         if uv_encoding:
-            data[..., 2] = np.clip(data[..., 2] + data[..., 0], 0.0, 1.0)
+            plot_data[..., 2] = np.clip(plot_data[..., 2] + plot_data[..., 0], 0.0, 1.0)
         elif false_colors:
-            data[..., 0] = 0.0
+            plot_data[..., 0] = 0.0
 
         # Transpose to (space, time, RGB) for imshow
-        data = np.transpose(data, (1, 0, 2))
+        plot_data = np.transpose(plot_data, (1, 0, 2))
         if 'az' in sort_by:
-            data = data[np.argsort(az)]
+            plot_data = plot_data[np.argsort(az)]
 
         # downsample (spatially) if needed
-        S, T, C = data.shape
+        S, T, C = plot_data.shape
         if S > max_items:
             block_size = S // max_items
-            data = data[:block_size * max_items].reshape(max_items, block_size, T, C).mean(axis=1)
+            plot_data = plot_data[:block_size * max_items].reshape(max_items, block_size, T, C).mean(axis=1)
 
-        ax.imshow(data, aspect='auto', origin='lower', interpolation='none')
+        ax.imshow(plot_data, aspect='auto', origin='lower', interpolation='none')
         ax.set_xlabel('Time step')
 
         ylabel = 'Items'
         if pathway == 'all':
-            ylabel = 'Rhabdomeres'
+            ylabel = ylabel_default
         elif pathway in ('cartridge', 'peripheral', 'periph', 'central'):
             ylabel = 'Cartridges'
         elif 'omm' in pathway:
