@@ -1,5 +1,6 @@
-from typing import Tuple, Sequence, Optional
+from typing import Tuple, Sequence, Optional, Union, Any
 import numpy as np
+import numpy.typing as npt
 from matplotlib.axes import Axes
 
 from insectvision.compound_eyes import Model
@@ -46,11 +47,27 @@ class VisualOutput:
             self._is_time_series = False
             self._shape = int(data.shape[-2] // model.shape[1]), int(model.shape[1])
 
+    def __repr__(self) -> str:
+        t_str = f'Time={self.shape[0]}, ' if self._is_time_series else ''
+        return f'VisualOutput({t_str}N={self.shape[-2]}, R={self.shape[-1]})'
+
     def __bool__(self) -> bool:
         return self._data is not None and self._data.size > 0
 
+    def __getitem__(self, s: Any) -> Union['VisualOutput', np.ndarray]:
+        sliced_data = self._data[s]
+        if isinstance(sliced_data, np.ndarray) and sliced_data.ndim >= 2:
+            # Check if last axis is still 4 (RGB + gain) and second to last is still rhabdomere count
+            if sliced_data.shape[-1] == self._data.shape[-1] and sliced_data.shape[-2] == self._data.shape[-2]:
+                return VisualOutput(sliced_data, self._model)
+        # For arbitrary slices (e.g. getting a specific rhabdomere or channel) fallback to returning a raw array
+        return sliced_data
+
+    def __len__(self) -> int:
+        return self.shape[0]
+
     def __array__(self,
-            dtype = None,
+            dtype: npt.DTypeLike = None,
             copy: Optional[bool] = None
         ) -> np.ndarray:
         if dtype:
@@ -123,7 +140,7 @@ class VisualOutput:
     @property
     def raw_radiance(self) -> np.ndarray:
         """
-        The physical light intensity hitting the eye before adaptation.
+        Light intensity hitting the eye before adaptation.
         Recovered by 'un-baking' the adaptation factor.
         """
         return np.mean(self.colours, axis=-1) / (self.adaptation + 1e-6)
@@ -131,8 +148,7 @@ class VisualOutput:
     @property
     def radiance(self) -> np.ndarray:
         """
-        The mean intensity of the adapted signal.
-        Calculated as the mean of the RGB channels.
+        Intensity of the adapted signal (mean of the 3 colour channels).
         """
         return np.mean(self.colours, axis=-1)
 
@@ -187,16 +203,6 @@ class VisualOutput:
     def pale_input(self) -> np.ndarray:
         """Alias to central_signal"""
         return self.central_signal
-
-    def __getitem__(self, idx) -> np.ndarray:
-        return self._data[idx]
-
-    def __len__(self) -> int:
-        return self.shape[0]
-
-    def __repr__(self) -> str:
-        t_str = f'Time={self.shape[0]}, ' if self._is_time_series else ''
-        return f'VisualOutput({t_str}N={self.shape[-2]}, R={self.shape[-1]})'
 
     # Plotting methods
 
@@ -363,6 +369,6 @@ class VisualOutput:
         elif 'omm' in pathway:
             ylabel = 'Ommatidia'
 
-        ax.set_ylabel(ylabel + (' (sorted Left to Right)' if sort_by == 'azimuth' else ''))
+        ax.set_ylabel(ylabel + (' (sorted Left to Right)' if 'az' in sort_by else ''))
 
         return ax
