@@ -644,27 +644,29 @@ def build_figure(s: PlotSettings) -> plt.Figure:
             row_axes.append(ax)
         sampling_axes.append(row_axes)
 
-    # Row 2: Randomness modes clusters (left), efficiency scatter (right)
-    bottom = outer[1].subgridspec(1, 2, width_ratios=[0.75, 1.18], wspace=0.20)
-    rand_gs = bottom[0].subgridspec(2, 2, wspace=0.0, hspace=0.32)
+    # Row 2: Randomness modes cluster (left, 2x3), efficiency scatter (right)
+    bottom = outer[1].subgridspec(1, 2, width_ratios=[1.1, 1.0], wspace=0.22)
+    rand_gs = bottom[0].subgridspec(2, 3, wspace=0.0, hspace=0.32)
 
     ax_pseudo = fig.add_subplot(rand_gs[0, 0])
-    ax_halton = fig.add_subplot(rand_gs[0, 1])
-    ax_strat = fig.add_subplot(rand_gs[1, 0])
-    ax_fib = fig.add_subplot(rand_gs[1, 1])
+    ax_strat = fig.add_subplot(rand_gs[0, 1])
+    ax_fib = fig.add_subplot(rand_gs[0, 2])
+    ax_halton = fig.add_subplot(rand_gs[1, 0])
+    ax_hammer = fig.add_subplot(rand_gs[1, 1])
+    ax_sobol = fig.add_subplot(rand_gs[1, 2])
 
     randomness_mode_scatter(ax_pseudo, s, 'Pseudo-random')
-    # randomness_mode_scatter(ax_halton, s, 'Quasi-random (Halton)')
-    # randomness_mode_scatter(ax_halton, s, 'Hammersley')
-    randomness_mode_scatter(ax_halton, s, 'Sobol')
     randomness_mode_scatter(ax_strat, s, 'Stratified')
     randomness_mode_scatter(ax_fib, s, 'Fibonacci')
+    randomness_mode_scatter(ax_halton, s, 'Quasi-random (Halton)')
+    randomness_mode_scatter(ax_hammer, s, 'Hammersley')
+    randomness_mode_scatter(ax_sobol, s, 'Sobol')
 
     b_left = ax_pseudo.get_position(fig).x0
-    b_bottom = ax_strat.get_position(fig).y0
+    b_bottom = ax_halton.get_position(fig).y0
 
     fig.text(b_left, b_bottom - 0.06, 'Randomness modes',
-             fontsize=s.title, ha='left', va='top')
+             fontsize=s.title, ha='center', va='top')
 
     ax_eff = fig.add_subplot(bottom[1])
     efficiency_coverage_scatter(ax_eff, s)
