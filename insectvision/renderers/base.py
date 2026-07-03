@@ -861,7 +861,7 @@ class Renderer:
 
         glFinish()  # Block until all rendering commands are complete
 
-        frames_to_read = int(self._frame_index)
+        frames_to_read = min(int(self._frame_index), self._batch_size)
 
         # Download the block
         with self.eye_buffers['colors'].bind():
@@ -998,6 +998,7 @@ class Renderer:
                 out_array = self._readback_async()
                 if out_array.size > 0:
                     out = VisualOutput(out_array, self._model)
+                self._frame_index = 0   # frame consumed, reset counter
 
             elif self._frame_index >= self._batch_size:
                 # Batched path: return full block (only when batch is full)

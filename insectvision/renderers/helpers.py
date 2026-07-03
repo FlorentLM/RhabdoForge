@@ -196,7 +196,7 @@ class VisualOutput:
 
     def __repr__(self) -> str:
         t_str = f'Time={self.shape[0]}, ' if self._is_time_series else ''
-        return f'{t_str}VisualOutput({t_str}N={self.shape[-2]}, R={self.shape[-1]})'
+        return f'VisualOutput({t_str}N={self.shape[-2]}, R={self.shape[-1]})'
 
     # Plotting methods
 
