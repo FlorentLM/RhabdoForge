@@ -327,8 +327,8 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
 
 
     # Proposal distribution
-    ax.plot(x, samp_y, color=s.green, lw=proposal_lw, alpha=0.8, linestyle=':', solid_capstyle='round', zorder=4)
-    # ax.plot(x, samp_y, color=s.green, lw=proposal_lw, alpha=0.8, linestyle=(0, (1, 2)), solid_capstyle='round', zorder=4)
+    # ax.plot(x, samp_y, color=s.green, lw=proposal_lw, alpha=0.8, linestyle=':', solid_capstyle='round', zorder=4)
+    ax.plot(x, samp_y, color=s.green, lw=proposal_lw, alpha=0.8, linestyle=(0, (1, 2)), solid_capstyle='round', zorder=4)
     if mode != 'Importance':
         ax.fill_between(x, samp_y, color=s.green, alpha=0.05, zorder=1)
 
@@ -341,7 +341,7 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
     ax.text(0, 0.33, 'FWHM', color=s.dark, fontsize=s.small, fontweight='bold', ha='center', zorder=Z_TEXT)
     # TODO: Move FWHM text a little bit lower
 
-    ax.text(-1.8, 0.13, f'{target_name} target\n$S(\\theta)$', color=target_color,
+    ax.text(-1.8, 0.13, f'Target\n$S(\\theta)$', color=target_color,
             fontsize=s.base, fontweight='bold', ha='center', zorder=Z_TEXT)
 
     if mode == 'Importance' and target_name == 'Airy':
@@ -443,8 +443,11 @@ def randomness_mode_scatter(ax, s: PlotSettings, mode_type):
         u1 = (cell_x + rng.random(n)) / grid
         u2 = (cell_y + rng.random(n)) / grid
 
+    elif mode_type == 'Quasi-random (Halton)':
+        u1 = np.clip(halton(n, 2), 1e-6, 1.0)
+        u2 = halton(n, 3)
 
-    elif mode_type == 'Hammersley (Scrambled)':
+    elif mode_type == 'Hammersley':
         offset1 = rng.random()
         offset2 = rng.random()
 
@@ -610,15 +613,15 @@ def build_figure(s: PlotSettings) -> plt.Figure:
     ax_fib = fig.add_subplot(rand_gs[1, 1])
 
     randomness_mode_scatter(ax_pseudo, s, 'Pseudo-random')
-    # randomness_mode_scatter(ax_halton, s, 'Quasi-random (Halton)')
-    randomness_mode_scatter(ax_halton, s, 'Hammersley (Scrambled)')
+    randomness_mode_scatter(ax_halton, s, 'Quasi-random (Halton)')
+    # randomness_mode_scatter(ax_halton, s, 'Hammersley')
     randomness_mode_scatter(ax_strat, s, 'Stratified')
     randomness_mode_scatter(ax_fib, s, 'Fibonacci')
 
     b_left = ax_pseudo.get_position(fig).x0
     b_bottom = ax_strat.get_position(fig).y0
 
-    fig.text(b_left, b_bottom - 0.06, 'Randomness and stratification',
+    fig.text(b_left, b_bottom - 0.06, 'Randomness modes',
              fontsize=s.title, ha='left', va='top')
 
     ax_eff = fig.add_subplot(bottom[1])
@@ -637,7 +640,7 @@ def build_figure(s: PlotSettings) -> plt.Figure:
                                  (sampling_axes[1], 'Airy target', s.red)):
         p = row_axes[0].get_position()
         fig.text(p.x0 - 0.018, (p.y0 + p.y1) / 2, label, rotation=90,
-                 va='center', ha='center', fontsize=s.header, color=col)
+                 va='center', ha='center', fontweight='bold', fontsize=s.header, color=col)
 
     a_pos = sampling_axes[0][0].get_position()
     fig.text(a_pos.x0, a_pos.y1 + 0.02, 'A', ha='right', va='bottom',
@@ -659,4 +662,4 @@ if __name__ == '__main__':
 
     fig = build_figure(settings)
 
-    settings.savefig(fig, 'sampling')
+    # settings.savefig(fig, 'sampling')
