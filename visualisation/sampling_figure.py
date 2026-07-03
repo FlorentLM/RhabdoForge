@@ -194,6 +194,41 @@ def radical_inverse_glsl(n_array):
     return bits.astype(float) * 2.3283064365386963e-10
 
 
+def reverse_bits_np(x):
+    x = np.asarray(x, dtype=np.uint32)
+    x = (x << np.uint32(16)) | (x >> np.uint32(16))
+    x = ((x & np.uint32(0x00ff00ff)) << np.uint32(8)) | ((x & np.uint32(0xff00ff00)) >> np.uint32(8))
+    x = ((x & np.uint32(0x0f0f0f0f)) << np.uint32(4)) | ((x & np.uint32(0xf0f0f0f0)) >> np.uint32(4))
+    x = ((x & np.uint32(0x33333333)) << np.uint32(2)) | ((x & np.uint32(0xcccccccc)) >> np.uint32(2))
+    x = ((x & np.uint32(0x55555555)) << np.uint32(1)) | ((x & np.uint32(0xaaaaaaaa)) >> np.uint32(1))
+    return x
+
+
+def sobol_dim1_np(i):
+    i  = np.asarray(i, dtype=np.uint32)
+    r  = np.zeros_like(i, dtype=np.uint32)
+    ii = i.copy()
+    v  = np.uint32(1 << 31)
+    while np.any(ii):
+        m = (ii & np.uint32(1)).astype(bool)
+        r[m] ^= v
+        ii >>= np.uint32(1)
+        v  ^= v >> np.uint32(1)
+    return r
+
+
+def owen_scramble_np(v, seed):
+    v, seed = np.asarray(v, dtype=np.uint32).copy(), np.uint32(seed)
+    with np.errstate(over='ignore'):    # uint32 wraparound is intended
+        v  = reverse_bits_np(v)
+        v ^= v * np.uint32(0x3d20adea)
+        v += seed
+        v *= ((seed >> np.uint32(16)) | np.uint32(1))
+        v ^= v * np.uint32(0x05526c56)
+        v ^= v * np.uint32(0x53a22864)
+    return reverse_bits_np(v)
+
+
 # ---------------------------------------------------------------------------
 # Ray sampling, all in FWHM units (acc = 1)
 
@@ -435,11 +470,10 @@ def randomness_mode_scatter(ax, s: PlotSettings, mode_type):
 
     if mode_type == 'Stratified':
         grid = int(np.ceil(np.sqrt(n)))
-        indices = np.arange(n)
-
-        cell_x = indices % grid
-        cell_y = indices // grid
-
+        offset = int(rng.integers(0, grid * grid))
+        cell = (np.arange(n) + offset) % (grid * grid)
+        cell_x = cell % grid
+        cell_y = cell // grid
         u1 = (cell_x + rng.random(n)) / grid
         u2 = (cell_y + rng.random(n)) / grid
 
@@ -458,11 +492,18 @@ def randomness_mode_scatter(ax, s: PlotSettings, mode_type):
         u2 = np.mod(u2_base + offset2, 1.0)
         u1 = np.clip(u1, 1e-6, 1.0)
 
+    elif mode_type == 'Sobol':
+        idx = np.arange(n, dtype=np.uint32)
+        INV = np.float64(2.3283064365386963e-10)
+        u1 = np.clip(owen_scramble_np(reverse_bits_np(idx), 0x9E3779B9).astype(np.float64) * INV, 1e-6, 1.0)
+        u2 = owen_scramble_np(sobol_dim1_np(idx), 0x85EBCA6B).astype(np.float64) * INV
+
     elif mode_type == 'Fibonacci':
         golden_angle = np.pi * (3.0 - np.sqrt(5.0))
-        rotation_offset = rng.random()
-        u1 = (np.arange(n) + 0.5) / n
-        u2 = np.mod((np.arange(n) * golden_angle / (2 * np.pi)) + rotation_offset, 1.0)
+        rot_off = rng.random()
+        rad_off = rng.random()
+        u1 = np.mod((np.arange(n) + 0.5) / n + rad_off, 1.0)
+        u2 = np.mod((np.arange(n) * golden_angle / (2 * np.pi)) + rot_off, 1.0)
         u1 = np.clip(1.0 - u1, 1e-6, 1.0)
 
     else: # 'Pseudo-random'
@@ -613,8 +654,9 @@ def build_figure(s: PlotSettings) -> plt.Figure:
     ax_fib = fig.add_subplot(rand_gs[1, 1])
 
     randomness_mode_scatter(ax_pseudo, s, 'Pseudo-random')
-    randomness_mode_scatter(ax_halton, s, 'Quasi-random (Halton)')
+    # randomness_mode_scatter(ax_halton, s, 'Quasi-random (Halton)')
     # randomness_mode_scatter(ax_halton, s, 'Hammersley')
+    randomness_mode_scatter(ax_halton, s, 'Sobol')
     randomness_mode_scatter(ax_strat, s, 'Stratified')
     randomness_mode_scatter(ax_fib, s, 'Fibonacci')
 

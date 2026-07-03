@@ -57,7 +57,7 @@ class RandomnessMode(IntEnum):
     Stratified = 2  # Grid-based jittered sampling
     Fibonacci = 3   # Fibonacci disk (Vogel's method), a spiral pattern based on the golden ratio
     Hammersley = 4  # Hammersley set, similar to Halton but more uniform
-    # Poisson = 5     # TODO
+    Sobol = 5       # Sobol sequence, Owen scrambling
 
 
 

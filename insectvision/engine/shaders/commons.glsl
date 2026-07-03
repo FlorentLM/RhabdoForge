@@ -6,6 +6,7 @@ const int RNG_HALTON     = 1;
 const int RNG_STRATIFIED = 2;
 const int RNG_FIBONACCI  = 3;
 const int RNG_HAMMERSLEY = 4;
+const int RNG_SOBOL      = 5;
 
 const int MODE_GAUSSIAN  = 0;
 const int MODE_AIRY      = 1;
@@ -13,8 +14,10 @@ const int MODE_AIRY      = 1;
 const float PI = 3.141592653589793;
 const float HPI = 1.5707963267948966;
 const float TWOPI = 6.283185307179586;
-const float GOLDEN_RATIO_ANGL = 2.399963229728653; // pi * (3.0 - sqrt(5.0))
-const float GAUSS_CONSTANT_K = 2.772588722239781;  // 4 * log(2), for a Gaussian with FWHM = acceptance_angle
+const float GOLDEN_RATIO_ANGL = 2.399963229728653;  // pi * (3.0 - sqrt(5.0))
+const float GAUSS_CONSTANT_K = 2.772588722239781;   // 4 * log(2), for a Gaussian with FWHM = acceptance_angle
+const float THE_TINIEST_FLOAT = 2.3283064365386963e-10;  // 2^-32
+
 
 struct Material {
     uint texture_idx;       // 0xFFFFFFFF means no texture (use base_color)
@@ -135,7 +138,35 @@ float radical_inverse_v2(uint bits) {
     bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
     bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
     bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
-    return float(bits) * 2.3283064365386963e-10;
+    return float(bits) * THE_TINIEST_FLOAT;
+}
+
+uint reverse_bits(uint x) {
+    x = (x << 16u) | (x >> 16u);
+    x = ((x & 0x00ff00ffu) << 8u) | ((x & 0xff00ff00u) >> 8u);
+    x = ((x & 0x0f0f0f0fu) << 4u) | ((x & 0xf0f0f0f0u) >> 4u);
+    x = ((x & 0x33333333u) << 2u) | ((x & 0xccccccccu) >> 2u);
+    x = ((x & 0x55555555u) << 1u) | ((x & 0xaaaaaaaau) >> 1u);
+    return x;
+}
+
+// Second dimension of the Sobol (0,2)-sequence
+uint sobol_dim1(uint i) {
+    uint r = 0u;
+    for (uint v = 1u << 31u; i != 0u; i >>= 1u, v ^= v >> 1u)
+        if ((i & 1u) != 0u) r ^= v;
+    return r;
+}
+
+// Hash-based nested-uniform (Owen) scramble, Burley 2020 / pbrt-v4
+uint owen_scramble(uint v, uint seed) {
+    v  = reverse_bits(v);
+    v ^= v * 0x3d20adeau;
+    v += seed;
+    v *= (seed >> 16u) | 1u;
+    v ^= v * 0x05526c56u;
+    v ^= v * 0x53a22864u;
+    return reverse_bits(v);
 }
 
 uint pcg_hash(uint seed) {
@@ -165,26 +196,22 @@ Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rhab_idx, u
         s.u2 = fract(halton_sequence(halton_idx, 3u) + float((hash >> 16u) & 0xFFFFu)/65535.0);
     }
     else if (mode == RNG_STRATIFIED) {
-        float grid_size = ceil(sqrt(float(nb_samples)));
-        float cell_x = float(sample_idx % uint(grid_size));
-        float cell_y = float(sample_idx / uint(grid_size));
+        uint G = uint(ceil(sqrt(float(nb_samples))));
+        uint cell = (sample_idx + pcg_hash(rhab_idx*1973u + dither_counter*26699u) % (G*G)) % (G*G);
+        float cell_x = float(cell % G);
+        float cell_y = float(cell / G);
 
         uint rng_state = seed;
-        s.u1 = (cell_x + random_float(rng_state)) / grid_size;
-        s.u2 = (cell_y + random_float(rng_state)) / grid_size;
+        s.u1 = (cell_x + random_float(rng_state)) / G;
+        s.u2 = (cell_y + random_float(rng_state)) / G;
     }
     else if (mode == RNG_FIBONACCI) {
-        // Vogel's Method (golden spiral)
-
-        // Rotate the spiral entirely randomly per frame to avoid temporal artifacts
-        uint rot_seed = pcg_hash(rhab_idx * 1973u + dither_counter * 26699u);
-        float rotation_offset = random_float(rot_seed);
-
-        s.u1 = (float(sample_idx) + 0.5) / float(nb_samples);
-        s.u2 = fract((float(sample_idx) * GOLDEN_RATIO_ANGL / TWOPI) + rotation_offset);
-
-        // Reverse u1 so density is in the center, and clamp to avoid log(0)
-        s.u1 = clamp(1.0 - s.u1, 1e-6, 1.0);
+        uint scr = pcg_hash(rhab_idx * 1973u + dither_counter * 26699u);
+        float rot_off = random_float(scr);
+        float rad_off = random_float(scr);
+        float u1 = fract((float(sample_idx) + 0.5) / float(nb_samples) + rad_off);
+        s.u2 = fract(float(sample_idx) * GOLDEN_RATIO_ANGL / TWOPI + rot_off);
+        s.u1 = clamp(1.0 - u1, 1e-6, 1.0);
     }
     else if (mode == RNG_HAMMERSLEY) {
         // Cranley-Patterson scrambled Hammersley
@@ -199,6 +226,15 @@ Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rhab_idx, u
         s.u1 = fract(u1_base + offset1);
         s.u2 = fract(u2_base + offset2);
         s.u1 = clamp(s.u1, 1e-6, 1.0);
+    }
+    else if (mode == RNG_SOBOL) {
+        uint idx = dither_counter * nb_samples + sample_idx;
+        uint seed_x = pcg_hash(rhab_idx * 1973u + 0x9e3779b9u);
+        uint seed_y = pcg_hash(rhab_idx * 1973u + 0x85ebca6bu);
+        uint vx = owen_scramble(reverse_bits(idx), seed_x);
+        uint vy = owen_scramble(sobol_dim1(idx), seed_y);
+        s.u1 = clamp(float(vx) * THE_TINIEST_FLOAT, 1e-6, 1.0);
+        s.u2 = float(vy) * THE_TINIEST_FLOAT;
     }
     else { // RNG_PSEUDO
         uint rng_state = seed;
