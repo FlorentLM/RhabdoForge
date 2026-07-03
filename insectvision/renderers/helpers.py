@@ -288,7 +288,8 @@ class VisualOutput(SignalView):
              false_colors: bool = False,
              uv_encoding: bool = False,
              draw_edges: bool = False,
-             projection: str = 'equirectangular'
+             projection: str = 'equirectangular',
+             gamma: float = 2.2
              ) -> 'Axes':
         """
         Displays the visual output as a gapless Voronoi tessellation.
@@ -349,6 +350,10 @@ class VisualOutput(SignalView):
 
         rgb = np.clip(plot_data[..., :3], 0.0, 1.0).copy()
 
+        # Apply Gamma Correction
+        if gamma and gamma != 1.0:
+            rgb = np.power(rgb, 1.0 / gamma)
+
         # Peripheral is greyscale
         if 'periph' in pathway:
             rgb = np.repeat(np.mean(rgb, axis=-1, keepdims=True), 3, axis=-1)
@@ -399,6 +404,7 @@ class VisualOutput(SignalView):
                         uv_encoding: bool = False,
                         max_items: int = 100,
                         sort_by: str = 'azimuth',
+                        gamma: float = 2.2
                         ) -> 'Axes':
         """
         Plots a spatio-temporal heatmap of the visual output over time.
@@ -451,6 +457,10 @@ class VisualOutput(SignalView):
             raise ValueError(f"Unsupported shape for timeseries: {data.shape}")
 
         plot_data = np.clip(plot_data[..., :3], 0.0, 1.0)
+
+        # Apply Gamma Correction
+        if gamma and gamma != 1.0:
+            plot_data = np.power(plot_data, 1.0 / gamma)
 
         if 'periph' in pathway:
             plot_data = np.repeat(np.mean(plot_data, axis=-1, keepdims=True), 3, axis=-1)
