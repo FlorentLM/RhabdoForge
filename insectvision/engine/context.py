@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Optional, Tuple, Callable, Dict, List, Union, 
 from collections import deque
 
 from insectvision.engine.agent import OrbitCamera
-from insectvision.utils import DisplayMode
+from insectvision.utils import DisplayMode, norm_l2
+from insectvision.geometry.spherical import cartesian_to_spherical
 from insectvision.interactive.controls import Controls, ActionRegistry
 from insectvision.interactive.hud import HUD
 from insectvision.interactive.debug import DebugOverlay
@@ -245,7 +246,7 @@ class Context:
         if description is None:
             description = callback.__name__.replace('_', ' ').title()
 
-        display_name = key_str.upper() if key_str else f"Key {key_code}"
+        display_name = key_str.upper() if key_str else f'Key {key_code}'
         self._key_bindings_desc[key_code] = (display_name, description)
 
         binding = (key, action)
@@ -367,13 +368,8 @@ class Context:
 
         if self.display_mode == DisplayMode.Compound:
             aspect_ratio = self.viewport_size[0] / self.viewport_size[1]
-            norms = np.linalg.norm(p_local, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            p_vec = p_local / norms
-
-            longi = np.arctan2(p_vec[:, 0], -p_vec[:, 2])
-            lati = np.arcsin(p_vec[:, 1])
-
+            p_vec = norm_l2(p_local)
+            longi, lati = cartesian_to_spherical(p_vec)
             x = (longi / np.pi) / aspect_ratio
             y = lati / (np.pi / 2.0)
 

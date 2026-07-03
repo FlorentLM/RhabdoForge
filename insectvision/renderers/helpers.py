@@ -203,11 +203,10 @@ class VisualOutput:
     def plot(self,
              ax: Optional['Axes'] = None,
              pathway: str = 'all',
-             projection: str = 'equirectangular',
              false_colors: bool = False,
              uv_encoding: bool = False,
-             dark_mode: bool = False,
              draw_edges: bool = False,
+             projection: str = 'equirectangular'
         ) -> 'Axes':
         """
         Displays the visual output as a gapless Voronoi tessellation (like in the first person shader).
@@ -217,38 +216,38 @@ class VisualOutput:
         from matplotlib.collections import PolyCollection
         from scipy.spatial import Voronoi
 
+        projection = str(projection).lower() if projection else 'equirectangular'
+        pathway = str(pathway).lower() if pathway else 'all'
+
         if ax is None:
-            if projection == 'equirectangular':
+            if 'equirect' in projection:
                 fig, ax = plt.subplots(figsize=(10, 5))
             else:
                 fig = plt.figure(figsize=(10, 5))
                 ax = fig.add_subplot(111, projection=projection)
 
-        is_ts = self._data.ndim == 3
-
-        # Extract spatial data and colour
         if pathway == 'all':
-            rgb = self.colours[-1] if is_ts else self.colours
+            rgb = self.colours[-1] if self._is_time_series else self.colours
             az = self._model.rhabdomeres.azimuth
             el = self._model.rhabdomeres.elevation
 
-        elif pathway in ('peripheral', 'central', 'ommatidium', 'cartridge'):
+        elif pathway in ('peripheral', 'periph', 'central', 'ommatidium', 'omm', 'cartridge'):
             match pathway:
-                case 'peripheral':
+                case 'peripheral' | 'periph':
                     sig = self.peripheral_signal
                 case 'central':
                     sig = self.central_signal
-                case 'ommatidium':
+                case 'ommatidium' | 'omm':
                     sig = np.mean(self.per_ommatidium, axis=-2)
                 case 'cartridge':
                     sig = np.mean(self.per_cartridge, axis=-2)
 
-            rgb = sig[-1, :, :3] if is_ts else sig[:, :3]
+            rgb = sig[-1, :, :3] if self._is_time_series else sig[:, :3]
             az = self._model.ommatidia.azimuth
             el = self._model.ommatidia.elevation
 
             # Peripheral is greyscale
-            if pathway == 'peripheral':
+            if 'periph' in pathway:
                 rgb = np.repeat(np.mean(rgb, axis=-1, keepdims=True), 3, axis=-1)   # TODO: use weights?
         else:
             raise ValueError("Invalid pathway, must be must be 'all', 'peripheral', 'central', 'ommatidium', or 'cartridge'")
@@ -260,23 +259,24 @@ class VisualOutput:
         elif false_colors:
             rgb[:, 0] = 0.0
 
-        # TODO: use polygons.py module
         # Voronoi cells on the unwrapped cylinder
         pts = np.column_stack((az, el))
+
         pts_left = np.column_stack((az - 2 * np.pi, el))
         pts_right = np.column_stack((az + 2 * np.pi + 1e-6, el))
+
         cap_x = np.linspace(-2 * np.pi, 2 * np.pi, max(100, len(az) // 10))
+
         pts_top = np.column_stack((cap_x, np.full_like(cap_x, np.pi / 2 + 0.5)))
         pts_bot = np.column_stack((cap_x, np.full_like(cap_x, -np.pi / 2 - 0.5)))
 
-        all_pts = np.vstack((pts, pts_left, pts_right, pts_top, pts_bot))
-        vor = Voronoi(all_pts)
+        vor = Voronoi(np.vstack((pts, pts_left, pts_right, pts_top, pts_bot)))
 
         polygons = []
         for i in range(len(pts)):
             polygons.append(vor.vertices[vor.regions[vor.point_region[i]]])
 
-        if projection == 'equirectangular':
+        if 'equirect' in projection:
             polygons = [np.degrees(p) for p in polygons]
             ax.set_xlim(-180, 180)
             ax.set_ylim(-90, 90)
@@ -288,29 +288,17 @@ class VisualOutput:
                 p[:, 0] = wrap_angle(p[:, 0])
             ax.grid(True, alpha=0.3)
 
-        # Anti-aliasing workaround: 'face' draws a mini border of the polygon's
-        # own color over the pixel gaps left by matplotlib
-        edge_c = ('white' if dark_mode else 'black') if draw_edges else 'face'
+        # Anti-aliasing workaround: 'face' draws a mini border of the polygon's colour over the gaps left by matplotlib
+        edge_c = 'white' if draw_edges else 'face'
         ax.add_collection(PolyCollection(polygons, facecolors=rgb, edgecolors=edge_c, linewidths=0.5, antialiaseds=True))
-
-        if dark_mode:
-            ax.set_facecolor('black')
-            if ax.figure is not None:
-                ax.figure.patch.set_facecolor('black')
-            ax.tick_params(colors='white')
-            ax.xaxis.label.set_color('white')
-            ax.yaxis.label.set_color('white')
-            for spine in ax.spines.values():
-                spine.set_color('white')
 
         return ax
 
-    def plot_time_series(self,
+    def plot_timeseries(self,
             ax: Optional['Axes'] = None,
             pathway: str = 'peripheral',
             false_colors: bool = False,
             uv_encoding: bool = False,
-            dark_mode: bool = False,
             max_items: int = 100,
             sort_by: str = 'azimuth',
         ) -> 'Axes':
@@ -319,8 +307,11 @@ class VisualOutput:
         """
         import matplotlib.pyplot as plt
 
-        if self._data.ndim != 3:
-            raise ValueError("This visualisation requires a VisualOutput containing multiple timesteps.")
+        sort_by = str(sort_by).lower() if sort_by else 'azimuth'
+        pathway = str(pathway).lower() if pathway else 'all'
+
+        if not self._is_time_series:
+            raise ValueError('This visualisation requires a VisualOutput containing multiple timesteps.')
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, max(4, min(10, max_items * 0.1))))
 
@@ -328,14 +319,13 @@ class VisualOutput:
             data = self.colours
             az = self._model.rhabdomeres.azimuth
 
-        elif pathway in ('peripheral', 'central', 'ommatidium', 'cartridge'):
-
+        elif pathway in ('peripheral', 'periph', 'central', 'ommatidium', 'omm', 'cartridge'):
             match pathway:
-                case 'peripheral':
+                case 'peripheral' | 'periph':
                     data = np.repeat(np.mean(self.peripheral_signal[..., :3], axis=-1, keepdims=True), 3, axis=-1)
                 case 'central':
                     data = self.central_signal[..., :3]
-                case 'ommatidium':
+                case 'ommatidium' | 'omm':
                     data = np.mean(self.per_ommatidium, axis=-2)[..., :3]
                 case 'cartridge':
                     data = np.mean(self.per_cartridge, axis=-2)[..., :3]
@@ -351,9 +341,9 @@ class VisualOutput:
         elif false_colors:
             data[..., 0] = 0.0
 
-        # Transpose to (Space, Time, RGB) for imshow
+        # Transpose to (space, time, RGB) for imshow
         data = np.transpose(data, (1, 0, 2))
-        if sort_by == 'azimuth':
+        if 'az' in sort_by:
             data = data[np.argsort(az)]
 
         # downsample (spatially) if needed
@@ -363,26 +353,16 @@ class VisualOutput:
             data = data[:block_size * max_items].reshape(max_items, block_size, T, C).mean(axis=1)
 
         ax.imshow(data, aspect='auto', origin='lower', interpolation='none')
-        ax.set_xlabel("Time step")
+        ax.set_xlabel('Time step')
 
         ylabel = 'Items'
         if pathway == 'all':
             ylabel = 'Rhabdomeres'
-        elif pathway in ('cartridge', 'peripheral', 'central'):
+        elif pathway in ('cartridge', 'peripheral', 'periph', 'central'):
             ylabel = 'Cartridges'
-        elif pathway == 'ommatidium':
+        elif 'omm' in pathway:
             ylabel = 'Ommatidia'
 
         ax.set_ylabel(ylabel + (' (sorted Left to Right)' if sort_by == 'azimuth' else ''))
-
-        if dark_mode:
-            ax.set_facecolor('black')
-            if ax.figure is not None:
-                ax.figure.patch.set_facecolor('black')
-            ax.tick_params(colors='white')
-            ax.xaxis.label.set_color('white')
-            ax.yaxis.label.set_color('white')
-            for spine in ax.spines.values():
-                spine.set_color('white')
 
         return ax
