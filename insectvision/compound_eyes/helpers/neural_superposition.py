@@ -176,7 +176,8 @@ def _enumerate_candidates(
                 'whitened_neighb_uv': np.column_stack([neighb_i.real, neighb_i.imag]),
                 'immediate': np.asarray(neighb.immediate[i_loc]).copy(),
                 'same_chir': np.asarray(neighb.same_chirality[i_loc]).copy(),
-                'template_uv': np.column_stack([tpl_i[periph].real, tpl_i[periph].imag]),
+                'full_template_uv': np.column_stack([tpl_i.real, tpl_i.imag]),
+                'periph_template_uv': np.column_stack([tpl_i[periph].real, tpl_i[periph].imag]),
                 'scale': float(scale),
                 'W': W.copy()
             })
@@ -442,7 +443,13 @@ def solve_zone(zone: 'OmmatidiumView', solver_context: 'SimpleNamespace') -> Tup
     if o_count < 2:
         return [], 0, ({} if trace else None)
 
-    neighb = zone.neighbours(query=zone.indices, k=min(solver_context.k_search, o_count - 1))
+    if trace:
+        # Query whole eye just so the trace can store different-chirality neighbours
+        eye = zone.model.eyes[zone.eye_index[0]]
+        neighb = eye.neighbours(query=zone.indices, k=min(solver_context.k_search, len(eye) - 1))
+    else:
+        neighb = zone.neighbours(query=zone.indices, k=min(solver_context.k_search, o_count - 1))
+
     if not neighb:
         return [], 0, ({} if trace else None)
 
