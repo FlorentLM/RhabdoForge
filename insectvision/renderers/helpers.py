@@ -50,7 +50,7 @@ class VisualOutput:
         return self._data is not None and self._data.size > 0
 
     def __array__(self,
-            dtype: Optional[np.dtypes | bool | float | int | np.integer | np.floating | np.bool] = None,
+            dtype = None,
             copy: Optional[bool] = None
         ) -> np.ndarray:
         if dtype:

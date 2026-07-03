@@ -26,7 +26,7 @@ from insectvision.compound_eyes.buffers import OMM_STATIC_DTYPE, OMM_DYNAMIC_DTY
 if TYPE_CHECKING:
     from insectvision.engine.scene import Scene
     from insectvision.engine.agent import Agent, OrbitCamera
-    from insectvision.engine.context import Context, get_context
+    from insectvision.engine.context import Context
     from insectvision.compound_eyes import Model, Eye
 
 
@@ -97,6 +97,7 @@ class Renderer:
         self.agent: 'Agent' = agent
 
         # Context reference
+        from insectvision.engine.context import get_context
         self._context = context or get_context()
         if self._context is None:
             raise RuntimeError('Renderer created before a Context was initialized. Call context = Context() first.')

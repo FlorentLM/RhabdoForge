@@ -466,7 +466,7 @@ class Context:
 
         return True
 
-    def run_headless(self, steps: Optional[int] = None) -> Generator[float]:
+    def run_headless(self, steps: Optional[int] = None) -> Generator:
         """Generator for a headless loop (ticks the clock and returns dt)."""
         start_frame = self.frame_count
         while steps is None or (self.frame_count - start_frame) < steps:
