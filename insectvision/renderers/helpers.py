@@ -1,5 +1,6 @@
-from typing import Tuple
+from typing import Tuple, Sequence, Optional
 import numpy as np
+from matplotlib.axes import Axes
 
 from insectvision.compound_eyes import Model
 from insectvision.geometry.circular import wrap_angle
@@ -45,7 +46,16 @@ class VisualOutput:
             self._is_time_series = False
             self._shape = int(data.shape[-2] // model.shape[1]), int(model.shape[1])
 
-    # TODO: __bool__ overload
+    def __bool__(self) -> bool:
+        return self._data is not None and self._data.size > 0
+
+    def __array__(self,
+            dtype: Optional[np.dtypes | bool | float | int | np.integer | np.floating | np.bool] = None,
+            copy: Optional[bool] = None
+        ) -> np.ndarray:
+        if dtype:
+            return np.array(object=self._data, dtype=dtype, copy=copy)
+        return self._data
 
     @property
     def shape(self) -> Tuple[int, int] | Tuple[int, int, int]:
@@ -60,12 +70,30 @@ class VisualOutput:
         return len(self._shape)
 
     @classmethod
-    def from_history(cls, history: list['VisualOutput']) -> 'VisualOutput':
-        """Stacks a list of single-frame VisualOutputs into one timeseries VisualOutput."""
+    def from_history(cls, history: Sequence['VisualOutput'] | Sequence[np.ndarray], model: Optional['Model'] = None) -> 'VisualOutput':
+        """
+        Stacks or concatenates multiple inputs into a single timeseries VisualOutput.
+        """
         if not history:
-            raise ValueError('History list is empty')
-        return cls(np.stack([vo.data for vo in history if vo], axis=0), history[0]._model)
-    # TODO: support stacking list of already-timeseries VO
+            raise ValueError('History is empty')
+
+        arrays = [np.asarray(item) for item in history]
+        normalized = [a[np.newaxis, ...] if a.ndim == 2 else a for a in arrays]
+
+        # Discovery: find the model from the first VisualOutput in the list
+        found_model = model
+        if found_model is None:
+            for item in history:
+                if isinstance(item, VisualOutput):
+                    found_model = item._model
+                    break
+
+        if found_model is None:
+            raise ValueError('A Model must be provided if the history consists only of raw arrays.')
+
+        combined_data = np.concatenate(normalized, axis=0)
+
+        return cls(combined_data, found_model)
 
     @property
     def data(self) -> np.ndarray:
@@ -117,8 +145,9 @@ class VisualOutput:
     @property
     def per_cartridge(self) -> np.ndarray:
         """Returns (..., N, R, 4) array of all rhabdomere outputs, per cartridge."""
+
         if not self._model.neural_superposition:
-            return self.per_ommatidium   # fallback for R=1 models
+            return self.per_ommatidium
 
         if self._data.ndim == 2:
             return self._data[self._model.cartridge_indices]
@@ -144,36 +173,42 @@ class VisualOutput:
 
     @property
     def central_signal(self) -> np.ndarray:
-        """The response of the central rhabdomere (Medulla color pathway)."""
+        """The response of the central rhabdomere (Medulla colour pathway)."""
         if self.shape[-1] == 1:
             return self.per_ommatidium[..., 0, :]
         return self.per_cartridge[..., getattr(self._model.bundle, 'center_index', 0), :]
 
     @property
-    def lmc_input(self):
+    def lmc_input(self) -> np.ndarray:
         """Alias to peripheral_signal"""
         return self.peripheral_signal
 
     @property
-    def pale_input(self):
+    def pale_input(self) -> np.ndarray:
         """Alias to central_signal"""
         return self.central_signal
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> np.ndarray:
         return self._data[idx]
 
     def __len__(self) -> int:
         return self.shape[0]
 
     def __repr__(self) -> str:
-        t_str = f', T={self.shape[0]}' if self.ndim == 3 else ''
-        return f"VisualOutput(N={self.shape[-2]}, R={self.shape[-1]}{t_str}, shape={self.shape})"
+        t_str = f'Time={self.shape[0]}, ' if self._is_time_series else ''
+        return f'{t_str}VisualOutput({t_str}N={self.shape[-2]}, R={self.shape[-1]})'
 
     # Plotting methods
 
-    def plot(self, pathway: str = 'all', projection: str = 'equirectangular',
-             ax=None, false_colors: bool = False, uv_encoding: bool = False,
-             draw_edges: bool = False, dark_mode: bool = False):
+    def plot(self,
+             ax: Optional['Axes'] = None,
+             pathway: str = 'all',
+             projection: str = 'equirectangular',
+             false_colors: bool = False,
+             uv_encoding: bool = False,
+             dark_mode: bool = False,
+             draw_edges: bool = False,
+        ) -> 'Axes':
         """
         Displays the visual output as a gapless Voronoi tessellation (like in the first person shader).
         If this VisualOutput contains multiple timesteps, this plots the last one.
@@ -270,10 +305,15 @@ class VisualOutput:
 
         return ax
 
-    def plot_time_series(self, pathway: str = 'peripheral',
-                         max_items: int = 100, sort_by: str = 'azimuth',
-                         false_colors: bool = False, uv_encoding: bool = False,
-                         dark_mode: bool = False, ax=None):
+    def plot_time_series(self,
+            ax: Optional['Axes'] = None,
+            pathway: str = 'peripheral',
+            false_colors: bool = False,
+            uv_encoding: bool = False,
+            dark_mode: bool = False,
+            max_items: int = 100,
+            sort_by: str = 'azimuth',
+        ) -> 'Axes':
         """
         Plots a spatio-temporal heatmap of the visual output over time.
         """
