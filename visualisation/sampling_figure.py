@@ -24,6 +24,7 @@ class PlotSettings:
     aspect: float = 0.95               # height / width when height_mm is None
     dpi: int = 600                     # raster image export (PNG/TIFF)
     raster_dpi: int = 300              # resolution of rasterised layers inside EPS/PDF (halftone min)
+    screen_dpi: int = 100              # on-screen dpi for the interactive viewer (NOT the export dpi)
 
     font_family: Sequence[str] = ('Arial', 'Helvetica', 'DejaVu Sans')
     base: float = 7.0                  # body text + tick labels
@@ -33,9 +34,9 @@ class PlotSettings:
     header: float = 8.5                # column / row-group headers
     initials: float = 14               # Big letters for subfigures (A, B, C ...)
 
-    axis_lw = 0.6
-    curve_lw = 0.8
-    grid_lw = 0.5
+    axis_lw: float = 0.6
+    curve_lw: float = 0.8
+    grid_lw: float = 0.5
 
     bg: str = 'white'
     yellorange: str = '#FFC32F'
@@ -93,7 +94,7 @@ class PlotSettings:
             'pdf.fonttype': 42,   # embed TrueType in PDF
             'ps.fonttype': 42,    # embed TrueType in EPS/PS
             'ps.useafm': False,
-            'figure.dpi': self.dpi,
+            'figure.dpi': self.screen_dpi,   # only interactive window, export dpi is set in savefig()
             'savefig.dpi': self.dpi,
             'figure.facecolor': self.bg,
             'savefig.facecolor': self.bg,
@@ -101,7 +102,7 @@ class PlotSettings:
         return self
 
     def new_figure(self) -> plt.Figure:
-        return plt.figure(figsize=self.figsize, dpi=self.dpi, facecolor=self.bg)
+        return plt.figure(figsize=self.figsize, dpi=self.screen_dpi, facecolor=self.bg)
 
     def savefig(self, fig: plt.Figure, name: str, formats: Optional[Sequence[str]] = None):
         raster_exts = {'png', 'tif', 'tiff', 'jpg', 'jpeg'}
@@ -117,26 +118,22 @@ class PlotSettings:
 
     @classmethod
     def nature_single(cls, **kw) -> 'PlotSettings':
-        """Nature single column: 89 mm (dense, this figure prefers double)."""
+        """Nature single column: 89 mm."""
         return cls(width_mm=89.0, base=6.0, small=5.5, tiny=5.0,
                    title=7.0, header=7.0, dpi=600, **kw)
 
     @classmethod
     def plos(cls, **kw) -> 'PlotSettings':
-        """PLOS: up to 190.5 mm, 8-12 pt type, >=300 dpi."""
+        """PLOS: up to 190.5 mm, 8-12 pt type."""
         return cls(width_mm=183.0, base=8.0, small=7.0, tiny=7.0,
                    title=9.0, header=9.5, dpi=600, **kw)
-
-    def variant(self, **kw) -> 'PlotSettings':
-        """A copy with fields overridden (e.g. a wider or taller sibling figure)."""
-        return replace(self, **kw)
 
 
 # ===========================================================================
 
 # Model / content config
 
-NUM_RAYS = 55
+NUM_RAYS = 32
 RAY_HEIGHT = 1.35
 X_LIMIT = 2.5
 UNDER_FLOOR = -0.2
@@ -149,9 +146,8 @@ UNIFORM_PROP_LEVEL = 0.9   # height of the flat "uniform p(theta)" schematic lin
 GAUSS_K = 2.77258872224    # GAUSS_CONSTANT_K = 4 * log(2)
 AIRY_SCALE = 3.232         # makes the Airy FWHM = 1.0
 SPREAD_MULT = 2.0          # proposal = spread_mult * acceptance
-AIRY_LUT_SIZE = 256
 
-AIRY_LUT = airy_sensitivity_lut(AIRY_LUT_SIZE)
+AIRY_LUT = airy_sensitivity_lut(256)
 
 # zorder threshold: everything below this goes into one rasterised layer per ax (EPS-safe translucency)
 Z_RASTER = 8.0
@@ -159,8 +155,8 @@ Z_TEXT = 12.0   # text remains vector
 
 # Line widths
 
-target_lw = 1.5      # Target curve
-proposal_lw = 1.0    # Proposal curve
+target_lw = 1.0      # Target curve
+proposal_lw = 1.5    # Proposal curve
 ray_lw = 0.8         # Rays
 guide_lw = 0.9       # FWHM markers, circles
 
@@ -170,9 +166,9 @@ def gaussian(radial_dist):
     return np.exp(-GAUSS_K * r * r)
 
 
-def airy(radial_dist):
-    idx = np.clip(np.asarray(radial_dist, dtype=float) * (255.0 / 4.0), 0.0, 255.0).astype(np.int64)
-    return AIRY_LUT[idx]
+def lookup_sensitivity_LUT(radial_dist):
+    lut_x = np.linspace(0.0, 4.0, len(AIRY_LUT))
+    return np.interp(np.asarray(radial_dist, dtype=float), lut_x, AIRY_LUT)
 
 
 def halton(n, base):
@@ -185,6 +181,17 @@ def halton(n, base):
             i //= base
         res.append(r)
     return np.array(res)
+
+
+def radical_inverse_glsl(n_array):
+    """Exact replica of the GLSL radical_inverse_v2 function in commons.glsl"""
+    bits = np.asarray(n_array, dtype=np.uint32)
+    bits = (bits << np.uint32(16)) | (bits >> np.uint32(16))
+    bits = ((bits & np.uint32(0x55555555)) << np.uint32(1)) | ((bits & np.uint32(0xAAAAAAAA)) >> np.uint32(1))
+    bits = ((bits & np.uint32(0x33333333)) << np.uint32(2)) | ((bits & np.uint32(0xCCCCCCCC)) >> np.uint32(2))
+    bits = ((bits & np.uint32(0x0F0F0F0F)) << np.uint32(4)) | ((bits & np.uint32(0xF0F0F0F0)) >> np.uint32(4))
+    bits = ((bits & np.uint32(0x00FF00FF)) << np.uint32(8)) | ((bits & np.uint32(0xFF00FF00)) >> np.uint32(8))
+    return bits.astype(float) * 2.3283064365386963e-10
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +291,7 @@ def airy_ring_stats():
     """
     fz = 3.8317 / AIRY_SCALE                      # first zero of J1 -> first Airy dark ring
     r = np.linspace(0.0, 4.0, 20000)
-    w = airy(r) * r                               # 2D area element
+    w = lookup_sensitivity_LUT(r) * r                               # 2D area element
     ring_mass = float(np.trapezoid(w[r > fz], r[r > fz]) / np.trapezoid(w, r))
     ray_reach = float(np.exp(-GAUSS_K * fz * fz))
     return fz, ring_mass, ray_reach
@@ -320,7 +327,8 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
 
 
     # Proposal distribution
-    ax.plot(x, samp_y, color=s.green, lw=proposal_lw, alpha=0.8, linestyle=(0, (1, 2)), zorder=4)
+    ax.plot(x, samp_y, color=s.green, lw=proposal_lw, alpha=0.8, linestyle=':', solid_capstyle='round', zorder=4)
+    # ax.plot(x, samp_y, color=s.green, lw=proposal_lw, alpha=0.8, linestyle=(0, (1, 2)), solid_capstyle='round', zorder=4)
     if mode != 'Importance':
         ax.fill_between(x, samp_y, color=s.green, alpha=0.05, zorder=1)
 
@@ -330,7 +338,7 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
     # FWHM marker
     fwhm_half = 0.5
     ax.hlines(0.5, -fwhm_half, fwhm_half, color=s.dark, linestyle='--', lw=guide_lw, zorder=10)
-    ax.text(0, 0.40, 'FWHM', color=s.dark, fontsize=s.small, fontweight='bold', ha='center', zorder=Z_TEXT)
+    ax.text(0, 0.33, 'FWHM', color=s.dark, fontsize=s.small, fontweight='bold', ha='center', zorder=Z_TEXT)
     # TODO: Move FWHM text a little bit lower
 
     ax.text(-1.8, 0.13, f'{target_name} target\n$S(\\theta)$', color=target_color,
@@ -345,13 +353,11 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
                         facecolor=s.red, alpha=0.16, hatch='////',
                         edgecolor=s.red, linewidth=0.0, zorder=6)
 
-        ax.annotate(f'Diffraction rings:\n{ring_mass:.0%} of $S(\\theta)$, '
-                    f'{ray_reach:.0%} of rays',
-                    xy=(1.5, max(target_func(1.5), 0.02)), xytext=(0.0, 1.17),
-                    color=s.red, fontsize=s.small, ha='center', va='center', zorder=Z_TEXT,
+        peak_r = 5.136 / AIRY_SCALE  # first Airy secondary max, ~1.59 FWHM
+        ax.annotate(f'Diffraction rings:\n{ring_mass:.0%} of $S(\\theta)$\n{ray_reach:.0%} of rays',
+                    xy=(peak_r, target_func(peak_r)), xytext=(2.0, 0.2),
+                    ha='center', va='bottom', color=s.red, style='italic', fontsize=s.small * 0.9, zorder=Z_TEXT,
                     arrowprops=dict(arrowstyle='-', color=s.red, lw=0.6))
-        # TODO: Position of this is lame, should be lower right (above the rightmost ripple)
-
 
     # Rays (alpha = contribution weight)
     rays_x, rays_y, weights = sample_rays(mode, target_func, NUM_RAYS, rng)
@@ -361,8 +367,15 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
     for rx, wn in zip(rays_x, w_norm):
         if -X_LIMIT < rx < X_LIMIT:
             x_bottom = rx * ((CONVERGENCE_DIST + UNDER_FLOOR) / (RAY_HEIGHT + CONVERGENCE_DIST))
+
+            min_alpha = 0.001
+            displ_weight = max(min_alpha, wn * 0.7)
+
+            col = s.yellorange if displ_weight > min_alpha else 'grey'
+            alpha = displ_weight if displ_weight > min_alpha else 0.2
+
             ax.plot([x_bottom, rx], [UNDER_FLOOR, RAY_HEIGHT],
-                    color=s.yellorange, alpha=max(0.03, wn * 0.7), lw=ray_lw, zorder=2)
+                    color=col, alpha=alpha, lw=ray_lw, zorder=2)
 
     # Insets: 2D sample cloud over the target heatmap
     axins = ax.inset_axes([0.02, 0.63, 0.3, 0.3])
@@ -380,9 +393,18 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
         extent=[-zoom_lim, zoom_lim, -zoom_lim, zoom_lim],
         origin='lower', cmap=cmap, alpha=0.3, zorder=1)
 
+    # FWHM
     axins.add_patch(
         Circle((0, 0), fwhm_half, color=s.dark, fill=False, linestyle='--', lw=guide_lw, zorder=6))
-    # TODO: Add a thinner, larger ring at the bottom of the curve, and another one at the first ripple for Airy
+
+    # Main lobe extent
+    axins.add_patch(
+        Circle((0, 0), 1.1, color=s.dark, fill=False, linestyle=':', lw=guide_lw * 0.6, alpha=0.7, zorder=6))
+
+    # Airy ripple
+    if target_name == 'Airy':
+        fz = 3.8317 / AIRY_SCALE
+        axins.add_patch(Circle((0, 0), fz, color=s.red, fill=False, linestyle='--', lw=guide_lw * 0.6, zorder=6))
 
     axins.scatter(rays_x, rays_y,
                   s=20, color=s.yellorange, alpha=np.clip(w_norm, 0.06, 0.65), edgecolors='white', lw=0.4, zorder=5)
@@ -406,40 +428,56 @@ def randomness_mode_scatter(ax, s: PlotSettings, mode_type):
     if s.rasterize:
         ax.set_rasterization_zorder(Z_RASTER)
 
-    rng = np.random.default_rng(7)
     n = 64
-    zoom = 1.1
+    rng = np.random.default_rng(42)
+    zoom = 1.3
     fwhm_half = 0.5
 
-    if mode_type == 'Pseudo-random':
-        u1 = rng.uniform(1e-6, 1.0, n)
-        u2 = rng.uniform(0.0, 1.0, n)
-        r = np.sqrt(-np.log(u1) / GAUSS_K)
-        rx, ry = r * np.cos(2 * np.pi * u2), r * np.sin(2 * np.pi * u2)
-
-    elif mode_type == 'Quasi-random (Halton)':
-        u1 = np.clip(halton(n, 2), 1e-6, 1.0)
-        u2 = halton(n, 3)
-        r = np.sqrt(-np.log(u1) / GAUSS_K)
-        rx, ry = r * np.cos(2 * np.pi * u2), r * np.sin(2 * np.pi * u2)
-
-    else:  # Stratified
+    if mode_type == 'Stratified':
         grid = int(np.ceil(np.sqrt(n)))
-        rx, ry = [], []
-        for i in range(n):
-            u1 = (i % grid + rng.random()) / grid
-            u2 = (i // grid + rng.random()) / grid
-            r = np.sqrt(-np.log(max(u1, 1e-6)) / GAUSS_K)
-            rx.append(r * np.cos(2 * np.pi * u2))
-            ry.append(r * np.sin(2 * np.pi * u2))
-        rx, ry = np.array(rx), np.array(ry)
+        indices = np.arange(n)
 
-    radii = np.sqrt(rx ** 2 + ry ** 2)
+        cell_x = indices % grid
+        cell_y = indices // grid
+
+        u1 = (cell_x + rng.random(n)) / grid
+        u2 = (cell_y + rng.random(n)) / grid
+
+
+    elif mode_type == 'Hammersley (Scrambled)':
+        offset1 = rng.random()
+        offset2 = rng.random()
+
+        u1_base = (np.arange(n) + 0.5) / n
+        u2_base = radical_inverse_glsl(np.arange(n))
+
+        u1 = np.mod(u1_base + offset1, 1.0)
+        u2 = np.mod(u2_base + offset2, 1.0)
+        u1 = np.clip(u1, 1e-6, 1.0)
+
+    elif mode_type == 'Fibonacci':
+        golden_angle = np.pi * (3.0 - np.sqrt(5.0))
+        rotation_offset = rng.random()
+        u1 = (np.arange(n) + 0.5) / n
+        u2 = np.mod((np.arange(n) * golden_angle / (2 * np.pi)) + rotation_offset, 1.0)
+        u1 = np.clip(1.0 - u1, 1e-6, 1.0)
+
+    else: # 'Pseudo-random'
+        u1 = rng.random(n)
+        u2 = rng.random(n)
+
+    radii = np.sqrt(-np.log(np.clip(u1, 1e-6, 1.0)) / GAUSS_K)
+
+    rx = radii * np.cos(2 * np.pi * u2)
+    ry = radii * np.sin(2 * np.pi * u2)
 
     c_map = LinearSegmentedColormap.from_list('rd', ['#1B2631', s.yellorange])
 
-    ax.add_patch(Circle((0, 0), fwhm_half, color=s.dark, fill=False,
-                        linestyle='--', lw=guide_lw, zorder=3))
+    ax.add_patch(
+        Circle((0, 0), fwhm_half, color=s.dark, fill=False, linestyle='--', lw=guide_lw, zorder=6))
+
+    ax.add_patch(
+        Circle((0, 0), 1.1, color=s.dark, fill=False, linestyle=':', lw=guide_lw * 0.6, alpha=0.7, zorder=6))
 
     ax.scatter(rx, ry, s=22, c=c_map(np.clip(radii / 1.5, 0, 1)),
                alpha=0.85, edgecolors='white', lw=0.4, zorder=4)
@@ -467,7 +505,7 @@ def efficiency_coverage_scatter(ax, s: PlotSettings):
     if s.rasterize:
         ax.set_rasterization_zorder(Z_RASTER)    # data marks into raster layer
 
-    targets = [(gaussian, 'Gaussian', s.blue), (airy, 'Airy', s.red)]
+    targets = [(gaussian, 'Gaussian', s.blue), (lookup_sensitivity_LUT, 'Airy', s.red)]
     s_lo, s_hi = min(HYBRID_SIGMAS), max(HYBRID_SIGMAS)
     alpha_of = lambda v: 0.30 + 0.70 * (v - s_lo) / (s_hi - s_lo)
 
@@ -491,8 +529,8 @@ def efficiency_coverage_scatter(ax, s: PlotSettings):
                    marker='^', s=40, facecolor=col, edgecolor='white', linewidth=0.5, zorder=4)
 
     # endpoint sigma labels on the Airy hook (the informative trajectory)
-    cov_a = [100 * _coverage(_gauss_proposal(v), airy) for v in (HYBRID_SIGMAS[0], HYBRID_SIGMAS[-1])]
-    eff_a = [100 * hybrid_efficiency(v, airy) for v in (HYBRID_SIGMAS[0], HYBRID_SIGMAS[-1])]
+    cov_a = [100 * _coverage(_gauss_proposal(v), lookup_sensitivity_LUT) for v in (HYBRID_SIGMAS[0], HYBRID_SIGMAS[-1])]
+    eff_a = [100 * hybrid_efficiency(v, lookup_sensitivity_LUT) for v in (HYBRID_SIGMAS[0], HYBRID_SIGMAS[-1])]
 
     ax.annotate(r'$\sigma$=1', (cov_a[0], eff_a[0]), xytext=(4, -8), textcoords='offset points',
                 fontsize=s.tiny, color=s.red, zorder=Z_TEXT)
@@ -510,7 +548,9 @@ def efficiency_coverage_scatter(ax, s: PlotSettings):
     leg = ax.legend(handles=handles, loc='upper left', fontsize=s.small,
                     handletextpad=0.3, borderpad=0.2, labelspacing=0.25,
                     title='Strategy', title_fontsize=s.small)
-    # TODO: Thin black legend border
+    leg.get_frame().set_edgecolor('black')
+    leg.get_frame().set_linewidth(0.15)
+    leg.get_frame().set_facecolor('white')
 
     leg.set_zorder(Z_TEXT)
     ax.add_artist(leg)
@@ -542,42 +582,50 @@ TARGETS_KEY = ['gaussian', 'airy']
 
 
 def build_figure(s: PlotSettings) -> plt.Figure:
-    targets = [(gaussian, 'Gaussian', s.blue), (airy, 'Airy', s.red)]
+    targets = [(gaussian, 'Gaussian', s.blue), (lookup_sensitivity_LUT, 'Airy', s.red)]
 
     fig = s.new_figure()
 
-    outer = GridSpec(3, 1, figure=fig, height_ratios=[1.0, 1.0, 0.92], hspace=0.30)
+    outer = GridSpec(2, 1, figure=fig, height_ratios=[2.0, 0.92], hspace=0.135)
+    # both sampling rows in one 2x3 grid with hspace=0.0)
+    top = outer[0].subgridspec(2, 3, wspace=0.12, hspace=0.0)
 
     # Rows 0 and 1: target x strategy, each row is 3-column wide
     sampling_axes = []
     for row, (tfunc, tname, tcolor) in enumerate(targets):
-        row_gs = outer[row].subgridspec(1, 3, wspace=0.12)
         row_axes = []
-
         for col, strat in enumerate(STRATEGIES):
-            ax = fig.add_subplot(row_gs[0, col])
+            ax = fig.add_subplot(top[row, col])
             sampling_curves(ax, s, tfunc, tname, strat, tcolor, seed=100 * row + col)
             row_axes.append(ax)
-
         sampling_axes.append(row_axes)
 
     # Row 2: Randomness modes clusters (left), efficiency scatter (right)
-    bottom = outer[2].subgridspec(1, 2, width_ratios=[1.0, 1.18], wspace=0.16)
-    rand_gs = bottom[0].subgridspec(2, 2, wspace=0.10, hspace=0.32)
+    bottom = outer[1].subgridspec(1, 2, width_ratios=[0.75, 1.18], wspace=0.20)
+    rand_gs = bottom[0].subgridspec(2, 2, wspace=0.0, hspace=0.32)
 
     ax_pseudo = fig.add_subplot(rand_gs[0, 0])
     ax_halton = fig.add_subplot(rand_gs[0, 1])
-    ax_strat = fig.add_subplot(rand_gs[1, :])       # centred under the two
+    ax_strat = fig.add_subplot(rand_gs[1, 0])
+    ax_fib = fig.add_subplot(rand_gs[1, 1])
 
     randomness_mode_scatter(ax_pseudo, s, 'Pseudo-random')
-    randomness_mode_scatter(ax_halton, s, 'Quasi-random (Halton)')
+    # randomness_mode_scatter(ax_halton, s, 'Quasi-random (Halton)')
+    randomness_mode_scatter(ax_halton, s, 'Hammersley (Scrambled)')
     randomness_mode_scatter(ax_strat, s, 'Stratified')
+    randomness_mode_scatter(ax_fib, s, 'Fibonacci')
+
+    b_left = ax_pseudo.get_position(fig).x0
+    b_bottom = ax_strat.get_position(fig).y0
+
+    fig.text(b_left, b_bottom - 0.06, 'Randomness and stratification',
+             fontsize=s.title, ha='left', va='top')
 
     ax_eff = fig.add_subplot(bottom[1])
     efficiency_coverage_scatter(ax_eff, s)
 
     # Margins fixed explicitly  # TODO: Adjust these
-    fig.subplots_adjust(left=0.055, right=0.985, top=0.925, bottom=0.045)
+    fig.subplots_adjust(left=0.06, right=0.97, top=0.905, bottom=0.07)
 
     # Headers and group labels
     for ax, strat in zip(sampling_axes[0], STRATEGIES):     # column headers
@@ -591,19 +639,24 @@ def build_figure(s: PlotSettings) -> plt.Figure:
         fig.text(p.x0 - 0.018, (p.y0 + p.y1) / 2, label, rotation=90,
                  va='center', ha='center', fontsize=s.header, color=col)
 
-    rand_reg = bottom[0].get_position(fig)   # randomness modes region
-    fig.text(x=rand_reg.x0, y=rand_reg.y1, s='B', ha='right', va='bottom', fontsize=s.initials, fontweight='bold', color='black')
+    a_pos = sampling_axes[0][0].get_position()
+    fig.text(a_pos.x0, a_pos.y1 + 0.02, 'A', ha='right', va='bottom',
+             fontsize=s.initials, fontweight='bold', color='black')
+
+    b_pos = bottom[0].get_position(fig)
+    fig.text(b_pos.x0, b_pos.y1, 'B', ha='right', va='bottom',
+             fontsize=s.initials, fontweight='bold', color='black')
+
+    c_pos = bottom[1].get_position(fig)
+    fig.text(c_pos.x0 - 0.055, c_pos.y1, 'C', ha='right', va='bottom',
+             fontsize=s.initials, fontweight='bold', color='black')
 
     return fig
 
-
-# TODO: Add A and B initials
 
 if __name__ == '__main__':
     settings = PlotSettings.nature_double().apply()
 
     fig = build_figure(settings)
-    # TODO: interactive viewer is borked, 600 dpi is too big for it, and point-based fonts cant be resized in it
 
-    settings.savefig(fig, 'sampling', formats=['png'])
-    # TODO: Margins are crap, need adjusted
+    settings.savefig(fig, 'sampling')

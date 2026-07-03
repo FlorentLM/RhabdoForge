@@ -128,14 +128,14 @@ float halton_sequence(uint index, uint base) {
     return r;
 }
 
-// Radical-inverse for Hammersley
+// Standard 32-bit radical-inverse for base 2 (for Hammersley)
 float radical_inverse_v2(uint bits) {
     bits = (bits << 16u) | (bits >> 16u);
     bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
     bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
     bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
     bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
-    return float(bits) * 2.3283064365386963e-10; // / 0x100000000
+    return float(bits) * 2.3283064365386963e-10;
 }
 
 uint pcg_hash(uint seed) {
@@ -174,32 +174,30 @@ Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rhab_idx, u
         s.u2 = (cell_y + random_float(rng_state)) / grid_size;
     }
     else if (mode == RNG_FIBONACCI) {
-        // Vogel's Method
-        // u1: normalized radius [0, 1]
-        // u2: normalized rotation [0, 1] (will be multiplied by 2*pi later)
+        // Vogel's Method (golden spiral)
 
-        // rotate the whole spiral per frame
-        float rotation_offset = float(dither_counter % 64u) / 64.0;
+        // Rotate the spiral entirely randomly per frame to avoid temporal artifacts
+        uint rot_seed = pcg_hash(rhab_idx * 1973u + dither_counter * 26699u);
+        float rotation_offset = random_float(rot_seed);
 
         s.u1 = (float(sample_idx) + 0.5) / float(nb_samples);
         s.u2 = fract((float(sample_idx) * GOLDEN_RATIO_ANGL / TWOPI) + rotation_offset);
 
-        // Ensure u1 never hits 0.0 to avoid log(0) in importance sampling
+        // Reverse u1 so density is in the center, and clamp to avoid log(0)
         s.u1 = clamp(1.0 - s.u1, 1e-6, 1.0);
     }
-   else if (mode == RNG_HAMMERSLEY) {
+    else if (mode == RNG_HAMMERSLEY) {
+        // Cranley-Patterson scrambled Hammersley
+        // Scramble seed changes per frame (dither) and per pixel (rhab_idx), but not per sample
         uint scramble_seed = pcg_hash(rhab_idx * 1973u + dither_counter * 26699u);
         float offset1 = random_float(scramble_seed);
         float offset2 = random_float(scramble_seed);
 
-        float u1_base = float(sample_idx) / float(nb_samples);
+        float u1_base = (float(sample_idx) + 0.5) / float(nb_samples);
         float u2_base = radical_inverse_v2(sample_idx);
 
-        // Cranley-Patterson rotation
         s.u1 = fract(u1_base + offset1);
         s.u2 = fract(u2_base + offset2);
-
-        // Clamp u1 for the Gaussian/Airy log math
         s.u1 = clamp(s.u1, 1e-6, 1.0);
     }
     else { // RNG_PSEUDO
