@@ -9,6 +9,7 @@ from PIL import Image
 from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
+from insectvision.geometry.linalg import tangent_frames
 from insectvision.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD
 from insectvision.geometry.spherical import sphere_to_stereo
 from insectvision.utils import norm_l2
@@ -93,29 +94,21 @@ def make_ommatidia_lattice(model, delaunay_mesh: pv.PolyData) -> pv.PolyData:
     # Build the polygons
     dual_faces = []
     valid_ommatidia_indices = []
-    normals = model.directions
+    right_vecs, up_vecs = tangent_frames(model.directions)
 
     for pt_idx, connected_cells in point_to_cells.items():
-        if pt_idx in boundary_vertices or len(connected_cells) < 3:
+
+        # For now skipping 'is_edge' lenses... # TODO: figure out a way to correctly build edge lenses
+        if model.is_edge[pt_idx] or pt_idx in boundary_vertices or len(connected_cells) < 3:
             continue
 
         # Get centers of surrounding triangles
         centers = cell_centers[connected_cells]
         center_vecs = centers - pts[pt_idx]
-        normal = normals[pt_idx]
 
-        # local tangent plane to sort the facet vertices clockwise/CCW
-        up = np.array([1.0, 0.0, 0.0])
-        if np.abs(np.dot(normal, up)) > 0.99:
-            up = np.array([0.0, 1.0, 0.0])
-
-        t1 = np.cross(normal, up)
-        t1 /= np.linalg.norm(t1)
-        t2 = np.cross(normal, t1)
-
-        # Project triangle centers to 2D tangent plane to get angles
-        x = np.sum(center_vecs * t1, axis=1)
-        y = np.sum(center_vecs * t2, axis=1)
+        # Project to tangent plane
+        x = np.sum(center_vecs * right_vecs[pt_idx], axis=1)
+        y = np.sum(center_vecs * up_vecs[pt_idx], axis=1)
         angles = np.arctan2(y, x)
 
         # Sort cell indices radially
@@ -193,27 +186,6 @@ def make_delaunay_mesh(model) -> pv.PolyData:
     return pv.PolyData(positions.astype(np.float32), faces=flat.flatten())
 
 
-def eye_boundary_line(lens_data_mesh: pv.PolyData) -> pv.PolyData:
-    """
-    Extracts the exact outer boundary of the valid triangulated eye mesh and smoothes for a more organic edge.
-    """
-    if lens_data_mesh.n_cells == 0 or lens_data_mesh.n_points == 0:
-        return pv.PolyData()
-
-    edges = lens_data_mesh.extract_feature_edges(
-        boundary_edges=True,
-        non_manifold_edges=False,
-        manifold_edges=False,
-        feature_edges=False
-    )
-
-    # relaxation smoothing to the extracted polyline vertices
-    if edges.n_points > 0:
-        edges = edges.smooth(n_iter=100, relaxation_factor=0.05)
-
-    return edges
-
-
 ##
 
 def _arrow_template() -> pv.PolyData:
@@ -283,7 +255,6 @@ class EyeViewer:
 
         # Per-eye Delaunay mesh (vertex i = lens i)
         self.delaunay_mesh = make_delaunay_mesh(self.model)
-        self.eye_boundary_lines = eye_boundary_line(self.delaunay_mesh)
 
         # Generate the ommatidia lattice
         self.lattice_mesh = make_ommatidia_lattice(self.model, self.delaunay_mesh)
@@ -465,12 +436,16 @@ class EyeViewer:
                 lighting=True,
             )
 
-        # Boundary polyline overlay
-        if self.eye_boundary_lines.n_cells > 0:
+        # Extract boundary of the hexagons
+        edges = m.extract_feature_edges(
+            boundary_edges=True,
+            non_manifold_edges=False,
+            feature_edges=False,
+            manifold_edges=False
+        )
+        if edges.n_points > 0:
             self.plotter.add_mesh(
-                self.eye_boundary_lines,
-                color='black', line_width=1.5, opacity=0.55,
-                lighting=False,
+                edges, color='black', line_width=2.5, opacity=0.85, lighting=False
             )
 
     ##
