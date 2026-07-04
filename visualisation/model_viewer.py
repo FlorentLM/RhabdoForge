@@ -230,18 +230,6 @@ def _phasor_template() -> pv.PolyData:
     return _PHASOR_TEMPLATE
 
 
-def _disc_template() -> pv.PolyData:
-    """
-    Unit disc lying in YZ plane (normal = +X). Glyph filter aligns the
-    template's +X with the orient vector, so this places each disc with its
-    normal along the lens optical axis (tangent to the eye surface).
-    """
-    global _DISC_TEMPLATE
-    if _DISC_TEMPLATE is None:
-        _DISC_TEMPLATE = pv.Disc(inner=0, outer=1.0, c_res=18, normal=(1, 0, 0))
-    return _DISC_TEMPLATE
-
-
 ##
 
 class EyeViewer:
@@ -580,26 +568,32 @@ class EyeViewer:
 
     def _add_heatmaps(self) -> None:
 
-        if self.R <= 1:
+        if self.R <= 1 or self.lattice_mesh.n_cells == 0:
             return
 
+        valid_indices = self.lattice_mesh.cell_data['ommatidia_index']
+
         # Collinearity mesh
-        m_col = self.delaunay_mesh.copy()
-        m_col.point_data['val'] = self.collinearity
+        m_col = self.lattice_mesh.copy()
+        m_col.cell_data['val'] = self.collinearity[valid_indices]
         act_col = self.plotter.add_mesh(
             m_col, scalars='val', cmap='inferno', clim=[0, 1],
-            show_scalar_bar=True, smooth_shading=True,
-            scalar_bar_args={'title': 'Optic flow', 'position_x': 0.78, 'width': 0.18}
+            show_edges=True, edge_color='#666666', line_width=1.0,
+            show_scalar_bar=True,
+            scalar_bar_args={'title': 'Optic flow', 'position_x': 0.78, 'width': 0.18},
+            ambient=0.3, diffuse=0.7
         )
         self.actors_collinearity.append(act_col)
 
         # Smoothness mesh
-        m_sm = self.delaunay_mesh.copy()
-        m_sm.point_data['val'] = self.smoothness
+        m_sm = self.lattice_mesh.copy()
+        m_sm.cell_data['val'] = self.smoothness[valid_indices]
         act_sm = self.plotter.add_mesh(
             m_sm, scalars='val', cmap='viridis', clim=[0.9, 1.0],
-            show_scalar_bar=True, smooth_shading=True,
-            scalar_bar_args={'title': 'Saccades', 'position_x': 0.78, 'width': 0.18}
+            show_edges=True, edge_color='#666666', line_width=1.0,
+            show_scalar_bar=True,
+            scalar_bar_args={'title': 'Saccades', 'position_x': 0.78, 'width': 0.18},
+            ambient=0.3, diffuse=0.7
         )
         self.actors_smoothness.append(act_sm)
 
@@ -623,31 +617,22 @@ class EyeViewer:
             val = 1.0 if eye.side == 'left' else 2.0 if eye.side == 'right' else 0.0
             side_field[eye.indices] = val
         try:
-            binoc_mask = self.model.is_binocular
-            side_field[binoc_mask] = 3.0
-        except:
-            pass
+            side_field[self.model.is_binocular] = 3.0
+        except: pass
 
-        eps = float(np.median(self.disc_radii)) * 0.1
-        positions = self.p + eps * self.d
-        pd = pv.PolyData(positions.astype(np.float32))
-        pd.point_data['vectors'] = self.d.astype(np.float32)
-        pd.point_data['radius'] = self.disc_radii.astype(np.float32)
-        pd.point_data['zones'] = side_field
+        m = self.lattice_mesh.copy()
+        valid_indices = m.cell_data['ommatidia_index']
+        m.cell_data['zones'] = side_field[valid_indices]
 
-        discs = pd.glyph(geom=_disc_template(), orient='vectors', scale='radius', factor=1.2)
-
-        # 0: Gray, 1: Red (Left), 2: Blue (Right), 3: Purple (Binoc)
         zone_colors = ['#e0e0e0', '#ff4b4b', '#4b70ff', '#9b3ddc']
 
         act = self.plotter.add_mesh(
-            discs, scalars='zones',
-            cmap=zone_colors, clim=[-0.5, 3.5],
+            m, scalars='zones', cmap=zone_colors, clim=[-0.5, 3.5],
+            show_edges=True, edge_color='#666666',
             show_scalar_bar=True,
             scalar_bar_args={
                 'title': 'Zones (Red:L, Blue:R, Purple:Binoc)', 'n_labels': 5,
-                'position_x': 0.70, 'position_y': 0.05,
-                'width': 0.28, 'height': 0.06, 'color': 'black',
+                'position_x': 0.70, 'position_y': 0.05, 'width': 0.28, 'height': 0.06, 'color': 'black',
             },
             ambient=0.4, diffuse=0.7,
         )
@@ -658,27 +643,18 @@ class EyeViewer:
         Visualises edge detection logic.
         """
 
-        eps = float(np.median(self.disc_radii)) * 0.1
-        positions = self.p + eps * self.d
-        pd = pv.PolyData(positions.astype(np.float32))
+        m = self.lattice_mesh.copy()
+        valid_indices = m.cell_data['ommatidia_index']
+        m.cell_data['edge_mask'] = self.model.is_edge[valid_indices].astype(np.float32)
 
-        pd.point_data['vectors'] = self.d.astype(np.float32)
-        pd.point_data['radius'] = self.disc_radii.astype(np.float32)
-        pd.point_data['edge_mask'] = self.model.is_edge.astype(np.float32)
-
-        discs = pd.glyph(geom=_disc_template(), orient='vectors', scale='radius', factor=1.2)
-
-        # 0: Interior gray, 1: Edge magenta
         edge_colors = ['#e0e0e0', '#ff00ff']
-
         act = self.plotter.add_mesh(
-            discs, scalars='edge_mask',
-            cmap=edge_colors, clim=[-0.5, 1.5],
+            m, scalars='edge_mask', cmap=edge_colors, clim=[-0.5, 1.5],
+            show_edges=True, edge_color='#666666',
             show_scalar_bar=True,
             scalar_bar_args={
                 'title': 'Edges', 'n_labels': 0,
-                'position_x': 0.70, 'position_y': 0.05,
-                'width': 0.28, 'height': 0.06, 'color': 'black',
+                'position_x': 0.70, 'position_y': 0.05, 'width': 0.28, 'height': 0.06, 'color': 'black',
             },
             ambient=0.4, diffuse=0.7,
         )
@@ -689,49 +665,25 @@ class EyeViewer:
         Visualises the 'neighbour_count' metadata field.
         """
 
-        R = self.model.shape[1]
+        if self.lattice_mesh.n_cells == 0:
+            return
 
+        m = self.lattice_mesh.copy()
         counts = self.model.buffer['neighbour_count'][:, 0].astype(np.float32)
+        valid_indices = m.cell_data['ommatidia_index']
+        m.cell_data['counts'] = counts[valid_indices]
 
-        eps = float(np.median(self.disc_radii)) * 0.1
-        positions = self.p + eps * self.d
-        pd = pv.PolyData(positions.astype(np.float32))
-        pd.point_data['vectors'] = self.d.astype(np.float32)
-        pd.point_data['radius'] = self.disc_radii.astype(np.float32)
-        pd.point_data['counts'] = counts
-
-        discs = pd.glyph(geom=_disc_template(), orient='vectors', scale='radius', factor=1.2)
-
-        count_colors = [
-            'black',  # 0
-            'black',  # 1
-            'black',  # 2
-            '#e74c3c',  # 3: Red
-            '#e67e22',  # 4: Orange
-            '#f1c40f',  # 5: Yellow
-            '#ecf0f1',  # 6: Light gray (standard)
-            '#3498db',  # 7: Blue
-            '#414181'  # 8: Dark blue
-        ]
+        count_colors = ['black', 'black', 'black', '#e74c3c', '#e67e22', '#f1c40f', '#ecf0f1', '#3498db', '#414181']
 
         act = self.plotter.add_mesh(
-            discs,
-            scalars='counts',
-            cmap=count_colors,
-            clim=[-0.5, 8.5],
+            m, scalars='counts', cmap=count_colors, clim=[-0.5, 8.5],
+            show_edges=True, edge_color='#666666',
             show_scalar_bar=True,
             scalar_bar_args={
-                'title': 'Neighbours counts',
-                'n_labels': 9,
-                'position_x': 0.70,
-                'position_y': 0.05,
-                'width': 0.28,
-                'height': 0.06,
-                'color': 'black',
+                'title': 'Neighbours counts', 'n_labels': 9,
+                'position_x': 0.70, 'position_y': 0.05, 'width': 0.28, 'height': 0.06, 'color': 'black',
             },
-            ambient=0.4,
-            diffuse=0.7,
-            interpolate_before_map=False
+            ambient=0.4, diffuse=0.7, interpolate_before_map=False
         )
         self.actors_neighbours.append(act)
 
@@ -785,23 +737,19 @@ class EyeViewer:
                 self.actors_bundles.append(act)
 
         # Mode 2: conflicts heatmap
-        if self.conflicts_field is not None:
-            eps = float(np.median(self.disc_radii)) * 0.05
-            positions = self.p + eps * self.d
-            pd = pv.PolyData(positions.astype(np.float32))
-            pd.point_data['vectors'] = self.d.astype(np.float32)
-            pd.point_data['radius'] = self.disc_radii.astype(np.float32)
-            pd.point_data['conflicts'] = self.conflicts_field
-            discs = pd.glyph(geom=_disc_template(), orient='vectors',
-                             scale='radius', factor=1.1)
+        if self.conflicts_field is not None and self.lattice_mesh.n_cells > 0:
+            m = self.lattice_mesh.copy()
+            valid_indices = m.cell_data['ommatidia_index']
+            m.cell_data['conflicts'] = self.conflicts_field[valid_indices].astype(np.float32)
 
             # Discrete colormap:
             # 0: Light gray (OK), 1: Blue (Unwired), 2: Yellow (Donation), 3: Cyan (Receiving), 4: Red (Both)
             cmap_colors = ['#e0e0e0', '#4287f5', '#f1c40f', '#00bcd4', '#e74c3c']
 
             act = self.plotter.add_mesh(
-                discs, scalars='conflicts',
+                m, scalars='conflicts',
                 cmap=cmap_colors, clim=[-0.5, 4.5],
+                show_edges=True, edge_color='#666666', line_width=1.0,
                 show_scalar_bar=True,
                 scalar_bar_args={
                     'title': 'Conflicts (Gray:OK Blue:Drop Yel:Don Cy:Rcv Red:Both)', 'n_labels': 0,
@@ -857,46 +805,51 @@ class EyeViewer:
         ioa_estimate = float(np.mean(result.distances[0][1:7])) if k_nb > 1 else 0.01
         d_rad = ioa_estimate * 0.45
 
+        # Create a fast O(1) lookup: model ommatidium index -> mesh cell index
+        valid_indices = self.lattice_mesh.cell_data['ommatidia_index']
+        omm_to_cell = {omm: cell_id for cell_id, omm in enumerate(valid_indices)}
+
         # Background lenses
         bg_mask = ~np.isin(neighb_indices, partners) & (neighb_indices != target_idx)
-        if np.any(bg_mask):
-            pd_bg = pv.PolyData(self.p[neighb_indices[bg_mask]])
-            pd_bg.point_data['vec'] = self.d[neighb_indices[bg_mask]]
+        bg_cells = [omm_to_cell[idx] for idx in neighb_indices[bg_mask] if idx in omm_to_cell]
+
+        if bg_cells:
+            # Extract just those polygons to display faintly
+            m_bg = self.lattice_mesh.extract_cells(bg_cells)
             self.actors_debugger.append(self.plotter.add_mesh(
-                pd_bg.glyph(geom=_disc_template(), orient='vec', factor=d_rad),
-                color='black', opacity=0.1
+                m_bg, color='black', opacity=0.1, show_edges=True, edge_color='gray'
             ))
 
         # Cartridge members
-        member_lenses = []
+        member_cells = []
         member_scalars = []
         label_pts, label_txt = [], []
 
         for r_type, l_idx in enumerate(partners):
             l_idx = int(l_idx)
-            if l_idx < 0:
-                continue
-            member_lenses.append(l_idx)
-            member_scalars.append(r_type)
+            if l_idx < 0: continue
+
+            if l_idx in omm_to_cell:
+                member_cells.append(omm_to_cell[l_idx])
+                member_scalars.append(r_type)
+
             if l_idx != target_idx:
                 label_pts.append(self.p[l_idx])
                 label_txt.append(f"R{r_type + 1}")
 
-                # Wiring lines
+                # Wiring lines (kept as is)
                 line = pv.Line(self.p[target_idx], self.p[l_idx])
                 self.actors_debugger.append(
                     self.plotter.add_mesh(line, color=RHAB_COLOURS[r_type], line_width=2, opacity=0.4))
 
-        if member_lenses:
-            pd_mem = pv.PolyData(self.p[member_lenses])
-            pd_mem.point_data['vec'] = self.d[member_lenses]
-            pd_mem.point_data['r_type'] = np.array(member_scalars)
-
-            glyph_mem = pd_mem.glyph(geom=_disc_template(), orient='vec', factor=d_rad)
+        if member_cells:
+            # Extract active polygons to color heavily
+            m_mem = self.lattice_mesh.extract_cells(member_cells)
+            m_mem.cell_data['r_type'] = np.array(member_scalars)
             self.actors_debugger.append(self.plotter.add_mesh(
-                glyph_mem, scalars='r_type', cmap=RHAB_COLOURS,
+                m_mem, scalars='r_type', cmap=RHAB_COLOURS,
                 clim=[0, len(RHAB_COLOURS) - 1], show_scalar_bar=False,
-                ambient=0.3, diffuse=0.8, show_edges=False, opacity=0.8
+                ambient=0.3, diffuse=0.8, show_edges=True, line_width=1.5, edge_color='black', opacity=0.8
             ))
 
         # Local rhabdomere bundle
