@@ -133,7 +133,8 @@ class PlotSettings:
 
 # Model / content config
 
-NUM_RAYS = 32
+NUM_RAYS_ROWS12 = 32
+NUM_RAYS_ROW3 = 32
 RAY_HEIGHT = 1.35
 X_LIMIT = 2.5
 UNDER_FLOOR = -0.2
@@ -395,7 +396,7 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
                     arrowprops=dict(arrowstyle='-', color=s.red, lw=0.6))
 
     # Rays (alpha = contribution weight)
-    rays_x, rays_y, weights = sample_rays(mode, target_func, NUM_RAYS, rng)
+    rays_x, rays_y, weights = sample_rays(mode, target_func, NUM_RAYS_ROWS12, rng)
 
     wmax = weights.max() if weights.max() > 0 else 1.0
     w_norm = weights / wmax
@@ -463,37 +464,36 @@ def randomness_mode_scatter(ax, s: PlotSettings, mode_type):
     if s.rasterize:
         ax.set_rasterization_zorder(Z_RASTER)
 
-    n = 64
     rng = np.random.default_rng(42)
     zoom = 1.3
     fwhm_half = 0.5
 
     if mode_type == 'Stratified':
-        grid = int(np.ceil(np.sqrt(n)))
+        grid = int(np.ceil(np.sqrt(NUM_RAYS_ROW3)))
         offset = int(rng.integers(0, grid * grid))
-        cell = (np.arange(n) + offset) % (grid * grid)
+        cell = (np.arange(NUM_RAYS_ROW3) + offset) % (grid * grid)
         cell_x = cell % grid
         cell_y = cell // grid
-        u1 = (cell_x + rng.random(n)) / grid
-        u2 = (cell_y + rng.random(n)) / grid
+        u1 = (cell_x + rng.random(NUM_RAYS_ROW3)) / grid
+        u2 = (cell_y + rng.random(NUM_RAYS_ROW3)) / grid
 
-    elif mode_type == 'Quasi-random (Halton)':
-        u1 = np.clip(halton(n, 2), 1e-6, 1.0)
-        u2 = halton(n, 3)
+    elif mode_type == 'Halton':
+        u1 = np.clip(halton(NUM_RAYS_ROW3, 2), 1e-6, 1.0)
+        u2 = halton(NUM_RAYS_ROW3, 3)
 
     elif mode_type == 'Hammersley':
         offset1 = rng.random()
         offset2 = rng.random()
 
-        u1_base = (np.arange(n) + 0.5) / n
-        u2_base = radical_inverse_glsl(np.arange(n))
+        u1_base = (np.arange(NUM_RAYS_ROW3) + 0.5) / NUM_RAYS_ROW3
+        u2_base = radical_inverse_glsl(np.arange(NUM_RAYS_ROW3))
 
         u1 = np.mod(u1_base + offset1, 1.0)
         u2 = np.mod(u2_base + offset2, 1.0)
         u1 = np.clip(u1, 1e-6, 1.0)
 
     elif mode_type == 'Sobol':
-        idx = np.arange(n, dtype=np.uint32)
+        idx = np.arange(NUM_RAYS_ROW3, dtype=np.uint32)
         INV = np.float64(2.3283064365386963e-10)
         u1 = np.clip(owen_scramble_np(reverse_bits_np(idx), 0x9E3779B9).astype(np.float64) * INV, 1e-6, 1.0)
         u2 = owen_scramble_np(sobol_dim1_np(idx), 0x85EBCA6B).astype(np.float64) * INV
@@ -502,20 +502,23 @@ def randomness_mode_scatter(ax, s: PlotSettings, mode_type):
         golden_angle = np.pi * (3.0 - np.sqrt(5.0))
         rot_off = rng.random()
         rad_off = rng.random()
-        u1 = np.mod((np.arange(n) + 0.5) / n + rad_off, 1.0)
-        u2 = np.mod((np.arange(n) * golden_angle / (2 * np.pi)) + rot_off, 1.0)
+        u1 = np.mod((np.arange(NUM_RAYS_ROW3) + 0.5) / NUM_RAYS_ROW3 + rad_off, 1.0)
+        u2 = np.mod((np.arange(NUM_RAYS_ROW3) * golden_angle / (2 * np.pi)) + rot_off, 1.0)
         u1 = np.clip(1.0 - u1, 1e-6, 1.0)
 
     else: # 'Pseudo-random'
-        u1 = rng.random(n)
-        u2 = rng.random(n)
+        u1 = rng.random(NUM_RAYS_ROW3)
+        u2 = rng.random(NUM_RAYS_ROW3)
 
+    # Convert to radial coordinates (Gaussian importance sample)
     radii = np.sqrt(-np.log(np.clip(u1, 1e-6, 1.0)) / GAUSS_K)
-
     rx = radii * np.cos(2 * np.pi * u2)
     ry = radii * np.sin(2 * np.pi * u2)
 
-    c_map = LinearSegmentedColormap.from_list('rd', ['#1B2631', s.yellorange])
+    # Calculate sensitivity value at that point
+    # This is S(theta). higher = more useful sample
+    utility = np.exp(-GAUSS_K * radii ** 2)
+    c_map = LinearSegmentedColormap.from_list('utility', [s.dark, s.yellorange])
 
     ax.add_patch(
         Circle((0, 0), fwhm_half, color=s.dark, fill=False, linestyle='--', lw=guide_lw, zorder=6))
@@ -523,8 +526,8 @@ def randomness_mode_scatter(ax, s: PlotSettings, mode_type):
     ax.add_patch(
         Circle((0, 0), 1.1, color=s.dark, fill=False, linestyle=':', lw=guide_lw * 0.6, alpha=0.7, zorder=6))
 
-    ax.scatter(rx, ry, s=22, c=c_map(np.clip(radii / 1.5, 0, 1)),
-               alpha=0.85, edgecolors='white', lw=0.4, zorder=4)
+    sc = ax.scatter(rx, ry, s=22, c=utility, cmap=c_map, vmin=0, vmax=1,
+                    alpha=0.9, edgecolors='white', lw=0.4, zorder=4)
 
     ax.set_title(mode_type, fontsize=s.title, pad=5)
 
@@ -539,6 +542,7 @@ def randomness_mode_scatter(ax, s: PlotSettings, mode_type):
         spine.set_edgecolor(s.frame)
         spine.set_linewidth(1.0)
 
+    return sc
 
 # Efficiency-vs-coverage scatter
 
@@ -632,7 +636,7 @@ def build_figure(s: PlotSettings) -> plt.Figure:
 
     outer = GridSpec(2, 1, figure=fig, height_ratios=[2.0, 0.92], hspace=0.135)
     # both sampling rows in one 2x3 grid with hspace=0.0)
-    top = outer[0].subgridspec(2, 3, wspace=0.12, hspace=0.0)
+    top = outer[0].subgridspec(2, 3, wspace=0.05, hspace=0.0)
 
     # Rows 0 and 1: target x strategy, each row is 3-column wide
     sampling_axes = []
@@ -645,8 +649,8 @@ def build_figure(s: PlotSettings) -> plt.Figure:
         sampling_axes.append(row_axes)
 
     # Row 2: Randomness modes cluster (left, 2x3), efficiency scatter (right)
-    bottom = outer[1].subgridspec(1, 2, width_ratios=[1.1, 1.0], wspace=0.22)
-    rand_gs = bottom[0].subgridspec(2, 3, wspace=0.0, hspace=0.32)
+    bottom = outer[1].subgridspec(1, 2, width_ratios=[1.0, 1.0], wspace=0.40)
+    rand_gs = bottom[0].subgridspec(2, 3, wspace=-0.15, hspace=0.35)
 
     ax_pseudo = fig.add_subplot(rand_gs[0, 0])
     ax_strat = fig.add_subplot(rand_gs[0, 1])
@@ -655,18 +659,26 @@ def build_figure(s: PlotSettings) -> plt.Figure:
     ax_hammer = fig.add_subplot(rand_gs[1, 1])
     ax_sobol = fig.add_subplot(rand_gs[1, 2])
 
-    randomness_mode_scatter(ax_pseudo, s, 'Pseudo-random')
+    sc_obj = randomness_mode_scatter(ax_pseudo, s, 'Pseudo-random')
     randomness_mode_scatter(ax_strat, s, 'Stratified')
     randomness_mode_scatter(ax_fib, s, 'Fibonacci')
-    randomness_mode_scatter(ax_halton, s, 'Quasi-random (Halton)')
+    randomness_mode_scatter(ax_halton, s, 'Halton')
     randomness_mode_scatter(ax_hammer, s, 'Hammersley')
     randomness_mode_scatter(ax_sobol, s, 'Sobol')
 
-    b_left = ax_pseudo.get_position(fig).x0
-    b_bottom = ax_halton.get_position(fig).y0
+    p_top_right = ax_fib.get_position(fig)
+    p_bot_right = ax_sobol.get_position(fig)
 
-    fig.text(b_left, b_bottom - 0.06, 'Randomness modes',
-             fontsize=s.title, ha='center', va='top')
+    cb_ax = fig.add_axes([p_top_right.x1 - 0.01, p_bot_right.y0 - 0.02, 0.008, p_top_right.y1 - p_bot_right.y0])
+    cb = fig.colorbar(sc_obj, cax=cb_ax, orientation='vertical')
+    cb.set_label('Relative Sensitivity $S(\\theta)$', fontsize=s.tiny, labelpad=4)
+    cb.outline.set_linewidth(0.5)
+    cb.ax.tick_params(labelsize=s.tiny, width=0.5, length=2)
+
+    p_mid_bot = ax_hammer.get_position(fig)
+
+    fig.text((p_mid_bot.x0 + p_mid_bot.x1) / 2.0 - 0.03, p_mid_bot.y0 - 0.05,  # TODO: why - 0.03??
+             'Stochastic distributions', fontsize=s.title, ha='center', va='top', fontweight='bold')
 
     ax_eff = fig.add_subplot(bottom[1])
     efficiency_coverage_scatter(ax_eff, s)
@@ -706,4 +718,4 @@ if __name__ == '__main__':
 
     fig = build_figure(settings)
 
-    # settings.savefig(fig, 'sampling')
+    settings.savefig(fig, 'sampling', formats=['svg', 'eps', 'pdf'])
