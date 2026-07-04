@@ -155,8 +155,9 @@ GAUSS_K = 2.77258872224    # GAUSS_CONSTANT_K = 4 * log(2)
 AIRY_SCALE = 3.232         # makes the Airy FWHM = 1.0
 SPREAD_MULT = 2.0          # proposal = spread_mult * acceptance
 
+AIRY_LUT_RES = 256
 AIRY_RANGE = 4.0
-AIRY_LUT = airy_sensitivity_lut(256, range=AIRY_RANGE)
+AIRY_LUT = airy_sensitivity_lut(AIRY_LUT_RES, range=AIRY_RANGE)
 
 # zorder threshold: everything below this goes into one rasterised layer per ax (EPS-safe translucency)
 Z_RASTER = 8.0
@@ -303,16 +304,15 @@ def uniform_efficiency(target_func):
     return A * A / (Z * B)
 
 
-def _reach(sigma, target_func):
-    """How much of the total integrated sensor area is reached?"""
-    r_max = sigma * np.sqrt(-np.log(1e-6) / GAUSS_K)
-    r_grid = np.linspace(0, 6.0, 5000)
-
-    # Area-weighted sensitivity: S(r) * r
-    weighted_s = target_func(r_grid) * r_grid
-    total = np.trapezoid(weighted_s, r_grid)
-    captured = np.trapezoid(weighted_s[r_grid <= r_max], r_grid[r_grid <= r_max])
-    return captured / total
+def _reach(sigma, target_func, R=AIRY_RANGE):
+    """
+    Fraction of total area-weighted signal within the proposal's reach r_max.
+    Weight r is the 2-D polar Jacobian (dA = 2*pi*r dr).
+    """
+    r_max = _rmax(sigma)
+    r = np.linspace(0.0, R, 20000)
+    w = target_func(r) * r
+    return np.trapezoid(np.where(r <= r_max, w, 0.0), r) / np.trapezoid(w, r)
 
 
 def _coverage(proposal_density, target_func):
@@ -416,7 +416,7 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
                         edgecolor=s.red, linewidth=0.0, zorder=6)
 
         peak_r = 5.136 / AIRY_SCALE  # first Airy secondary max, ~1.59 FWHM
-        ax.annotate(f'Diffraction rings:\n~{ring_mass:.0%} of total signal\n~{ray_reach:.0%} of rays',
+        ax.annotate(f'Diffraction rings:\n~{ring_mass:.2%} of signal\n~{ray_reach:.2%} of rays',
                     xy=(peak_r, target_func(peak_r)), xytext=(2.0, 0.2),
                     ha='center', va='bottom', color=s.red, style='italic', fontsize=s.small * 0.9, zorder=Z_TEXT,
                     arrowprops=dict(arrowstyle='-', color=s.red, lw=0.6))
@@ -569,13 +569,15 @@ def randomness_mode_scatter(ax, s: PlotSettings, mode_type):
 
     ax.set_xticks([])
     ax.set_yticks([])
-    for spine in ax.spines.values():
-        spine.set_edgecolor(s.frame)
-        spine.set_linewidth(1.0)
+    # for spine in ax.spines.values():
+    #     spine.set_edgecolor(s.frame)
+    #     spine.set_linewidth(0.5)
+
+    ax.spines[:].set_visible(False)
 
     return sc
 
-# Efficiency-vs-coverage scatter
+# Efficiency scatters
 
 HYBRID_SIGMAS = [1.0, 1.25, 1.5, 2.0, 2.5, 3.0]
 
@@ -611,7 +613,7 @@ def efficiency_coverage_scatter(ax, s: PlotSettings):
     cov_a = [100 * _coverage(_gauss_proposal(v), lookup_sensitivity_LUT) for v in (HYBRID_SIGMAS[0], HYBRID_SIGMAS[-1])]
     eff_a = [100 * hybrid_efficiency(v, lookup_sensitivity_LUT) for v in (HYBRID_SIGMAS[0], HYBRID_SIGMAS[-1])]
 
-    ax.annotate(r'$\sigma$=1', (cov_a[0], eff_a[0]), xytext=(4, -8), textcoords='offset points',
+    ax.annotate(r'$\sigma$=1', (cov_a[0], eff_a[0]), xytext=(4, 6), textcoords='offset points',
                 fontsize=s.tiny, color=s.red, zorder=Z_TEXT)
 
     ax.annotate(r'$\sigma$=3', (cov_a[1], eff_a[1]), xytext=(-16, -8), textcoords='offset points',
@@ -624,9 +626,18 @@ def efficiency_coverage_scatter(ax, s: PlotSettings):
     handles = [Line2D([0], [0], marker=m, linestyle='none', markerfacecolor=s.frame,
                       markeredgecolor='white', markersize=5.5, label=lab) for lab, m in strat]
 
-    leg = ax.legend(handles=handles, loc='upper left', fontsize=s.small,
-                    handletextpad=0.3, borderpad=0.2, labelspacing=0.25,
-                    title='Strategy', title_fontsize=s.small)
+    ax.text(0.99, 0.03, r'opacity $\propto\sigma$' + '\n' + r'circled: $\sigma{=}2$',
+            transform=ax.transAxes, fontsize=s.tiny, color=s.dark, ha='right', va='bottom',
+            zorder=Z_TEXT)
+
+    ax.set_xlim(25, 106)
+    ax.set_ylim(-19, 109)
+
+    ax.set_ylabel('Efficiency\nESS/N (%)', fontsize=s.base)
+    ax.set_title('(i) Strategies comparison', fontsize=s.title, loc='left', pad=3)
+    ax.set_ylim(-19, 112)
+    leg = ax.legend(handles=handles, loc='upper left', fontsize=s.tiny,
+                    handletextpad=0.25, borderpad=0.2, labelspacing=0.2)
     leg.get_frame().set_edgecolor('black')
     leg.get_frame().set_linewidth(0.15)
     leg.get_frame().set_facecolor('white')
@@ -634,17 +645,7 @@ def efficiency_coverage_scatter(ax, s: PlotSettings):
     leg.set_zorder(Z_TEXT)
     ax.add_artist(leg)
 
-    ax.text(0.99, 0.03, r'opacity $\propto\ \sigma$' + '\n' + r'ring: $\sigma{=}2$',
-            transform=ax.transAxes, fontsize=s.tiny, color=s.frame, ha='right', va='bottom',
-            zorder=Z_TEXT)
-
-    ax.set_xlim(25, 106)
-    ax.set_ylim(-19, 109)
-
     ax.set_xlabel(r'Coverage: proposal $\cap$ target (%)', fontsize=s.base)
-    ax.set_ylabel('Sampling efficiency ESS/N (%)', fontsize=s.base)
-
-    ax.set_title('Efficiency vs. coverage', fontsize=s.title, loc='left')
 
     ax.tick_params(labelsize=s.base)
     for sp in ('top', 'right'):
@@ -653,6 +654,54 @@ def efficiency_coverage_scatter(ax, s: PlotSettings):
     ax.grid(color=s.grid, lw=s.grid_lw, zorder=0)
     ax.set_axisbelow(True)
 
+def efficiency_reach_tradeoff(ax, s: PlotSettings):
+
+    ax2 = ax.twinx()
+    sig = np.linspace(1.0, 3.0, 161)
+
+    ax.axvspan(1.0, 1.8, color=s.red, alpha=0.05, zorder=0)
+    ax.text(1.40, 50, 'Airy unstable tail', color=s.red,
+            fontsize=s.tiny * 0.85, ha='center', va='top', alpha=0.85, zorder=Z_TEXT)
+
+    for tf, col in [(gaussian, s.blue), (lookup_sensitivity_LUT, s.red)]:
+        ax2.plot(sig, [100 * _reach(v, tf) for v in sig],
+                 color=col, lw=s.curve_lw, ls=(0, (4, 2)), alpha=0.9, zorder=3)
+        ax.plot(sig, [100 * hybrid_efficiency(v, tf) for v in sig],
+                color=col, lw=s.curve_lw * 1.6, zorder=5)
+
+    ax.axvline(2.0, color=s.dark, lw=0.6, ls=':', zorder=2)
+
+    ax.text(2.04, -14, r'$\sigma{=}2$', color=s.dark, fontsize=s.tiny, ha='left', va='bottom', zorder=Z_TEXT)
+    ax.text(2.72, 36, 'Gaussian', color=s.blue, fontsize=s.small, ha='center', zorder=Z_TEXT)
+    ax.text(2.72, 3,  'Airy',     color=s.red,  fontsize=s.small, ha='center', zorder=Z_TEXT)
+
+    ax.set_xlim(1.0, 3.0)
+    ax.set_ylim(-19, 112)
+    ax2.set_ylim(70, 104)
+
+    ax.set_xlabel(r'Proposal width  $\sigma$', fontsize=s.base, labelpad=1)
+    ax.set_ylabel('Efficiency\nESS/N (%)', fontsize=s.base)
+
+    ax2.set_ylabel('Reached (%)', fontsize=s.base, color=s.frame)
+    ax2.tick_params(labelsize=s.tiny, colors=s.frame, pad=1)
+    ax2.spines['right'].set_color(s.frame)
+
+    ax.set_title(r'(ii) Proposal width $\sigma$', fontsize=s.title, loc='left', pad=3)
+
+    ax.tick_params(labelsize=s.tiny, pad=1)
+
+    for a in (ax, ax2):
+        a.spines['top'].set_visible(False)
+    ax.grid(color=s.grid, lw=s.grid_lw); ax.set_axisbelow(True)
+
+    h = [Line2D([0], [0], color=s.dark, lw=s.curve_lw * 1.6, label='Efficiency'),
+         Line2D([0], [0], color=s.dark, lw=s.curve_lw, ls=(0, (4, 2)), label='Reach')]
+
+    leg = ax.legend(handles=h, loc='upper right', bbox_to_anchor=(1.0, 0.9), fontsize=s.tiny, handletextpad=0.4, borderpad=0.25)
+    leg.get_frame().set_edgecolor('black')
+    leg.get_frame().set_linewidth(0.15)
+    leg.get_frame().set_facecolor('white')
+    leg.set_zorder(Z_TEXT)
 
 # ===========================================================================
 
@@ -665,8 +714,7 @@ def build_figure(s: PlotSettings) -> plt.Figure:
 
     fig = s.new_figure()
 
-    outer = GridSpec(2, 1, figure=fig, height_ratios=[2.0, 0.92], hspace=0.135)
-    # both sampling rows in one 2x3 grid with hspace=0.0)
+    outer = GridSpec(2, 1, figure=fig, height_ratios=[2.0, 1.3], hspace=0.14)
     top = outer[0].subgridspec(2, 3, wspace=0.05, hspace=0.0)
 
     # Rows 0 and 1: target x strategy, each row is 3-column wide
@@ -700,9 +748,9 @@ def build_figure(s: PlotSettings) -> plt.Figure:
     p_top_right = ax_fib.get_position(fig)
     p_bot_right = ax_sobol.get_position(fig)
 
-    cb_ax = fig.add_axes([p_top_right.x1 - 0.01, p_bot_right.y0 - 0.02, 0.008, p_top_right.y1 - p_bot_right.y0])
+    cb_ax = fig.add_axes((p_top_right.x1 - 0.01, p_bot_right.y1 / 2.0, 0.015, p_top_right.height * 2 - 0.02))
     cb = fig.colorbar(sc_obj, cax=cb_ax, orientation='vertical')
-    cb.set_label('Relative Sensitivity $S(\\theta)$', fontsize=s.tiny, labelpad=4)
+    cb.set_label('Relative sensitivity $S(\\theta)$', fontsize=s.tiny, labelpad=3)
     cb.outline.set_linewidth(0.5)
     cb.ax.tick_params(labelsize=s.tiny, width=0.5, length=2)
 
@@ -711,8 +759,12 @@ def build_figure(s: PlotSettings) -> plt.Figure:
     fig.text((p_mid_bot.x0 + p_mid_bot.x1) / 2.0 - 0.03, p_mid_bot.y0 - 0.05,  # TODO: why - 0.03??
              'Stochastic distributions', fontsize=s.title, ha='center', va='top', fontweight='bold')
 
-    ax_eff = fig.add_subplot(bottom[1])
-    efficiency_coverage_scatter(ax_eff, s)
+    eff_area = bottom[1].subgridspec(1, 2, width_ratios=[1.0, 0.15], wspace=0.0)  # 0.15 = empty strip on the right
+    eff_gs = eff_area[0].subgridspec(2, 1, hspace=0.75)
+    ax_eff_a = fig.add_subplot(eff_gs[0])
+    ax_eff_b = fig.add_subplot(eff_gs[1])
+    efficiency_coverage_scatter(ax_eff_a, s)
+    efficiency_reach_tradeoff(ax_eff_b, s)
 
     # Margins fixed explicitly  # TODO: Adjust these
     fig.subplots_adjust(left=0.06, right=0.97, top=0.905, bottom=0.07)
