@@ -8,6 +8,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
 
+from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
 from insectvision.utils import airy_sensitivity_lut
 
 
@@ -138,7 +139,13 @@ NUM_RAYS_ROW3 = 32
 RAY_HEIGHT = 1.35
 X_LIMIT = 2.5
 UNDER_FLOOR = -0.2
-CONVERGENCE_DIST = 4.5
+
+bundle = drosophila_bundle()
+PHYSICAL_RATIO = bundle.focal_um / bundle.diameters_um[0]
+
+CONVERGENCE_DIST = PHYSICAL_RATIO * (X_LIMIT / 2.0) # scales the cone to fit the plot
+# CONVERGENCE_DIST = 4.5
+# CONVERGENCE_DIST = np.inf
 
 UNIFORM_RADIUS = 1.8       # naive-baseline disk radius (FWHM units)
 UNIFORM_PROP_LEVEL = 0.9   # height of the flat "uniform p(theta)" schematic line
@@ -148,7 +155,7 @@ GAUSS_K = 2.77258872224    # GAUSS_CONSTANT_K = 4 * log(2)
 AIRY_SCALE = 3.232         # makes the Airy FWHM = 1.0
 SPREAD_MULT = 2.0          # proposal = spread_mult * acceptance
 
-AIRY_RANGE = 6.0
+AIRY_RANGE = 4.0
 AIRY_LUT = airy_sensitivity_lut(256, range=AIRY_RANGE)
 
 # zorder threshold: everything below this goes into one rasterised layer per ax (EPS-safe translucency)
@@ -169,7 +176,7 @@ def gaussian(radial_dist):
 
 
 def lookup_sensitivity_LUT(radial_dist):
-    lut_x = np.linspace(0.0, 4.0, len(AIRY_LUT))
+    lut_x = np.linspace(0.0, AIRY_RANGE, len(AIRY_LUT))
     return np.interp(np.asarray(radial_dist, dtype=float), lut_x, AIRY_LUT)
 
 
@@ -383,8 +390,7 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
 
 
     # Proposal distribution
-    # ax.plot(x, samp_y, color=s.green, lw=proposal_lw, alpha=0.8, linestyle=':', solid_capstyle='round', zorder=4)
-    ax.plot(x, samp_y, color=s.green, lw=proposal_lw, alpha=0.8, linestyle=(0, (1, 2)), solid_capstyle='round', zorder=4)
+    ax.plot(x, samp_y, color=s.green, lw=proposal_lw, alpha=0.8, linestyle=(0, (0.1, 2)), dash_capstyle='round', zorder=4)
     if mode != 'Importance':
         ax.fill_between(x, samp_y, color=s.green, alpha=0.05, zorder=1)
 
@@ -395,7 +401,7 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
     fwhm_half = 0.5
     ax.hlines(0.5, -fwhm_half, fwhm_half, color=s.dark, linestyle='--', lw=guide_lw, zorder=10)
     ax.text(0, 0.33, 'FWHM', color=s.dark, fontsize=s.small, fontweight='bold', ha='center', zorder=Z_TEXT)
-    # TODO: Move FWHM text a little bit lower
+
 
     ax.text(-1.8, 0.13, f'Target\n$S(\\theta)$', color=target_color,
             fontsize=s.base, fontweight='bold', ha='center', zorder=Z_TEXT)
@@ -410,7 +416,7 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
                         edgecolor=s.red, linewidth=0.0, zorder=6)
 
         peak_r = 5.136 / AIRY_SCALE  # first Airy secondary max, ~1.59 FWHM
-        ax.annotate(f'Diffraction rings:\n{ring_mass:.0%} of $S(\\theta)$\n{ray_reach:.0%} of rays',
+        ax.annotate(f'Diffraction rings:\n~{ring_mass:.0%} of total signal\n~{ray_reach:.0%} of rays',
                     xy=(peak_r, target_func(peak_r)), xytext=(2.0, 0.2),
                     ha='center', va='bottom', color=s.red, style='italic', fontsize=s.small * 0.9, zorder=Z_TEXT,
                     arrowprops=dict(arrowstyle='-', color=s.red, lw=0.6))
@@ -422,13 +428,18 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
     w_norm = weights / wmax
     for rx, wn in zip(rays_x, w_norm):
         if -X_LIMIT < rx < X_LIMIT:
-            x_bottom = rx * ((CONVERGENCE_DIST + UNDER_FLOOR) / (RAY_HEIGHT + CONVERGENCE_DIST))
+            if np.isfinite(CONVERGENCE_DIST) and CONVERGENCE_DIST > 0.0:
+                x_bottom = rx * ((CONVERGENCE_DIST + UNDER_FLOOR) / (RAY_HEIGHT + CONVERGENCE_DIST))
+            else:
+                x_bottom = rx
 
             min_alpha = 0.001
             displ_weight = max(min_alpha, wn * 0.7)
 
             col = s.yellorange if displ_weight > min_alpha else 'grey'
-            alpha = displ_weight if displ_weight > min_alpha else 0.2
+            # col = s.yellorange
+            alpha = displ_weight if displ_weight > min_alpha else 0.1
+            # alpha = displ_weight
 
             ax.plot([x_bottom, rx], [UNDER_FLOOR, RAY_HEIGHT],
                     color=col, alpha=alpha, lw=ray_lw, zorder=2)
@@ -738,4 +749,4 @@ if __name__ == '__main__':
 
     fig = build_figure(settings)
 
-    settings.savefig(fig, 'sampling', formats=['svg', 'eps', 'pdf'])
+    settings.savefig(fig, 'sampling', formats=['svg', 'eps', 'png', 'pdf'])
