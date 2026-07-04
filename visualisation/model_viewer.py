@@ -56,7 +56,88 @@ def radii_from_lattice(model) -> np.ndarray:
     return radii
 
 
-def make_eye_mesh(model) -> pv.PolyData:
+def make_ommatidia_lattice(model, delaunay_mesh: pv.PolyData) -> pv.PolyData:
+    """
+    Creates the dual Voronoi-like lattice mesh from the Delaunay triangulation.
+    Each vertex in the Delaunay mesh (lens center) becomes a polygonal facet.
+    """
+    if delaunay_mesh.n_cells == 0 or delaunay_mesh.n_points == 0:
+        return pv.PolyData()
+
+    # The existing make_eye_mesh guarantees pure triangles -> reshape to (N, 4) and strip the '3' prefix
+    faces = delaunay_mesh.faces.reshape(-1, 4)[:, 1:4]
+
+    # Identify boundary vertices (avoid drawing malformed open facets)
+    edge_counts = {}
+    for face in faces:
+        for i in range(3):
+            e = tuple(sorted([face[i], face[(i + 1) % 3]]))
+            edge_counts[e] = edge_counts.get(e, 0) + 1
+
+    boundary_vertices = set()
+    for e, count in edge_counts.items():
+        if count == 1:  # an edge belonging to only 1 triangle == a boundary edge
+            boundary_vertices.add(e[0])
+            boundary_vertices.add(e[1])
+
+    # Triangle centers become the corners of the hexagonal lattice
+    pts = delaunay_mesh.points
+    cell_centers = np.mean(pts[faces], axis=1)
+
+    # Map each ommatidium (Delaunay vertex) to the triangles that contain it
+    point_to_cells = {i: [] for i in range(delaunay_mesh.n_points)}
+    for cell_idx, face in enumerate(faces):
+        for pt_idx in face:
+            point_to_cells[pt_idx].append(cell_idx)
+
+    # Build the polygons
+    dual_faces = []
+    valid_ommatidia_indices = []
+    normals = model.directions
+
+    for pt_idx, connected_cells in point_to_cells.items():
+        if pt_idx in boundary_vertices or len(connected_cells) < 3:
+            continue
+
+        # Get centers of surrounding triangles
+        centers = cell_centers[connected_cells]
+        center_vecs = centers - pts[pt_idx]
+        normal = normals[pt_idx]
+
+        # local tangent plane to sort the facet vertices clockwise/CCW
+        up = np.array([1.0, 0.0, 0.0])
+        if np.abs(np.dot(normal, up)) > 0.99:
+            up = np.array([0.0, 1.0, 0.0])
+
+        t1 = np.cross(normal, up)
+        t1 /= np.linalg.norm(t1)
+        t2 = np.cross(normal, t1)
+
+        # Project triangle centers to 2D tangent plane to get angles
+        x = np.sum(center_vecs * t1, axis=1)
+        y = np.sum(center_vecs * t2, axis=1)
+        angles = np.arctan2(y, x)
+
+        # Sort cell indices radially
+        sorted_order = np.argsort(angles)
+        sorted_cells = np.array(connected_cells)[sorted_order]
+
+        # PyVista face list format: [N, v0, v1, ..., vN-1]
+        dual_faces.append(len(sorted_cells))
+        dual_faces.extend(sorted_cells)
+        valid_ommatidia_indices.append(pt_idx)
+
+    if not dual_faces:
+        return pv.PolyData()
+
+    lattice = pv.PolyData(cell_centers.astype(np.float32), faces=np.array(dual_faces, dtype=np.int_))
+
+    # Store the original lens index so we can map heatmaps correctly
+    lattice.cell_data['ommatidia_index'] = np.array(valid_ommatidia_indices, dtype=np.int_)
+    return lattice
+
+
+def make_delaunay_mesh(model) -> pv.PolyData:
     """
     Lens-indexed mesh: vertex i = lens i.
     """
@@ -213,8 +294,11 @@ class EyeViewer:
         self.arrow_len = self.r_sphere * 0.08
 
         # Per-eye Delaunay mesh (vertex i = lens i)
-        self.lens_data_mesh = make_eye_mesh(self.model)
-        self.eye_boundary_lines = eye_boundary_line(self.lens_data_mesh)
+        self.delaunay_mesh = make_delaunay_mesh(self.model)
+        self.eye_boundary_lines = eye_boundary_line(self.delaunay_mesh)
+
+        # Generate the ommatidia lattice
+        self.lattice_mesh = make_ommatidia_lattice(self.model, self.delaunay_mesh)
 
         # Per-lens chirality
         self.chirality = self.model.chirality.astype(np.float32)
@@ -360,16 +444,21 @@ class EyeViewer:
         - scalars is None, faint=True: faint white background surface
         - scalars is None, faint=False: opaque white surface
         """
-        if self.lens_data_mesh.n_cells == 0:
+
+        if self.lattice_mesh.n_cells == 0:
             return
 
-        m = self.lens_data_mesh.copy()
+        m = self.lattice_mesh.copy()
+
+        # lattice mesh represents lenses as faces (cells) instead of vertices (points)
         if scalars is not None:
-            m.point_data['_scalar'] = scalars.astype(np.float32)
+            valid_indices = m.cell_data['ommatidia_index']
+            m.cell_data['_scalar'] = scalars[valid_indices].astype(np.float32)
             kwargs = dict(
                 scalars='_scalar', cmap=cmap,
                 show_scalar_bar=(sbar_title is not None),
-                smooth_shading=True, ambient=0.3, diffuse=0.7,
+                show_edges=True, line_width=1.5, edge_color='#2c3e50',  # hexagon outlines
+                ambient=0.3, diffuse=0.7,
             )
             if clim is not None:
                 kwargs['clim'] = list(clim)
@@ -384,7 +473,8 @@ class EyeViewer:
             self.plotter.add_mesh(
                 m, color=SURFACE_COLOR,
                 opacity=(SURFACE_OPAC if faint else 1.0),
-                show_edges=False, smooth_shading=True, lighting=True,
+                show_edges=True, line_width=1.0, edge_color='#666666',  # subtle grey lattice wireframe
+                lighting=True,
             )
 
         # Boundary polyline overlay
@@ -414,37 +504,37 @@ class EyeViewer:
         )
 
     def _add_optic_flow_panel(self) -> None:
-        if self.lens_data_mesh.n_cells == 0:
+        if self.delaunay_mesh.n_cells == 0:
             return
         dots = self.d @ self.optic_flow_world
         v_proj = self.optic_flow_world[None, :] - dots[:, None] * self.d
         norms = np.linalg.norm(v_proj, axis=1, keepdims=True)
         v_proj = np.divide(v_proj, norms.clip(min=1e-8))
 
-        m = self.lens_data_mesh.copy()
+        m = self.delaunay_mesh.copy()
         m.point_data['OpticFlow'] = v_proj.astype(np.float32)
         arrows = self._glyph_arrows(m, 'OpticFlow')
         self.plotter.add_mesh(arrows, color='#da70d6',
                               ambient=0.4, diffuse=0.7, smooth_shading=True)
 
     def _add_alignment_panel(self) -> None:
-        if self.lens_data_mesh.n_cells == 0 or self.R <= 1:
+        if self.delaunay_mesh.n_cells == 0 or self.R <= 1:
             return
 
-        m_smooth = self.lens_data_mesh.copy()
+        m_smooth = self.delaunay_mesh.copy()
         m_smooth.point_data['AlignmentSmooth'] = self.model.orientation_field
         g_smooth = self._glyph_phasors(m_smooth, 'AlignmentSmooth')
         a_smooth = self.plotter.add_mesh(g_smooth, color='green', line_width=2)
         self.actors_alignment_smooth.append(a_smooth)
 
-        m_raw = self.lens_data_mesh.copy()
+        m_raw = self.delaunay_mesh.copy()
         m_raw.point_data['AlignmentRaw'] = self.result_raw.alignment_phasor.astype(np.float32)
         g_raw = self._glyph_phasors(m_raw, 'AlignmentRaw')
         a_raw = self.plotter.add_mesh(g_raw, color='#8c8c00', line_width=2)
         self.actors_alignment_raw.append(a_raw)
 
     def _add_major_axis_panel(self) -> None:
-        if self.lens_data_mesh.n_cells == 0 or self.R <= 1:
+        if self.delaunay_mesh.n_cells == 0 or self.R <= 1:
             return
 
         for mask, color in [
@@ -461,17 +551,17 @@ class EyeViewer:
             self.plotter.add_mesh(arrows, color=color, ambient=0.4, diffuse=0.7, smooth_shading=True)
 
     def _add_saccade_panel(self) -> None:
-        if self.lens_data_mesh.n_cells == 0:
+        if self.delaunay_mesh.n_cells == 0:
             return
 
-        m_smooth = self.lens_data_mesh.copy()
+        m_smooth = self.delaunay_mesh.copy()
         m_smooth.point_data['SaccadeSmooth'] = self.model.saccade_field
         g_smooth = self._glyph_arrows(m_smooth, 'SaccadeSmooth')
         a_smooth = self.plotter.add_mesh(g_smooth, color='red',
                                          ambient=0.4, diffuse=0.7, smooth_shading=True)
         self.actors_saccade_smooth.append(a_smooth)
 
-        m_raw = self.lens_data_mesh.copy()
+        m_raw = self.delaunay_mesh.copy()
         m_raw.point_data['SaccadeRaw'] = self.result_raw.saccade_phasor.astype(np.float32)
         g_raw = self._glyph_phasors(m_raw, 'SaccadeRaw')
         a_raw = self.plotter.add_mesh(g_raw, color='#FF94BD', line_width=2)
@@ -494,7 +584,7 @@ class EyeViewer:
             return
 
         # Collinearity mesh
-        m_col = self.lens_data_mesh.copy()
+        m_col = self.delaunay_mesh.copy()
         m_col.point_data['val'] = self.collinearity
         act_col = self.plotter.add_mesh(
             m_col, scalars='val', cmap='inferno', clim=[0, 1],
@@ -504,7 +594,7 @@ class EyeViewer:
         self.actors_collinearity.append(act_col)
 
         # Smoothness mesh
-        m_sm = self.lens_data_mesh.copy()
+        m_sm = self.delaunay_mesh.copy()
         m_sm.point_data['val'] = self.smoothness
         act_sm = self.plotter.add_mesh(
             m_sm, scalars='val', cmap='viridis', clim=[0.9, 1.0],
