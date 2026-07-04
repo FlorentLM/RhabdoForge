@@ -134,13 +134,13 @@ def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable'
 
 # TODO: Other luts for other sensitivity profiles?
 
-def airy_sensitivity_lut(size: int = 256) -> np.ndarray:
+def airy_sensitivity_lut(size: int = 256, range: float = 6.0) -> np.ndarray:
     """
     Map x from 0.0 (centre) to 4.0 (deep in the tails)
     where x is normalised such that x=0.5 is the half max
     """
 
-    x_vals = np.linspace(0, 4.0, size)
+    x_vals = np.linspace(0, range, size)
     lut_data = []
 
     for x_norm in x_vals:

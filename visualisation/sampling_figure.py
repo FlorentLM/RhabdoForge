@@ -1,4 +1,4 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 import numpy as np
@@ -148,7 +148,8 @@ GAUSS_K = 2.77258872224    # GAUSS_CONSTANT_K = 4 * log(2)
 AIRY_SCALE = 3.232         # makes the Airy FWHM = 1.0
 SPREAD_MULT = 2.0          # proposal = spread_mult * acceptance
 
-AIRY_LUT = airy_sensitivity_lut(256)
+AIRY_RANGE = 6.0
+AIRY_LUT = airy_sensitivity_lut(256, range=AIRY_RANGE)
 
 # zorder threshold: everything below this goes into one rasterised layer per ax (EPS-safe translucency)
 Z_RASTER = 8.0
@@ -295,6 +296,18 @@ def uniform_efficiency(target_func):
     return A * A / (Z * B)
 
 
+def _reach(sigma, target_func):
+    """How much of the total integrated sensor area is reached?"""
+    r_max = sigma * np.sqrt(-np.log(1e-6) / GAUSS_K)
+    r_grid = np.linspace(0, 6.0, 5000)
+
+    # Area-weighted sensitivity: S(r) * r
+    weighted_s = target_func(r_grid) * r_grid
+    total = np.trapezoid(weighted_s, r_grid)
+    captured = np.trapezoid(weighted_s[r_grid <= r_max], r_grid[r_grid <= r_max])
+    return captured / total
+
+
 def _coverage(proposal_density, target_func):
     """Overlapping coefficient of the normalised proposal and target densities, in [0, 1]."""
     dA = 2 * np.pi * _COV_R
@@ -326,7 +339,7 @@ def airy_ring_stats():
     ray_reach = P(Gaussian-iCDF radius > first ring) = exp(-K z^2)
     """
     fz = 3.8317 / AIRY_SCALE                      # first zero of J1 -> first Airy dark ring
-    r = np.linspace(0.0, 4.0, 20000)
+    r = np.linspace(0.0, AIRY_RANGE, 20000)
     w = lookup_sensitivity_LUT(r) * r                               # 2D area element
     ring_mass = float(np.trapezoid(w[r > fz], r[r > fz]) / np.trapezoid(w, r))
     ray_reach = float(np.exp(-GAUSS_K * fz * fz))
@@ -344,7 +357,7 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
     x = np.linspace(-X_LIMIT, X_LIMIT, 1000)
 
 
-    # Target sensitivity
+    # Target sensitivity, S(theta)
     target_y = target_func(np.abs(x))
     ax.plot(x, target_y, color=target_color, lw=target_lw, zorder=5)
     ax.fill_between(x, target_y, color=target_color, alpha=0.10, zorder=1)
@@ -360,6 +373,13 @@ def sampling_curves(ax, s: PlotSettings, target_func, target_name, mode, target_
     else:
         samp_y = np.full_like(x, UNIFORM_PROP_LEVEL)
         samp_label = 'Uniform\n$p(\\theta)$'
+
+
+    # Area-weighted sensitivity (= real information density), S(theta) * theta
+    contribution = target_y * np.abs(x)
+    if np.max(contribution) > 0:
+        contribution /= (np.max(contribution) * 1.8)
+    ax.plot(x, contribution, color=target_color, lw=s.curve_lw, linestyle='--', alpha=0.5, zorder=4)
 
 
     # Proposal distribution
