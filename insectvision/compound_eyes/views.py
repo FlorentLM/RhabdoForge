@@ -1113,18 +1113,18 @@ class RhabdomereView(BaseView):
 
     def _tip_rel_world(self) -> np.ndarray:
         """Helper: Rhabdomere tip position relative to lens centre in world coordinates."""
-        omm = self.omm_indices
 
-        focal = np.asarray(self._buffer['focal_um', omm], dtype=np.float32)
+        parent_omm = self.rhab_indices // self.R
+
+        focal = np.asarray(self._buffer['focal_um', parent_omm], dtype=np.float32)
         offsets = self._buffer['rest_offset', self.rhab_indices]
 
-        # Local coordinate: [dx, dy, -focal_length]
         local_pos = np.column_stack([offsets, -focal])
         world_pos = local_to_world(
             local_pos,
-            self._buffer['right', omm],
-            self._buffer['up', omm],
-            self._buffer['forward', omm]
+            self._buffer['right', parent_omm],
+            self._buffer['up', parent_omm],
+            self._buffer['forward', parent_omm]
         )
         return world_pos
 
@@ -1133,7 +1133,8 @@ class RhabdomereView(BaseView):
         """
         World-space positions of the rhabdomere tips (M, 3).
         """
-        omm_pos = self._buffer['position', self.rhab_indices // self.R]
+        parent_omm = self.rhab_indices // self.R
+        omm_pos = self._buffer['position', parent_omm]
         return omm_pos + self._tip_rel_world()
 
     @property
