@@ -1,18 +1,20 @@
 import os
 from datetime import datetime
 from itertools import cycle
+from typing import Optional, Sequence
 import numpy as np
 import pyvista as pv
-from scipy.spatial import Delaunay
+from numpy.typing import ArrayLike
 from PIL import Image
+
+from scipy.spatial import Delaunay, ConvexHull
 
 from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
+from insectvision.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD, norm_l2
 from insectvision.geometry.linalg import tangent_frames
-from insectvision.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD
-from insectvision.geometry.spherical import sphere_to_stereo
-from insectvision.utils import norm_l2
+from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere, normals_to_ellipsoid
 
 CHIRALITY_NEG_COLOR = '#B95D21'
 CHIRALITY_POS_COLOR = '#FF9800'
@@ -44,6 +46,7 @@ def receptor_tip_offsets(model) -> np.ndarray:
 
 def radii_from_lattice(model) -> np.ndarray:
     """Per-lens display radius = mean distance to the lens's immediate lattice neighbours."""
+    # TODO: Replace this with a function from the modules
 
     radii = np.zeros(model.shape[0], dtype=np.float32)
     for eye in model.eyes:
@@ -57,136 +60,248 @@ def radii_from_lattice(model) -> np.ndarray:
     return radii
 
 
-def make_ommatidia_lattice(model, delaunay_mesh: pv.PolyData) -> pv.PolyData:
+def make_hex_mesh(model, delaunay_points, delaunay_faces, delaunay_indices):
     """
-    Creates the dual Voronoi-like lattice mesh from the Delaunay triangulation.
-    Each vertex in the Delaunay mesh (lens center) becomes a polygonal facet.
+    Build the dual Voronoi lattice from the Delaunay mesh.
+    point_original_idx[i] is the global ommatidium index or -1 for ghosts.
     """
-    if delaunay_mesh.n_cells == 0 or delaunay_mesh.n_points == 0:
+
+    if len(delaunay_points) == 0 or len(delaunay_faces) == 0:
         return pv.PolyData()
 
-    # The existing make_eye_mesh guarantees pure triangles -> reshape to (N, 4) and strip the '3' prefix
-    faces = delaunay_mesh.faces.reshape(-1, 4)[:, 1:4]
+    faces = delaunay_faces[:, 1:4]
+    pts = delaunay_points
+    N_mesh = len(pts)
 
-    # Identify boundary vertices (avoid drawing malformed open facets)
-    edge_counts = {}
-    for face in faces:
-        for i in range(3):
-            e = tuple(sorted([face[i], face[(i + 1) % 3]]))
-            edge_counts[e] = edge_counts.get(e, 0) + 1
+    # Pre‑compute tangent frames for real points (needed for angle sorting)
+    dirs = model.directions
+    right_vecs = np.zeros((N_mesh, 3))
+    up_vecs = np.zeros((N_mesh, 3))
+    for i, gid in enumerate(delaunay_indices):
+        if gid != -1:
+            r, u = tangent_frames(dirs[gid:gid+1])
+            right_vecs[i] = r[0]
+            up_vecs[i] = u[0]
 
-    boundary_vertices = set()
-    for e, count in edge_counts.items():
-        if count == 1:  # an edge belonging to only 1 triangle == a boundary edge
-            boundary_vertices.add(e[0])
-            boundary_vertices.add(e[1])
-
-    # Triangle centers become the corners of the hexagonal lattice
-    pts = delaunay_mesh.points
+    # Triangle centers (Voronoi vertices)
     cell_centers = np.mean(pts[faces], axis=1)
 
-    # Map each ommatidium (Delaunay vertex) to the triangles that contain it
-    point_to_cells = {i: [] for i in range(delaunay_mesh.n_points)}
+    # Collect, for each real point, all triangles that contain it
+    point_to_cells = {i: [] for i in range(N_mesh) if delaunay_indices[i] != -1}
     for cell_idx, face in enumerate(faces):
         for pt_idx in face:
-            point_to_cells[pt_idx].append(cell_idx)
+            if delaunay_indices[pt_idx] != -1:
+                point_to_cells[pt_idx].append(cell_idx)
 
-    # Build the polygons
     dual_faces = []
-    valid_ommatidia_indices = []
-    right_vecs, up_vecs = tangent_frames(model.directions)
+    valid_global_indices = []
 
     for pt_idx, connected_cells in point_to_cells.items():
+        if len(connected_cells) < 3:
+            continue   # skip points with too few neighbours (should not happen with ghosts)
 
-        # For now skipping 'is_edge' lenses... # TODO: figure out a way to correctly build edge lenses
-        if model.is_edge[pt_idx] or pt_idx in boundary_vertices or len(connected_cells) < 3:
-            continue
-
-        # Get centers of surrounding triangles
         centers = cell_centers[connected_cells]
-        center_vecs = centers - pts[pt_idx]
+        vecs = centers - pts[pt_idx]
 
-        # Project to tangent plane
-        x = np.sum(center_vecs * right_vecs[pt_idx], axis=1)
-        y = np.sum(center_vecs * up_vecs[pt_idx], axis=1)
+        # Project onto tangent plane
+        x = np.sum(vecs * right_vecs[pt_idx], axis=1)
+        y = np.sum(vecs * up_vecs[pt_idx], axis=1)
         angles = np.arctan2(y, x)
 
-        # Sort cell indices radially
-        sorted_order = np.argsort(angles)
-        sorted_cells = np.array(connected_cells)[sorted_order]
-
-        # PyVista face list format: [N, v0, v1, ..., vN-1]
+        sorted_cells = np.array(connected_cells)[np.argsort(angles)]
         dual_faces.append(len(sorted_cells))
         dual_faces.extend(sorted_cells)
-        valid_ommatidia_indices.append(pt_idx)
+        valid_global_indices.append(delaunay_indices[pt_idx])
 
-    if not dual_faces:
-        return pv.PolyData()
+    points = cell_centers.astype(np.float32)
+    faces = np.array(dual_faces, dtype=np.int_)
+    indices = np.array(valid_global_indices, dtype=np.int_)
 
-    lattice = pv.PolyData(cell_centers.astype(np.float32), faces=np.array(dual_faces, dtype=np.int_))
-
-    # Store the original lens index so we can map heatmaps correctly
-    lattice.cell_data['ommatidia_index'] = np.array(valid_ommatidia_indices, dtype=np.int_)
-    return lattice
+    return points, faces, indices
 
 
-def make_delaunay_mesh(model) -> pv.PolyData:
+def make_delaunay_mesh(model, ghost_rows=1):
     """
-    Lens-indexed mesh: vertex i = lens i.
+    Build Delaunay mesh (with ghost points) for each eye.
+
+    Returns:
+        combined_mesh: PyVista PolyData (real + ghost points, all triangles)
+        real_points_indices: array of length N_points, -1 for ghosts, else global ommatidium index
     """
     positions = model.positions
     if positions.shape[0] == 0:
-        return pv.PolyData()
+        return pv.PolyData(), np.array([])
 
-    all_faces = []
+    all_points = []      # 3D coordinates (real + ghost)
+    all_global_indices = []  # global index or -1
+    all_faces = []       # triangle indices (relative to all_points)
+    offset = 0
+
     for eye in model.eyes:
         if len(eye) < 3:
             continue
 
         global_idx = np.asarray(eye.indices, dtype=np.int_)
         eye_pos = positions[global_idx]
-
         eye_dirs = norm_l2(eye.directions)
-        try:
-            pts_2d, _, _, _ = sphere_to_stereo(eye_dirs)
-            tri = Delaunay(pts_2d)
-            simplices = tri.simplices
 
-        except Exception:
-            continue
+        pts_2d, forward, right, up = sphere_to_stereo(eye_dirs)
 
-        # Filter out spiky gap-filling triangles
-        p0 = eye_pos[simplices[:, 0]]
-        p1 = eye_pos[simplices[:, 1]]
-        p2 = eye_pos[simplices[:, 2]]
+        # Initial Delaunay to extract the boundary
 
-        # Get 3D lengths of all triangle edges
+        tri_initial = Delaunay(pts_2d)
+        init_faces = tri_initial.simplices
+
+        # Calculate 2D edge lengths to filter out 'gap bridging' triangles
+        p0_2d = pts_2d[init_faces[:, 0]]
+        p1_2d = pts_2d[init_faces[:, 1]]
+        p2_2d = pts_2d[init_faces[:, 2]]
+
+        l01_2d = np.linalg.norm(p0_2d - p1_2d, axis=1)
+        l12_2d = np.linalg.norm(p1_2d - p2_2d, axis=1)
+        l20_2d = np.linalg.norm(p2_2d - p0_2d, axis=1)
+
+        max_len_2d = np.max(np.column_stack([l01_2d, l12_2d, l20_2d]), axis=1)
+        min_len_2d = np.min(np.column_stack([l01_2d, l12_2d, l20_2d]), axis=1)
+
+        median_len_2d = np.median(min_len_2d)
+        valid_face_mask = max_len_2d < (median_len_2d * 4.0)
+        valid_faces = init_faces[valid_face_mask]
+
+        # Count edge occurrences to find the perimeter
+        edge_dict = {}
+        for face in valid_faces:
+            for i in range(3):
+                vA, vB, v3 = face[i], face[(i + 1) % 3], face[(i + 2) % 3]
+                edge = tuple(sorted((vA, vB)))
+                if edge not in edge_dict:
+                    edge_dict[edge] = []
+                edge_dict[edge].append(v3)  # save the inner vertex reference
+
+        # Boundary edges belong to exactly 1 valid triangle
+        boundary_edges = []
+        for edge, v3_list in edge_dict.items():
+            if len(v3_list) == 1:
+                boundary_edges.append((edge[0], edge[1], v3_list[0]))
+
+        # Generate ghost points
+        ghost_2d = []
+        ghost_3d = []
+
+        for v1, v2, v3 in boundary_edges:
+            # 2D
+            p1_2d = pts_2d[v1]
+            p2_2d = pts_2d[v2]
+            p3_2d = pts_2d[v3]  # interior point of the triangle
+
+            mid_2d = (p1_2d + p2_2d) / 2.0
+            edge_vec_2d = p2_2d - p1_2d
+            edge_len_2d = np.linalg.norm(edge_vec_2d)
+            if edge_len_2d < 1e-12:
+                continue
+
+            normal_2d = np.array([-edge_vec_2d[1], edge_vec_2d[0]]) / edge_len_2d
+            if np.dot(normal_2d, mid_2d - p3_2d) < 0:
+                normal_2d = -normal_2d
+
+            # 3D
+            p1_3d = eye_pos[v1]
+            p2_3d = eye_pos[v2]
+            p3_3d = eye_pos[v3]
+
+            mid_3d = (p1_3d + p2_3d) / 2.0
+            edge_vec_3d = p2_3d - p1_3d
+            edge_len_3d = np.linalg.norm(edge_vec_3d)
+
+            local_surf_norm = (eye_dirs[v1] + eye_dirs[v2]) / 2.0
+            norm_mag = np.linalg.norm(local_surf_norm)
+            if norm_mag > 1e-8:
+                local_surf_norm /= norm_mag
+            else:
+                local_surf_norm = np.array([0.0, 0.0, 1.0])
+
+            # Tangent outward vector: cross edge with true surface normal
+            outward_3d = np.cross(edge_vec_3d, local_surf_norm)
+            out_mag = np.linalg.norm(outward_3d)
+            if out_mag > 1e-8:
+                outward_3d /= out_mag
+                # Ensure it points away from interior point v3
+                if np.dot(outward_3d, mid_3d - p3_3d) < 0:
+                    outward_3d = -outward_3d
+            else:
+                outward_3d = mid_3d - p3_3d
+                outward_3d /= np.linalg.norm(outward_3d)
+
+            spacing_2d = edge_len_2d * 0.8
+            spacing_3d = edge_len_3d * 0.8
+
+            for row in range(1, ghost_rows + 1):
+                ghost_2d.append(mid_2d + normal_2d * spacing_2d * row)
+
+                ghost_pt_3d = mid_3d + outward_3d * spacing_3d * row
+
+                # # Slight curvature drop to keep it perfectly spherical
+                # local_radius = (np.linalg.norm(p1_3d) + np.linalg.norm(p2_3d)) / 2.0
+                # ghost_pt_3d = ghost_pt_3d * (local_radius / np.linalg.norm(ghost_pt_3d))
+
+                ghost_3d.append(ghost_pt_3d)
+
+        # Final Delaunay
+
+        if ghost_2d:
+            combined_2d = np.vstack([pts_2d, np.array(ghost_2d)])
+            mapping = np.concatenate([global_idx, -np.ones(len(ghost_2d), dtype=np.int_)])
+            combined_3d = np.vstack([eye_pos, np.array(ghost_3d, dtype=np.float32)])
+        else:
+            combined_2d = pts_2d
+            mapping = global_idx
+            combined_3d = eye_pos.astype(np.float32)
+
+        tri = Delaunay(combined_2d)
+        faces = tri.simplices
+
+        # Filter the final mesh to ensure bad Voronoi centres aren't created
+        p0 = combined_3d[faces[:, 0]]
+        p1 = combined_3d[faces[:, 1]]
+        p2 = combined_3d[faces[:, 2]]
+
         l01 = np.linalg.norm(p0 - p1, axis=1)
         l12 = np.linalg.norm(p1 - p2, axis=1)
         l20 = np.linalg.norm(p2 - p0, axis=1)
 
-        # Find maximum edge length for each triangle and estimate median edge length
         max_len = np.max(np.column_stack([l01, l12, l20]), axis=1)
-        typical_edge = np.median(np.min(np.column_stack([l01, l12, l20]), axis=1))
+        min_len = np.min(np.column_stack([l01, l12, l20]), axis=1)
 
-        # Drop triangles whose longest edge is significantly large
-        valid_mask = max_len < (typical_edge * 4.0)
-        valid_simplices = simplices[valid_mask]
+        # Check if the face touches any REAL geometry
+        has_real = np.any(mapping[faces] != -1, axis=1)
+        local_median = np.median(min_len[has_real]) if np.any(has_real) else 1.0
 
-        if len(valid_simplices) > 0:
-            all_faces.append(global_idx[valid_simplices])
+        # Keep if it's pure ghost void, or if it touches real points and isn't huge
+        keep = (~has_real) | (max_len < local_median * 4.0)
 
-    if not all_faces:
-        return pv.PolyData(positions.astype(np.float32))
+        faces = faces[keep] + offset
 
-    faces = np.vstack(all_faces)
-    flat = np.empty((faces.shape[0], 4), dtype=np.int_)
-    flat[:, 0] = 3
-    flat[:, 1:] = faces
-    return pv.PolyData(positions.astype(np.float32), faces=flat.flatten())
+        all_points.append(combined_3d)
+        all_global_indices.append(mapping)
+        all_faces.append(faces)
+        offset += len(combined_3d)
 
+    if not all_points:
+        return np.array([]), np.array([]), np.array([])
 
-##
+    all_points = np.vstack(all_points).astype(np.float32)
+    all_global_indices = np.concatenate(all_global_indices).astype(np.int_)
+    all_faces = np.vstack(all_faces) if all_faces else np.empty((0, 3), dtype=np.int_)
+
+    if len(all_faces) == 0:
+        return all_points, np.array([]), all_global_indices
+
+    faces = np.empty((len(all_faces), 4), dtype=np.int_)
+    faces[:, 0] = 3
+    faces[:, 1:] = all_faces
+
+    return all_points, faces, all_global_indices
+
 
 def _arrow_template() -> pv.PolyData:
     global _ARROW_TEMPLATE
@@ -212,10 +327,10 @@ class EyeViewer:
     def __init__(
         self,
         model: Model,
-        aligner: BundlesAligner = None,
-        optic_flow_world=None,
+        aligner: Optional[BundlesAligner] = None,
+        optic_flow_world: Optional[ArrayLike] = None,
         sparsity: float = 0.0,
-        debug_IDs=None
+        debug_IDs: Optional[Sequence[int]] = None
     ):
 
         self.model = model
@@ -253,11 +368,26 @@ class EyeViewer:
         self.r_sphere = float(np.mean(np.linalg.norm(self.p, axis=1)))
         self.arrow_len = self.r_sphere * 0.08
 
-        # Per-eye Delaunay mesh (vertex i = lens i)
-        self.delaunay_mesh = make_delaunay_mesh(self.model)
+        # Build Delaunay mesh (real + ghosts)
+        delaunay_points, delaunay_faces, delaunay_indices = make_delaunay_mesh(self.model, ghost_rows=1)
 
-        # Generate the ommatidia lattice
-        self.lattice_mesh = make_ommatidia_lattice(self.model, self.delaunay_mesh)
+        if np.any(delaunay_points) and np.any(delaunay_faces):
+            self.delaunay_mesh_full = pv.PolyData(delaunay_points, faces=delaunay_faces.flatten())
+        else:
+            self.delaunay_mesh_full = pv.PolyData()
+
+        # Delaunay mesh containing only real points (for glyphs, scalars, etc.)
+        self._real_mask = delaunay_indices != -1
+        self.delaunay_mesh_real = pv.PolyData(delaunay_points[self._real_mask])
+
+        # Build hexagonal lattice from the combined Delaunay (real + ghosts)
+        hexmesh_points, hexmesh_faces, hexmesh_indices = make_hex_mesh(self.model, delaunay_points, delaunay_faces, delaunay_indices)
+
+        if np.any(delaunay_points) and np.any(delaunay_faces):
+            self.lattice_mesh = pv.PolyData(hexmesh_points, faces=hexmesh_faces)
+        else:
+            self.lattice_mesh = pv.PolyData()
+        self.lattice_mesh.cell_data['ommatidia_index'] = hexmesh_indices
 
         # Per-lens chirality
         self.chirality = self.model.chirality.astype(np.float32)
@@ -290,6 +420,7 @@ class EyeViewer:
 
         # Plot bookkeeping
         self.plotter = None
+        self.actors_meshing_debug = []
         self.actors_alignment_smooth = []
         self.actors_alignment_raw = []
         self.actors_saccade_smooth = []
@@ -307,62 +438,55 @@ class EyeViewer:
 
         self.state_alignment_smoothed = True
         self.state_saccade_smoothed = True
+        self.state_meshing_debug = False
 
         # Big panel state: 0 = bundles, 1 = debugger, 2 = conflicts heatmap
         self.state_bigpanel = 1
-        self._BIGPANEL_LABELS = ['Bundles', 'Wiring debugger', 'Conflicts', 'Binocularity', 'Edges', 'Neighbours']
-
+        self._BIGPANEL_LABELS = [
+            'Bundles',
+            'Wiring debugger',
+            'Conflicts',
+            'Binocularity',
+            'Edges',
+            'Neighbours',
+        ]
         self._debugger_subplot = None  # filled in show()
 
-    ##
+    def _add_debug_meshing(self, subplot=None):
+        """Temporarily display ghost points and Delaunay edges."""
 
-    def show(self):
+        pts = self.delaunay_mesh_real.points
+        pts_w_ghosts = self.delaunay_mesh_full.points
+        faces = self.delaunay_mesh_full.faces.reshape(-1, 4)[:, 1:4]
 
-        self.plotter = pv.Plotter(
-            shape=(2, 4),
-            groups=[(1, slice(2, 4))],
-            window_size=list((2400, 1100)),
-            border=True,
-        )
+        # Real points (blue) and ghost points (red)
+        ghost_mask = ~self._real_mask
 
-        try:
-            pv.set_new_attribute(self.plotter, 'pickpoint', None)   # needed to prevent errors on Windows and macOS...
-            # ...in a try-except because Linux errors on allow_new_attributes() call...
-        except AttributeError:
-            pass
+        if subplot is not None:
+            self.plotter.subplot(*subplot)
 
-        self.plotter.set_background('white')
+        # Plot real points
+        real_points_actors = self.plotter.add_points(pts, color='blue', point_size=10,
+                                                     render_points_as_spheres=True)
+        self.actors_meshing_debug.append(real_points_actors)
 
-        self._debugger_subplot = (1, 2)
+        # Plot ghost points
+        if np.any(ghost_mask):
+            ghost_points_actors = self.plotter.add_points(pts_w_ghosts[ghost_mask], color='red', point_size=10,
+                                                          render_points_as_spheres=True)
+            self.actors_meshing_debug.append(ghost_points_actors)
 
-        # Panel layout
-        panel_setups = [
-            ((0, 0), "Optic Flow", self._add_optic_flow_panel),
-            ((0, 1), "Alignment Axes  [A]", self._add_alignment_panel),
-            ((0, 2), "Major Axes", self._add_major_axis_panel),
-            ((0, 3), "Saccade Axes  [S]", self._add_saccade_panel),
-            ((1, 0), "Alignment Heatmaps  [H]", self._add_heatmaps),
-            ((1, 1), "IOA", self._add_ioa_panel),
-            ((1, 2), "Bundles / Wiring / Conflicts  [B]  [N]", self._add_bigpanel),
-        ]
+        # Draw Delaunay edges (only those connecting real–ghost or real–real)
+        edges = set()
+        for tri in faces:
+            for i in range(3):
+                e = tuple(sorted((tri[i], tri[(i + 1) % 3])))
+                edges.add(e)
+        edge_lines = np.stack(list(edges))
 
-        for (row, col), title, builder in panel_setups:
-            self.plotter.subplot(row, col)
-            self._common_scene(title)
-            builder()
-
-        # visibility states + linking
-        self._apply_alignment_visibility()
-        self._apply_saccade_visibility()
-        self._apply_heatmap_visibility()
-        self._apply_bigpanel_visibility()
-
-        self.plotter.link_views()
-        self._setup_keybindings()
-        self._setup_camera()
-        self.plotter.show()
-
-    ##
+        if np.any(edge_lines):
+            edge_lines_actors = self.plotter.add_lines(pts_w_ghosts[edge_lines].reshape(-1, 3), color='black', width=1)
+            self.actors_meshing_debug.append(edge_lines_actors)
 
     # Per-panel fluff (planes, flow indicator, title, axes)
 
@@ -385,15 +509,14 @@ class EyeViewer:
             scale=self.r_sphere * 0.6,
         )
         self.plotter.add_mesh(flow_arrow, color=FLOW_COLOR, lighting=False, opacity=0.85)
-
         self.plotter.add_axes(interactive=False)
 
     def _add_eye_surface(
         self,
-        scalars: np.ndarray = None,
+        scalars: Optional[np.ndarray] = None,
         cmap=None,
         clim=None,
-        sbar_title: str = None,
+        sbar_title: Optional[str] = None,
         faint: bool = False,
     ) -> None:
         """
@@ -467,37 +590,37 @@ class EyeViewer:
         )
 
     def _add_optic_flow_panel(self) -> None:
-        if self.delaunay_mesh.n_cells == 0:
+        if self.delaunay_mesh_real.n_cells == 0:
             return
         dots = self.d @ self.optic_flow_world
         v_proj = self.optic_flow_world[None, :] - dots[:, None] * self.d
         norms = np.linalg.norm(v_proj, axis=1, keepdims=True)
         v_proj = np.divide(v_proj, norms.clip(min=1e-8))
 
-        m = self.delaunay_mesh.copy()
+        m = self.delaunay_mesh_real.copy()
         m.point_data['OpticFlow'] = v_proj.astype(np.float32)
         arrows = self._glyph_arrows(m, 'OpticFlow')
         self.plotter.add_mesh(arrows, color='#da70d6',
                               ambient=0.4, diffuse=0.7, smooth_shading=True)
 
     def _add_alignment_panel(self) -> None:
-        if self.delaunay_mesh.n_cells == 0 or self.R <= 1:
+        if self.delaunay_mesh_real.n_cells == 0 or self.R <= 1:
             return
 
-        m_smooth = self.delaunay_mesh.copy()
+        m_smooth = self.delaunay_mesh_real.copy()
         m_smooth.point_data['AlignmentSmooth'] = self.model.orientation_field
         g_smooth = self._glyph_phasors(m_smooth, 'AlignmentSmooth')
         a_smooth = self.plotter.add_mesh(g_smooth, color='green', line_width=2)
         self.actors_alignment_smooth.append(a_smooth)
 
-        m_raw = self.delaunay_mesh.copy()
+        m_raw = self.delaunay_mesh_real.copy()
         m_raw.point_data['AlignmentRaw'] = self.result_raw.alignment_phasor.astype(np.float32)
         g_raw = self._glyph_phasors(m_raw, 'AlignmentRaw')
         a_raw = self.plotter.add_mesh(g_raw, color='#8c8c00', line_width=2)
         self.actors_alignment_raw.append(a_raw)
 
     def _add_major_axis_panel(self) -> None:
-        if self.delaunay_mesh.n_cells == 0 or self.R <= 1:
+        if self.delaunay_mesh_real.n_cells == 0 or self.R <= 1:
             return
 
         for mask, color in [
@@ -514,17 +637,17 @@ class EyeViewer:
             self.plotter.add_mesh(arrows, color=color, ambient=0.4, diffuse=0.7, smooth_shading=True)
 
     def _add_saccade_panel(self) -> None:
-        if self.delaunay_mesh.n_cells == 0:
+        if self.delaunay_mesh_real.n_cells == 0:
             return
 
-        m_smooth = self.delaunay_mesh.copy()
+        m_smooth = self.delaunay_mesh_real.copy()
         m_smooth.point_data['SaccadeSmooth'] = self.model.saccade_field
         g_smooth = self._glyph_arrows(m_smooth, 'SaccadeSmooth')
         a_smooth = self.plotter.add_mesh(g_smooth, color='red',
                                          ambient=0.4, diffuse=0.7, smooth_shading=True)
         self.actors_saccade_smooth.append(a_smooth)
 
-        m_raw = self.delaunay_mesh.copy()
+        m_raw = self.delaunay_mesh_real.copy()
         m_raw.point_data['SaccadeRaw'] = self.result_raw.saccade_phasor.astype(np.float32)
         g_raw = self._glyph_phasors(m_raw, 'SaccadeRaw')
         a_raw = self.plotter.add_mesh(g_raw, color='#FF94BD', line_width=2)
@@ -666,6 +789,7 @@ class EyeViewer:
         """Bottom-right panel (wide)."""
 
         self._add_eye_surface(faint=True)
+        self._add_debug_meshing()
 
         # Mode 1: rhabdomere-tip bundles overview
         if self.R > 1:
@@ -852,6 +976,10 @@ class EyeViewer:
 
     # Visibility helpers
 
+    def _apply_meshing_debug_visibility(self) -> None:
+        for a in self.actors_meshing_debug:
+            a.SetVisibility(self.state_meshing_debug)
+
     def _apply_alignment_visibility(self) -> None:
         for a in self.actors_alignment_smooth:
             a.SetVisibility(self.state_alignment_smoothed)
@@ -923,6 +1051,11 @@ class EyeViewer:
     # Key binds
 
     def _setup_keybindings(self) -> None:
+        def toggle_debug():
+            self.state_meshing_debug = not self.state_meshing_debug
+            self._apply_meshing_debug_visibility()
+            self.plotter.render()
+
         def toggle_alignment():
             self.state_alignment_smoothed = not self.state_alignment_smoothed
             self._apply_alignment_visibility()
@@ -958,6 +1091,7 @@ class EyeViewer:
         self.plotter.add_key_event('h', toggle_heatmap)
         self.plotter.add_key_event('a', toggle_alignment)
         self.plotter.add_key_event('s', toggle_saccade)
+        self.plotter.add_key_event('d', toggle_debug)
         self.plotter.add_key_event('b', cycle_bigpanel)
         self.plotter.add_key_event('n', cycle_debugger)
         self.plotter.add_key_event('Insert', self._dump_snapshots)
@@ -1034,10 +1168,6 @@ class EyeViewer:
             panel_img.save(path)
             print(f"  > Saved {path}")
 
-    ##
-
-    # Camera
-
     def _setup_camera(self) -> None:
         cam_dir = self.fwd + self.right + self.up
         cam_pos = cam_dir / np.linalg.norm(cam_dir) * (self.r_sphere * 6.5)
@@ -1045,6 +1175,52 @@ class EyeViewer:
             self.plotter.subplot(row, col)
             self.plotter.camera_position = [cam_pos.tolist(), (0, 0, 0), self.up.tolist()]
 
+    def show(self):
+
+        self.plotter = pv.Plotter(
+            shape=(2, 4),
+            groups=[(1, slice(2, 4))],
+            window_size=list((2400, 1100)),
+            border=True,
+        )
+
+        try:
+            pv.set_new_attribute(self.plotter, 'pickpoint', None)   # needed to prevent errors on Windows and macOS...
+            # ...in a try-except because Linux errors on allow_new_attributes() call...
+        except AttributeError:
+            pass
+
+        self.plotter.set_background('white')
+
+        self._debugger_subplot = (1, 2)
+
+        # Panel layout
+        panel_setups = [
+            ((0, 0), "Optic Flow", self._add_optic_flow_panel),
+            ((0, 1), "Alignment Axes  [A]", self._add_alignment_panel),
+            ((0, 2), "Major Axes", self._add_major_axis_panel),
+            ((0, 3), "Saccade Axes  [S]", self._add_saccade_panel),
+            ((1, 0), "Alignment Heatmaps  [H]", self._add_heatmaps),
+            ((1, 1), "IOA", self._add_ioa_panel),
+            ((1, 2), "Bundles / Wiring / Conflicts  [B]  [N]", self._add_bigpanel),
+        ]
+
+        for (row, col), title, builder in panel_setups:
+            self.plotter.subplot(row, col)
+            self._common_scene(title)
+            builder()
+
+        # visibility states + linking
+        self._apply_meshing_debug_visibility()
+        self._apply_alignment_visibility()
+        self._apply_saccade_visibility()
+        self._apply_heatmap_visibility()
+        self._apply_bigpanel_visibility()
+
+        self.plotter.link_views()
+        self._setup_keybindings()
+        self._setup_camera()
+        self.plotter.show()
 
 ##
 
