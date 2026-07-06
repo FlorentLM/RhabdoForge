@@ -38,6 +38,7 @@ _DISC_TEMPLATE = None
 # Helper functions
 
 def receptor_tip_offsets(model) -> np.ndarray:
+    # TODO: Useless helper?
     d = model.directions
     rec_dirs = model.buffer['curr_direction']
     axial = np.sum(rec_dirs * d[:, None, :], axis=2, keepdims=True)
@@ -46,7 +47,8 @@ def receptor_tip_offsets(model) -> np.ndarray:
 
 def radii_from_lattice(model) -> np.ndarray:
     """Per-lens display radius = mean distance to the lens's immediate lattice neighbours."""
-    # TODO: Replace this with a function from the modules
+
+    # TODO: Remove / replace this with a robust function from the modules
 
     radii = np.zeros(model.shape[0], dtype=np.float32)
     for eye in model.eyes:
@@ -122,185 +124,134 @@ def make_hex_mesh(model, delaunay_points, delaunay_faces, delaunay_indices):
 
 def make_delaunay_mesh(model, ghost_rows=1):
     """
-    Build Delaunay mesh (with ghost points) for each eye.
-
-    Returns:
-        combined_mesh: PyVista PolyData (real + ghost points, all triangles)
-        real_points_indices: array of length N_points, -1 for ghosts, else global ommatidium index
+    Build Delaunay mesh with ghost points using local lattice density.
     """
+
+    # TODO: This function needs to be cleaned/ DRY-ed
+
     positions = model.positions
     if positions.shape[0] == 0:
         return pv.PolyData(), np.array([])
 
-    all_points = []      # 3D coordinates (real + ghost)
-    all_global_indices = []  # global index or -1
-    all_faces = []       # triangle indices (relative to all_points)
+    all_spacing_3d = radii_from_lattice(model)
+    all_points, all_global_indices, all_faces = [], [], []
     offset = 0
 
     for eye in model.eyes:
         if len(eye) < 3:
             continue
 
-        global_idx = np.asarray(eye.indices, dtype=np.int_)
-        eye_pos = positions[global_idx]
+        indices = np.asarray(eye.indices, dtype=np.int_)
+        eye_pos = positions[indices]
         eye_dirs = norm_l2(eye.directions)
+        eye_spacing_3d = all_spacing_3d[indices]
 
+        # Get the 2D map and the basis
+        # sphere_to_stereo maps directions, not positions.
+        # The basis (forward, right, up) defines the eye's 'local' coordinate system.
         pts_2d, forward, right, up = sphere_to_stereo(eye_dirs)
 
-        # Initial Delaunay to extract the boundary
+        # Find boundary
+        tri_init = Delaunay(pts_2d)
+        p2d_f = pts_2d[tri_init.simplices]
+        l2d_max = np.max(np.linalg.norm(p2d_f - np.roll(p2d_f, 1, axis=1), axis=2), axis=1)
+        valid_faces = tri_init.simplices[l2d_max < (np.median(l2d_max) * 4.0)]
 
-        tri_initial = Delaunay(pts_2d)
-        init_faces = tri_initial.simplices
-
-        # Calculate 2D edge lengths to filter out 'gap bridging' triangles
-        p0_2d = pts_2d[init_faces[:, 0]]
-        p1_2d = pts_2d[init_faces[:, 1]]
-        p2_2d = pts_2d[init_faces[:, 2]]
-
-        l01_2d = np.linalg.norm(p0_2d - p1_2d, axis=1)
-        l12_2d = np.linalg.norm(p1_2d - p2_2d, axis=1)
-        l20_2d = np.linalg.norm(p2_2d - p0_2d, axis=1)
-
-        max_len_2d = np.max(np.column_stack([l01_2d, l12_2d, l20_2d]), axis=1)
-        min_len_2d = np.min(np.column_stack([l01_2d, l12_2d, l20_2d]), axis=1)
-
-        median_len_2d = np.median(min_len_2d)
-        valid_face_mask = max_len_2d < (median_len_2d * 4.0)
-        valid_faces = init_faces[valid_face_mask]
-
-        # Count edge occurrences to find the perimeter
         edge_dict = {}
-        for face in valid_faces:
+        for f in valid_faces:
             for i in range(3):
-                vA, vB, v3 = face[i], face[(i + 1) % 3], face[(i + 2) % 3]
-                edge = tuple(sorted((vA, vB)))
-                if edge not in edge_dict:
-                    edge_dict[edge] = []
-                edge_dict[edge].append(v3)  # save the inner vertex reference
+                edge = tuple(sorted((f[i], f[(i + 1) % 3])))
+                edge_dict.setdefault(edge, []).append(f[(i + 2) % 3])
+        boundary = [(e[0], e[1], vlist[0]) for e, vlist in edge_dict.items() if len(vlist) == 1]
 
-        # Boundary edges belong to exactly 1 valid triangle
-        boundary_edges = []
-        for edge, v3_list in edge_dict.items():
-            if len(v3_list) == 1:
-                boundary_edges.append((edge[0], edge[1], v3_list[0]))
+        # Map local metrics
+        v_norm2d = {i: np.zeros(2) for i in range(len(eye_pos))}
+        v_norm3d = {i: np.zeros(3) for i in range(len(eye_pos))}
 
-        # Generate ghost points
-        ghost_2d = []
-        ghost_3d = []
+        # Calculate local IOA (angular spacing) for the 2D map
+        # lang = separation in radians
+        v_lang = {i: [] for i in range(len(eye_pos))}
 
-        for v1, v2, v3 in boundary_edges:
-            # 2D
-            p1_2d = pts_2d[v1]
-            p2_2d = pts_2d[v2]
-            p3_2d = pts_2d[v3]  # interior point of the triangle
+        boundary_data = []
+        for v1, v2, v3 in boundary:
 
-            mid_2d = (p1_2d + p2_2d) / 2.0
-            edge_vec_2d = p2_2d - p1_2d
-            edge_len_2d = np.linalg.norm(edge_vec_2d)
-            if edge_len_2d < 1e-12:
+            # Physical spacing
+            l3d = (eye_spacing_3d[v1] + eye_spacing_3d[v2]) / 2.0
+            # Angular spacing (IOA)
+            lang = np.arccos(np.clip(np.dot(eye_dirs[v1], eye_dirs[v2]), -1.0, 1.0))
+
+            # 2D unit normal
+            e2d = pts_2d[v2] - pts_2d[v1]
+            n2d = np.array([-e2d[1], e2d[0]])
+            n2d /= (np.linalg.norm(n2d) + 1e-12)
+            if np.dot(n2d, (pts_2d[v1] + pts_2d[v2]) / 2.0 - pts_2d[v3]) < 0: n2d = -n2d
+
+            # 3D unit normal
+            mid_d = norm_l2(eye_dirs[v1] + eye_dirs[v2])
+            n3d = norm_l2(np.cross(eye_pos[v2] - eye_pos[v1], mid_d))
+            if np.dot(n3d, (eye_pos[v1] + eye_pos[v2]) / 2.0 - eye_pos[v3]) < 0: n3d = -n3d
+
+            boundary_data.append((v1, v2, v3, l3d, lang, n2d, n3d))
+            for v in (v1, v2):
+                v_norm2d[v] += n2d
+                v_norm3d[v] += n3d
+                v_lang[v].append(lang)
+
+        ghost_2d, ghost_3d = [], []
+
+        H_FAC = np.sqrt(3) / 2.0  # height of equilateral triangle
+
+        # Edge Ghosts (staggered)
+        for v1, v2, v3, l3d, lang, n2d, n3d in boundary_data:
+            mid_d = norm_l2(eye_dirs[v1] + eye_dirs[v2])
+            scale = 1.0 / (1.0 + np.dot(mid_d, forward))
+
+            mid_2d = (pts_2d[v1] + pts_2d[v2]) / 2.0
+            mid_3d = (eye_pos[v1] + eye_pos[v2]) / 2.0
+
+            for r in range(1, ghost_rows + 1):
+                ghost_2d.append(mid_2d + n2d * (lang * H_FAC * r * scale))
+                ghost_3d.append(mid_3d + n3d * (l3d * H_FAC * r))
+
+        # Vertex ghosts (fill corners)
+        for v in v_norm2d.keys():
+            if np.linalg.norm(v_norm2d[v]) < 1e-6:
                 continue
 
-            normal_2d = np.array([-edge_vec_2d[1], edge_vec_2d[0]]) / edge_len_2d
-            if np.dot(normal_2d, mid_2d - p3_2d) < 0:
-                normal_2d = -normal_2d
+            n2d = norm_l2(v_norm2d[v])
+            n3d = norm_l2(v_norm3d[v])
 
-            # 3D
-            p1_3d = eye_pos[v1]
-            p2_3d = eye_pos[v2]
-            p3_3d = eye_pos[v3]
+            avg_l3d = eye_spacing_3d[v]
+            avg_lang = np.mean(v_lang[v]) if v_lang[v] else 0.017  # ~1 deg fallback
 
-            mid_3d = (p1_3d + p2_3d) / 2.0
-            edge_vec_3d = p2_3d - p1_3d
-            edge_len_3d = np.linalg.norm(edge_vec_3d)
+            scale = 1.0 / (1.0 + np.dot(eye_dirs[v], forward))
 
-            local_surf_norm = (eye_dirs[v1] + eye_dirs[v2]) / 2.0
-            norm_mag = np.linalg.norm(local_surf_norm)
-            if norm_mag > 1e-8:
-                local_surf_norm /= norm_mag
-            else:
-                local_surf_norm = np.array([0.0, 0.0, 1.0])
+            for r in range(1, ghost_rows + 1):
+                ghost_2d.append(pts_2d[v] + n2d * (avg_lang * r * scale))
+                ghost_3d.append(eye_pos[v] + n3d * (avg_l3d * r))
 
-            # Tangent outward vector: cross edge with true surface normal
-            outward_3d = np.cross(edge_vec_3d, local_surf_norm)
-            out_mag = np.linalg.norm(outward_3d)
-            if out_mag > 1e-8:
-                outward_3d /= out_mag
-                # Ensure it points away from interior point v3
-                if np.dot(outward_3d, mid_3d - p3_3d) < 0:
-                    outward_3d = -outward_3d
-            else:
-                outward_3d = mid_3d - p3_3d
-                outward_3d /= np.linalg.norm(outward_3d)
-
-            spacing_2d = edge_len_2d * 0.8
-            spacing_3d = edge_len_3d * 0.8
-
-            for row in range(1, ghost_rows + 1):
-                ghost_2d.append(mid_2d + normal_2d * spacing_2d * row)
-
-                ghost_pt_3d = mid_3d + outward_3d * spacing_3d * row
-
-                # # Slight curvature drop to keep it perfectly spherical
-                # local_radius = (np.linalg.norm(p1_3d) + np.linalg.norm(p2_3d)) / 2.0
-                # ghost_pt_3d = ghost_pt_3d * (local_radius / np.linalg.norm(ghost_pt_3d))
-
-                ghost_3d.append(ghost_pt_3d)
-
-        # Final Delaunay
-
-        if ghost_2d:
-            combined_2d = np.vstack([pts_2d, np.array(ghost_2d)])
-            mapping = np.concatenate([global_idx, -np.ones(len(ghost_2d), dtype=np.int_)])
-            combined_3d = np.vstack([eye_pos, np.array(ghost_3d, dtype=np.float32)])
-        else:
-            combined_2d = pts_2d
-            mapping = global_idx
-            combined_3d = eye_pos.astype(np.float32)
+        # Finalise
+        combined_2d = np.vstack([pts_2d, np.array(ghost_2d)])
+        combined_3d = np.vstack([eye_pos, np.array(ghost_3d, dtype=np.float32)])
+        mapping = np.concatenate([indices, -np.ones(len(ghost_2d), dtype=np.int_)])
 
         tri = Delaunay(combined_2d)
-        faces = tri.simplices
-
-        # Filter the final mesh to ensure bad Voronoi centres aren't created
-        p0 = combined_3d[faces[:, 0]]
-        p1 = combined_3d[faces[:, 1]]
-        p2 = combined_3d[faces[:, 2]]
-
-        l01 = np.linalg.norm(p0 - p1, axis=1)
-        l12 = np.linalg.norm(p1 - p2, axis=1)
-        l20 = np.linalg.norm(p2 - p0, axis=1)
-
-        max_len = np.max(np.column_stack([l01, l12, l20]), axis=1)
-        min_len = np.min(np.column_stack([l01, l12, l20]), axis=1)
-
-        # Check if the face touches any REAL geometry
-        has_real = np.any(mapping[faces] != -1, axis=1)
-        local_median = np.median(min_len[has_real]) if np.any(has_real) else 1.0
-
-        # Keep if it's pure ghost void, or if it touches real points and isn't huge
-        keep = (~has_real) | (max_len < local_median * 4.0)
-
-        faces = faces[keep] + offset
-
         all_points.append(combined_3d)
         all_global_indices.append(mapping)
-        all_faces.append(faces)
+        all_faces.append(tri.simplices + offset)
         offset += len(combined_3d)
 
     if not all_points:
         return np.array([]), np.array([]), np.array([])
 
     all_points = np.vstack(all_points).astype(np.float32)
-    all_global_indices = np.concatenate(all_global_indices).astype(np.int_)
-    all_faces = np.vstack(all_faces) if all_faces else np.empty((0, 3), dtype=np.int_)
-
-    if len(all_faces) == 0:
-        return all_points, np.array([]), all_global_indices
+    all_indices = np.concatenate(all_global_indices)
+    all_faces = np.vstack(all_faces)
 
     faces = np.empty((len(all_faces), 4), dtype=np.int_)
-    faces[:, 0] = 3
-    faces[:, 1:] = all_faces
+    faces[:, 0], faces[:, 1:] = 3, all_faces
 
-    return all_points, faces, all_global_indices
+    return all_points, faces, all_indices
 
 
 def _arrow_template() -> pv.PolyData:
@@ -308,13 +259,6 @@ def _arrow_template() -> pv.PolyData:
     if _ARROW_TEMPLATE is None:
         _ARROW_TEMPLATE = pv.Arrow(tip_radius=0.08, shaft_radius=0.03, tip_length=0.25)
     return _ARROW_TEMPLATE
-
-
-def _phasor_template() -> pv.PolyData:
-    global _PHASOR_TEMPLATE
-    if _PHASOR_TEMPLATE is None:
-        _PHASOR_TEMPLATE = pv.Line(pointa=(-0.5, 0, 0), pointb=(0.5, 0, 0))
-    return _PHASOR_TEMPLATE
 
 
 ##
@@ -391,9 +335,6 @@ class EyeViewer:
 
         # Per-lens chirality
         self.chirality = self.model.chirality.astype(np.float32)
-
-        # Per-lens lattice spacing
-        self.disc_radii = radii_from_lattice(self.model) * 0.4
 
         # Heatmap scalars
         self.collinearity = self._compute_collinearity()
@@ -583,8 +524,13 @@ class EyeViewer:
         )
 
     def _glyph_phasors(self, mesh: pv.PolyData, orient_name: str) -> pv.PolyData:
+
+        global _PHASOR_TEMPLATE
+        if _PHASOR_TEMPLATE is None:
+            _PHASOR_TEMPLATE = pv.Line(pointa=(-0.5, 0, 0), pointb=(0.5, 0, 0))
+
         return mesh.glyph(
-            geom=_phasor_template(), orient=orient_name,
+            geom=_PHASOR_TEMPLATE, orient=orient_name,
             factor=self.arrow_len, scale=False,
             tolerance=self.sparsity if self.sparsity > 0 else None,
         )
