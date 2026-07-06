@@ -6,19 +6,18 @@ import numpy as np
 import pyvista as pv
 from numpy.typing import ArrayLike
 from PIL import Image
-
-from scipy.spatial import Delaunay, ConvexHull
+from scipy.spatial import Delaunay
 
 from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
+from insectvision.geometry.neighbours import graph_spacing
 from insectvision.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD, norm_l2
 from insectvision.geometry.linalg import tangent_frames
-from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere, normals_to_ellipsoid
+from insectvision.geometry.spherical import sphere_to_stereo
 
 CHIRALITY_NEG_COLOR = '#B95D21'
 CHIRALITY_POS_COLOR = '#FF9800'
-
 SURFACE_COLOR = 'white'
 SURFACE_OPAC = 0.18
 EQUATOR_COLOR = '#3b6dff'
@@ -26,43 +25,18 @@ SAGITTAL_COLOR = '#888888'
 PLANE_OPAC = 0.06
 FLOW_COLOR = '#9b3ddc'
 
-# Templates for glyph rendering (built once, shared across panels)
 
+# Templates for glyph rendering (built once, shared across panels)
 _ARROW_TEMPLATE = None
 _PHASOR_TEMPLATE = None
-_DISC_TEMPLATE = None
 
 
 ##
 
-# Helper functions
-
-def receptor_tip_offsets(model) -> np.ndarray:
-    # TODO: Useless helper?
-    d = model.directions
-    rec_dirs = model.buffer['curr_direction']
-    axial = np.sum(rec_dirs * d[:, None, :], axis=2, keepdims=True)
-    return -(rec_dirs - axial * d[:, None, :])
+# TODO: Move the meshing functions to the mesh utilities and use the mesh in an SSBO in the renderer
 
 
-def radii_from_lattice(model) -> np.ndarray:
-    """Per-lens display radius = mean distance to the lens's immediate lattice neighbours."""
-
-    # TODO: Remove / replace this with a robust function from the modules
-
-    radii = np.zeros(model.shape[0], dtype=np.float32)
-    for eye in model.eyes:
-        if len(eye) == 0:
-            continue
-        result = eye.neighbours(query=eye.indices, k=6, immediate_only=True)
-        if result.distances.size == 0:
-            continue
-        radii[eye.indices] = result.distances.mean(axis=1)
-    radii[radii < 1e-9] = 0.001
-    return radii
-
-
-def make_hex_mesh(model, delaunay_points, delaunay_faces, delaunay_indices):
+def make_hex_mesh(normals, delaunay_points, delaunay_faces, delaunay_indices):
     """
     Build the dual Voronoi lattice from the Delaunay mesh.
     point_original_idx[i] is the global ommatidium index or -1 for ghosts.
@@ -76,12 +50,11 @@ def make_hex_mesh(model, delaunay_points, delaunay_faces, delaunay_indices):
     N_mesh = len(pts)
 
     # Pre‑compute tangent frames for real points (needed for angle sorting)
-    dirs = model.directions
     right_vecs = np.zeros((N_mesh, 3))
     up_vecs = np.zeros((N_mesh, 3))
     for i, gid in enumerate(delaunay_indices):
         if gid != -1:
-            r, u = tangent_frames(dirs[gid:gid+1])
+            r, u = tangent_frames(normals[gid:gid+1])
             right_vecs[i] = r[0]
             up_vecs[i] = u[0]
 
@@ -133,7 +106,6 @@ def make_delaunay_mesh(model, ghost_rows=1):
     if positions.shape[0] == 0:
         return pv.PolyData(), np.array([])
 
-    all_spacing_3d = radii_from_lattice(model)
     all_points, all_global_indices, all_faces = [], [], []
     offset = 0
 
@@ -144,7 +116,11 @@ def make_delaunay_mesh(model, ghost_rows=1):
         indices = np.asarray(eye.indices, dtype=np.int_)
         eye_pos = positions[indices]
         eye_dirs = norm_l2(eye.directions)
-        eye_spacing_3d = all_spacing_3d[indices]
+
+        graph = eye._get_first_ring_graph()
+        adj = graph['adjacency']
+        eye_spacing_3d = graph_spacing(eye.positions, adj, reduce=np.mean)
+        eye_spacing_3d[np.isnan(eye_spacing_3d) | (eye_spacing_3d < 1e-9)] = 0.001
 
         # Get the 2D map and the basis
         # sphere_to_stereo maps directions, not positions.
@@ -273,25 +249,21 @@ class EyeViewer:
         model: Model,
         aligner: Optional[BundlesAligner] = None,
         optic_flow_world: Optional[ArrayLike] = None,
-        sparsity: float = 0.0,
         debug_IDs: Optional[Sequence[int]] = None
     ):
 
         self.model = model
         self.bundle = model.bundle
         self.N, self.R = model.shape
-        self.sparsity = float(sparsity)
-
-        self.right = np.asarray(WORLD_RIGHT, dtype=np.float32)
-        self.up = np.asarray(WORLD_UP, dtype=np.float32)
-        self.fwd = np.asarray(WORLD_FORWARD, dtype=np.float32)
 
         self._debug_ids = cycle(list(debug_IDs)) if debug_IDs else None
 
         if aligner is None:
-            flow = optic_flow_world if optic_flow_world is not None else -self.fwd
+            flow = optic_flow_world if optic_flow_world is not None else WORLD_BACKWARD
             aligner = BundlesAligner(flow_direction=flow)
+
         self.aligner_smooth = aligner
+
         self.aligner_raw = BundlesAligner(
             flow_direction=aligner.flow_direction,
             diagonal_strength=aligner.diagonal_strength,
@@ -301,6 +273,7 @@ class EyeViewer:
             falloff=aligner.falloff,
             strength=aligner.strength,
         )
+
         self.optic_flow_world = aligner.flow_direction.astype(np.float32)
 
         self.result_smooth = self.aligner_smooth.compute(self.model)
@@ -325,7 +298,7 @@ class EyeViewer:
         self.delaunay_mesh_real = pv.PolyData(delaunay_points[self._real_mask])
 
         # Build hexagonal lattice from the combined Delaunay (real + ghosts)
-        hexmesh_points, hexmesh_faces, hexmesh_indices = make_hex_mesh(self.model, delaunay_points, delaunay_faces, delaunay_indices)
+        hexmesh_points, hexmesh_faces, hexmesh_indices = make_hex_mesh(self.model.directions, delaunay_points, delaunay_faces, delaunay_indices)
 
         if np.any(delaunay_points) and np.any(delaunay_faces):
             self.lattice_mesh = pv.PolyData(hexmesh_points, faces=hexmesh_faces)
@@ -436,10 +409,9 @@ class EyeViewer:
 
         # Equatorial and sagittal ref planes (head frame)
         plane_size = self.r_sphere * 2.6
-        eq = pv.Plane(center=(0, 0, 0), direction=self.up,
-                      i_size=plane_size, j_size=plane_size)
-        sag = pv.Plane(center=(0, 0, 0), direction=self.right,
-                       i_size=plane_size, j_size=plane_size)
+        eq = pv.Plane(center=(0, 0, 0), direction=WORLD_UP, i_size=plane_size, j_size=plane_size)
+        sag = pv.Plane(center=(0, 0, 0), direction=WORLD_RIGHT, i_size=plane_size, j_size=plane_size)
+
         self.plotter.add_mesh(eq, color=EQUATOR_COLOR, opacity=PLANE_OPAC)
         self.plotter.add_mesh(sag, color=SAGITTAL_COLOR, opacity=PLANE_OPAC)
 
@@ -517,11 +489,7 @@ class EyeViewer:
     # Individual panel content
 
     def _glyph_arrows(self, mesh: pv.PolyData, orient_name: str) -> pv.PolyData:
-        return mesh.glyph(
-            geom=_arrow_template(), orient=orient_name,
-            factor=self.arrow_len, scale=False,
-            tolerance=self.sparsity if self.sparsity > 0 else None,
-        )
+        return mesh.glyph(geom=_arrow_template(), orient=orient_name, factor=self.arrow_len, scale=False)
 
     def _glyph_phasors(self, mesh: pv.PolyData, orient_name: str) -> pv.PolyData:
 
@@ -529,11 +497,7 @@ class EyeViewer:
         if _PHASOR_TEMPLATE is None:
             _PHASOR_TEMPLATE = pv.Line(pointa=(-0.5, 0, 0), pointb=(0.5, 0, 0))
 
-        return mesh.glyph(
-            geom=_PHASOR_TEMPLATE, orient=orient_name,
-            factor=self.arrow_len, scale=False,
-            tolerance=self.sparsity if self.sparsity > 0 else None,
-        )
+        return mesh.glyph(geom=_PHASOR_TEMPLATE, orient=orient_name, factor=self.arrow_len, scale=False)
 
     def _add_optic_flow_panel(self) -> None:
         if self.delaunay_mesh_real.n_cells == 0:
@@ -739,27 +703,15 @@ class EyeViewer:
 
         # Mode 1: rhabdomere-tip bundles overview
         if self.R > 1:
-            offsets = receptor_tip_offsets(self.model)
-            max_off = float(np.max(np.linalg.norm(offsets, axis=2)))
+            vis_scale = (self.r_sphere * 0.012)
 
-            if max_off < 1e-5:
-                # Symmetrical or perfectly fused bundle, no offset to scale
-                tip_positions = np.broadcast_to(self.p[:, None, :], (self.N, self.R, 3))
-                is_mirrored = np.zeros(self.N, dtype=bool)
-            else:
-                # Standard open rhabdom, scale up the pattern for visibility
-                tip_scale = (self.r_sphere * 0.012) / max_off
-                tip_positions = self.p[:, None, :] + offsets * tip_scale
-                is_mirrored = self.model.chirality < 0
-
+            is_mirrored = self.model.chirality < 0
             i1, i2 = self.bundle.main_axis_indices
 
-            groups = {
-                'gold': [], 'red': [], 'white': [],
-                'teal': [], 'royalblue': [],
-            }
+            groups = {'gold': [], 'red': [], 'white': [], 'teal': [], 'royalblue': []}
             for r in range(self.R):
-                pts_r = tip_positions[:, r, :]
+                pts_r = self.model.rhabdomeres.positions.reshape(self.N, self.R, 3) * vis_scale
+
                 if r == self.bundle.center_index:
                     groups['gold'].append(pts_r)
                 elif r == i1:
@@ -774,11 +726,8 @@ class EyeViewer:
                 arrays = [a for a in pts_list if len(a) > 0]
                 if not arrays:
                     continue
-                stacked = np.vstack(arrays)
-                act = self.plotter.add_points(
-                    stacked, color=color, point_size=8,
-                    render_points_as_spheres=True,
-                )
+                act = self.plotter.add_points(np.vstack(arrays), color=color, point_size=8, render_points_as_spheres=True)
+
                 self.actors_bundles.append(act)
 
         # Mode 2: conflicts heatmap
@@ -806,7 +755,7 @@ class EyeViewer:
             self.actors_conflicts.append(act)
 
         # Mode 3: wiring debugger
-        if getattr(self.model, '_cartridges_wired', False) and self.R > 1:
+        if self.model.neural_superposition and self.R > 1:
             self._redraw_debugger()
 
         # Mode 4: Binocular zone
@@ -823,10 +772,14 @@ class EyeViewer:
     # Wiring debugger
 
     def _redraw_debugger(self) -> None:
-
+        """
+        Visualizes the neural superposition wiring for a single cartridge.
+        Uses CartridgeView to find donor rhabdomeres and their world-space positions.
+        """
         if self._debugger_subplot is not None:
             self.plotter.subplot(*self._debugger_subplot)
 
+        # Clear previous debugger actors
         for act in self.actors_debugger:
             self.plotter.remove_actor(act)
         self.actors_debugger.clear()
@@ -835,84 +788,80 @@ class EyeViewer:
             return
 
         target_idx = next(self._debug_ids) if self._debug_ids else np.random.randint(0, self.N)
-        print(f'Target idx: {target_idx}')
 
-        # Find the eye view containing the target ommatidium
-        target_eye_id = int(self.model.eye_index[target_idx])
-        target_eye = next(e for e in self.model.eyes if e.eye_index == target_eye_id)
+        target_cartridge = self.model.cartridges[target_idx]
+        donor_omm_indices = self.model.cartridge_map[target_idx]
+        cartridge_tips = target_cartridge.rhabdomeres.positions
 
-        k_nb = min(40, len(target_eye))
-        result = target_eye.neighbours(positions=self.p[target_idx][None, :], k=k_nb)
-        neighb_indices = result.indices[0]
+        target_eye = self.model.eyes[int(self.model.eye_index[target_idx])]
 
-        partners = self.model.cartridge_map[target_idx]
+        k_nb = min(42, len(target_eye))
+        nb_res = target_eye.neighbours(query=[target_idx], k=k_nb)
+        neighb_indices = nb_res.indices[0]
 
-        ioa_estimate = float(np.mean(result.distances[0][1:7])) if k_nb > 1 else 0.01
-        d_rad = ioa_estimate * 0.45
-
-        # Create a fast O(1) lookup: model ommatidium index -> mesh cell index
         valid_indices = self.lattice_mesh.cell_data['ommatidia_index']
         omm_to_cell = {omm: cell_id for cell_id, omm in enumerate(valid_indices)}
 
-        # Background lenses
-        bg_mask = ~np.isin(neighb_indices, partners) & (neighb_indices != target_idx)
+        # Render background lenses (faint)
+        bg_mask = ~np.isin(neighb_indices, donor_omm_indices) & (neighb_indices != target_idx)
         bg_cells = [omm_to_cell[idx] for idx in neighb_indices[bg_mask] if idx in omm_to_cell]
-
         if bg_cells:
-            # Extract just those polygons to display faintly
             m_bg = self.lattice_mesh.extract_cells(bg_cells)
             self.actors_debugger.append(self.plotter.add_mesh(
-                m_bg, color='black', opacity=0.1, show_edges=True, edge_color='gray'
+                m_bg, color='black', opacity=0.05, show_edges=True, edge_color='gray'
             ))
 
-        # Cartridge members
+        # Render donor lenses and wiring
         member_cells = []
         member_scalars = []
         label_pts, label_txt = [], []
 
-        for r_type, l_idx in enumerate(partners):
-            l_idx = int(l_idx)
-            if l_idx < 0: continue
+        target_pos = self.p[target_idx]
 
-            if l_idx in omm_to_cell:
-                member_cells.append(omm_to_cell[l_idx])
-                member_scalars.append(r_type)
+        for r_slot, donor_idx in enumerate(donor_omm_indices):
+            donor_idx = int(donor_idx)
+            if donor_idx < 0:
+                continue  # Unwired slot
 
-            if l_idx != target_idx:
-                label_pts.append(self.p[l_idx])
-                label_txt.append(f"R{r_type + 1}")
+            if donor_idx in omm_to_cell:
+                member_cells.append(omm_to_cell[donor_idx])
+                member_scalars.append(r_slot)
 
-                # Wiring lines (kept as is)
-                line = pv.Line(self.p[target_idx], self.p[l_idx])
+            # Draw wiring lines
+            if donor_idx != target_idx:
+                donor_pos = self.p[donor_idx]
+                line = pv.Line(cartridge_tips[r_slot], donor_pos)
                 self.actors_debugger.append(
-                    self.plotter.add_mesh(line, color=RHAB_COLOURS[r_type], line_width=2, opacity=0.4))
+                    self.plotter.add_mesh(line, color=RHAB_COLOURS[r_slot], line_width=3, opacity=0.6)
+                )
+                label_pts.append(donor_pos)
+                label_txt.append(f"R{r_slot + 1}")
 
+        # Highlight active donor lenses
         if member_cells:
-            # Extract active polygons to color heavily
             m_mem = self.lattice_mesh.extract_cells(member_cells)
-            m_mem.cell_data['r_type'] = np.array(member_scalars)
+            m_mem.cell_data['r_slot'] = np.array(member_scalars)
             self.actors_debugger.append(self.plotter.add_mesh(
-                m_mem, scalars='r_type', cmap=RHAB_COLOURS,
+                m_mem, scalars='r_slot', cmap=RHAB_COLOURS,
                 clim=[0, len(RHAB_COLOURS) - 1], show_scalar_bar=False,
-                ambient=0.3, diffuse=0.8, show_edges=True, line_width=1.5, edge_color='black', opacity=0.8
+                ambient=0.3, diffuse=0.8, show_edges=True, line_width=2, edge_color='black', opacity=0.7
             ))
 
-        # Local rhabdomere bundle
-        offsets = receptor_tip_offsets(self.model)[target_idx]
-        tip_scale = (self.r_sphere * 0.05) / np.max(np.linalg.norm(offsets, axis=1)) * 0.2
-        bundle_origin = self.p[target_idx] + (self.d[target_idx] * d_rad * 0.1)
+        # Render rhabdomere tips
+        tip_radius = np.median(nb_res.distances) * 0.015
+        for r_slot in range(self.R):
+            if donor_omm_indices[r_slot] == -1:
+                continue
 
-        for r_type in range(self.R):
-            tip_pos = bundle_origin + offsets[r_type] * tip_scale
+            tip_sphere = pv.Sphere(radius=tip_radius, center=cartridge_tips[r_slot])
             self.actors_debugger.append(self.plotter.add_mesh(
-                pv.Sphere(radius=d_rad * 0.075, center=tip_pos),
-                color=RHAB_COLOURS[r_type], lighting=True
+                tip_sphere, color=RHAB_COLOURS[r_slot], lighting=True
             ))
 
-        # Labels
+        # Labels and target marker
         if label_pts:
             self.actors_debugger.append(self.plotter.add_point_labels(
-                label_pts, label_txt, font_size=15, show_points=False,
+                label_pts, label_txt, font_size=14, show_points=False,
                 shape_color='white', shape_opacity=0.8
             ))
 
@@ -972,25 +921,26 @@ class EyeViewer:
 
     # Heatmap scalars (cached at init)
 
-    def _compute_collinearity(self) -> np.ndarray | None:
-        """|raw flow projected to lens tangent . combed alignment phasor|."""
-        if self.R <= 1:
-            return None
-        dots = self.d @ self.optic_flow_world
-        raw_flow = self.optic_flow_world[None, :] - dots[:, None] * self.d
-        norms = np.linalg.norm(raw_flow, axis=1, keepdims=True).clip(min=1e-8)
-        raw_unit = raw_flow / norms
-        return np.abs(np.einsum('ij,ij->i',
-                                raw_unit,
-                                self.result_smooth.alignment_phasor)).astype(np.float32)
+    def _compute_collinearity(self) -> np.ndarray:
+
+        # Project flow into (right, up) tangent coords of every ommatidium
+        dot_r = self.model.right @ self.optic_flow_world
+        dot_u = self.model.up @ self.optic_flow_world
+
+        # Local unit flow vector in tangent plane
+        mag = np.hypot(dot_r, dot_u).clip(min=1e-8)
+        local_flow = np.stack([dot_r / mag, dot_u / mag], axis=-1)
+
+        # compare to alignment field (already in local tangent coords)
+        alignment_local = self.model.orientation_field_local
+        return np.abs(np.einsum('ij,ij->i', local_flow, alignment_local))
 
     def _compute_smoothness(self) -> np.ndarray | None:
         """|raw saccade phasor . smoothed saccade phasor| (1.0 = unchanged)."""
         if self.R <= 1:
             return None
-        return np.abs(np.einsum('ij,ij->i',
-                                self.result_raw.saccade_phasor,
-                                self.result_smooth.saccade_phasor)).astype(np.float32)
+        s = np.einsum('ij,ij->i', self.result_raw.saccade_phasor, self.result_smooth.saccade_phasor)
+        return np.abs(s).astype(np.float32)
 
     ##
 
@@ -1115,11 +1065,12 @@ class EyeViewer:
             print(f"  > Saved {path}")
 
     def _setup_camera(self) -> None:
-        cam_dir = self.fwd + self.right + self.up
+        cam_dir = WORLD_FORWARD + WORLD_RIGHT + WORLD_UP
         cam_pos = cam_dir / np.linalg.norm(cam_dir) * (self.r_sphere * 6.5)
+
         for (row, col) in [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2)]:
             self.plotter.subplot(row, col)
-            self.plotter.camera_position = [cam_pos.tolist(), (0, 0, 0), self.up.tolist()]
+            self.plotter.camera_position = [list(cam_pos), (0, 0, 0), list(WORLD_UP)]
 
     def show(self):
 

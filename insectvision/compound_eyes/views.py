@@ -1111,23 +1111,38 @@ class RhabdomereView(BaseView):
     def ommatidia(self) -> OmmatidiumView:
         return OmmatidiumView(self._model, self.omm_indices)
 
+    def _tip_rel_world(self) -> np.ndarray:
+        """Helper: Rhabdomere tip position relative to lens centre in world coordinates."""
+        omm = self.omm_indices
+
+        focal = np.asarray(self._buffer['focal_um', omm], dtype=np.float32)
+        offsets = self._buffer['rest_offset', self.rhab_indices]
+
+        # Local coordinate: [dx, dy, -focal_length]
+        local_pos = np.column_stack([offsets, -focal])
+        world_pos = local_to_world(
+            local_pos,
+            self._buffer['right', omm],
+            self._buffer['up', omm],
+            self._buffer['forward', omm]
+        )
+        return world_pos
+
+    @property
+    def positions(self) -> np.ndarray:
+        """
+        World-space positions of the rhabdomere tips (M, 3).
+        """
+        omm_pos = self._buffer['position', self.rhab_indices // self.R]
+        return omm_pos + self._tip_rel_world()
+
     @property
     def directions(self) -> np.ndarray:
         """
-        Per-receptor rest viewing directions in world space, shape (M, 3).
-
-        Reconstructed from the parent ommatidium frame (forward/right/up, focal)
-        and the receptor's rest_offset.
+        Per-receptor rest viewing directions in world space (M, 3).
         """
-        omm = self.rhab_indices // self.R
-        fwd = self._buffer['forward', omm]
-        right = self._buffer['right', omm]
-        up = self._buffer['up', omm]
-        focal = np.asarray(self._buffer['focal_um', omm], dtype=np.float32)
-        off = np.asarray(self._buffer['rest_offset', self.rhab_indices], dtype=np.float32)
-        tip_local = np.column_stack([off, -focal[:, None]])
-        d = local_to_world(tip_local, right, up, fwd)
-        return norm_l2(-d).astype(np.float32)
+        # Vector from tip through lens center (0,0,0 local) is -relative_tip
+        return norm_l2(-self._tip_rel_world()).astype(np.float32)
 
 
 class EyeView(OmmatidiumView):
