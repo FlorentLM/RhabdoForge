@@ -12,7 +12,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
-from insectvision.geometry.linalg import rot2d
+from insectvision.geometry.linalg import rotation_matrix2d
 from insectvision.geometry.polygons import resample_contour, Polygon2D
 from insectvision.geometry.neighbours import delaunay_neighbours, ball_spacing
 from insectvision.geometry.lattice import first_ring_gap, create_hexagonal_grid, base_bond_dirs, compute_lattice_basis
@@ -267,7 +267,7 @@ class LatticeGenerator:
         extent = float(np.max(np.abs(self.measurements.domain.boundary)) + 5 * spacing)
 
         theta0 = float(self.measurements.theta_fn(self.measurements.domain.boundary.mean(axis=0, keepdims=True))[0])
-        rot0 = rot2d(theta0)
+        rot0 = rotation_matrix2d(theta0)
         bond_dirs = base_bond_dirs(self.measurements.lattice_angles_rad)
 
         align_points = self.measurements.source_points if (align and self.measurements.source_points is not None) else None

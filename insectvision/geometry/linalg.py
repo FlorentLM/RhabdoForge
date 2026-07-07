@@ -110,53 +110,36 @@ def local_to_world(coords: ArrayLike, *basis: ArrayLike) -> np.ndarray:
     return out
 
 
-# TODO: Merge these?
-def rot2d(theta: float | ArrayLike, degrees: bool = False) -> np.ndarray:
-    """2x2 rotation matrix for a single angle or array of."""
-    theta = np.asarray(theta, dtype=np.float64)
-    if degrees:
-        theta = np.deg2rad(theta)
-    c, s = np.cos(theta), np.sin(theta)
-    out = np.stack([[c, -s], [s, c]]).squeeze()
-    return out if out.ndim == 2 else out.T
+def rotation_matrix2d(theta: float | ArrayLike, degrees: bool = False) -> np.ndarray:
+    """
+    Return a 2x2 rotation matrix (or stack of) for angle theta.
+    """
+    th = np.deg2rad(theta) if degrees else np.asarray(theta, dtype=np.float64)
+    c, s = np.cos(th), np.sin(th)
+
+    out = np.stack([
+        np.stack([c, -s], axis=-1),
+        np.stack([s, c], axis=-1)
+    ], axis=-2)
+    return out.squeeze()
 
 
-def rotate2d(vecs: ArrayLike, theta: ArrayLike) -> np.ndarray:
-    """Apply R(theta) to 2D vectors, broadcasting theta over vecs[..., :2]."""
-    vecs = np.asarray(vecs, dtype=np.float64)
-    c, s = np.cos(theta), np.sin(theta)
-    x, y = vecs[..., 0], vecs[..., 1]
+def rotate2d(vecs: ArrayLike, theta: ArrayLike, degrees: bool = False) -> np.ndarray:
+    """
+    Rotate 2D vectors by angle theta.
+
+    Args:
+        vecs: (..., 2) array of vectors.
+        theta: (...) rotation angle(s).
+        degrees: If True, theta is in degrees.
+    """
+    v = np.asarray(vecs, dtype=np.float64)
+    th = np.deg2rad(theta) if degrees else np.asarray(theta, dtype=np.float64)
+
+    c, s = np.cos(th), np.sin(th)
+    x, y = v[..., 0], v[..., 1]
+
     return np.stack([c * x - s * y, s * x + c * y], axis=-1)
-
-
-# TODO: this one is unused, might get rid of?
-def rotate_vectors(
-        vectors: ArrayLike,
-        axes: ArrayLike,
-        angles: ArrayLike,
-        degrees: bool = True,
-        normalize_axes: bool = False,
-) -> np.ndarray:
-    """Rotate vectors around arbitrary axes (Rodrigues' formula)."""
-
-    v = np.asarray(vectors, dtype=np.float64)
-    k = np.asarray(axes, dtype=np.float64)
-    theta = np.asarray(angles, dtype=np.float64)
-
-    if normalize_axes:
-        k = k / np.linalg.norm(k, axis=-1, keepdims=True)
-
-    if degrees:
-        theta = np.deg2rad(theta)
-
-    theta = theta[..., np.newaxis]
-
-    c = np.cos(theta)
-    s = np.sin(theta)
-    cross = np.cross(k, v, axis=-1)
-    dot = np.sum(k * v, axis=-1, keepdims=True)
-
-    return v * c + cross * s + k * dot * (1.0 - c)
 
 
 def principal_axis_angle(points2d: ArrayLike, degrees: bool = False) -> float:
