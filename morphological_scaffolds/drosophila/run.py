@@ -65,7 +65,6 @@ def _stereo_to_sphere_buchner(points_2d: np.ndarray, center: np.ndarray, radius:
     Inverse stereographic projection using Buchner's convention.
     Coordinate system: -Z = Anterior, +Y = Dorsal, +X = Right (left eye)
     """
-    # TODO: make this a more generic math util?
 
     # Center, flip, normalise
     p = (points_2d - center) * -1
@@ -81,7 +80,7 @@ def _stereo_to_sphere_buchner(points_2d: np.ndarray, center: np.ndarray, radius:
     lat = np.arcsin(np.clip((y * np.sin(c)) / (rho + 1e-9), -1, 1))
     lon = lon0 + np.arctan2(x * np.sin(c), rho * np.cos(c))
 
-    # Spherical to Cartesian
+    # Spherical to cartesian
     X = np.cos(lat) * np.sin(lon)
     Y = np.sin(lat)
     Z = -np.cos(lat) * np.cos(lon)

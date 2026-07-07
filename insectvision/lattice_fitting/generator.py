@@ -15,7 +15,7 @@ from scipy.spatial import cKDTree
 from insectvision.geometry.fields import interpolate_spacing_field, interpolate_hexatic_field
 from insectvision.geometry.linalg import rotation_matrix2d
 from insectvision.geometry.polygons import resample_contour, Polygon2D
-from insectvision.geometry.neighbours import delaunay_neighbours, ball_spacing
+from insectvision.geometry.neighbours import delaunay_neighbours, ball_spacing, merge_close_points
 from insectvision.geometry.lattice import (
     first_ring_gap, create_hexagonal_grid, base_bond_dirs, compute_lattice_basis, trace_lattice_rows, bearings_to_angles
 )
@@ -113,18 +113,10 @@ def _cull_junk(
     if verbose:
         print(f'  finalize: culled {int(is_junk.sum())} boundary stragglers')
 
-    pairs = cKDTree(pts).query_pairs(r=merge_factor * avg_spacing)
-    if pairs:
-        drop = set()
-        for i, j in sorted(pairs):   # deterministic -> drop higher index
-            if i not in drop and j not in drop:
-                drop.add(j)
-
-        keep = np.ones(len(pts), dtype=bool)
-        keep[list(drop)] = False
-        pts = pts[keep]
-        if verbose:
-            print(f'  finalize: merged {len(drop)} near-duplicate pairs')
+    before = len(pts)
+    pts = merge_close_points(pts, radius=merge_factor * avg_spacing, reduce=np.mean)
+    if verbose and len(pts) < before:
+        print(f'  finalize: merged {before - len(pts)} near-duplicates')
 
     return pts
 

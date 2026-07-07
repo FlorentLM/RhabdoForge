@@ -6,6 +6,7 @@ from scipy.spatial import cKDTree
 from insectvision.geometry.fields import interpolate_hexatic_field
 from insectvision.geometry.lattice import bond_ioa
 from insectvision.geometry.linalg import rotate2d
+from insectvision.geometry.neighbours import merge_close_points
 from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere, radius_of_curvature
 from insectvision.geometry.polygons import Polygon2D
 from insectvision.utils import norm_l2
@@ -254,7 +255,7 @@ def ghosts_from_growth_3d(
         n_rows: int = 2,
         curvature_radius: Optional[float] = None,
         collision_factor: float = 0.7,
-        merge_factor: float = 0.7,
+        merge_factor: float = 1.1,
         field_smoothing: float = 0.1,
         aniso_axis: str = 'hexatic',
     ) -> Tuple[np.ndarray, np.ndarray]:
@@ -343,8 +344,6 @@ def ghosts_from_mirror(points2d: ArrayLike, equations: ArrayLike, depth: float) 
     Creates a symmetric Voronoi pressure that stops edge points from squashing
     against the boundary. 'equations' are scipy ConvexHull half-plane rows
     [nx, ny, offset] with outward-pointing normals.
-
-    TODO: Currently corner points get reflected across two edges and are kept as-is: add a merge pass
     """
     points2d = np.asarray(points2d, dtype=np.float64)
     equations = np.asarray(equations, dtype=np.float64)
@@ -367,7 +366,7 @@ def ghosts_from_mirror(points2d: ArrayLike, equations: ArrayLike, depth: float) 
         mirrored_pts = close_pts - 2.0 * dist_close[:, None] * normal[None, :]
         mirrored.append(mirrored_pts)
 
-    if mirrored:
-        return np.vstack(mirrored)
+    if not mirrored:
+        return np.zeros((0, 2))
 
-    return np.zeros((0, 2))
+    return merge_close_points(np.vstack(mirrored), radius=0.5 * depth, reduce=np.mean)

@@ -2,6 +2,8 @@ from typing import List, Optional, Tuple, Sequence, Callable, Union
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree, Delaunay
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 
 from insectvision.utils import norm_l2
 
@@ -338,3 +340,46 @@ def graph_spacing(
         if nb.size:
             out[i] = reduce(np.linalg.norm(points2d[nb] - points2d[i], axis=1), axis=-1)
     return out
+
+
+def merge_close_points(points: ArrayLike, radius: float, reduce: Optional[Callable] = np.mean) -> np.ndarray:
+    """
+    Merge points (2D or 3D) within 'radius' (each group becomes one output point).
+
+    'reduce' must accept an 'axis' argument (np.mean, np.median, np.min, np.max...),
+    or if None, the lowest-index point of each component is preserved.
+    """
+    points = np.asarray(points, dtype=np.float64)
+    n = len(points)
+    if n < 2:
+        return points
+
+    pairs = cKDTree(points).query_pairs(r=float(radius), output_type='ndarray')
+    if len(pairs) == 0:
+        return points
+
+    graph = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
+    n_comp, labels = connected_components(graph, directed=False)
+
+    # No reduction (keep first point of each group)
+    if reduce is None:
+        first = np.full(n_comp, n, dtype=np.intp)
+        np.minimum.at(first, labels, np.arange(n))
+        return points[first]
+
+    # Fast path for mean
+    if reduce is np.mean:
+        counts = np.bincount(labels, minlength=n_comp)
+        sums = np.stack([np.bincount(labels, weights=points[:, d], minlength=n_comp)
+                         for d in range(points.shape[1])], axis=1)
+        return sums / counts[:, None]
+
+    # Generic reduction (np.median, np.max, etc.)
+    idx = np.argsort(labels)
+    sorted_labels = labels[idx]
+    sorted_points = points[idx]
+
+    diff = np.where(np.diff(sorted_labels))[0] + 1
+    groups = np.split(sorted_points, diff)
+
+    return np.array([reduce(g, axis=0) for g in groups])
