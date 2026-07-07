@@ -8,13 +8,13 @@ from numpy.typing import ArrayLike
 from PIL import Image
 from scipy.spatial import Delaunay
 
-from insectvision.compound_eyes import Model
-from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
-from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 from insectvision.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD, norm_l2
 from insectvision.geometry.linalg import tangent_frames
 from insectvision.geometry.spherical import sphere_to_stereo
-from visualisation.test_lattice_ops import grow_lattice_outwards
+from insectvision.geometry.lattice import grow_lattice_outwards
+from insectvision.compound_eyes import Model
+from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
+from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 
 
 CHIRALITY_NEG_COLOR = '#B95D21'

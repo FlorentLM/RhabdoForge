@@ -1,14 +1,18 @@
-from typing import TYPE_CHECKING, Sequence, List, Callable, Tuple, Optional
+from typing import TYPE_CHECKING, Sequence, List, Callable, Tuple, Optional, Union
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
+from insectvision.geometry.hexatic import hexatic_interpolant_fn
 from insectvision.geometry.linalg import principal_axis_angle
-from insectvision.geometry.neighbours import ragged_neighbours
+from insectvision.geometry.neighbours import ragged_neighbours, knn
+from insectvision.geometry.spherical import sphere_to_stereo, chord_to_angle, stereo_to_sphere
+from insectvision.utils import norm_l2
 
 if TYPE_CHECKING:
     from insectvision.geometry.polygons import Polygon2D
     from insectvision.geometry.neighbours import NeighbourGraph
+    from insectvision.compound_eyes import OmmatidiumView, EyeView
 
 
 # Lattice generation
@@ -122,6 +126,117 @@ def create_ghosts_ring(
         done[grp] = True
 
     return np.asarray(out)
+
+
+# TODO: This should probably not take eye / view classes, should be a pure function
+def grow_lattice_outwards(
+        eye: Union['OmmatidiumView', 'EyeView'],
+        n_rows: int = 2,
+        collision_factor: float = 0.7,
+        merge_factor: float = 0.7,
+        field_smoothing: float = 0.1,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Extend the eye lattice outwards by 'n_rows' rings, following the smoothed hexatic
+    orientation field of the whole eye.
+
+    Returns (virtual_positions, virtual_directions) for the newly created points.
+    """
+
+    # Setup projection frame and hexatic orientation field
+    # project whole eye to a single tangent plane to get a consistent orientation field
+    pts2d_orig, fwd, right, up = sphere_to_stereo(eye.directions)
+
+    theta_fn = hexatic_interpolant_fn(pts2d_orig, smoothing=field_smoothing)
+
+    curr_pos = eye.positions.copy().astype(np.float64)
+    curr_dirs = eye.directions.copy().astype(np.float64)
+    current_seeds = np.where(eye.is_edge)[0]
+
+    for _ in range(n_rows):
+        curr_full_tree = cKDTree(curr_pos)   # have to use this because curr_pos may contain virtual points
+        cand_pts, cand_dirs, cand_step = [], [], []
+
+        for idx in current_seeds:
+            p, d = curr_pos[idx], curr_dirs[idx]
+
+            # IOA from the nearest *real* ommatidium (curr_pos holds virtual points too)
+            ref_view, _ = eye.query_positions(p, k=1)   # have to use this because curr_pos may contain virtual points
+            minor, major = ref_view.interommatidial_angles[0]
+            # ioa_k = np.where(np.arange(6) % 3 == 0, minor, major)
+            ioa_k = np.where((np.arange(6) + 1) % 3 == 0, minor, major)  # this one is correct I think?
+
+            # Local radius of curvature from the current cloud
+            dists, nbs = knn(curr_full_tree, p, k=7, drop_self=True)
+            dists, nbs = dists.ravel(), nbs.ravel()
+            chords = np.linalg.norm(curr_dirs[nbs] - d, axis=-1)
+            angles = chord_to_angle(chords)
+            valid = (angles > 1e-4) & (dists > 0)
+            R = np.median(dists[valid] / angles[valid]) if np.any(valid) else eye.curvature_radius
+
+            # Hexatic bearing in the fixed stereo frame
+            q_stereo, *_ = sphere_to_stereo(d, (fwd, right, up))
+            base_angle = theta_fn(q_stereo).item()
+
+            # 2D bearing to 3D tangent vector
+            uv_step = np.array([np.cos(base_angle), np.sin(base_angle)])
+            d1 = stereo_to_sphere(q_stereo + 1e-6 * uv_step, fwd, right, up).ravel()
+
+            t = d1 - d
+            t -= (t @ d) * d        # Project onto tangent plane of d
+            base_tan = norm_l2(t)
+
+            for k in range(6):
+                phi = k * (np.pi / 3.0)
+
+                step_vec = base_tan * np.cos(phi) + np.cross(d, base_tan) * np.sin(phi)
+                v_dir = norm_l2(d * np.cos(ioa_k[k]) + step_vec * np.sin(ioa_k[k]))
+                v_pos = p + R * (v_dir - d)
+                s = R * ioa_k[k]
+
+                d_near, _ = knn(curr_full_tree, v_pos, k=1, drop_self=False)
+                if d_near[0] < collision_factor * s:
+                    continue
+
+                # Reject inward candidates (heuristic: farther from the seed's neighbourhood == outward)
+                nb_pos = curr_pos[nbs]
+                to_seed = np.mean(np.linalg.norm(nb_pos - p, axis=1))
+                to_virt = np.mean(np.linalg.norm(nb_pos - v_pos, axis=1))
+                if to_seed > to_virt and d_near[0] < s:
+                    continue
+
+                cand_pts.append(v_pos)
+                cand_dirs.append(v_dir)
+                cand_step.append(s)
+
+        if not cand_pts:
+            break
+
+        cand_pts = np.asarray(cand_pts, dtype=np.float64)
+        cand_dirs = np.asarray(cand_dirs, dtype=np.float64)
+        merge_r = merge_factor * np.median(cand_step)
+
+        # Merge duplicates proposed by adjacent seeds
+        filt_pts, filt_dirs = [], []
+        temp_tree = cKDTree(cand_pts)
+        done = np.zeros(len(cand_pts), dtype=bool)
+
+        for i in range(len(cand_pts)):
+            if done[i]:
+                continue
+
+            grp = temp_tree.query_ball_point(cand_pts[i], r=merge_r)
+            filt_pts.append(cand_pts[grp].mean(axis=0))
+            filt_dirs.append(norm_l2(cand_dirs[grp].mean(axis=0)))
+            done[grp] = True
+
+        start = len(curr_pos)
+        curr_pos = np.vstack([curr_pos, filt_pts])
+        curr_dirs = np.vstack([curr_dirs, filt_dirs])
+        current_seeds = np.arange(start, len(curr_pos))
+
+    n0 = len(eye.positions)
+    return curr_pos[n0:], curr_dirs[n0:]
 
 
 # Basis & bond geometry
