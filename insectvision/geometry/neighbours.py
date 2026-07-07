@@ -305,7 +305,7 @@ def ball_spacing(
         tree: Optional[cKDTree] = None,
         query_points: Optional[np.ndarray] = None,
         k: int = 6,
-        reduce: 'Callable' = np.mean,
+        reduce: Callable = np.mean,
 ) -> np.ndarray:
     """
     Local spacing as the reduce (mean by default) of distances to the k nearest
@@ -323,7 +323,7 @@ def ball_spacing(
 def graph_spacing(
         points2d: ArrayLike,
         neighbours: 'NeighbourGraph',
-        reduce: 'Callable' = np.mean
+        reduce: Callable = np.mean
     ) -> np.ndarray:
     """
     Local point spacing over a neighbour graph with choice of reduce function (mean by default).

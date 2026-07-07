@@ -18,69 +18,37 @@ def create_hexagonal_grid(
         angles: float | Sequence[float] = np.pi / 3,
         extent: float = 10.0,
         degrees: bool = False,
-    ) -> np.ndarray:
+) -> np.ndarray:
     """
-    Make a hexagonal grid with exact coverage for any geometry.
+    Generate a perfectly regular (but potentially skewed) hexagonal grid.
 
     Args:
         spacing: The length of the first basis vector (b1).
         angles:
             - if float: The angle between b1 and b2 (standard hex = pi/3).
             - if 3-item list: The three internal angles (alpha, beta, gamma) of the lattice triangle.
-                Sum is normalised to 180 degrees.
+                Sum is normalised to pi (or 180° if working in degrees).
         extent: The radius of the circular domain to cover.
     """
+    B = compute_lattice_basis(spacing, angles, degrees=degrees)
+    inv_B = np.linalg.inv(B)
 
-    angles = np.asarray(angles, dtype=np.float64)
-    if degrees:
-        angles = np.deg2rad(angles)
+    # Determine required integer range to cover the circular extent
+    n1 = int(np.ceil(extent * np.linalg.norm(inv_B[:, 0])))
+    n2 = int(np.ceil(extent * np.linalg.norm(inv_B[:, 1])))
 
-    if angles.ndim == 0:
-        # Standard case: equilateral triangle sides if angle is 60 deg
-        a = float(angles)
-        b1 = np.array([spacing, 0.0])
-        b2 = np.array([spacing * np.cos(a), spacing * np.sin(a)])
-    else:
-        # Squished case: triangle with angles a, b, c
-        if angles.size != 3:
-            raise ValueError('Provide 3 angles for a squished lattice.')
+    ii, jj = np.meshgrid(np.arange(-n1, n1 + 1), np.arange(-n2, n2 + 1))
+    indices = np.stack([ii.ravel(), jj.ravel()], axis=1)
 
-        angles = angles * (np.pi / np.sum(angles))
-        a, b, c = angles
-
-        s2 = spacing
-        s1 = s2 * np.sin(a) / np.sin(b)
-
-        b1 = np.array([s2, 0.0])
-        b2 = np.array([s1 * np.cos(c), s1 * np.sin(c)])
-
-    B = np.column_stack([b1, b2])
-
-    try:
-        inv_B = np.linalg.inv(B)
-    except np.linalg.LinAlgError:
-        raise ValueError('Lattice angles result in a degenerate (collinear) basis.')
-
-    n1 = int(np.ceil(extent * np.linalg.norm(inv_B[0, :])))
-    n2 = int(np.ceil(extent * np.linalg.norm(inv_B[1, :])))
-
-    i_range = np.arange(-n1, n1 + 1)
-    j_range = np.arange(-n2, n2 + 1)
-    ii, jj = np.meshgrid(i_range, j_range)
-
-    indices = np.stack([ii.ravel(), jj.ravel()], axis=0)
-    grid = (B @ indices).T
-
-    dist_sq = np.sum(grid ** 2, axis=1)
-    mask = dist_sq <= (extent ** 2)
-
+    grid = indices @ B
+    mask = np.sum(grid ** 2, axis=1) <= (extent ** 2)
     return grid[mask]
 
 
 def create_ghosts_ring(
         points2d: ArrayLike,
-        theta_fn: 'callable',
-        spacing_fn: 'callable',
+        theta_fn: Callable,
+        spacing_fn: Callable,
         bond_dirs: ArrayLike,
         domain: 'Polygon2D',
         avg_spacing: float,
@@ -156,6 +124,114 @@ def create_ghosts_ring(
     return np.asarray(out)
 
 
+# Basis & bond geometry
+
+def compute_lattice_basis(
+        spacing: float = 1.0,
+        angles: float | Sequence[float] = np.pi / 3,
+        degrees: bool = False
+) -> np.ndarray:
+    """
+    Compute the 2x2 basis matrix B = [b1, b2] for a hexagonal lattice.
+    """
+    angles = np.asarray(angles, dtype=np.float64)
+    if degrees:
+        angles = np.deg2rad(angles)
+
+    if angles.ndim == 0:
+        # Standard: spacing is length of both vectors
+        b1 = np.array([spacing, 0.0])
+        b2 = np.array([spacing * np.cos(angles), spacing * np.sin(angles)])
+    else:
+        # Squished: triangle with internal angles a, b, c
+        if angles.size != 3:
+            raise ValueError('Provide 3 angles for a squished lattice.')
+
+        angles = angles * (np.pi / np.sum(angles))
+        a, b, c = angles
+
+        # Law of sines: s1 / sin(a) = s2 / sin(b)
+        # 'spacing' treated as the length of the primary horizontal bond (s2)
+        s2 = spacing
+        s1 = s2 * np.sin(a) / np.sin(b)
+
+        b1 = np.array([s2, 0.0])
+        b2 = np.array([s1 * np.cos(c), s1 * np.sin(c)])
+
+    return np.vstack([b1, b2])
+
+
+def base_bond_dirs(lattice_angles: float | Sequence[float], degrees: bool = False) -> np.ndarray:
+    """
+    Computes the 6 nearest-neighbour bond directions from lattice geometry.
+    """
+    basis = compute_lattice_basis(spacing=1.0, angles=lattice_angles, degrees=degrees)
+    b1, b2 = basis[0], basis[1]
+
+    # The 6 neighbours are b1, b2, and the closing side
+    dirs = np.vstack([
+        b1,         # Right
+        b2,         # Top-right-ish
+        b2 - b1,    # Top-left-ish
+        -b1,        # Left
+        -b2,        # Bottom-left-ish
+        b1 - b2     # Bottom-right-ish
+    ])
+    return dirs / np.linalg.norm(dirs, axis=1, keepdims=True)
+
+
+def local_bearings(
+        points2d: ArrayLike,
+        theta_fn: Callable,
+        offsets_deg: Sequence[float] = (0.0, 60.0, 120.0),
+        degrees: bool = False
+) -> np.ndarray:
+    """
+    Evaluate the principal lattice bearings at arbitrary coordinates.
+
+    Args:
+        - points2d: (N, 2) spatial coordinates to query
+        - theta_fn: Continuous hexatic axis interpolant
+        - offsets: The relative angles of the lattice axes
+        - degrees: If True, inputs/outputs are in degrees
+
+    Returns:
+        (N, 3) array of absolute row bearings
+    """
+    pts = np.atleast_2d(np.asarray(points2d, dtype=np.float64))
+    base_angles_rad = theta_fn(pts).ravel()[:, None]
+
+    offs = np.deg2rad(np.asarray(offsets_deg, dtype=np.float64))
+
+    bearings_rad = (base_angles_rad + offs) % np.pi
+    return np.rad2deg(bearings_rad) if degrees else bearings_rad
+
+
+def bearings_to_angles(bearings: ArrayLike, degrees: bool = False) -> np.ndarray:
+    """
+    Convert three absolute row bearings into the three internal
+    angles of the lattice unit-triangle.
+    """
+    bearings = np.asarray(bearings, dtype=np.float64)
+    if degrees:
+        bearings = np.deg2rad(bearings)
+
+    if len(bearings) < 3:
+        print('Could not resolve 3 rows, using regular 60° hex')
+        # Fallback to perfect hex if the lattice is too disordered to trace
+        angles = np.array([np.pi / 3, np.pi / 3, np.pi / 3])
+    else:
+        b = np.sort(bearings % np.pi)[:3]
+
+        # Internal angles are the gaps between the three lines
+        a1 = b[1] - b[0]
+        a2 = b[2] - b[1]
+        a3 = np.pi - (a1 + a2)  # wrap-around angle
+        angles = np.array([a1, a2, a3])
+
+    return np.rad2deg(angles) if degrees else angles
+
+
 # Lattice graph measurements
 
 def first_ring_gap(
@@ -171,7 +247,7 @@ def first_ring_gap(
     """
 
     points2d = np.asarray(points2d, dtype=np.float64)
-    neighbours_list = ragged_neighbours(neighbours)         # why not dense?
+    neighbours_list = ragged_neighbours(neighbours)
     gap = np.full(len(points2d), 2.0 * np.pi)
 
     for i, neighb_indices in enumerate(neighbours_list):
@@ -186,95 +262,65 @@ def first_ring_gap(
     return np.rad2deg(gap) if degrees else gap
 
 
-# This should not create a hexagonal grid just to throw it away...
-def base_bond_dirs(lattice_angles: float | Sequence[float], spacing: float = 1.0, degrees: bool = False) -> np.ndarray:
-    """
-    The six ideal nearest-neighbour bond directions of the base cell (unit vectors).
-    """
-    lattice_angles = np.asarray(lattice_angles, dtype=np.float64)
-    if degrees:
-        lattice_angles = np.deg2rad(lattice_angles)
-
-    grid = create_hexagonal_grid(spacing=spacing, angles=lattice_angles, extent=2.5 * spacing, degrees=False)
-    nn = grid[np.argsort(np.linalg.norm(grid, axis=1))[1:7]]   # skip origin, take 6 nearest
-    return nn / np.linalg.norm(nn, axis=1, keepdims=True)
-
-
-# Lattice row tracing
+# Row tracing
 
 def _walk(
         points2d: np.ndarray,
-        neighbours: Sequence[np.ndarray],
+        neighbours: List[np.ndarray],
         start: int,
         heading: np.ndarray,
         max_steps: int,
         cos_step: float,
         cos_global: float,
-    ) -> np.ndarray:
+) -> np.ndarray:
     """
-    Greedy single-direction walk: step to the neighbour best aligned with the heading.
-    'neighbours' is the list-of-arrays form (ragged)
+    Greedy single-direction row walk.
     """
     path, cur = [], start
     h0 = heading / (np.linalg.norm(heading) + 1e-12)
     h, visited = h0, {start}
 
     for _ in range(max_steps):
-        nb = neighbours[cur]
-        if len(nb) == 0:
+        neighb = neighbours[cur]
+        if neighb.size == 0:
             break
 
-        vec = points2d[nb] - points2d[cur]
+        vec = points2d[neighb] - points2d[cur]
         u = vec / (np.linalg.norm(vec, axis=1, keepdims=True) + 1e-12)
         dots = u @ h
         j = int(np.argmax(dots))
+
         if dots[j] < cos_step or (u[j] @ h0) < cos_global:
             break
-        nxt = int(nb[j])
+
+        nxt = int(neighb[j])
         if nxt in visited:
             break
+
         path.append(nxt)
         visited.add(nxt)
         h, cur = u[j], nxt
+
     return np.array(path, dtype=int)
-
-
-# TODO: redundant?
-def get_lattice_angles(
-        points2d: ArrayLike,
-        neighbours: 'NeighbourGraph',
-        axis_fn: Callable
-    ) -> np.ndarray:
-    """Three internal angles of the mean unit cell (sums to pi), defaults to 60/60/60 if unresolved."""
-
-    _, _, bearings = trace_lattice_rows(points2d, neighbours, axis_fn=axis_fn)
-
-    if len(bearings) < 3:
-        print('  Could not resolve 3 rows, using regular 60° hex')
-        return np.array([np.pi / 3, np.pi / 3, np.pi / 3])
-
-    bearings = np.sort(bearings)
-    a1, a2 = bearings[1] - bearings[0], bearings[2] - bearings[1]
-    return np.array([a1, a2, np.pi - (a1 + a2)])
-
 
 
 def trace_lattice_rows(
         points2d: ArrayLike,
         neighbours: 'NeighbourGraph',
-        seed: Optional[int] = None,
+        seed: Optional[Sequence[float]] = None,
         bearings: Optional[ArrayLike] = None,
-        axis_fn: Optional[Callable] = None,
-        offsets: Sequence[float] = (0.0, 60.0, 120.0),
+        theta_fn: Optional[Callable] = None,
+        offsets_deg: Sequence[float] = (0.0, 60.0, 120.0),
         max_steps: int = 500,
-        step_tol: float = 30.0,
-        global_tol: float = 70.0,
-        degrees: bool = True
-) -> Tuple[int, List[np.ndarray], np.ndarray]:
+        step_tol_deg: float = 30.0,
+        global_tol_deg: float = 70.0,
+        degrees: bool = False
+) -> Tuple[np.ndarray, List[np.ndarray], np.ndarray]:
     """
     Trace lattice rows outward from the centre seed along the local axis directions.
 
-    Provide either explicit 'bearings' or
+    Provide either explicit 'bearings' or a hexatic interpolant function 'theta_fn'.
+
     Returns:
         seed_idx: Index of the central point.
         rows: List of (N, 2) arrays, each representing a sorted row of points.
@@ -286,31 +332,24 @@ def trace_lattice_rows(
     # If no seed point, take closest to centroid
     seed = points2d.mean(axis=0) if seed is None else np.array(seed, dtype=np.float64)
     seed_idx = int(np.argmin(np.linalg.norm(points2d - seed, axis=1)))
+    seed_pos = points2d[seed_idx]
+
+    cos_step = np.cos(np.deg2rad(step_tol_deg))
+    cos_global = np.cos(np.deg2rad(global_tol_deg))
 
     if bearings is None:
-        if axis_fn is None:
-            raise AttributeError("Either pass 'bearings' or 'axis_fn' (and optionally 'offsets').")
-        # Determine search directions
-        bearings = axis_fn(points2d[seed_idx][None])[0]
+        if theta_fn is None:
+            raise ValueError("Must provide either 'bearings' or 'theta_fn'")
+        bearings_rad = local_bearings(seed_pos, theta_fn, offsets_deg, degrees=False)[0]
     else:
-        if axis_fn is not None:
-            print("[Info] Explicit 'bearings' used, 'axis_fn' (and 'offsets') ignored.")
-        bearings = np.asarray(bearings, dtype=np.float32)[:3]
-
-    if degrees:
-        offsets_rad = np.deg2rad(offsets)
-        cos_step = np.cos(np.deg2rad(step_tol))
-        cos_global = np.cos(np.deg2rad(global_tol))
-    else:
-        offsets_rad = np.asarray(offsets, dtype=np.float32)[:3]
-        cos_step = np.cos(step_tol)
-        cos_global = np.cos(global_tol)
+        bearings = np.asarray(bearings, dtype=np.float64)
+        bearings_rad = np.deg2rad(bearings) if degrees else bearings
 
     neighb_list = ragged_neighbours(neighbours)
 
-    kept_rows, kept_bearings = [], []
+    out_rows, out_bearings = [], []
 
-    for brg in bearings + offsets_rad:
+    for brg in bearings_rad[:3]:
         h0 = np.array([np.cos(brg), np.sin(brg)])
 
         # Walk both directions
@@ -323,7 +362,10 @@ def trace_lattice_rows(
         # Fit bearing
         b = principal_axis_angle(row_pts)
         if not np.isnan(b):
-            kept_rows.append(row_pts)
-            kept_bearings.append(b % np.pi)
+            out_rows.append(row_pts)
+            out_bearings.append(b % np.pi)
 
-    return seed, kept_rows, np.array(kept_bearings)
+    out_bearings = np.array(out_bearings)
+    if degrees:
+        out_bearings = np.rad2deg(out_bearings)
+    return seed_pos, out_rows, out_bearings

@@ -58,7 +58,7 @@ def align_grid(grid: ArrayLike, points2d: ArrayLike) -> np.ndarray:
 
 def density_warp(
         points2d: ArrayLike,
-        spacing_fn: 'Callable',
+        spacing_fn: Callable,
         reference_spacing: float,
         exponent: float = 1.0,
     ) -> np.ndarray:
@@ -88,8 +88,8 @@ def density_warp(
 
 def spring_relaxation(
         points2d: ArrayLike,
-        spacing_fn: 'Callable',
-        theta_fn: 'Callable',
+        spacing_fn: Callable,
+        theta_fn: Callable,
         bond_dirs: ArrayLike,
         max_iter: int = 120,
         retriangulate_every: int = 5,
@@ -230,7 +230,7 @@ def spring_relaxation(
 
 def density_correct(
         points2d: ArrayLike,
-        target_spacing_fn: 'Callable',
+        target_spacing_fn: Callable,
         domain: Optional['Polygon2D'],
         n_iter: int = 3,
         relax: float = 0.6,
@@ -295,6 +295,7 @@ def density_correct(
     return pts
 
 
+# TODO: This one should move
 def mirror_bilateral(
         positions: ArrayLike,
         directions: ArrayLike,

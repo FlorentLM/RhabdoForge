@@ -19,13 +19,15 @@ from insectvision.geometry.lattice import first_ring_gap, create_hexagonal_grid,
 from insectvision.lattice_fitting.relaxation import align_grid, density_warp, spring_relaxation, density_correct
 from insectvision.lattice_fitting.profile import EyeMeasurements
 
+# TODO: Maybe some of these functions should be public?
+
 
 # Stage 1: density warp
 
-def warp_init(
+def _warp_init(
         domain: 'Polygon2D',
-        target_spacing_fn: 'Callable',
-        n_target: int,
+        target_spacing_fn: Callable,
+        target_count: int,
         rot0: ArrayLike,
         extent: float,
         buffer: float,
@@ -46,29 +48,33 @@ def warp_init(
         a, b, c = lattice_angles * (np.pi / lattice_angles.sum())
         factor = np.sin(a) * np.sin(c) / np.sin(b)
 
-    current_spacing = float(np.sqrt(domain.area / (n_target * factor)))
-
+    current_spacing = np.sqrt(domain.area / (target_count * factor))
     for _ in range(6):
-        grid = create_hexagonal_grid(spacing=current_spacing, angles=lattice_angles, extent=extent) @ rot0.T
-        surv = grid[domain.inside(grid, buffer=buffer)]
-        surv = density_warp(surv, target_spacing_fn, reference_spacing=current_spacing,
-                            exponent=warp_exponent)
-        count_inside = domain.inside(surv, buffer=0.0).sum()
+        tentative_grid = create_hexagonal_grid(spacing=current_spacing, angles=lattice_angles, extent=extent) @ rot0.T
+        tentative_lattice = tentative_grid[domain.inside(tentative_grid, buffer=buffer)]
+
+        tentative_lattice = density_warp(tentative_lattice, target_spacing_fn,
+                                         reference_spacing=current_spacing, exponent=warp_exponent)
+
+        count_inside = domain.inside(tentative_lattice, buffer=0.0).sum()
         if count_inside == 0:
             current_spacing *= 0.7
             continue
-        ratio = n_target / count_inside
+
+        ratio = target_count / count_inside
         current_spacing *= 1.0 / np.sqrt(ratio)
         if abs(ratio - 1.0) < 0.03:
             break
 
-    grid = create_hexagonal_grid(spacing=current_spacing, angles=lattice_angles, extent=extent) @ rot0.T
+    selected_grid = create_hexagonal_grid(spacing=current_spacing, angles=lattice_angles, extent=extent) @ rot0.T
     if align_points is not None:
-        grid = align_grid(grid, align_points)
+        selected_grid = align_grid(selected_grid, align_points)
 
-    lattice = grid[domain.inside(grid, buffer=buffer)]
-    return density_warp(lattice, target_spacing_fn, reference_spacing=current_spacing,
-                        exponent=warp_exponent)
+    selected_lattice = selected_grid[domain.inside(selected_grid, buffer=buffer)]
+    selected_warped_lattice = density_warp(selected_lattice, target_spacing_fn,
+                                           reference_spacing=current_spacing, exponent=warp_exponent)
+
+    return selected_warped_lattice
 
 
 # Stage 4: boundary finalisation
@@ -76,7 +82,7 @@ def warp_init(
 def _cull_junk(
         points2d: ArrayLike,
         domain: 'Polygon2D',
-        target_spacing_fn: 'Callable',
+        target_spacing_fn: Callable,
         avg_spacing: float,
         boundary_gap_deg: float = 110.0,
         straggler_ratio: float = 1.5,
@@ -127,21 +133,20 @@ def _cull_junk(
     return pts
 
 
-def finalize_lattice(
+def _finalize_lattice(
         points2d: ArrayLike,
         domain: 'Polygon2D',
-        target_spacing_fn: 'Callable',
+        target_spacing_fn: Callable,
         avg_spacing: float,
-        theta_fn: 'Callable',
+        theta_fn: Callable,
         bond_dirs: ArrayLike,
         params: Optional['FittingParameters'] = None,
         verbose: bool = False
-    ):
+    ) -> np.ndarray:
     """
     Clean the boundary of a relaxed lattice:
         1- Cull boundary stragglers + merge near-duplicates
-        2- Add candidate ring points along the smooth contour at the local target spacing,
-            then only keep those that fill a gap
+        2- Add candidate ring points along the smooth contour at the local target spacing, then only keep those that fill a gap
         3- Settle with a short spring relaxation pass bounded by mirrored ghost points (skipped if ghost_source == 'none')
     """
 
@@ -255,26 +260,31 @@ class LatticeGenerator:
         # Determine spacing of the wanted lattice (applies density scale)
         spacing = self.measurements.mean_spacing / np.sqrt(self.params.density_scale)
         target_spacing_fn = lambda q: self.measurements.spacing_fn(q) / np.sqrt(self.params.density_scale)
-        n_target = int(round(self.measurements.n_source * self.params.density_scale))
+
+        if self.measurements.source_points is not None:
+            target_point_count = int(round(len(self.measurements.source_points) * self.params.density_scale))
+        else:
+            # TODO: Maybe don't raise here?
+            raise AssertionError('No source points found.')
 
         buffer = self.params.buffer_factor * spacing
         extent = float(np.max(np.abs(self.measurements.domain.boundary)) + 5 * spacing)
 
         theta0 = float(self.measurements.theta_fn(self.measurements.domain.boundary.mean(axis=0, keepdims=True))[0])
         rot0 = rot2d(theta0)
-        bond_dirs = base_bond_dirs(self.measurements.lattice_angles)
+        bond_dirs = base_bond_dirs(self.measurements.lattice_angles_rad)
 
         align_points = self.measurements.source_points if (align and self.measurements.source_points is not None) else None
 
         # Density match
-        lattice = warp_init(
+        lattice = _warp_init(
             domain=self.measurements.domain,
             target_spacing_fn=target_spacing_fn,
-            n_target=n_target,
+            target_count=target_point_count,    # TODO: make this one optional?
             rot0=rot0,
             extent=extent,
             buffer=buffer,
-            lattice_angles=self.measurements.lattice_angles,
+            lattice_angles=self.measurements.lattice_angles_rad,
             align_points=align_points,
             warp_exponent=self.params.warp_exponent
         )
@@ -313,7 +323,7 @@ class LatticeGenerator:
         trimmed = relaxed[inside]
 
         if self.params.finalize:
-            final = finalize_lattice(
+            final = _finalize_lattice(
                 points2d=trimmed,
                 domain=self.measurements.domain,
                 target_spacing_fn=target_spacing_fn,

@@ -80,7 +80,7 @@ def polygon_centroid(points2d: ArrayLike) -> np.ndarray:
 def weighted_polygon_centroids(
         cells: Sequence[Optional[np.ndarray]],
         fallback: ArrayLike,
-        weight_fn: Optional['Callable'] = None,
+        weight_fn: Optional[Callable] = None,
         clip_equations: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
@@ -288,7 +288,7 @@ def hull_signed_distance(points2d: ArrayLike, hull: 'ConvexHull') -> np.ndarray:
     return (points2d @ eq[:, :2].T + eq[:, 2]).max(axis=1)
 
 
-def resample_contour(boundary: ArrayLike, spacing_fn: 'Callable') -> np.ndarray:
+def resample_contour(boundary: ArrayLike, spacing_fn: Callable) -> np.ndarray:
     """
     Walk a closed contour and drop a point every local target spacing.
 

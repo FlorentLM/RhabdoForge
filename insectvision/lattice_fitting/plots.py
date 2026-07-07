@@ -8,7 +8,7 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from scipy.interpolate import griddata
 from scipy.spatial import cKDTree
 
-from insectvision.geometry.hexatic import compute_hexatic_phasor, hexatic_order
+from insectvision.geometry.hexatic import compute_psi6, hexatic_order
 from insectvision.geometry.linalg import principal_axis_angle
 from insectvision.geometry.spherical import sphere_to_stereo, chord_to_angle
 from insectvision.geometry.neighbours import delaunay_edges, delaunay_neighbours, graph_spacing, ball_spacing
@@ -16,7 +16,7 @@ from insectvision.geometry.lattice import trace_lattice_rows
 from insectvision.lattice_fitting.profile import EyeMeasurements
 
 
-# Shared helpers
+# TODO: Move these two to shared plot utils
 
 def set_3d_equal(ax: Axes3D, points: np.ndarray) -> None:
     """
@@ -76,7 +76,7 @@ def plot_lattice(
 
 # Six-panel diagnostic (2D)
 
-def lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diagnostics.png'):
+def plot_lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diagnostics.png'):
     """
     A  Source spacing field             : target density, for context
     B  Density residual map             : achieved vs. target spacing (interior)
@@ -196,7 +196,10 @@ def lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diagnosti
     # D. Lattice rows fitted vs. source
     ax = axs[1, 1]
 
-    src_seed, src_rows, bearings = trace_lattice_rows(raw_points, raw_nb, axis_fn=theta_fn)
+    # Trace source from geometric center
+    src_seed, src_rows, bearings = trace_lattice_rows(raw_points, raw_nb, theta_fn=theta_fn)
+
+    # Trace generated lattice using the same spatial seed and the source bearings
     gen_seed, gen_rows, _ = trace_lattice_rows(final, gen_nb, seed=src_seed, bearings=bearings)
 
     edges = delaunay_edges(final, max_length_factor=1.8)
@@ -221,7 +224,7 @@ def lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diagnosti
     # E. Hexatic order + defects
     ax = axs[0, 2]
 
-    z6 = compute_hexatic_phasor(final, gen_nb)
+    z6 = compute_psi6(final, gen_nb)
     psi = hexatic_order(z6)
     coord = np.array([len(n) for n in gen_nb])
 
@@ -247,7 +250,7 @@ def lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diagnosti
     ax = axs[1, 2]
 
     ax.set_aspect('auto')
-    psi_src = hexatic_order(compute_hexatic_phasor(raw_points, raw_nb))
+    psi_src = hexatic_order(compute_psi6(raw_points, raw_nb))
     in_src = domain.signed_distance(raw_points) < -hide_margin * src_ms
 
     cg = coord[inside]
@@ -315,7 +318,7 @@ def plot_lattice_3d(
         c_values = graph_spacing(pts_2d, adj)
         c_label = 'Local spacing (stereo)'
     elif adj is not None and color_by == 'psi6':
-        c_values = hexatic_order(compute_hexatic_phasor(pts_2d, adj))
+        c_values = hexatic_order(compute_psi6(pts_2d, adj))
         c_label, cmap = 'Hexatic order ($\\psi_6$)', 'RdYlGn'
 
     fig = plt.figure(figsize=(9, 8))
@@ -463,7 +466,7 @@ def plot_density_3d(
 
     # Mean chord to k nearest neighbours on the direction sphere -> great-circle angle
     chord = ball_spacing(cKDTree(directions), k=k)
-    ioa_deg = np.degrees(chord_to_angle(chord))
+    ioa_deg = np.rad2deg(chord_to_angle(chord))
 
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')

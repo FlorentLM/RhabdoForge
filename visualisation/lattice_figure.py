@@ -3,7 +3,7 @@ import numpy as np
 from insectvision.geometry.spherical import sphere_to_stereo
 from insectvision.lattice_fitting.profile import EyeMeasurements
 from insectvision.lattice_fitting.generator import LatticeGenerator, FittingParameters
-from insectvision.lattice_fitting.plots import plot_lattice, lattice_diagnostics
+from insectvision.lattice_fitting.plots import plot_lattice, plot_lattice_diagnostics
 from morphological_scaffolds.drosophila.run import reconstruct_buchner_data
 
 
@@ -30,9 +30,11 @@ if __name__ == '__main__':
         min_hex_order=MIN_HEX_ORDER,
     )
 
-    print(f'Source:  N={measurements.n_source}  '
+    points_count = len(measurements.source_points)
+
+    print(f'Source: N={points_count} '
           f'mean_spacing={measurements.mean_spacing:.4f}  '
-          f'lattice_angles={np.rad2deg(measurements.lattice_angles).round(1)} deg')
+          f'lattice_angles={np.rad2deg(measurements.lattice_angles_rad).round(1)}°')
 
     # Generate a lattice from those fields
     params = FittingParameters(density_scale=DENSITY_SCALE, ghost_source=GHOST_SOURCE)
@@ -40,9 +42,8 @@ if __name__ == '__main__':
 
     lattice = gen.run(align=ALIGN, verbose=True)
 
-    print(f'Generated:  N={len(lattice)}  '
-          f'(target {int(round(measurements.n_source * DENSITY_SCALE))})')
+    print(f'Generated: N={len(lattice)} (target {int(round(points_count * DENSITY_SCALE))})')
 
     # Look at it
     plot_lattice(lattice, measurements, density_scale=DENSITY_SCALE)
-    lattice_diagnostics(gen.stages)
+    plot_lattice_diagnostics(gen.stages)

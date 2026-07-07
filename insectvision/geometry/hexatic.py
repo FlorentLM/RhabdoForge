@@ -17,7 +17,7 @@ def hexatic_order(z6: ArrayLike) -> np.ndarray:
     return np.abs(z6).astype(np.float32)
 
 
-def compute_hexatic_phasor(points2d: ArrayLike, neighbours: 'NeighbourGraph') -> np.ndarray:
+def compute_psi6(points2d: ArrayLike, neighbours: 'NeighbourGraph') -> np.ndarray:
     """
     Per-point 6-fold order parameter (psi_6) from a 2D cloud + neighbour graph.
     Points with < 2 neighbours return 0+0j.
@@ -43,7 +43,7 @@ def hexatic_interpolant_fn(
         smoothing: float = 0.5,
         min_order: float = 0.5,
         return_confidence: bool = False
-    ) -> Union['Callable', Tuple['Callable', 'Callable']]:
+    ) -> Union[Callable, Tuple[Callable, Callable]]:
     """
     Continuous local hexatic-axis interpolant.
 
@@ -55,7 +55,7 @@ def hexatic_interpolant_fn(
     if neighbours is None:
         neighbours = beta_skeleton_neighbours(points2d)
 
-    z6 = compute_hexatic_phasor(points2d, neighbours)
+    z6 = compute_psi6(points2d, neighbours)
     order = hexatic_order(z6)
 
     keep = order >= min_order
