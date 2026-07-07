@@ -14,15 +14,16 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
+from insectvision.utils import norm_l2
+
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
 from insectvision.geometry.ghosting import ghosts_from_growth_3d
 from insectvision.geometry.linalg import tangent_frames, local_to_world
 from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_neighbours
 from insectvision.geometry.lattice import first_ring_gap
 from insectvision.geometry.spherical import (
-    cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo
+    cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo, radius_of_curvature
 )
-from insectvision.utils import norm_l2
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes.model import Model
@@ -150,11 +151,24 @@ class BaseView:
         return f, r, u
 
     @property
-    def curvature_radius(self) -> float:
+    def curvature_radius(self) -> np.ndarray:
         """
-        The estimated global radius of curvature (μm or world units) for this view.
+        The local radius of curvature (μm or world units) for each ommatidium in this view.
+        Returns an array of shape (N,).
         """
-        return self.estimate_curvature_radius()
+        if self.N == 0:
+            return np.array([], dtype=np.float32)
+
+        tree = self._get_tree('positions')
+        if tree is None:
+            return np.full(self.N, np.nan, dtype=np.float32)
+
+        return radius_of_curvature(
+            query_pos=self.positions,
+            query_dirs=self.directions,
+            tree=tree,
+            cloud_normals=self.directions,
+        ).astype(np.float32)
 
     # Transformation methods
 
@@ -1019,37 +1033,6 @@ class SpatialQueries:
 
         return indices
 
-    # TODO: radius of curature helper usage site 3
-
-    def estimate_curvature_radius(self, k: int = 7) -> float:
-        """
-        Estimate the median local radius of curvature for the ommatidia in this view.
-
-        R = arc_length / delta_theta. This measures the physical distance
-        on the eye surface per unit change in viewing angle.
-        """
-        if self.N < 2:
-            return 0.0
-
-        tree = self._get_tree('positions')
-        if tree is None:
-            return 0.0
-
-        dists, nb_local = knn(tree, self.positions, k)
-        home_dirs = self.directions
-        nb_dirs = self._buffer['forward', self.omm_indices[nb_local]]
-
-        chords = np.linalg.norm(nb_dirs - home_dirs[:, None, :], axis=-1)
-        angles = chord_to_angle(chords)
-
-        valid = (angles > 1e-6) & (dists > 0)
-
-        if not np.any(valid):
-            logger.warning('Could not estimate curvature radius: no angular variation found.')
-            return 0.0
-
-        return float(np.median(dists[valid] / angles[valid]))
-
 
 class OmmatidiumView(SpatialQueries, BaseView):
     """Selection indexes the ommatidia axis."""
@@ -1273,7 +1256,6 @@ class EyeView(OmmatidiumView):
             is_edge=self.is_edge,
             ioa_angles=self.interommatidial_angles,
             n_rows=rows,
-            curvature_radius=self.curvature_radius,
             **kwargs,
         )
         self._spatial_store['ghosts'] = ghosts

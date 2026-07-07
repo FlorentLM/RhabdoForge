@@ -703,7 +703,6 @@ def refine_chi(
     model.rest_offsets = np.stack([new_dx.ravel(), new_dy.ravel()], axis=-1).astype(np.float32)
 
     # Update microsaccade vectors to stay aligned with the new chi
-    # TODO: Make this optional?
     sacc_vecs = model.buffer['saccade_dxdy']
 
     c, s = np.cos(smoothed_err), np.sin(smoothed_err)

@@ -6,8 +6,7 @@ from scipy.spatial import cKDTree
 from insectvision.geometry.hexatic import hexatic_interpolant_fn
 from insectvision.geometry.lattice import bond_ioa
 from insectvision.geometry.linalg import rotate2d
-from insectvision.geometry.neighbours import knn
-from insectvision.geometry.spherical import sphere_to_stereo, chord_to_angle, stereo_to_sphere
+from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere, radius_of_curvature
 from insectvision.geometry.polygons import Polygon2D
 from insectvision.utils import norm_l2
 
@@ -191,23 +190,14 @@ def _one_sphere_ring(
     _, j = real_tree.query(P)
     minor, major = real_ioa[j, 0], real_ioa[j, 1]
 
-
-    # TODO: radius of curature helper usage site 1
-
-    # Local radius of curvature from the current cloud (self dropped)
-    tree = cKDTree(curr_pos)
-    dists, neighb_ind = knn(tree, P, k=7, drop_self=True)
-
-    chords = np.linalg.norm(curr_dirs[neighb_ind] - D[:, None, :], axis=-1)
-    angles = chord_to_angle(chords)
-
-    valid = (angles > 1e-4) & (dists > 0)
-
-    with np.errstate(all='ignore'):
-        R = np.nanmedian(np.where(valid, dists / np.where(valid, angles, 1.0), np.nan), axis=1)
-
-
-    R = np.where(np.isfinite(R), R, fallback_R)   # (M,)
+    # Local radius of curvature from the current cloud
+    R = radius_of_curvature(
+        query_pos=P,
+        query_dirs=D,
+        tree=cKDTree(curr_pos),
+        cloud_normals=curr_dirs
+    )
+    R = np.where(np.isfinite(R), R, fallback_R)  # (M,)
 
     # Base tangent from the local hexatic bearing
     q_seed, *_ = sphere_to_stereo(D, frame)   # (M, 2)
@@ -302,17 +292,16 @@ def ghosts_from_growth_3d(
 
     real_tree = cKDTree(positions)
 
-    # TODO: radius of curature helper usage site 2
-
     # Global fallback radius of curvature (same estimator, one shot) if none supplied
     if curvature_radius is None:
-        d0, nb0 = knn(real_tree, positions, k=7, drop_self=True)
-        an0 = chord_to_angle(np.linalg.norm(directions[nb0] - directions[:, None, :], axis=-1))
-        v0 = (an0 > 1e-4) & (d0 > 0)
-
-        with np.errstate(all='ignore'):
-            fallback_R = float(np.nanmedian(np.where(v0, d0 / np.where(v0, an0, 1.0), np.nan)))
-
+        radii = radius_of_curvature(
+            query_pos=positions,
+            query_dirs=directions,
+            tree=real_tree,
+            cloud_normals=directions,
+        )
+        # Reduce to a single scalar for the global fallback
+        fallback_R = np.nanmedian(radii)
         if not np.isfinite(fallback_R):
             fallback_R = 1.0
     else:

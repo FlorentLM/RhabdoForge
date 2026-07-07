@@ -2,9 +2,9 @@ from typing import TYPE_CHECKING, Tuple, Optional, Sequence
 import numpy as np
 from numpy.typing import ArrayLike
 
+from insectvision.utils import norm_l2
 from insectvision.geometry.linalg import tangent_frames, local_to_world
 from insectvision.geometry.neighbours import knn
-from insectvision.utils import norm_l2
 
 if TYPE_CHECKING:
     from scipy.spatial import cKDTree
@@ -151,15 +151,41 @@ def normals_to_ellipsoid(directions: ArrayLike, rx: float, ry: float, rz: float)
     return np.column_stack([x, y, z])
 
 
-# TODO: Might move this one
-def curvature_radius(query_pos: ArrayLike, query_dirs: ArrayLike, tree: 'cKDTree', cloud_dirs: ArrayLike, k: int = 7) -> np.ndarray:
-    """R ~= (spatial distance) / (great-circle angle) over k neighbours."""
-    dist, idx = knn(tree, query_pos, k=k, drop_self=True)
+def radius_of_curvature(
+        query_pos: ArrayLike,
+        query_dirs: ArrayLike,
+        tree: 'cKDTree',
+        cloud_normals: ArrayLike,
+        k: int = 7,
+) -> np.ndarray:
+    """
+    Estimate local radius of curvature per query point: R ~= (spatial distance) / (great-circle angle).
 
-    query_dirs = np.asarray(query_dirs, dtype=np.float64)
-    cloud_dirs = np.asarray(cloud_dirs, dtype=np.float64)
+    Args:
+        - query_pos: (N, 3) positions to evaluate
+        - query_dirs: (N, 3) optical axes at those positions
+        - tree: cKDTree containing the cloud positions
+        - cloud_normals: (M, 3) optical axes corresponding to the tree data
+        - k: Number of neighbours to average over
 
-    ang = chord_to_angle(np.linalg.norm(cloud_dirs[idx] - query_dirs[:, None, :], axis=-1))
-    valid = (ang > 1e-4) & (dist > 0)
+    Returns:
+        (N,) array of radii. Points with no angular variation return NaN.
+    """
+    q_pos = np.atleast_2d(np.asarray(query_pos, dtype=np.float64))
+    q_dir = np.atleast_2d(np.asarray(query_dirs, dtype=np.float64))
+
+    dist, idx = knn(tree, q_pos, k=k, drop_self=True)
+    if idx.size == 0:
+        return np.full(len(q_pos), np.nan)
+
+    # Calculate angles between query normals and neighbour normals
+    # chord length on unit sphere -> angle in radians
+    chords = np.linalg.norm(cloud_normals[idx] - q_dir[:, None, :], axis=-1)
+    angles = chord_to_angle(chords)
+
+    # R = arc_length / angle
+    valid = (angles > 1e-5) & (dist > 0)
+
     with np.errstate(all='ignore'):
-        return np.nanmedian(np.where(valid, dist / np.where(valid, ang, 1.0), np.nan), axis=1)
+        ratios = np.where(valid, dist / np.where(valid, angles, 1.0), np.nan)
+        return np.nanmedian(ratios, axis=1)
