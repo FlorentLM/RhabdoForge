@@ -1188,6 +1188,13 @@ class RhabdomereView(BaseView):
         return world_pos
 
     @property
+    def relative_positions(self) -> np.ndarray:
+        """
+        Rhabdomere tip positions relative to their parent lens centre in world coordinates, (M, 3).
+        """
+        return self._tip_rel_world()
+
+    @property
     def positions(self) -> np.ndarray:
         """
         World-space positions of the rhabdomere tips (M, 3).

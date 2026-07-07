@@ -646,14 +646,15 @@ class EyeViewer:
 
         # Mode 1: rhabdomere-tip bundles overview
         if self.R > 1:
-            vis_scale = (self.r_sphere * 0.012)
+            tips_rel = self.model.rhabdomeres.relative_positions.reshape(self.N, self.R, 3)
+            pts_all = self.model.positions[:, None, :] + tips_rel
 
             is_mirrored = self.model.chirality < 0
             i1, i2 = self.bundle.main_axis_indices
 
             groups = {'gold': [], 'red': [], 'white': [], 'teal': [], 'royalblue': []}
             for r in range(self.R):
-                pts_r = self.model.rhabdomeres.positions.reshape(self.N, self.R, 3) * vis_scale
+                pts_r = pts_all[:, r, :]
 
                 if r == self.bundle.center_index:
                     groups['gold'].append(pts_r)
