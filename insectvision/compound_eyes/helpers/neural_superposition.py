@@ -60,7 +60,7 @@ def get_conflict_masks(cartridge_map: np.ndarray, peripheral_indices: np.ndarray
         any=receiving | donation,
         unwired_slots=unwired_slots,
         has_selfwires=np.any(unwired_slots, axis=1),
-        unwired_count=int(unwired_slots.sum()),
+        unwired_count=unwired_slots.sum(axis=1),
     )
 
 
