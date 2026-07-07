@@ -7,14 +7,14 @@ from insectvision.lattice_fitting.plots import plot_lattice, lattice_diagnostics
 from morphological_scaffolds.drosophila.run import reconstruct_buchner_data
 
 
-SVG = 'species_models/drosophila_custom/drosophila_Buchner_1971_redigitized.svg'
+SVG = 'morphological_scaffolds/drosophila/data/buchner1971_redigitised.svg'
 
-DENSITY_SCALE     = 1.0     # > 1 packs more ommatidia
-DENSITY_SMOOTHING = 0.05    # RBF smoothing of the spacing field
-AXES_SMOOTHING    = 0.30    # RBF smoothing of the hexatic-axis field
-MIN_HEX_ORDER     = 0.20    # |psi6| below which a point is dropped from the axis fit
-GHOST_SOURCE      = 'edge'  # 'hull' | 'edge' | 'none'
-ALIGN             = True    # align init grid to the source cloud (False = purely parametric)
+DENSITY_SCALE     = 1.0         # > 1 packs more ommatidia
+DENSITY_SMOOTHING = 0.1        # RBF smoothing of the spacing field
+AXES_SMOOTHING    = 0.50        # RBF smoothing of the hexatic-axis field
+MIN_HEX_ORDER     = 0.20        # |psi6| below which a point is dropped from the axis fit
+GHOST_SOURCE      = 'lattice'   # 'lattice' | 'hull' | 'edge' | 'none'
+ALIGN             = True        # align init grid to the source cloud (False = purely parametric)
 
 
 if __name__ == '__main__':

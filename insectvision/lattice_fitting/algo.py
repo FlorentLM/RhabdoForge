@@ -6,7 +6,7 @@ from scipy.optimize import minimize
 from scipy.spatial import cKDTree, ConvexHull
 from scipy.interpolate import RegularGridInterpolator, griddata
 
-from insectvision.geometry.polygons import Polygon2D, mirror_across_hull
+from insectvision.geometry.polygons import Polygon2D, mirror_across_hull, lattice_ghosts
 from insectvision.geometry.neighbours import delaunay_edges, ball_spacing
 
 
@@ -190,7 +190,7 @@ def spring_relaxation(
         verbose: bool = False,
         domain: Optional['Polygon2D'] = None,
         ghost_depth: float = 0.0,
-        ghost_source: str = 'hull'
+        ghost_source: str = 'lattice'
     ) -> np.ndarray:
     """
     Local spring relaxation with orientation-following bonds.
@@ -213,8 +213,8 @@ def spring_relaxation(
 
     ghost_source = 'none' if not ghost_source else str(ghost_source).lower()
 
-    if ghost_source not in ('hull', 'edge', 'none'):
-        raise ValueError(f"ghost_source must be 'hull', 'edge' or 'none', got {ghost_source!r}")
+    if ghost_source not in ('lattice', 'hull', 'edge', 'none'):
+        raise ValueError(f"ghost_source must be 'lattice', 'hull', 'edge' or 'none', got {ghost_source!r}")
 
     pts = np.copy(points2d).astype(np.float64)
 
@@ -226,14 +226,23 @@ def spring_relaxation(
         if not use_ghosts:
             return p, np.zeros((0, 2))
 
-        if ghost_source == 'edge':
+        if ghost_source == 'lattice':
+            g = lattice_ghosts(
+                p, theta_fn, spacing_fn, bond_dirs, domain,
+                avg_spacing=float(np.median(spacing_fn(p).ravel())),
+                boundary_band=ghost_depth / max(np.median(spacing_fn(p).ravel()), 1e-9),
+            )
+        elif ghost_source == 'edge':
             try:
                 eqs = ConvexHull(p).equations
+                g = mirror_across_hull(p, eqs, ghost_depth)
             except Exception:
                 return p, np.zeros((0, 2))   # degenerate cloud? skip ghosts this pass
-        else:
+
+        else:  # 'hull'
             eqs = domain.hull.equations
-        g = mirror_across_hull(p, eqs, ghost_depth)
+            g = mirror_across_hull(p, eqs, ghost_depth)
+
         if len(g):
             # Drop ghosts sitting on top of a real point (self-images for 'edge')
             d, _ = cKDTree(p).query(g)
@@ -251,7 +260,7 @@ def spring_relaxation(
             cloud, ghosts = build_cloud(pts)
             edges = delaunay_edges(cloud, max_length_factor=1.8)
         else:
-            # refresh the (moved) real block; ghosts stay frozen between retriangulations
+            # refresh the (moved) real block, ghosts stay frozen between retriangulations
             cloud = np.vstack([pts, ghosts]) if use_ghosts else pts
 
         e0, e1 = edges[:, 0], edges[:, 1]

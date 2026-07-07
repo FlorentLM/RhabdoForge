@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Optional, Sequence
 import numpy as np
 from numpy.typing import ArrayLike
 from insectvision.geometry.linalg import tangent_frames, local_to_world
@@ -52,27 +52,41 @@ def spherical_gradients(azimuth: ArrayLike, elevation: ArrayLike, degrees: bool 
 
 # Stereographic projection
 
-def sphere_to_stereo(directions: ArrayLike) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def sphere_to_stereo(
+        directions: ArrayLike,
+        basis: Optional[Sequence[ArrayLike]] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Stereographic projection of unit directions onto a tangent plane centred
-    on the mean viewing direction.
+    Stereographic projection of unit directions onto a tangent plane.
+
+    Args:
+        directions: (N, 3) array of unit vectors.
+        basis: Optional (forward, right, up) sequence of basis vectors. If None, the orthonormal frame is
+               centered on the mean of the input directions.
 
     Returns:
         points2d: (N, 2)
         forward, right, up: (3,) orthonormal frame of the projection plane
     """
+    directions = np.atleast_2d(np.asarray(directions, dtype=np.float64))
 
-    directions = np.asarray(directions, dtype=np.float64)
+    if basis is None:
+        centre_dir = np.mean(directions, axis=0)
+        forward = norm_l2(centre_dir)
+        right, up = tangent_frames(forward)
+    else:
+        forward, right, up = basis
+        forward = np.asarray(forward, dtype=np.float64)
+        right = np.asarray(right, dtype=np.float64)
+        up = np.asarray(up, dtype=np.float64)
 
-    centre_dir = np.mean(directions, axis=0)
-    forward = norm_l2(centre_dir)
-    right, up = tangent_frames(forward)
+    denom = 1.0 + (directions @ forward)
 
-    denom = 1.0 + np.dot(directions, forward)
     points2d = np.column_stack([
-        np.dot(directions, right) / denom,
-        np.dot(directions, up) / denom,
+        (directions @ right) / denom,
+        (directions @ up) / denom,
     ])
+
     return points2d, forward, right, up
 
 
@@ -85,8 +99,8 @@ def stereo_to_sphere(
     """
     Inverse stereographic projection (2D plane -> unit sphere).
     """
-
     points2d = np.asarray(points2d, dtype=np.float64)
+
     forward = np.asarray(forward, dtype=np.float64)
     right = np.asarray(right, dtype=np.float64)
     up = np.asarray(up, dtype=np.float64)

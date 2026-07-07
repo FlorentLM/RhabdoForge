@@ -475,7 +475,7 @@ class Context:
 
         return True
 
-    def run_headless(self, steps: Optional[int] = None, reset_timers: bool = False) -> Generator:
+    def run_headless(self, steps: Optional[int] = None, reset_timers: bool = False) -> Generator[float, None, None]:
         """Generator for a headless loop (ticks the clock and returns dt)."""
         if reset_timers:
             self.reset_timers()

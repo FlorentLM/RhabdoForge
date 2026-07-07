@@ -9,7 +9,7 @@ RhabdomereView: Indexes the Rhabdomeres axis
 EyeView       : An OmmatidiumView over one eye
 """
 import logging
-from typing import TYPE_CHECKING, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Optional, Tuple, Union, Generator, Dict
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
@@ -147,6 +147,13 @@ class BaseView:
         _, f, r, u = sphere_to_stereo(self.directions)
         return f, r, u
 
+    @property
+    def curvature_radius(self) -> float:
+        """
+        The estimated global radius of curvature (μm or world units) for this view.
+        """
+        return self.estimate_curvature_radius()
+
     # Transformation methods
 
     def translate(self, offset: ArrayLike) -> 'Model':
@@ -166,15 +173,15 @@ class BaseView:
         self.positions = self.positions * factor
         return self
 
-    def rotate(self, R: ArrayLike) -> 'Model':
+    def rotate(self, R_mat: ArrayLike) -> 'Model':
         """
         Rotate all positions, directions, and tangent frames by the 3x3
-        rotation matrix 'R'.
+        rotation matrix 'R_mat'.
         """
-        R_mat = np.asarray(R, dtype=np.float64)
+        R_mat = np.asarray(R_mat, dtype=np.float64)
 
         if R_mat.shape != (3, 3):
-            raise ValueError(f'R must be 3x3, got {R_mat.shape}')
+            raise ValueError(f'R_mat must be 3x3, got {R_mat.shape}')
 
         if not np.allclose(R_mat @ R_mat.T, np.eye(3), atol=1e-3):
             logger.warning('rotate() called with non-orthonormal matrix, results may be off...')
@@ -988,6 +995,35 @@ class SpatialQueries:
 
         return indices
 
+    def estimate_curvature_radius(self, k: int = 7) -> float:
+        """
+        Estimate the median local radius of curvature for the ommatidia in this view.
+
+        R = arc_length / delta_theta. This measures the physical distance
+        on the eye surface per unit change in viewing angle.
+        """
+        if self.N < 2:
+            return 0.0
+
+        tree = self._get_tree('positions')
+        if tree is None:
+            return 0.0
+
+        dists, nb_local = knn(tree, self.positions, k)
+        home_dirs = self.directions
+        nb_dirs = self._buffer['forward', self.omm_indices[nb_local]]
+
+        chords = np.linalg.norm(nb_dirs - home_dirs[:, None, :], axis=-1)
+        angles = chord_to_angle(chords)
+
+        valid = (angles > 1e-6) & (dists > 0)
+
+        if not np.any(valid):
+            logger.warning('Could not estimate curvature radius: no angular variation found.')
+            return 0.0
+
+        return float(np.median(dists[valid] / angles[valid]))
+
 
 class OmmatidiumView(SpatialQueries, BaseView):
     """Selection indexes the ommatidia axis."""
@@ -1008,28 +1044,45 @@ class OmmatidiumView(SpatialQueries, BaseView):
         return self._omm_indices
 
     @property
-    def indices(self):
+    def indices(self) -> np.ndarray:
         return self._omm_indices
 
     @property
     def rhab_indices(self) -> np.ndarray:
         return self._omm_indices[..., None] * self.R + np.arange(self.R, dtype=np.intp).reshape(-1)
 
-    def __getitem__(self, key):
+    def __getitem__(self, key) -> 'OmmatidiumView':
         return OmmatidiumView(self._model, self._omm_indices[key])
 
-    def __repr__(self):
-        return f'{type(self).__name__}(ommatidia={self._omm_indices.shape})'
+    def __repr__(self) -> str:
+        ind = self._omm_indices
+        if ind.ndim == 0:
+            info_str = f'n=1, ind=[{int(ind.item())}]'
+        else:
+            n = len(ind)
+            info_str = f'n={n}'
 
-    def __eq__(self, other):
+            amin = ind.min()
+            amax = ind.max()
+            is_contiguous = (amax - amin == n - 1) and (len(np.unique(ind)) == n)
+            if n <= 5:
+                info_str += f', ind={self._omm_indices.tolist()}'
+            else:
+                if is_contiguous:
+                    info_str += f', ind=[{amin}->{amax} contig.]'
+                else:
+                    info_str += f', ind=[..., non contig.]'
+        return f'{type(self).__name__}({info_str})'
+
+    def __eq__(self, other) -> bool:
         if not isinstance(other, OmmatidiumView):
             return False
         return self._buffer is other._buffer and np.array_equal(self.omm_indices, other.omm_indices)
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash((id(self._buffer), self._omm_indices.tobytes()))
 
-    def __iter__(self):
+    def __iter__(self) -> Generator['OmmatidiumView', None, None]:
         for i in self._omm_indices.reshape(-1):
             yield OmmatidiumView(self._model, np.array([i], dtype=np.intp))
 
@@ -1037,7 +1090,7 @@ class OmmatidiumView(SpatialQueries, BaseView):
     def rhabdomeres(self) -> 'RhabdomereView':
         return RhabdomereView(self._model, self.rhab_indices)
 
-    def ommatidia_by_chirality(self) -> dict[int, 'OmmatidiumView']:
+    def ommatidia_by_chirality(self) -> Dict[int, 'OmmatidiumView']:
         chir = self._omm_chirality(self.omm_indices)  # +1 / -1 per ommatidium
         out = {}
         for sign in (+1.0, -1.0):
@@ -1073,11 +1126,6 @@ class RhabdomereView(BaseView):
         return (len(self),)
 
     @property
-    def N(self) -> int:
-        idx = self._rhab_indices
-        return int(idx.shape[0]) if idx.ndim else 1
-
-    @property
     def model(self) -> 'Model':
         return self._model
 
@@ -1086,29 +1134,31 @@ class RhabdomereView(BaseView):
         return self._rhab_indices
 
     @property
-    def indices(self):
+    def indices(self) -> np.ndarray:
         return self._rhab_indices
 
     @property
     def omm_indices(self) -> np.ndarray:
         return np.unique(self._rhab_indices // self.R)
 
-    def __getitem__(self, key):
+    def __getitem__(self, key) -> 'RhabdomereView':
         return RhabdomereView(self._model, self._rhab_indices[..., key])
 
-    def __repr__(self):
-        return f'RhabdomereView(rhabdomeres={self._rhab_indices.shape})'
+    def __repr__(self) -> str:
+        ind = self._rhab_indices
+        n = int(ind.shape[0]) if ind.ndim else 1
+        return f'RhabdomereView(n={n})'
 
-    def __eq__(self, other):
+    def __eq__(self, other) -> bool:
         if not isinstance(other, RhabdomereView):
             return False
         return self._buffer is other._buffer and np.array_equal(self.rhab_indices, other.rhab_indices)
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash((id(self._buffer), self._rhab_indices.tobytes()))
 
     @property
-    def ommatidia(self) -> OmmatidiumView:
+    def ommatidia(self) -> 'OmmatidiumView':
         return OmmatidiumView(self._model, self.omm_indices)
 
     def _tip_rel_world(self) -> np.ndarray:
