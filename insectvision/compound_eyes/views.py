@@ -203,7 +203,31 @@ class BaseView:
         _, el = cartesian_to_spherical(self.directions)
         return el
 
-    # TODO: Add per-rhabdomere azimuth / elevation properties?
+    @property
+    def rhabdomere_azimuth(self) -> np.ndarray:
+        """The azimuth of every rhabdomere in this view, shaped (N, R)."""
+        az, _ = cartesian_to_spherical(self.rhabdomeres.directions)
+        return az.reshape(self.N, self.R)
+
+    @property
+    def rhabdomere_elevation(self) -> np.ndarray:
+        """The elevation of every rhabdomere in this view, shaped (N, R)."""
+        _, el = cartesian_to_spherical(self.rhabdomeres.directions)
+        return el.reshape(self.N, self.R)
+
+    @property
+    def rhabdomere_positions(self) -> np.ndarray:
+        """
+        World-space positions of all rhabdomere tips in this view (N, R, 3).
+        """
+        return self.rhabdomeres.positions.reshape(self.N, self.R, 3)
+
+    @property
+    def rhabdomere_directions(self) -> np.ndarray:
+        """
+        World-space viewing directions of all rhabdomeres in this view (N, R, 3).
+        """
+        return self.rhabdomeres.directions.reshape(self.N, self.R, 3)
 
     # Lattice properties
 
@@ -338,8 +362,6 @@ class BaseView:
 
     rest_offsets = ViewField('rest_offset', 'rhabdomere',
         doc="Rhabdomeres positional offsets from the ommatidium optical axis (at rest).")
-
-    # TODO: also expose rhabdomeres positions in world space?
 
     wavelength = ViewField('wavelength_um', 'rhabdomere',
         doc="Rhabdomeres peak wavelengths (μm).")
@@ -867,14 +889,14 @@ class SpatialQueries:
         return int(np.clip(k_needed, k_min, n - 1))
     
     def directed_neighbours(self,
-                            direction: ArrayLike,
-                            query: Optional[ArrayLike] = None,
-                            k: int = 1,
-                            distance: float = 0.0,
-                            coordinate: str = 'spherical',
-                            return_weights: bool = False,
-                            k_search: Optional[int] = None,
-                            ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+            direction: ArrayLike,
+            query: Optional[ArrayLike] = None,
+            k: int = 1,
+            distance: float = 0.0,
+            coordinate: str = 'spherical',
+            return_weights: bool = False,
+            k_search: Optional[int] = None,
+        ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """
         Finds the k nearest lattice neighbours to a specific vector in the tangent plane.
 

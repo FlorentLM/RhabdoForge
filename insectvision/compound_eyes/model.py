@@ -2,39 +2,44 @@
 The main user-facing CompoundEyeModel class that wraps the data buffers.
 Does all the building, and exposes properties that the other views can re-expose.
 """
+import logging
 from pathlib import Path
-from typing import Optional, Union, Tuple, List
+from typing import TYPE_CHECKING, Optional, Union, Tuple, List
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import Delaunay
 
-from insectvision.geometry.polygons import triangle_areas
-from insectvision.utils import norm_l2, broadcast_to_shape, broadcast_1d
 from insectvision.engine.meshes import icosphere, fibonacci_sphere
-from insectvision.utils import WORLD_FORWARD
+from insectvision.utils import WORLD_FORWARD, norm_l2, broadcast_to_shape, broadcast_1d
+
 from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world, tangent_bearing
 from insectvision.geometry.neighbours import knn, graph_spacing, ball_spacing
 from insectvision.geometry.smoothing import smooth_phasors, smooth_field_partitioned
 from insectvision.geometry.spherical import angle_to_chord, sphere_to_stereo
+from insectvision.geometry.polygons import triangle_areas
+
 from insectvision.compound_eyes.buffers import Buffer, _BIT_LAYOUT
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
 from insectvision.compound_eyes.helpers.neural_superposition import (
     wire_neural_superposition, get_conflict_masks, get_noconflict_masks, refine_chi
 )
 from insectvision.compound_eyes.helpers.acceptance import (
-    AcceptanceModel, SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
+    SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
 )
-from insectvision.compound_eyes.helpers.alignment import (
-    BundlesAligner, AlignmentResult, apply_chirality, trivial_alignment
-)
-from insectvision.compound_eyes.views import SpatialQueries, BaseView, logger, OmmatidiumView, EyeView, RhabdomereView
+from insectvision.compound_eyes.helpers.alignment import BundlesAligner, apply_chirality, trivial_alignment
+from insectvision.compound_eyes.views import SpatialQueries, BaseView, OmmatidiumView, EyeView, RhabdomereView
 
+if TYPE_CHECKING:
+    from insectvision.compound_eyes.views import NeighbourResult
+    from insectvision.compound_eyes.helpers.acceptance import AcceptanceModel
+    from insectvision.compound_eyes.helpers.alignment import AlignmentResult
 
 
 # TODO Should store the rotational alignment of the anisotropy to the lattice somewhere??
 
+logger = logging.getLogger(__name__)
 
 
 class Model(SpatialQueries, BaseView):
@@ -485,7 +490,7 @@ class Model(SpatialQueries, BaseView):
 
     # Private - Rhabdomere bundle orientation backwrite
 
-    def _bundle_orientation_backwrite(self, orientation: AlignmentResult) -> None:
+    def _bundle_orientation_backwrite(self, orientation: 'AlignmentResult') -> None:
         """
         Backwrite an OrientationResult into the corresponding data fields.
         Called by 'BundlesAligner.apply()' and during construction.
@@ -506,7 +511,7 @@ class Model(SpatialQueries, BaseView):
 
         if self._R == 1:
             # Simple model (R=1): chi follows the hexagonal lattice tiling
-            self._buf['chi'] = self._buf['ioa_tilt'].copy()    # TODO: is this really ideal?
+            self._buf['chi'] = self._buf['ioa_tilt'].copy()
         else:
             # Full model: actual rhabdomere bundle orientation
             self._buf['chi'] = chi
@@ -975,34 +980,72 @@ class Model(SpatialQueries, BaseView):
                    )
         return self
 
-    # Disabling model-level neighbours queries
+    def neighbours(self,
+            query: Optional[ArrayLike] = None,
+            positions: Optional[ArrayLike] = None,
+            k: int = 6,
+            **kwargs
+        ) -> 'NeighbourResult':
+        """
+        Global k-NN query across all eyes.
+        """
+        return super().neighbours(query=query, positions=positions, k=k, **kwargs)
 
-    # TODO: Should dispatch per-eye instead of raising
-
-    def neighbours(self, *args, **kwargs):
-        raise NotImplementedError('Neighbours queries must be done per-eye.')
-
-    def directed_neighbours (self, *args, **kwargs):
-        raise NotImplementedError('Neighbours queries must be done per-eye.')
+    def directed_neighbours(self, direction: ArrayLike, query: Optional[ArrayLike] = None, **kwargs) -> np.ndarray:
+        """
+        Global directed search across all eyes.
+        """
+        return super().directed_neighbours(direction=direction, query=query, **kwargs)
 
     # Advanced properties
-    # TODO: Maybe recompute what needs to be if these change
 
     @property
     def lens_packing(self) -> float:
         return self._lens_packing
 
     @lens_packing.setter
-    def lens_packing(self, value: float):
-        self._lens_packing = float(max(0.0, value))
+    def lens_packing(self, value: float) -> None:
+
+        val = float(max(0.0, value))
+        if self._lens_packing == val:
+            return
+
+        # Apertures depend on packing
+        ioa_spacing = self._compute_lattice_properties()[-1]
+        self._buf['aperture_um'] = self._estimate_apertures(ioa_spacing)
+
+        # Maintain F-number
+        f = self._buf['focal_um']
+        d = self._buf['aperture_um']
+        f_number = np.median(f / np.clip(d, 1e-6, None))
+
+        self._buf['focal_um'] = self._buf['aperture_um'] * f_number
+
+        # Recompute optics-dependent fields
+        self._buf['rest_acc_angles'] = self._compute_acceptance(self._acceptance_model)
+        self._buf['curr_acc_angles'] = self._buf['rest_acc_angles'].copy()
+
+        self._bump_spatial_ver()
 
     @property
     def lattice_beta(self) -> float:
         return self._lattice_beta
 
     @lattice_beta.setter
-    def lattice_beta(self, value: float):
-        self._lattice_beta = float(max(0.0, value))
+    def lattice_beta(self, value: float) -> None:
+
+        value = float(max(0.0, value))
+        if self._lattice_beta == value:
+            return
+
+        # Beta changes the topology of the first-ring graph
+        self._bump_spatial_ver()
+        # Edge detection and aperture estimation use the graph
+        self._buf['is_edge'] = self._identify_edge_ommatidia()
+        # Force re-estimation of everything derived from the graph
+        ioa_angles, _, _, ioa_spacing = self._compute_lattice_properties()
+        self._buf['ioa_angles'] = ioa_angles
+        self._buf['aperture_um'] = self._estimate_apertures(ioa_spacing)
 
     @property
     def wiring_trace(self) -> Optional[dict]:
