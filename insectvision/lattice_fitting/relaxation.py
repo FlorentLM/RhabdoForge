@@ -6,8 +6,9 @@ from scipy.optimize import minimize
 from scipy.spatial import cKDTree, ConvexHull
 from scipy.interpolate import RegularGridInterpolator, griddata
 
-from insectvision.geometry.polygons import Polygon2D, mirror_across_hull
-from insectvision.geometry.lattice import create_ghosts_ring
+from insectvision.geometry.linalg import rotate2d
+from insectvision.geometry.polygons import Polygon2D
+from insectvision.geometry.ghosting import ghosts_from_mirror, ghosts_from_growth_2d
 from insectvision.geometry.neighbours import delaunay_edges, ball_spacing
 
 
@@ -135,8 +136,9 @@ def spring_relaxation(
         if not use_ghosts:
             return p, np.zeros((0, 2))
 
+        # TODO: Clean this once the ghost functions signatures are standardised
         if ghost_source == 'lattice':
-            g = create_ghosts_ring(
+            g = ghosts_from_growth_2d(
                 p, theta_fn, spacing_fn, bond_dirs, domain,
                 avg_spacing=float(np.median(spacing_fn(p).ravel())),
                 boundary_band=ghost_depth / max(np.median(spacing_fn(p).ravel()), 1e-9),
@@ -144,13 +146,13 @@ def spring_relaxation(
         elif ghost_source == 'edge':
             try:
                 eqs = ConvexHull(p).equations
-                g = mirror_across_hull(p, eqs, ghost_depth)
+                g = ghosts_from_mirror(p, eqs, ghost_depth)
             except Exception:
                 return p, np.zeros((0, 2))   # degenerate cloud? skip ghosts this pass
 
         else:  # 'hull'
             eqs = domain.hull.equations
-            g = mirror_across_hull(p, eqs, ghost_depth)
+            g = ghosts_from_mirror(p, eqs, ghost_depth)
 
         if len(g):
             # Drop ghosts sitting on top of a real point (self-images for 'edge')
@@ -180,21 +182,14 @@ def spring_relaxation(
         c, s = np.cos(th), np.sin(th)
 
         # Into lattice frame
-        loc = np.stack([
-            c * cur[:, 0] + s * cur[:, 1],
-            -s * cur[:, 0] + c * cur[:, 1]
-        ], axis=1)
-
+        loc = rotate2d(cur, -th)
         u = loc / np.maximum(np.linalg.norm(loc, axis=1, keepdims=True), 1e-12)
         ideal = bond_dirs[np.argmax(u @ bond_dirs.T, axis=1)]
 
         L = spacing_fn(mid).ravel()
 
         # Rest vector back in world frame
-        rest = L[:, None] * np.stack([
-            c * ideal[:, 0] - s * ideal[:, 1],
-            s * ideal[:, 0] + c * ideal[:, 1]
-        ], axis=1)
+        rest = L[:, None] * rotate2d(ideal, th)
 
         fpe = (cur - rest) / np.maximum(np.linalg.norm(rest, axis=1, keepdims=True), 1e-12)
         fmag = np.linalg.norm(fpe, axis=1, keepdims=True)

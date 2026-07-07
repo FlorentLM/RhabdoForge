@@ -92,7 +92,44 @@ def rotate_in_tangent_plane(
     return rotated.astype(np.float32)
 
 
-# TODO: This one is unused, might get rid of
+def local_to_world(coords: ArrayLike, *basis: ArrayLike) -> np.ndarray:
+    """
+    Express local coordinates in world space against a set of basis vectors.
+    The result is *not* renormalised.
+    """
+    out_coords = np.asarray(coords)
+    if coords.shape[-1] != len(basis):
+        raise ValueError(f'local_to_world: coords last axis must equal number of basis vectors')
+
+    b0 = _match_batch(out_coords, basis[0])[1]
+    out = out_coords[..., 0, None] * b0
+
+    for i in range(1, len(basis)):
+        bi = _match_batch(out_coords, basis[i])[1]
+        out = out + out_coords[..., i, None] * bi
+    return out
+
+
+# TODO: Merge these?
+def rot2d(theta: float | ArrayLike, degrees: bool = False) -> np.ndarray:
+    """2x2 rotation matrix for a single angle or array of."""
+    theta = np.asarray(theta, dtype=np.float64)
+    if degrees:
+        theta = np.deg2rad(theta)
+    c, s = np.cos(theta), np.sin(theta)
+    out = np.stack([[c, -s], [s, c]]).squeeze()
+    return out if out.ndim == 2 else out.T
+
+
+def rotate2d(vecs: ArrayLike, theta: ArrayLike) -> np.ndarray:
+    """Apply R(theta) to 2D vectors, broadcasting theta over vecs[..., :2]."""
+    vecs = np.asarray(vecs, dtype=np.float64)
+    c, s = np.cos(theta), np.sin(theta)
+    x, y = vecs[..., 0], vecs[..., 1]
+    return np.stack([c * x - s * y, s * x + c * y], axis=-1)
+
+
+# TODO: this one is unused, might get rid of?
 def rotate_vectors(
         vectors: ArrayLike,
         axes: ArrayLike,
@@ -120,34 +157,6 @@ def rotate_vectors(
     dot = np.sum(k * v, axis=-1, keepdims=True)
 
     return v * c + cross * s + k * dot * (1.0 - c)
-
-
-def local_to_world(coords: ArrayLike, *basis: ArrayLike) -> np.ndarray:
-    """
-    Express local coordinates in world space against a set of basis vectors.
-    The result is *not* renormalised.
-    """
-    out_coords = np.asarray(coords)
-    if coords.shape[-1] != len(basis):
-        raise ValueError(f'local_to_world: coords last axis must equal number of basis vectors')
-
-    b0 = _match_batch(out_coords, basis[0])[1]
-    out = out_coords[..., 0, None] * b0
-
-    for i in range(1, len(basis)):
-        bi = _match_batch(out_coords, basis[i])[1]
-        out = out + out_coords[..., i, None] * bi
-    return out
-
-
-def rot2d(theta: float | ArrayLike, degrees: bool = False) -> np.ndarray:
-    """2x2 rotation matrix for a single angle or array of."""
-    theta = np.asarray(theta, dtype=np.float64)
-    if degrees:
-        theta = np.deg2rad(theta)
-    c, s = np.cos(theta), np.sin(theta)
-    out = np.stack([[c, -s], [s, c]]).squeeze()
-    return out if out.ndim == 2 else out.T
 
 
 def principal_axis_angle(points2d: ArrayLike, degrees: bool = False) -> float:

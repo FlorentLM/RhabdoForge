@@ -15,7 +15,7 @@ from scipy.spatial import cKDTree
 from insectvision.geometry.linalg import rot2d
 from insectvision.geometry.polygons import resample_contour, Polygon2D
 from insectvision.geometry.neighbours import delaunay_neighbours, ball_spacing
-from insectvision.geometry.lattice import first_ring_gap, create_hexagonal_grid, base_bond_dirs
+from insectvision.geometry.lattice import first_ring_gap, create_hexagonal_grid, base_bond_dirs, compute_lattice_basis
 from insectvision.lattice_fitting.relaxation import align_grid, density_warp, spring_relaxation, density_correct
 from insectvision.lattice_fitting.profile import EyeMeasurements
 
@@ -42,11 +42,7 @@ def _warp_init(
     rot0 = np.asarray(rot0, dtype=np.float64)
     lattice_angles = np.asarray(lattice_angles, dtype=np.float64)
 
-    if lattice_angles.ndim == 0:
-        factor = np.sin(lattice_angles)
-    else:
-        a, b, c = lattice_angles * (np.pi / lattice_angles.sum())
-        factor = np.sin(a) * np.sin(c) / np.sin(b)
+    factor = abs(np.linalg.det(compute_lattice_basis(1.0, lattice_angles)))
 
     current_spacing = np.sqrt(domain.area / (target_count * factor))
     for _ in range(6):
@@ -264,8 +260,8 @@ class LatticeGenerator:
         if self.measurements.source_points is not None:
             target_point_count = int(round(len(self.measurements.source_points) * self.params.density_scale))
         else:
-            # TODO: Maybe don't raise here?
-            raise AssertionError('No source points found.')
+            factor = abs(np.linalg.det(compute_lattice_basis(1.0, self.measurements.lattice_angles_rad)))
+            target_point_count = int(round(self.measurements.domain.area / (factor * spacing ** 2)))
 
         buffer = self.params.buffer_factor * spacing
         extent = float(np.max(np.abs(self.measurements.domain.boundary)) + 5 * spacing)
@@ -280,7 +276,7 @@ class LatticeGenerator:
         lattice = _warp_init(
             domain=self.measurements.domain,
             target_spacing_fn=target_spacing_fn,
-            target_count=target_point_count,    # TODO: make this one optional?
+            target_count=target_point_count,
             rot0=rot0,
             extent=extent,
             buffer=buffer,

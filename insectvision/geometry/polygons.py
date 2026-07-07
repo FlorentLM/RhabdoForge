@@ -1,7 +1,63 @@
-from typing import Tuple, Optional, Sequence, Callable, List
+from typing import Tuple, Optional, Sequence, Callable, List, Union
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import ConvexHull, Delaunay, cKDTree, Voronoi
+
+
+class Polygon2D:
+    """
+    A 2D region with conveniences:
+
+    - Delaunay triangulation for fast inside tests
+    - cKDTree of the raw cloud for buffered tests
+    - ConvexHull
+    - Boundary polyline (for plotting)
+    - Area
+    """
+
+    def __init__(self,
+            boundary: ArrayLike,
+            raw_points2d: ArrayLike,
+            hull: 'ConvexHull'
+        ):
+
+        self.boundary: np.ndarray = np.asarray(boundary, dtype=float)   # ordered polyline (M, 2)
+        self.hull: 'ConvexHull' = hull
+        self.equations: np.ndarray = np.asarray(hull.equations, dtype=float)
+        self.area: float = polygon_area(self.boundary)
+
+        self._delaunay: 'Delaunay' = Delaunay(self.boundary)
+        self._tree: 'cKDTree' = cKDTree(np.asarray(raw_points2d, dtype=float))
+
+    @classmethod
+    def from_points(cls, points2d: ArrayLike, smooth: bool = False, n_boundary: int = 300) -> 'Polygon2D':
+
+        points2d = np.asarray(points2d, dtype=float)
+        hull = ConvexHull(points2d)
+
+        if smooth:
+            boundary = smooth_hull(points2d, hull, n=n_boundary)
+            hull = ConvexHull(boundary)  # hull of the smoothed ring -> ghosts/equations
+        else:
+            boundary = points2d[hull.vertices]
+
+        return cls(boundary, points2d, hull)
+
+    def inside(self, points2d: ArrayLike, buffer: float = 0.0) -> np.ndarray:
+
+        points2d = np.atleast_2d(np.asarray(points2d, dtype=float))
+        inside = self._delaunay.find_simplex(points2d) >= 0
+        if buffer > 0:
+            out = np.where(~inside)[0]
+            if len(out):
+                d, _ = self._tree.query(points2d[out])
+                inside[out] = d < buffer
+        return inside
+
+    def signed_distance(self, points2d: ArrayLike) -> np.ndarray:
+        """Signed distance to the hull faces (<0 inside)."""
+        return signed_distance(points2d=points2d, domain=self)
+
 
 
 def polygon_area(points2d: ArrayLike, signed: bool = False) -> float:
@@ -202,41 +258,6 @@ def clip_polygon(points2d: Sequence[ArrayLike], hull_equations: ArrayLike) -> np
 
 # Voronoi / hull routines
 
-def mirror_across_hull(points2d: ArrayLike, equations: ArrayLike, depth: float) -> np.ndarray:
-    """
-    Mirror points lying within 'depth' of the hull edges to the outside.
-
-    Creates a symmetric Voronoi pressure that stops edge points from squashing
-    against the boundary. 'equations' are scipy ConvexHull half-plane rows
-    [nx, ny, offset] with outward-pointing normals.
-    """
-    points2d = np.asarray(points2d, dtype=np.float64)
-    equations = np.asarray(equations, dtype=np.float64)
-
-    mirrored = []
-    for eq in equations:
-        normal, offset = eq[:2], eq[2]
-
-        # ConvexHull convention: normals point outward
-        dist = points2d @ normal + offset
-
-        mask = (dist > -depth) & (dist <= 0)  # inside the hull and within 'depth' of the edge
-        if not np.any(mask):
-            continue
-
-        close_pts = points2d[mask]
-        dist_close = dist[mask]
-
-        # Reflect across the edge
-        mirrored_pts = close_pts - 2.0 * dist_close[:, None] * normal[None, :]
-        mirrored.append(mirrored_pts)
-
-    if mirrored:
-        return np.vstack(mirrored)
-
-    return np.zeros((0, 2))
-
-
 def voronoi_cells(vor: 'Voronoi', n_cells: Optional[int] = None) -> List[np.ndarray]:
     """
     Ordered vertex arrays for the first 'n_cells' input points of a scipy Voronoi
@@ -279,12 +300,12 @@ def smooth_hull(
     return np.column_stack([x, y])
 
 
-def hull_signed_distance(points2d: ArrayLike, hull: 'ConvexHull') -> np.ndarray:
+def signed_distance(points2d: ArrayLike, domain: Union['Polygon2D', 'ConvexHull']) -> np.ndarray:
     """
     Signed distance to the nearest convex-hull face (<0 inside, >0 outside).
     """
     points2d = np.atleast_2d(np.asarray(points2d, dtype=np.float64))
-    eq = hull.equations
+    eq = domain.equations
     return (points2d @ eq[:, :2].T + eq[:, 2]).max(axis=1)
 
 
@@ -332,57 +353,3 @@ def resample_contour(boundary: ArrayLike, spacing_fn: Callable) -> np.ndarray:
         if np.linalg.norm(ring[-1] - ring[0]) < 0.5 * first_step:
             ring = ring[:-1]
     return ring
-
-
-class Polygon2D:
-    """
-    A 2D region with conveniences:
-
-    - Delaunay triangulation for fast inside tests
-    - cKDTree of the raw cloud for buffered tests
-    - ConvexHull
-    - Boundary polyline (for plotting)
-    - Area
-    """
-
-    def __init__(self,
-            boundary: ArrayLike,
-            raw_points2d: ArrayLike,
-            hull: 'ConvexHull'
-        ):
-
-        self.boundary: np.ndarray = np.asarray(boundary, dtype=float)   # ordered polyline (M, 2)
-        self.hull: 'ConvexHull' = hull
-        self.area: float = polygon_area(self.boundary)
-
-        self._delaunay: 'Delaunay' = Delaunay(self.boundary)
-        self._tree: 'cKDTree' = cKDTree(np.asarray(raw_points2d, dtype=float))
-
-    @classmethod
-    def from_points(cls, points2d: ArrayLike, smooth: bool = False, n_boundary: int = 300) -> 'Polygon2D':
-
-        points2d = np.asarray(points2d, dtype=float)
-        hull = ConvexHull(points2d)
-
-        if smooth:
-            boundary = smooth_hull(points2d, hull, n=n_boundary)
-            hull = ConvexHull(boundary)  # hull of the smoothed ring -> Lloyd ghosts/equations
-        else:
-            boundary = points2d[hull.vertices]
-
-        return cls(boundary, points2d, hull)
-
-    def inside(self, points2d: ArrayLike, buffer: float = 0.0) -> np.ndarray:
-
-        points2d = np.atleast_2d(np.asarray(points2d, dtype=float))
-        inside = self._delaunay.find_simplex(points2d) >= 0
-        if buffer > 0:
-            out = np.where(~inside)[0]
-            if len(out):
-                d, _ = self._tree.query(points2d[out])
-                inside[out] = d < buffer
-        return inside
-
-    def signed_distance(self, points2d: ArrayLike) -> np.ndarray:
-        """Signed distance to the hull faces (<0 inside)."""
-        return hull_signed_distance(points2d=points2d, hull=self.hull)

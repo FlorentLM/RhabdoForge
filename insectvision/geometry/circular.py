@@ -40,32 +40,3 @@ def wrap_angle(angles: ArrayLike, degrees: bool = False) -> np.ndarray:
     a = np.deg2rad(angles) if degrees else np.asarray(angles)
     wrapped = (a + np.pi) % (2.0 * np.pi) - np.pi
     return np.rad2deg(wrapped) if degrees else wrapped
-
-
-def circ_mean(
-        angles: ArrayLike,
-        weights: Optional[ArrayLike] = None,
-        axis: Optional[int] = None,
-        degrees: bool = False
-    ) -> np.ndarray:
-    """
-    Circular mean of angles, optionally weighted
-    """
-    a = np.deg2rad(angles) if degrees else np.asarray(angles)
-    m = np.angle(resultant(angles=a, weights=weights, axis=axis, degrees=False))
-    return np.rad2deg(m) if degrees else m
-
-
-def circ_std(
-        angles: ArrayLike,
-        weights: Optional[ArrayLike] = None,
-        axis: Optional[int] = None,
-        degrees: bool = False
-    ) -> np.ndarray:
-    """
-    Circular standard deviation, optionally weighted
-    0 = perfectly concentrated, grows with spread
-    """
-    a = np.deg2rad(angles) if degrees else angles
-    r = np.clip(np.abs(resultant(angles=a, weights=weights, axis=axis, degrees=False)), 1e-9, 1.0)
-    return np.sqrt(-2.0 * np.log(np.deg2rad(r) if degrees else r))

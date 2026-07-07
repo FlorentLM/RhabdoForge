@@ -15,6 +15,7 @@ from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
+from insectvision.geometry.ghosting import ghosts_from_growth_3d
 from insectvision.geometry.linalg import tangent_frames, local_to_world
 from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_neighbours
 from insectvision.geometry.lattice import first_ring_gap
@@ -996,6 +997,8 @@ class SpatialQueries:
 
         return indices
 
+    # TODO: radius of curature helper usage site 3
+
     def estimate_curvature_radius(self, k: int = 7) -> float:
         """
         Estimate the median local radius of curvature for the ommatidia in this view.
@@ -1202,6 +1205,8 @@ class EyeView(OmmatidiumView):
     One eye: an ommatidium selection + eye identity (index / side).
     """
 
+    DEFAULT_VIRTUAL_ROWS = 3
+
     __slots__ = ('_eye_index', '_side')
 
     def __init__(self, model: 'Model', eye_index: int, indices: np.ndarray, side: str = 'left'):
@@ -1225,3 +1230,38 @@ class EyeView(OmmatidiumView):
     def side_sign(self) -> float:
         """Sign of the side: Left/Midline = +1.0, Right = -1.0."""
         return -1.0 if self._side == 'right' else 1.0
+
+    @property
+    def ghost_positions(self) -> np.ndarray:
+        """(G, 3) virtual lens positions grown outward from this eye's boundary (cached)."""
+        return self._ensure_ghosts()[0]
+
+    @property
+    def ghost_directions(self) -> np.ndarray:
+        """(G, 3) virtual optical axes matching ghost_positions (cached)."""
+        return self._ensure_ghosts()[1]
+
+    def build_ghosts(self, n_rows: Optional[int] = None, **kwargs) -> Tuple[np.ndarray, np.ndarray]:
+        """(Re)grow and cache the ghost ring(s)."""
+        rows = self.DEFAULT_VIRTUAL_ROWS if n_rows is None else int(n_rows)
+
+        ghosts = ghosts_from_growth_3d(
+            positions=self.positions,
+            directions=self.directions,
+            is_edge=self.is_edge,
+            ioa_angles=self.interommatidial_angles,
+            n_rows=rows,
+            curvature_radius=self.curvature_radius,
+            **kwargs,
+        )
+        self._spatial_store['ghosts'] = ghosts
+        return ghosts
+
+    def invalidate_ghosts(self) -> None:
+        """Drop the cache explicitly (otherwise invalidated on spatial version bumps)."""
+        self._spatial_store.pop('ghosts', None)
+
+    def _ensure_ghosts(self) -> Tuple[np.ndarray, np.ndarray]:
+        if 'ghosts' not in self._spatial_store:
+            self.build_ghosts()
+        return self._spatial_store['ghosts']

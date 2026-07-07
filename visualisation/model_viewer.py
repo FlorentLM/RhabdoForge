@@ -1,7 +1,7 @@
 import os
 from datetime import datetime
 from itertools import cycle
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Tuple
 import numpy as np
 import pyvista as pv
 from numpy.typing import ArrayLike
@@ -11,7 +11,6 @@ from scipy.spatial import Delaunay
 from insectvision.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD, norm_l2
 from insectvision.geometry.linalg import tangent_frames
 from insectvision.geometry.spherical import sphere_to_stereo
-from insectvision.geometry.lattice import grow_lattice_outwards
 from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
@@ -36,8 +35,12 @@ _PHASOR_TEMPLATE = None
 
 # TODO: Move the meshing functions to the mesh utilities and use the mesh in the renderer?
 
-
-def make_hex_mesh(normals, delaunay_points, delaunay_faces, delaunay_indices):
+def make_hex_mesh(
+        normals: np.ndarray,
+        delaunay_points: np.ndarray,
+        delaunay_faces: np.ndarray,
+        delaunay_indices: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     if len(delaunay_points) == 0 or len(delaunay_faces) == 0:
         return np.array([]), np.array([]), np.array([])
@@ -107,12 +110,11 @@ def make_hex_mesh(normals, delaunay_points, delaunay_faces, delaunay_indices):
     return points, faces, indices
 
 
-def make_delaunay_mesh(model, ghost_rows=1):
+def make_delaunay_mesh(model: 'Model', ghost_rows: int = 1) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Build Delaunay mesh with ghost points using procedural lattice growth.
+    Build per-eye Delaunay mesh from each eye's real + virtual points.
     """
-    positions = model.positions
-    if positions.shape[0] == 0:
+    if model.positions.shape[0] == 0:
         return np.array([]), np.array([]), np.array([])
 
     all_points, all_global_indices, all_faces = [], [], []
@@ -123,37 +125,31 @@ def make_delaunay_mesh(model, ghost_rows=1):
             continue
 
         indices = np.asarray(eye.indices, dtype=np.int_)
-        eye_pos = positions[indices]
-        eye_dirs = norm_l2(eye.directions)
 
-        # Generate virtual ghost points using the procedural lattice growth
+        real_pos = np.asarray(eye.positions, dtype=np.float64)
+        real_dirs = norm_l2(eye.directions)
+
         if ghost_rows > 0:
-            ghost_pos, ghost_dirs = grow_lattice_outwards(eye, n_rows=ghost_rows)
+            eye.build_ghosts(n_rows=ghost_rows)  # honour the requested ring count
+            gpos, gdirs = eye.ghost_positions, eye.ghost_directions
         else:
-            ghost_pos, ghost_dirs = [], []
+            gpos = np.zeros((0, 3))
+            gdirs = np.zeros((0, 3))
 
-        # Combine real and ghost points
-        if len(ghost_pos) > 0:
-            combined_pos = np.vstack([eye_pos, ghost_pos]).astype(np.float32)
-            mapping = np.concatenate([indices, -np.ones(len(ghost_pos), dtype=np.int_)])
+        if len(gpos):
+            combined_pos = np.vstack([real_pos, gpos]).astype(np.float32)
+            combined_dirs = np.vstack([real_dirs, gdirs])
+            mapping = np.concatenate([indices, -np.ones(len(gpos), dtype=np.int_)])
         else:
-            combined_pos = eye_pos.astype(np.float32)
+            combined_pos = real_pos.astype(np.float32)
+            combined_dirs = real_dirs
             mapping = indices
 
-        # Project to a 2D stereographic plane to perform Delaunay Triangulation
-        # (explicitly lock the projection frame to the real eye directions)
-        pts_2d_real, forward, right, up = sphere_to_stereo(eye_dirs)
-
-        if len(ghost_pos) > 0:
-            pts_2d_ghost, *_ = sphere_to_stereo(ghost_dirs, (forward, right, up))
-            pts_2d = np.vstack([pts_2d_real, pts_2d_ghost])
-        else:
-            pts_2d = pts_2d_real
-
+        # Delaunay in the locked stereo plane of the (real + ghost) directions
+        pts_2d, *_ = sphere_to_stereo(norm_l2(combined_dirs))
         tri = Delaunay(pts_2d)
 
-        # Prune excessively large boundary triangles
-        # (keeps the convex hull tight to the ghost ring and prevents wild outer edges)
+        # Prune oversized boundary triangles (keeps the hull tight to the ghost ring)
         p2d_f = pts_2d[tri.simplices]
         l2d_max = np.max(np.linalg.norm(p2d_f - np.roll(p2d_f, 1, axis=1), axis=2), axis=1)
         valid_faces = tri.simplices[l2d_max < (np.median(l2d_max) * 4.0)]

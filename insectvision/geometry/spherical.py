@@ -1,8 +1,13 @@
-from typing import Tuple, Optional, Sequence
+from typing import TYPE_CHECKING, Tuple, Optional, Sequence
 import numpy as np
 from numpy.typing import ArrayLike
+
 from insectvision.geometry.linalg import tangent_frames, local_to_world
+from insectvision.geometry.neighbours import knn
 from insectvision.utils import norm_l2
+
+if TYPE_CHECKING:
+    from scipy.spatial import cKDTree
 
 
 # Spherical <-> Cartesian
@@ -144,3 +149,17 @@ def normals_to_ellipsoid(directions: ArrayLike, rx: float, ry: float, rz: float)
     z = (rz ** 2 * nz) / K
 
     return np.column_stack([x, y, z])
+
+
+# TODO: Might move this one
+def curvature_radius(query_pos: ArrayLike, query_dirs: ArrayLike, tree: 'cKDTree', cloud_dirs: ArrayLike, k: int = 7) -> np.ndarray:
+    """R ~= (spatial distance) / (great-circle angle) over k neighbours."""
+    dist, idx = knn(tree, query_pos, k=k, drop_self=True)
+
+    query_dirs = np.asarray(query_dirs, dtype=np.float64)
+    cloud_dirs = np.asarray(cloud_dirs, dtype=np.float64)
+
+    ang = chord_to_angle(np.linalg.norm(cloud_dirs[idx] - query_dirs[:, None, :], axis=-1))
+    valid = (ang > 1e-4) & (dist > 0)
+    with np.errstate(all='ignore'):
+        return np.nanmedian(np.where(valid, dist / np.where(valid, ang, 1.0), np.nan), axis=1)
