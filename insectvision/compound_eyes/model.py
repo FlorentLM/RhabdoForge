@@ -31,6 +31,11 @@ from insectvision.compound_eyes.helpers.alignment import (
 from insectvision.compound_eyes.views import SpatialQueries, BaseView, logger, OmmatidiumView, EyeView, RhabdomereView
 
 
+
+# TODO Should store the rotational alignment of the anisotropy to the lattice somewhere??
+
+
+
 class Model(SpatialQueries, BaseView):
     """
     A (set of) compound eyes specified as N ommatidia positions / directions
