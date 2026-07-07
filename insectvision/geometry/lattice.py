@@ -1,11 +1,14 @@
-from typing import Sequence, List, Callable, Tuple, Optional
+from typing import TYPE_CHECKING, Sequence, List, Callable, Tuple, Optional
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
 from insectvision.geometry.linalg import principal_axis_angle
-from insectvision.geometry.neighbours import NeighbourGraph, ragged_neighbours
-from insectvision.geometry.polygons import Polygon2D
+from insectvision.geometry.neighbours import ragged_neighbours
+
+if TYPE_CHECKING:
+    from insectvision.geometry.polygons import Polygon2D
+    from insectvision.geometry.neighbours import NeighbourGraph
 
 
 # Lattice generation
@@ -157,7 +160,7 @@ def create_ghosts_ring(
 
 def first_ring_gap(
         points2d: ArrayLike,
-        neighbours: NeighbourGraph,
+        neighbours: 'NeighbourGraph',
         degrees: bool = False
     ) -> np.ndarray:
     """
@@ -168,20 +171,22 @@ def first_ring_gap(
     """
 
     points2d = np.asarray(points2d, dtype=np.float64)
-    nbr = ragged_neighbours(neighbours)
+    neighbours_list = ragged_neighbours(neighbours)         # why not dense?
     gap = np.full(len(points2d), 2.0 * np.pi)
 
-    for i, nb in enumerate(nbr):
-        if nb.size < 2:
+    for i, neighb_indices in enumerate(neighbours_list):
+        if neighb_indices.size < 2:
             continue
-        d = points2d[nb] - points2d[i]
+
+        d = points2d[neighb_indices] - points2d[i]
         ang = np.sort(np.arctan2(d[:, 1], d[:, 0]))
         diffs = np.diff(np.concatenate([ang, ang[:1] + 2.0 * np.pi]))
-        gap[i] = float(diffs.max())
+        gap[i] = diffs.max()
 
     return np.rad2deg(gap) if degrees else gap
 
 
+# This should not create a hexagonal grid just to throw it away...
 def base_bond_dirs(lattice_angles: float | Sequence[float], spacing: float = 1.0, degrees: bool = False) -> np.ndarray:
     """
     The six ideal nearest-neighbour bond directions of the base cell (unit vectors).
@@ -234,13 +239,11 @@ def _walk(
     return np.array(path, dtype=int)
 
 
-
-# TODO: This should not call trace_lattice_rows
-
+# TODO: redundant?
 def get_lattice_angles(
         points2d: ArrayLike,
         neighbours: 'NeighbourGraph',
-        axis_fn: 'Callable'
+        axis_fn: Callable
     ) -> np.ndarray:
     """Three internal angles of the mean unit cell (sums to pi), defaults to 60/60/60 if unresolved."""
 
@@ -258,7 +261,7 @@ def get_lattice_angles(
 
 def trace_lattice_rows(
         points2d: ArrayLike,
-        neighbours: NeighbourGraph,
+        neighbours: 'NeighbourGraph',
         seed: Optional[int] = None,
         bearings: Optional[ArrayLike] = None,
         axis_fn: Optional[Callable] = None,
