@@ -5,7 +5,7 @@ from numpy.typing import ArrayLike
 
 from insectvision.utils import norm_l2, broadcast_1d
 from insectvision.geometry.linalg import tangent_frames, rotate_in_tangent_plane, local_to_world
-from insectvision.geometry.smoothing import smooth_field_partitioned
+from insectvision.geometry.fields import smooth_field_partitioned
 from insectvision.geometry.circular import wrap_angle
 
 if TYPE_CHECKING:

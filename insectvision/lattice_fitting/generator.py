@@ -12,14 +12,14 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
+from insectvision.geometry.fields import interpolate_spacing_field, interpolate_hexatic_field
 from insectvision.geometry.linalg import rotation_matrix2d
 from insectvision.geometry.polygons import resample_contour, Polygon2D
 from insectvision.geometry.neighbours import delaunay_neighbours, ball_spacing
-from insectvision.geometry.lattice import first_ring_gap, create_hexagonal_grid, base_bond_dirs, compute_lattice_basis
+from insectvision.geometry.lattice import (
+    first_ring_gap, create_hexagonal_grid, base_bond_dirs, compute_lattice_basis, trace_lattice_rows, bearings_to_angles
+)
 from insectvision.lattice_fitting.relaxation import align_grid, density_warp, spring_relaxation, density_correct
-from insectvision.lattice_fitting.profile import EyeMeasurements
-
-# TODO: Maybe some of these functions should be public?
 
 
 # Stage 1: density warp
@@ -190,6 +190,62 @@ def _finalize_lattice(
         ghost_depth=p.ghost_depth_factor * avg_spacing,
         ghost_source=p.ghost_source
     )
+
+##
+
+# Fitting dataclasses
+
+@dataclass
+class EyeMeasurements:
+    """
+    Measurements from a source 2D cloud (used to feed generation).
+    """
+    domain: 'Polygon2D'
+    spacing_fn: Callable
+    theta_fn: Callable
+    lattice_angles_rad: np.ndarray
+    mean_spacing: float
+    source_points: Optional[np.ndarray] = None
+
+    @classmethod
+    def from_points(cls,
+            points2d: ArrayLike,
+            density_smoothing: float = 0.1,
+            axes_smoothing: float = 0.4,
+            min_hex_order: float = 0.2,
+            max_length_factor:float = 1.8,
+            smooth_domain: bool = True
+        ) -> 'EyeMeasurements':
+
+        points2d = np.asarray(points2d, dtype=float)
+
+        neighbours = delaunay_neighbours(points2d=points2d, max_length_factor=max_length_factor)
+
+        # Create continuous fields
+        spacing_fn, mean_spacing = interpolate_spacing_field(
+            points2d=points2d,
+            neighbours=neighbours,
+            smoothing=density_smoothing,
+            return_mean_spacing=True
+        )
+
+        theta_fn = interpolate_hexatic_field(
+            points2d=points2d,
+            neighbours=neighbours,
+            smoothing=axes_smoothing,
+            min_order=min_hex_order,
+            return_confidence=False     # TODO: actually why not? could be useful
+        )
+
+        # Trace the rows to get the 3 primary bearings
+        _, _, bearings = trace_lattice_rows(points2d=points2d, neighbours=neighbours, theta_fn=theta_fn)
+
+        # Convert to internal angles
+        lattice_angles = bearings_to_angles(bearings)
+
+        domain = Polygon2D.from_points(points2d=points2d, smooth=smooth_domain)
+
+        return cls(domain, spacing_fn, theta_fn, lattice_angles, mean_spacing, points2d)
 
 
 @dataclass

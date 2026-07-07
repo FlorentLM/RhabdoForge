@@ -13,7 +13,7 @@ from insectvision.geometry.linalg import principal_axis_angle
 from insectvision.geometry.spherical import sphere_to_stereo, chord_to_angle
 from insectvision.geometry.neighbours import delaunay_edges, delaunay_neighbours, graph_spacing, ball_spacing
 from insectvision.geometry.lattice import trace_lattice_rows
-from insectvision.lattice_fitting.profile import EyeMeasurements
+from insectvision.lattice_fitting.generator import EyeMeasurements
 
 
 # TODO: Move these two to shared plot utils

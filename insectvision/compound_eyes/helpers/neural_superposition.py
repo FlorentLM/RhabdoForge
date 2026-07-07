@@ -6,7 +6,7 @@ from scipy.optimize import linear_sum_assignment, LinearConstraint, milp, Bounds
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from insectvision.geometry.circular import wrap_angle
-from insectvision.geometry.smoothing import smooth_field_partitioned
+from insectvision.geometry.fields import smooth_field_partitioned
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes.model import Model
@@ -672,8 +672,7 @@ def refine_chi(
         neighbours.append(nb)
 
     smoothed_err = smooth_field_partitioned(
-        values=omm_err, kind='scalar', groups=groups, neighbours=neighbours,
-        n_iter=smooth_iters, mask=measurable
+        values=omm_err, neighbours=neighbours, kind='scalar', groups=groups, mask=measurable, n_iter=smooth_iters
     )
 
     # Clamp the nudge to prevent flipping
@@ -683,11 +682,11 @@ def refine_chi(
     if adjust_scale:
         smoothed_scale = smooth_field_partitioned(
             values=omm_scale,
+            neighbours=neighbours,
             kind='scalar',
             groups=groups,
-            neighbours=neighbours,
+            mask=measurable,
             n_iter=smooth_iters,
-            mask=measurable
         )
 
         final_scale = 1.0 + (smoothed_scale - 1.0) * relax

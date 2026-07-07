@@ -16,7 +16,7 @@ from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world, tangent_bearing
 from insectvision.geometry.neighbours import knn, graph_spacing, ball_spacing
-from insectvision.geometry.smoothing import smooth_phasors, smooth_field_partitioned
+from insectvision.geometry.fields import smooth_phasors, smooth_field_partitioned
 from insectvision.geometry.spherical import angle_to_chord, sphere_to_stereo
 from insectvision.geometry.polygons import triangle_areas
 
@@ -700,7 +700,13 @@ class Model(SpatialQueries, BaseView):
             # Smooth lattice axis as a 6-fold phasor
             g2l = np.full(self._N, -1, dtype=np.intp)
             g2l[eye.indices] = np.arange(n)
-            e_tilts_z6_smoothed = smooth_phasors(np.exp(6j * np.asarray(e_tilts, dtype=np.float64)), neighbours=np.where(is_immediate, g2l[neighbours.indices], -1), n_iter=2, weights=e_psi6_mag)
+
+            e_tilts_z6_smoothed = smooth_phasors(
+                values=np.exp(6j * np.asarray(e_tilts, dtype=np.float64)),
+                neighbours=np.where(is_immediate, g2l[neighbours.indices], -1),
+                weights=e_psi6_mag,
+                n_iter=2
+            )
             e_tilts = hexatic_axis_angle(e_tilts_z6_smoothed)  # put angles back in (-pi/6, pi/6]
 
             ioa_minor[eye.indices] = np.where(np.isfinite(e_ioa_minor), e_ioa_minor, 0.0)
@@ -822,12 +828,12 @@ class Model(SpatialQueries, BaseView):
 
         return smooth_field_partitioned(
             values=out,
+            neighbours=n,
             kind='scalar',
             groups=g,
-            neighbours=n,
-            n_iter=n_iter,
             mask=mask,
             method=method,
+            n_iter=n_iter,
         ).astype(np.float32)
 
     # Private - Neural superposition cache helper

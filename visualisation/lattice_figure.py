@@ -1,8 +1,7 @@
 import numpy as np
 
 from insectvision.geometry.spherical import sphere_to_stereo
-from insectvision.lattice_fitting.profile import EyeMeasurements
-from insectvision.lattice_fitting.generator import LatticeGenerator, FittingParameters
+from insectvision.lattice_fitting.generator import LatticeGenerator, FittingParameters, EyeMeasurements
 from insectvision.lattice_fitting.plots import plot_lattice, plot_lattice_diagnostics
 from morphological_scaffolds.drosophila.run import reconstruct_buchner_data
 

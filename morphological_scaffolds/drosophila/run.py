@@ -14,9 +14,8 @@ from svg.path import parse_path, Line, Close
 
 from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere, normals_to_ellipsoid
 from insectvision.lattice_fitting.relaxation import mirror_bilateral
-from insectvision.lattice_fitting.generator import FittingParameters, LatticeGenerator
+from insectvision.lattice_fitting.generator import FittingParameters, LatticeGenerator, EyeMeasurements
 from insectvision.lattice_fitting.plots import plot_lattice, set_3d_equal, draw_gizmo
-from insectvision.lattice_fitting.profile import EyeMeasurements
 from insectvision.lattice_fitting.plots import plot_eye_scaffold_3d, plot_lattice_3d, plot_density_3d
 
 

@@ -142,6 +142,7 @@ def rotate2d(vecs: ArrayLike, theta: ArrayLike, degrees: bool = False) -> np.nda
     return np.stack([c * x - s * y, s * x + c * y], axis=-1)
 
 
+# TODO: Make this a more generic PCA function?
 def principal_axis_angle(points2d: ArrayLike, degrees: bool = False) -> float:
     """
     Orientation of the major principal axis of a point set (PCA).

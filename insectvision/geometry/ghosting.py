@@ -3,7 +3,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
-from insectvision.geometry.hexatic import hexatic_interpolant_fn
+from insectvision.geometry.fields import interpolate_hexatic_field
 from insectvision.geometry.lattice import bond_ioa
 from insectvision.geometry.linalg import rotate2d
 from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere, radius_of_curvature
@@ -287,7 +287,7 @@ def ghosts_from_growth_3d(
     # Fixed stereo frame + orientation field + outward-test domain, from the real eye
     pts2d, fwd, right, up = sphere_to_stereo(directions)
     frame = (fwd, right, up)
-    theta_fn = hexatic_interpolant_fn(pts2d, smoothing=field_smoothing)
+    theta_fn = interpolate_hexatic_field(pts2d, smoothing=field_smoothing)
     stereo_domain = Polygon2D.from_points(pts2d)
 
     real_tree = cKDTree(positions)
