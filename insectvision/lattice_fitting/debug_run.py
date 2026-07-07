@@ -10,7 +10,7 @@ from morphological_scaffolds.drosophila.run import reconstruct_buchner_data
 SVG = 'morphological_scaffolds/drosophila/data/buchner1971_redigitised.svg'
 
 DENSITY_SCALE     = 1.0         # > 1 packs more ommatidia
-DENSITY_SMOOTHING = 0.1        # RBF smoothing of the spacing field
+DENSITY_SMOOTHING = 0.1         # RBF smoothing of the spacing field
 AXES_SMOOTHING    = 0.50        # RBF smoothing of the hexatic-axis field
 MIN_HEX_ORDER     = 0.20        # |psi6| below which a point is dropped from the axis fit
 GHOST_SOURCE      = 'lattice'   # 'lattice' | 'hull' | 'edge' | 'none'

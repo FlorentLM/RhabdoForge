@@ -152,19 +152,19 @@ def rot2d(theta: float | ArrayLike, degrees: bool = False) -> np.ndarray:
 
 def principal_axis_angle(points2d: ArrayLike, degrees: bool = False) -> float:
     """
-    Orientation of the major principal axis of a 2D point set (PCA).
-    Sign-ambiguous (a line, not a ray).
+    Orientation of the major principal axis of a point set (PCA).
+    Sign-ambiguous (returns a line orientation in [-pi/2, pi/2]).
     """
     points2d = np.asarray(points2d, dtype=float)
-
     if len(points2d) < 2:
         return np.nan
 
+    # Center points and compute covariance
     c = points2d - points2d.mean(axis=0)
     evals, evecs = np.linalg.eigh(c.T @ c)
-    vec = evecs[:, int(np.argmax(evals))]
 
-    angle = float(np.arctan2(vec[1], vec[0]))
+    # Largest eigenvalue is the major axis
+    vec = evecs[:, np.argmax(evals)]
+    angle = np.arctan2(vec[1], vec[0])
 
     return np.rad2deg(angle) if degrees else angle
-

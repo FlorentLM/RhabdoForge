@@ -15,7 +15,8 @@ from insectvision.utils import WORLD_FORWARD
 from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world, tangent_bearing
-from insectvision.geometry.neighbours import smooth_phasors, knn, smooth_field_partitioned, graph_spacing, ball_spacing
+from insectvision.geometry.neighbours import knn, graph_spacing, ball_spacing
+from insectvision.geometry.smoothing import smooth_phasors, smooth_field_partitioned
 from insectvision.geometry.spherical import angle_to_chord, sphere_to_stereo
 from insectvision.compound_eyes.buffers import Buffer, _BIT_LAYOUT
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle

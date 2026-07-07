@@ -8,11 +8,12 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from scipy.interpolate import griddata
 from scipy.spatial import cKDTree
 
-from insectvision.geometry.hexatic import phasor_from_points, hexatic_order
+from insectvision.geometry.hexatic import compute_hexatic_phasor, hexatic_order
 from insectvision.geometry.linalg import principal_axis_angle
 from insectvision.geometry.spherical import sphere_to_stereo, chord_to_angle
-from insectvision.geometry.neighbours import delaunay_edges, delaunay_neighbours, graph_spacing, walk_rows, ball_spacing
-from insectvision.lattice_fitting.profile import trace_lattice_rows, EyeMeasurements
+from insectvision.geometry.neighbours import delaunay_edges, delaunay_neighbours, graph_spacing, ball_spacing
+from insectvision.geometry.lattice import trace_lattice_rows
+from insectvision.lattice_fitting.profile import EyeMeasurements
 
 
 # Shared helpers
@@ -195,10 +196,8 @@ def lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diagnosti
     # D. Lattice rows fitted vs. source
     ax = axs[1, 1]
 
-    si, src_rows, bearings = trace_lattice_rows(raw_points, raw_nb, theta_fn)
-
-    li = int(np.argmin(np.linalg.norm(final - raw_points[si], axis=1)))
-    gen_rows = walk_rows(final, gen_nb, li, bearings)
+    src_seed, src_rows, bearings = trace_lattice_rows(raw_points, raw_nb, axis_fn=theta_fn)
+    gen_seed, gen_rows, _ = trace_lattice_rows(final, gen_nb, seed=src_seed, bearings=bearings)
 
     edges = delaunay_edges(final, max_length_factor=1.8)
     ax.add_collection(LineCollection(final[edges], color='0.8', lw=0.4, alpha=0.5))
@@ -213,7 +212,7 @@ def lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diagnosti
         ax.plot(gr[:, 0], gr[:, 1], color=col, lw=2.2, zorder=5, label=f'Row {lab}  \u0394={d:.1f}\u00b0')
         ax.plot(sr[:, 0], sr[:, 1], color=col, lw=1.4, ls=':', alpha=0.85, zorder=4)
 
-    ax.scatter([final[li, 0]], [final[li, 1]], c='k', s=45, marker='*', zorder=6)
+    ax.scatter(gen_seed[0], gen_seed[1], c='k', s=45, marker='*', zorder=6)
     ax.plot(bnd[:, 0], bnd[:, 1], 'k--', lw=1.0, alpha=0.4)
     ax.legend(fontsize=9, loc='upper right', framealpha=0.9)
 
@@ -222,7 +221,8 @@ def lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diagnosti
     # E. Hexatic order + defects
     ax = axs[0, 2]
 
-    psi = hexatic_order(phasor_from_points(final, gen_nb))
+    z6 = compute_hexatic_phasor(final, gen_nb)
+    psi = hexatic_order(z6)
     coord = np.array([len(n) for n in gen_nb])
 
     inside = domain.signed_distance(final) < -hide_margin * gen_ms
@@ -247,7 +247,7 @@ def lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diagnosti
     ax = axs[1, 2]
 
     ax.set_aspect('auto')
-    psi_src = hexatic_order(phasor_from_points(raw_points, raw_nb))
+    psi_src = hexatic_order(compute_hexatic_phasor(raw_points, raw_nb))
     in_src = domain.signed_distance(raw_points) < -hide_margin * src_ms
 
     cg = coord[inside]
@@ -315,7 +315,7 @@ def plot_lattice_3d(
         c_values = graph_spacing(pts_2d, adj)
         c_label = 'Local spacing (stereo)'
     elif adj is not None and color_by == 'psi6':
-        c_values = hexatic_order(phasor_from_points(pts_2d, adj))
+        c_values = hexatic_order(compute_hexatic_phasor(pts_2d, adj))
         c_label, cmap = 'Hexatic order ($\\psi_6$)', 'RdYlGn'
 
     fig = plt.figure(figsize=(9, 8))

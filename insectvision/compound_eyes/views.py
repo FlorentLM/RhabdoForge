@@ -16,7 +16,8 @@ from scipy.spatial import cKDTree
 
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
 from insectvision.geometry.linalg import tangent_frames, local_to_world
-from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_neighbours, first_ring_gap
+from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_neighbours
+from insectvision.geometry.lattice import first_ring_gap
 from insectvision.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo
 )

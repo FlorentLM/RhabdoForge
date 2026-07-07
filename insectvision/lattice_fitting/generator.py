@@ -14,10 +14,9 @@ from scipy.spatial import cKDTree
 
 from insectvision.geometry.linalg import rot2d
 from insectvision.geometry.polygons import resample_contour, Polygon2D
-from insectvision.geometry.neighbours import delaunay_neighbours, first_ring_gap, ball_spacing
-from insectvision.lattice_fitting.algo import (
-    hexagonal_grid, align_grid, density_warp, hex_cell_area_factor, base_bond_dirs, spring_relaxation, density_correct
-)
+from insectvision.geometry.neighbours import delaunay_neighbours, ball_spacing
+from insectvision.geometry.lattice import first_ring_gap, create_hexagonal_grid, base_bond_dirs
+from insectvision.lattice_fitting.relaxation import align_grid, density_warp, spring_relaxation, density_correct
 from insectvision.lattice_fitting.profile import EyeMeasurements
 
 
@@ -39,12 +38,18 @@ def warp_init(
     """
 
     rot0 = np.asarray(rot0, dtype=np.float64)
+    lattice_angles = np.asarray(lattice_angles, dtype=np.float64)
 
-    factor = hex_cell_area_factor(lattice_angles)
+    if lattice_angles.ndim == 0:
+        factor = np.sin(lattice_angles)
+    else:
+        a, b, c = lattice_angles * (np.pi / lattice_angles.sum())
+        factor = np.sin(a) * np.sin(c) / np.sin(b)
+
     current_spacing = float(np.sqrt(domain.area / (n_target * factor)))
 
     for _ in range(6):
-        grid = hexagonal_grid(spacing=current_spacing, angles=lattice_angles, extent=extent) @ rot0.T
+        grid = create_hexagonal_grid(spacing=current_spacing, angles=lattice_angles, extent=extent) @ rot0.T
         surv = grid[domain.inside(grid, buffer=buffer)]
         surv = density_warp(surv, target_spacing_fn, reference_spacing=current_spacing,
                             exponent=warp_exponent)
@@ -57,7 +62,7 @@ def warp_init(
         if abs(ratio - 1.0) < 0.03:
             break
 
-    grid = hexagonal_grid(spacing=current_spacing, angles=lattice_angles, extent=extent) @ rot0.T
+    grid = create_hexagonal_grid(spacing=current_spacing, angles=lattice_angles, extent=extent) @ rot0.T
     if align_points is not None:
         grid = align_grid(grid, align_points)
 

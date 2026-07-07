@@ -1,4 +1,4 @@
-from typing import Callable, Sequence, Optional, Tuple
+from typing import Callable, Optional, Tuple
 import numpy as np
 from numpy.typing import ArrayLike
 from numpy.fft import fft2, ifft2, fftfreq
@@ -6,100 +6,9 @@ from scipy.optimize import minimize
 from scipy.spatial import cKDTree, ConvexHull
 from scipy.interpolate import RegularGridInterpolator, griddata
 
-from insectvision.geometry.polygons import Polygon2D, mirror_across_hull, lattice_ghosts
+from insectvision.geometry.polygons import Polygon2D, mirror_across_hull
+from insectvision.geometry.lattice import create_ghosts_ring
 from insectvision.geometry.neighbours import delaunay_edges, ball_spacing
-
-
-def hexagonal_grid(
-        spacing: float = 1.0,
-        angles: float | Sequence[float] = np.pi / 3,
-        extent: float = 10.0,
-        degrees: bool = False,
-    ) -> np.ndarray:
-    """
-    Make a hexagonal grid with exact coverage for any geometry.
-
-    Args:
-        spacing: The length of the first basis vector (b1).
-        angles:
-            - if float: The angle between b1 and b2 (standard hex = pi/3).
-            - if 3-item list: The three internal angles (alpha, beta, gamma) of the lattice triangle.
-                Sum is normalised to 180 degrees.
-        extent: The radius of the circular domain to cover.
-    """
-
-    angles = np.asarray(angles, dtype=np.float64)
-    if degrees:
-        angles = np.deg2rad(angles)
-
-    if angles.ndim == 0:
-        # Standard case: equilateral triangle sides if angle is 60 deg
-        a = float(angles)
-        b1 = np.array([spacing, 0.0])
-        b2 = np.array([spacing * np.cos(a), spacing * np.sin(a)])
-    else:
-        # Squished case: triangle with angles a, b, c
-        if angles.size != 3:
-            raise ValueError('Provide 3 angles for a squished lattice.')
-
-        angles = angles * (np.pi / np.sum(angles))
-        a, b, c = angles
-
-        s2 = spacing
-        s1 = s2 * np.sin(a) / np.sin(b)
-
-        b1 = np.array([s2, 0.0])
-        b2 = np.array([s1 * np.cos(c), s1 * np.sin(c)])
-
-    B = np.column_stack([b1, b2])
-
-    try:
-        inv_B = np.linalg.inv(B)
-    except np.linalg.LinAlgError:
-        raise ValueError('Lattice angles result in a degenerate (collinear) basis.')
-
-    n1 = int(np.ceil(extent * np.linalg.norm(inv_B[0, :])))
-    n2 = int(np.ceil(extent * np.linalg.norm(inv_B[1, :])))
-
-    i_range = np.arange(-n1, n1 + 1)
-    j_range = np.arange(-n2, n2 + 1)
-    ii, jj = np.meshgrid(i_range, j_range)
-
-    indices = np.stack([ii.ravel(), jj.ravel()], axis=0)
-    grid = (B @ indices).T
-
-    dist_sq = np.sum(grid ** 2, axis=1)
-    mask = dist_sq <= (extent ** 2)
-
-    return grid[mask]
-
-
-def hex_cell_area_factor(angles: float | Sequence[float], degrees: bool = False) -> float:
-    """
-    Unit-cell area = spacing^2 * this factor (for the angles hexagonal_grid uses).
-    """
-    angles = np.asarray(angles, dtype=np.float64)
-    if degrees:
-        angles = np.deg2rad(angles)
-
-    if angles.ndim == 0:
-        return float(np.sin(angles))
-
-    a, b, c = np.asarray(angles, float) * (np.pi / np.sum(angles))
-    return float(np.sin(a) * np.sin(c) / np.sin(b))
-
-
-def base_bond_dirs(lattice_angles: float | Sequence[float], spacing: float = 1.0, degrees: bool = False) -> np.ndarray:
-    """
-    The six ideal nearest-neighbour bond directions of the base cell (unit vectors).
-    """
-    lattice_angles = np.asarray(lattice_angles, dtype=np.float64)
-    if degrees:
-        lattice_angles = np.deg2rad(lattice_angles)
-
-    grid = hexagonal_grid(spacing=spacing, angles=lattice_angles, extent=2.5 * spacing, degrees=False)
-    nn = grid[np.argsort(np.linalg.norm(grid, axis=1))[1:7]]   # skip origin, take 6 nearest
-    return nn / np.linalg.norm(nn, axis=1, keepdims=True)
 
 
 def align_grid(grid: ArrayLike, points2d: ArrayLike) -> np.ndarray:
@@ -227,7 +136,7 @@ def spring_relaxation(
             return p, np.zeros((0, 2))
 
         if ghost_source == 'lattice':
-            g = lattice_ghosts(
+            g = create_ghosts_ring(
                 p, theta_fn, spacing_fn, bond_dirs, domain,
                 avg_spacing=float(np.median(spacing_fn(p).ravel())),
                 boundary_band=ghost_depth / max(np.median(spacing_fn(p).ravel()), 1e-9),

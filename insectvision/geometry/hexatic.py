@@ -1,4 +1,4 @@
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple, Union
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.interpolate import RBFInterpolator
@@ -17,12 +17,10 @@ def hexatic_order(z6: ArrayLike) -> np.ndarray:
     return np.abs(z6).astype(np.float32)
 
 
-def phasor_from_points(points2d: ArrayLike, neighbours: 'NeighbourGraph') -> np.ndarray:
+def compute_hexatic_phasor(points2d: ArrayLike, neighbours: 'NeighbourGraph') -> np.ndarray:
     """
-    Per-point 6-fold phasor from a 2D cloud + neighbour graph.
-
-    'neighbours' is a NeighbourGraph in either representation (ragged list-of-arrays
-    or dense (N, k) with entries < 0 as padding). Points with < 2 neighbours get 0+0j.
+    Per-point 6-fold order parameter (psi_6) from a 2D cloud + neighbour graph.
+    Points with < 2 neighbours return 0+0j.
     """
     points2d = np.asarray(points2d, dtype=np.float64)
     nbr = ragged_neighbours(neighbours)
@@ -31,19 +29,21 @@ def phasor_from_points(points2d: ArrayLike, neighbours: 'NeighbourGraph') -> np.
     for i, nb in enumerate(nbr):
         if nb.size < 2:
             continue
+        # Bearings of neighbours relative to self
         d = points2d[nb] - points2d[i]
-        z6[i] = resultant(angles=np.arctan2(d[:, 1], d[:, 0]), axis=-1, fold=6)
+        angles = np.arctan2(d[:, 1], d[:, 0])
+        z6[i] = resultant(angles=angles, fold=6)
 
     return z6
 
 
-def hexatic_axis_field(
+def hexatic_interpolant_fn(
         points2d: ArrayLike,
         neighbours: Optional[ArrayLike] = None,
         smoothing: float = 0.5,
         min_order: float = 0.5,
         return_confidence: bool = False
-    ) -> 'Callable':
+    ) -> Union['Callable', Tuple['Callable', 'Callable']]:
     """
     Continuous local hexatic-axis interpolant.
 
@@ -55,7 +55,7 @@ def hexatic_axis_field(
     if neighbours is None:
         neighbours = beta_skeleton_neighbours(points2d)
 
-    z6 = phasor_from_points(points2d, neighbours)
+    z6 = compute_hexatic_phasor(points2d, neighbours)
     order = hexatic_order(z6)
 
     keep = order >= min_order
@@ -71,6 +71,7 @@ def hexatic_axis_field(
 
     if not return_confidence:
         return theta_fn
+
     rbf_c = RBFInterpolator(points2d[keep], order[keep], kernel='thin_plate_spline', smoothing=smoothing)
 
     def conf_fn(q):
