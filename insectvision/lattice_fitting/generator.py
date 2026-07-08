@@ -21,7 +21,9 @@ from insectvision.geometry.neighbours import (
 from insectvision.geometry.lattice import (
     create_hexagonal_grid, base_bond_dirs, compute_lattice_basis, trace_lattice_rows, bearings_to_angles
 )
-from insectvision.lattice_fitting.relaxation import align_grid, density_warp, spring_relaxation, density_correct
+from insectvision.lattice_fitting.relaxation import (
+    align_grid, density_warp, spring_relaxation, density_correct, _ghost_source_str
+)
 
 
 # Stage 1: density warp
@@ -288,9 +290,7 @@ class FittingParameters:
     settle_iters: int = 40              # Spring relaxation iters for the final settle
 
     def __post_init__(self):
-        self.ghost_source = 'none' if not self.ghost_source else str(self.ghost_source).lower()
-        if self.ghost_source not in ('lattice', 'hull', 'edge', 'none'):
-            raise ValueError(f"ghost_source must be 'lattice', 'hull', 'edge' or 'none', got {self.ghost_source!r}")
+        self.ghost_source = _ghost_source_str(self.ghost_source)
 
     # TODO: Load from yaml
 

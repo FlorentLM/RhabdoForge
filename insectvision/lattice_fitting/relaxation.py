@@ -12,6 +12,21 @@ from insectvision.geometry.ghosting import ghosts_from_mirror, ghosts_from_growt
 from insectvision.geometry.neighbours import delaunay_edges, metric_spacing
 
 
+GHOST_SOURCES = ('lattice', 'hull', 'edge', 'none')
+
+
+def _ghost_source_str(value) -> str:
+    """
+    Normalise a ghost_source argument: None/empty -> 'none', lowercased, then
+    validated against GHOST_SOURCES.
+    """
+    value = 'none' if not value else str(value).lower()
+    if value not in GHOST_SOURCES:
+        opts = ', '.join(repr(s) for s in GHOST_SOURCES[:-1])
+        raise ValueError(f"ghost_source must be {opts} or {GHOST_SOURCES[-1]!r}, got {value!r}")
+    return value
+
+
 def align_grid(grid: ArrayLike, points2d: ArrayLike) -> np.ndarray:
     """
     Align a hex grid (rigid transform) to match a point cloud.
@@ -22,9 +37,7 @@ def align_grid(grid: ArrayLike, points2d: ArrayLike) -> np.ndarray:
     source_domain = Polygon2D.from_points(points2d)
 
     def loss(p):
-        cos, sin = np.cos(p[2]), np.sin(p[2])
-        mat = np.array([[cos, -sin], [sin, cos]])
-        t = grid @ mat.T + p[:2]
+        t = rotate2d(grid, p[2]) + p[:2]
 
         t_tree = cKDTree(t)
         d_fwd, _ = t_tree.query(points2d)
@@ -45,13 +58,8 @@ def align_grid(grid: ArrayLike, points2d: ArrayLike) -> np.ndarray:
             (-np.pi / 4, np.pi / 4),
         ],
     )
-
     pos, rot = res.x[:2], res.x[2]
-    c, s = np.cos(rot), np.sin(rot)
-    R_mat = np.array([[c, -s], [s, c]])
-    aligned = grid @ R_mat.T + pos
-
-    return aligned
+    return rotate2d(grid, rot) + pos
 
 
 # Relaxation
@@ -121,10 +129,7 @@ def spring_relaxation(
         - 'none': no ghosts (free boundary, will contract during relaxation).
     """
 
-    ghost_source = 'none' if not ghost_source else str(ghost_source).lower()
-
-    if ghost_source not in ('lattice', 'hull', 'edge', 'none'):
-        raise ValueError(f"ghost_source must be 'lattice', 'hull', 'edge' or 'none', got {ghost_source!r}")
+    ghost_source = _ghost_source_str(ghost_source)
 
     pts = np.copy(points2d).astype(np.float64)
 

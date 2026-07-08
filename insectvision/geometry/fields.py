@@ -170,7 +170,7 @@ def smooth_nematic_vectors(
 
 def smooth_field_partitioned(
         values: ArrayLike,
-        neighbours: Optional[Sequence[np.ndarray]] = None,  # TODO: should accept NeighbourGraph and do the pad / rag
+        neighbours: Optional[Sequence[NeighbourGraph]] = None,
         weights: Optional[np.ndarray] = None,
         kind: str = 'scalar',
         partition: Optional[np.ndarray] = None,
@@ -249,9 +249,12 @@ def smooth_field_partitioned(
     else:
         if len(groups) != len(neighbours):
             raise ValueError("'groups' and 'neighbours' must have the same length")
-        work = [(np.asarray(gi, dtype=np.intp), nb)
-                for gi, nb in zip(groups, neighbours)
-                if np.asarray(gi).size >= floor]
+        work = []
+        for gi, nb in zip(groups, neighbours):
+            gi = np.asarray(gi, dtype=np.intp)
+            if gi.size < floor:
+                continue
+            work.append((gi, padded_neighbours(nb, masked=False)))
 
     for gi, nb_local in work:
         vals = out[gi]
