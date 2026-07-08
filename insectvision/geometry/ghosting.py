@@ -62,9 +62,11 @@ def _ghost_growth_kernel(
     if len(candidates) == 0:
         return _empty()
 
-    # Reject: bonds already satisfied by an existing point, and inward candidates.
+    # Reject: bonds already satisfied by an existing point, and inward candidates
     d_near, _ = cKDTree(existing).query(candidates)
-    keep = (d_near > satisfied_factor * step_len) & outward_ok
+    step_floor = 0.5 * float(np.median(step_len)) if step_len.size else 0.0
+    reject_r = satisfied_factor * np.maximum(step_len, step_floor)
+    keep = (d_near > reject_r) & outward_ok
     if not keep.any():
         return _empty()
 

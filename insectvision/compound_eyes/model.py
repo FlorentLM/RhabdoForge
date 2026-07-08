@@ -10,6 +10,8 @@ from numpy.typing import ArrayLike
 from scipy.spatial import Delaunay
 
 from insectvision.engine.meshes import icosphere, fibonacci_sphere
+from insectvision.geometry._temp_quality import ghost_augmented_spacing, ghost_augmented_neighbourhood
+from insectvision.geometry.lattice import lattice_confidence
 from insectvision.utils import WORLD_FORWARD, norm_l2, broadcast_to_shape, broadcast_1d
 
 from insectvision.geometry.circular import resultant
@@ -144,21 +146,10 @@ class Model(SpatialQueries, BaseView):
         # β parameter for the β-skeleton graph: beta slightly <1 keeps edges that shear pushes past 90°
         self._lattice_beta: float = float(max(0.0, lattice_beta))
 
-        # Lattice properties from the first-ring neighbour graph:
-        # IOA (minor, major), tilt, hexatic order, and per-ommatidium spacing.
-        ioa_angles, ioa_tilts, ioa_hexatic_order, ioa_spacing = self._compute_lattice_properties()
-
-        self._hexatic_order = ioa_hexatic_order
-
-        if interommatidial_angles_rad is not None:
-            ioa_angles = broadcast_to_shape(
-                interommatidial_angles_rad, shape=(N, 2),
-                accepted=[((2,), (1,)), ((N, 2), (0, 1))],
-                name='interommatidial_angles_rad',
-            )
-
-        self._buf['ioa_angles'] = ioa_angles
-        self._buf['ioa_tilt'] = ioa_tilts
+        # Build IOA / tilt / order / is_edge / trust, and the spacing used for
+        # apertures. See _build_lattice for the (provisional -> edge -> trust ->
+        # ghost-refine) order, which is the only one that lets ghosts bootstrap.
+        ioa_spacing = self._compute_lattice_properties(ioa_override=interommatidial_angles_rad)
 
         # ============ Lens diameters (apertures) ============
 
@@ -239,9 +230,6 @@ class Model(SpatialQueries, BaseView):
             neighbour_count[eye.indices] = eye._get_first_ring_graph()['degree'].astype(np.uint32)
 
         self._buf['neighbour_count'] = neighbour_count
-
-        # Edge / binocular classification
-        self._buf['is_edge'] = self._identify_edge_ommatidia()
         self._buf['is_binocular'] = self._identify_binocular_ommatidia()
 
         # ============ Neural superposition ============
@@ -601,9 +589,13 @@ class Model(SpatialQueries, BaseView):
         return is_edge
 
     # Private - Facets (lenses) lattice geometry helpers
+    #
+    # TODO: This is now a lot of logic for lattice properties, should probably move to a file in helpers submodule
 
-    def _compute_lattice_properties(self, k_search: int = 12) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def _lattice_props_pass1(self, k_search: int = 12) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
+        First pass (before is_edge/IOA exist).
+
         Per-ommatidium lattice properties from the local first-ring neighbour graph.
 
         Computes three things:
@@ -660,8 +652,6 @@ class Model(SpatialQueries, BaseView):
             # Optical IOA: angular separation in optical-axis space
             angular_sep = np.arccos(np.clip(np.einsum('ik,ijk->ij', home_dirs, neighb_dirs), -1.0, 1.0)).astype(np.float32)
 
-            delta_pos = neighb_pos - home_pos[:, None, :]
-
             bearings = tangent_bearing(neighb_pos, home_pos, home_right, home_up)
 
             # Hexatic order over the first ring
@@ -670,16 +660,21 @@ class Model(SpatialQueries, BaseView):
             e_psi6_mag = hexatic_order(z_avg).astype(np.float32)
 
             # IOA: mean of 2 smallest / 2 largest first ring separations
-            min2, max2 = np.sort(np.where(is_immediate, angular_sep, np.inf), axis=1)[:, :2], -np.sort(np.where(is_immediate, -angular_sep, np.inf), axis=1)[:, :2]
+            min2 = np.sort(np.where(is_immediate, angular_sep, np.inf), axis=1)[:, :2]
+            max2 = -np.sort(np.where(is_immediate, -angular_sep, np.inf), axis=1)[:, :2]
+
             with np.errstate(all='ignore'):
                 e_ioa_minor = np.nanmean(np.where(np.isfinite(min2), min2, np.nan), axis=1).astype(np.float32)
                 e_ioa_major = np.nanmean(np.where(np.isfinite(max2), max2, np.nan), axis=1).astype(np.float32)
 
             # neighbourhood too sparse: fallback to simple mean over whatever is immediate, zero if nothing
             if np.any(sparse_mask := is_immediate.sum(axis=1) < 2):
+
                 with np.errstate(all='ignore'):
                     fallback = np.nanmean(np.where(is_immediate, angular_sep, np.nan), axis=1)
+
                 fallback = np.where(np.isfinite(fallback), fallback, 0.0).astype(np.float32)
+
                 e_ioa_minor = np.where(sparse_mask, fallback, e_ioa_minor)
                 e_ioa_major = np.where(sparse_mask, fallback, e_ioa_major)
                 e_tilts = np.where(sparse_mask, 0.0, e_tilts).astype(np.float32)
@@ -705,11 +700,149 @@ class Model(SpatialQueries, BaseView):
             ioa_order[eye.indices] = e_psi6_mag
             spacing[eye.indices] = e_spacing
 
-            logger.debug(f"Eye {eye.eye_index} lattice |Ψ6|: {float(np.mean(e_psi6_mag)):.3f}, median spacing: {float(np.median(e_spacing)):.3f}")
+            logger.debug(f"Eye {eye.eye_index} lattice |Ψ6|: {float(np.mean(e_psi6_mag)):.3f}, median spacing: {float(np.median(e_spacing)):.3f}")  # TODO: Move this log in init, after the second pass
 
         ioa_angles = np.stack([ioa_minor, ioa_major], axis=-1).astype(np.float32)
 
         return ioa_angles, ioa_tilts, ioa_order, spacing
+
+    def _lattice_props_pass2(self, k_search: int = 12):
+        """
+        Second pass (for once is_edge/IOA exist).
+
+        Closes each boundary ring with the ghosts and re-measures IOA / tilt / |Psi6| / spacing
+        over the closed ring, blending each into the provisional field by trust (interior ~untouched, boundary taken from the closed ring).
+        """
+        minor = self.interommatidial_angles[:, 0].copy()
+        major = self.interommatidial_angles[:, 1].copy()
+
+        tilt = self.interommatidial_tilt.copy()
+        h_order = self._hexatic_order.copy()
+
+        spacing = np.zeros(self._N, dtype=np.float32)
+
+        for eye in self._eyes:
+            n = len(eye)
+            indices = eye.indices
+            adj = eye._get_first_ring_graph()['adjacency']
+            positions = self._buf['position'][indices]
+
+            if n < 3:
+                if n >= 2:
+                    spacing[indices] = graph_spacing(positions, adj, reduce=np.median)
+                continue
+
+            directions = self._buf['forward'][indices]
+            rights = self._buf['right'][indices]
+            ups = self._buf['up'][indices]
+            g_pos, g_dirs = eye.ghost_positions, eye.ghost_directions
+
+            neighb_dirs, neighb_pos, is_immediate, _ = ghost_augmented_neighbourhood(
+                positions, directions, g_pos, g_dirs, k=k_search)
+
+            angular_sep = np.arccos(
+                np.clip(np.einsum('ik,ijk->ij', directions, neighb_dirs), -1.0, 1.0)
+            )
+
+            delta = neighb_pos - positions[:, None, :]
+
+            u = np.einsum('ijk,ik->ij', delta, rights)
+            v = np.einsum('ijk,ik->ij', delta, ups)
+            bearings = np.arctan2(v, u)
+
+            z = resultant(angles=bearings, weights=is_immediate, axis=1, fold=6)
+
+            e_tilt = hexatic_axis_angle(z)
+            e_order = hexatic_order(z)
+
+            sep_asc = np.sort(np.where(is_immediate, angular_sep, np.inf), axis=1)[:, :2]
+            sep_desc = np.sort(np.where(is_immediate, angular_sep, -np.inf), axis=1)[:, -2:]
+
+            with np.errstate(all='ignore'):
+                e_minor = np.nanmean(np.where(np.isfinite(sep_asc), sep_asc, np.nan), axis=1)
+                e_major = np.nanmean(np.where(np.isfinite(sep_desc), sep_desc, np.nan), axis=1)
+
+            e_minor = np.where(np.isfinite(e_minor), e_minor, minor[indices])
+            e_major = np.where(np.isfinite(e_major), e_major, e_minor)
+
+            # Smooth the refined tilt over the real first ring
+            e_tilt = hexatic_axis_angle(
+                smooth_phasors(values=np.exp(6j * e_tilt), neighbours=adj, weights=e_order, n_iter=2)
+            )
+
+            s_ghost = ghost_augmented_spacing(positions, g_pos, k=6, reduce=np.median)
+            s_graph = graph_spacing(positions, adj, reduce=np.median)
+
+            c = self._trust[indices]  # 1 = trust provisional, 0 = take refined
+            cz = c.astype(np.float64)
+
+            minor[indices] = (c * minor[indices] + (1.0 - c) * e_minor)
+            major[indices] = (c * major[indices] + (1.0 - c) * e_major)
+            h_order[indices] = (c * h_order[indices] + (1.0 - c) * e_order)
+
+            # Tilt blends as a 6-fold phasor
+            z_blend = cz * np.exp(6j * tilt[indices]) + (1.0 - cz) * np.exp(6j * e_tilt)
+            tilt[indices] = hexatic_axis_angle(z_blend)
+
+            s = c * s_graph + (1.0 - c) * s_ghost
+            bad = ~(np.isfinite(s) & (s > 0))
+            s[bad] = s_ghost[bad]
+            spacing[indices] = s
+
+        ioa_angles = np.stack([minor, major], axis=-1)
+
+        return ioa_angles.astype(np.float32), tilt.astype(np.float32), h_order.astype(np.float32), spacing.astype(np.float32)
+
+    def _compute_lattice_properties(self, ioa_override: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Build every first-ring lattice property
+
+            1. provisional IOA / tilt / order   (_lattice_props_pass1, no ghosts)
+            2. edge classification              (_identify_edge_ommatidia)
+            3. trust field                      (_lattice_trust_field)
+            4. ghost-refined IOA / tilt / order / spacing, blended by trust (_lattice_props_pass2)
+
+        Writes ioa_angles, ioa_tilt, _hexatic_order, is_edge and _trust,
+        and returns the (N,) spacing that feeds aperture estimation
+
+        Args:
+            ioa_override: optional user-supplied IOA. Ghosts still use it,
+                but the refined IOA is not written back over it.
+        """
+        ioa_prov, tilt_prov, order_prov, _ = self._lattice_props_pass1()
+        self._hexatic_order = order_prov
+
+        if ioa_override is not None:
+            ioa_prov = broadcast_to_shape(
+                ioa_override, shape=(self._N, 2),
+                accepted=[((2,), (1,)), ((self._N, 2), (0, 1))],
+                name='interommatidial_angles_rad',
+            )
+        self._buf['ioa_angles'] = ioa_prov
+        self._buf['ioa_tilt'] = tilt_prov
+        self._buf['is_edge'] = self._identify_edge_ommatidia()
+
+        trust = np.zeros(self._N, dtype=np.float32)
+        for eye in self._eyes:
+            if len(eye) < 3:
+                continue
+
+            graph = eye._get_first_ring_graph()
+            trust[eye.indices] = lattice_confidence(
+                hex_order=self._hexatic_order[eye.indices],
+                max_gap=graph['max_gap'],
+                is_edge=eye.is_edge,
+            )
+        self._trust = trust
+
+        r_ioa, r_tilt, r_order, spacing = self._lattice_props_pass2()
+
+        if ioa_override is None:
+            self._buf['ioa_angles'] = r_ioa
+            self._buf['ioa_tilt'] = r_tilt
+            self._hexatic_order = r_order
+
+        return spacing
 
     def _estimate_apertures(self,
             ioa_spacing: np.ndarray,
@@ -1006,8 +1139,8 @@ class Model(SpatialQueries, BaseView):
         if self._lens_packing == val:
             return
 
-        # Apertures depend on packing
-        ioa_spacing = self._compute_lattice_properties()[-1]
+        # Apertures depend on packing (rebuild the lattice then re-estimate)
+        ioa_spacing = self._compute_lattice_properties()
         self._buf['aperture_um'] = self._estimate_apertures(ioa_spacing)
 
         # Maintain F-number
@@ -1036,11 +1169,7 @@ class Model(SpatialQueries, BaseView):
 
         # Beta changes the topology of the first-ring graph
         self._bump_spatial_ver()
-        # Edge detection and aperture estimation use the graph
-        self._buf['is_edge'] = self._identify_edge_ommatidia()
-        # Force re-estimation of everything derived from the graph
-        ioa_angles, _, _, ioa_spacing = self._compute_lattice_properties()
-        self._buf['ioa_angles'] = ioa_angles
+        ioa_spacing = self._compute_lattice_properties()
         self._buf['aperture_um'] = self._estimate_apertures(ioa_spacing)
 
     @property

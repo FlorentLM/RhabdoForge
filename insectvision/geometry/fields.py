@@ -5,6 +5,7 @@ from scipy.interpolate import RBFInterpolator
 from scipy.spatial import cKDTree
 
 from insectvision.geometry.hexatic import compute_psi6, hexatic_order
+from insectvision.geometry.lattice import first_ring_gap, lattice_confidence
 from insectvision.geometry.neighbours import (
     NeighbourGraph, padded_neighbours, knn, beta_skeleton_neighbours, graph_spacing
 )
@@ -333,6 +334,7 @@ def interpolate_spacing_field(
         neighbours: NeighbourGraph,
         smoothing: float = 0.1,
         clip_norm: Tuple[float, float] = (0.1, 2.0),
+        min_confidence=0.5,
         return_mean_spacing: bool = False
     ) -> Union[Callable, Tuple[Callable, float]]:
     """
@@ -363,16 +365,28 @@ def interpolate_spacing_field(
     # no NaNs anymore so mean smoothing over the first-ring graph
     spacing = smooth_scalars(values=spacing, neighbours=neighbours, method='mean', n_iter=3)
 
-    # Ref scale: mean over inner 90% so the boundary doesn't inflate it
-    lo, hi = np.percentile(spacing, [5, 95])
-    core = (spacing >= lo) & (spacing <= hi)
-    mean_spacing = float(spacing[core].mean()) if core.any() else float(spacing.mean())
+    # Self-derived fit confidence (no eye object / no external trust at fit time)
+    # disordered or open-ring boundary points are dropped from the fit.
+    conf = lattice_confidence(
+        hex_order=hexatic_order(compute_psi6(points2d, neighbours)),
+        max_gap=first_ring_gap(points2d, neighbours),
+    )
 
-    rbf = RBFInterpolator(points2d, spacing / mean_spacing, kernel='thin_plate_spline', smoothing=smoothing)
+    keep = conf >= float(min_confidence)
+    if keep.sum() < 4:  # safety: nothing trusted
+        keep = np.ones(len(points2d), dtype=bool)
+
+    # Reference scale from trusted points only (so boundary doesn't inflates it)
+    ref = spacing[keep]
+    lo, hi = np.percentile(ref, [5, 95])
+    core = (ref >= lo) & (ref <= hi)
+    mean_spacing = ref[core].mean() if core.any() else ref.mean()
+
+    rbf = RBFInterpolator(points2d[keep], ref / mean_spacing, kernel='thin_plate_spline', smoothing=smoothing)
 
     def spacing_fn(q):
-        spacing = rbf(np.atleast_2d(np.asarray(q, dtype=np.float64))).ravel()
-        return np.clip(spacing, clip_norm[0], clip_norm[1]) * mean_spacing
+        s = rbf(np.atleast_2d(np.asarray(q, dtype=np.float64))).ravel()
+        return np.clip(s, clip_norm[0], clip_norm[1]) * mean_spacing
 
     if return_mean_spacing:
         return spacing_fn, mean_spacing

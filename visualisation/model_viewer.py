@@ -74,7 +74,7 @@ def make_hex_mesh(
     unique_points, first_idx, counts = np.unique(
         sorted_points, return_index=True, return_counts=True
     )
-    real_unique = unique_points[real_mask]
+    real_unique = unique_points[real_mask[unique_points]]
     # Map real point index to its position in the unique array
     real_pos = np.searchsorted(unique_points, real_unique)
 

@@ -11,6 +11,8 @@ from typing import Optional, Callable, Sequence
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 
 from insectvision.geometry.fields import interpolate_spacing_field, interpolate_hexatic_field
 from insectvision.geometry.linalg import rotation_matrix2d
@@ -79,7 +81,6 @@ def _cull_junk(
         points2d: ArrayLike,
         domain: 'Polygon2D',
         target_spacing_fn: Callable,
-        avg_spacing: float,
         boundary_gap_deg: float = 110.0,
         straggler_ratio: float = 1.5,
         outside_factor: float = 0.5,
@@ -90,11 +91,11 @@ def _cull_junk(
     Remove out of boundary stray points and merge near-duplicates.
 
     A point is junk if it is both a boundary site (open first ring) and either of:
-        - under-coordinated (deg <= 2)
-        - too sparse (local/target spacing > straggler_ratio),
-        - Clearly outside the contour (signed hull distance > outside_factor * avg_spacing)
+        - Under-coordinated (deg <= 2)
+        - Too sparse (local/target spacing > straggler_ratio),
+        - Clearly outside the contour (signed hull distance > outside_factor * local spacing)
 
-    Near-duplicates (closer than merge_factor * avg_spacing) are collapsed to one point
+    Near-duplicates (closer than merge_factor * local spacing) are collapsed to one point.
     """
 
     pts = np.copy(points2d).astype(np.float64)
@@ -104,17 +105,22 @@ def _cull_junk(
     gap = first_ring_gap(pts, neighbours)
     deg = np.array([len(nb) for nb in neighbours])
 
-    s_ratio = ball_spacing(query_points=pts, k=6) / np.maximum(target_spacing_fn(pts).ravel(), 1e-12)
+    local_spacing = target_spacing_fn(pts).ravel()
+    s_ratio = ball_spacing(query_points=pts, k=6) / np.maximum(local_spacing, 1e-12)
     d_hull = domain.signed_distance(pts)
 
     is_boundary = gap > np.deg2rad(boundary_gap_deg)
-    is_junk = is_boundary & ((deg <= 2) | (s_ratio > straggler_ratio) | (d_hull > outside_factor * avg_spacing))
+    is_junk = is_boundary & (
+        (deg <= 2) | (s_ratio > straggler_ratio) | (d_hull > outside_factor * local_spacing)
+    )
     pts = pts[~is_junk]
     if verbose:
         print(f'  finalize: culled {int(is_junk.sum())} boundary stragglers')
 
     before = len(pts)
-    pts = merge_close_points(pts, radius=merge_factor * avg_spacing, reduce=np.mean)
+    if merge_factor > 0:
+        merge_radius = merge_factor * target_spacing_fn(pts).ravel()  # per-point, re-evaluated post-cull
+        pts = _merge_local(pts, merge_radius, reduce=np.mean)
     if verbose and len(pts) < before:
         print(f'  finalize: merged {before - len(pts)} near-duplicates')
 
@@ -144,7 +150,6 @@ def _finalize_lattice(
         points2d=points2d,
         domain=domain,
         target_spacing_fn=target_spacing_fn,
-        avg_spacing=avg_spacing,
         boundary_gap_deg=p.boundary_gap_deg,
         straggler_ratio=p.straggler_ratio,
         outside_factor=p.outside_factor,
@@ -226,7 +231,10 @@ class EyeMeasurements:
             neighbours=neighbours,
             smoothing=axes_smoothing,
             min_order=min_hex_order,
-            return_confidence=False     # TODO: actually why not? could be useful
+            return_confidence=False     # TODO: actually why not? could be useful:
+                                        #   interpolate_hexatic_field now shares lattice_confidence's ingredients,
+                                        #   so could route its min_order gate through the (order x completeness)
+                                        #   function so both fields exclude on one consistent rule?
         )
 
         # Trace the rows to get the 3 primary bearings
@@ -269,10 +277,10 @@ class FittingParameters:
     finalize: bool = True
     keep_tol_factor: float = 0.35       # Coarse distance-trim before finalisation
     boundary_gap_deg: float = 110.0     # first-ring gap above which a point counts as boundary
-    straggler_ratio: float = 1.2        # Cull boundary points sparser than this * target
-    outside_factor: float = 0.3         # Cull boundary points this * spacing outside the hull
-    merge_factor: float = 0.5           # Merge point pairs closer than this * spacing
-    fill_factor: float = 0.75           # Add a point seed if no point is within this * spacing
+    straggler_ratio: float = 1.2        # Cull boundary points sparser than this * local target (local ratio)
+    outside_factor: float = 0.3         # Cull boundary points this * local spacing outside the hull
+    merge_factor: float = 0.5           # Merge point pairs closer than this * local spacing (0 = off)
+    fill_factor: float = 0.75           # Add a point seed if no point is within this * local spacing
     settle_iters: int = 40              # Spring relaxation iters for the final settle
 
     def __post_init__(self):

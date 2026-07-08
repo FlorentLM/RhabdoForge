@@ -464,6 +464,8 @@ def plot_density_3d(
     k nearest neighbours in direction space).
     """
 
+    # TODO: this plot is rubbish, edges are wrong, should use the robust estimators
+
     positions = np.asarray(positions, dtype=float)
     directions = np.asarray(directions, dtype=float)
 

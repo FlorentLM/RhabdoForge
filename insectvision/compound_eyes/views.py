@@ -255,6 +255,11 @@ class BaseView:
         """Per-ommatidium hexatic order |Ψ6| of the lens lattice (1 = perfect hex, 0 = isotropic)."""
         return self.model._hexatic_order[self.omm_indices]
 
+    @property
+    def trust(self) -> np.ndarray:
+        """Per-ommatidium metric confidence in [0, 1] (see Model._compute_trust_field)."""
+        return self.model._trust[self.omm_indices]
+
     # Per-ommatidium neighbourhood-related properties
 
     eye_index = ViewField('eye_id', 'ommatidia')
@@ -496,12 +501,9 @@ class SpatialQueries:
     @property
     def _spatial_store(self) -> dict:
         """Per-view cache dict, cleared when the model's geometry changes."""
-
         if self._spatial.get('_ver') != self.model._spatial_version:
-
             self._spatial.clear()
             self._spatial['_ver'] = self.model._spatial_version
-
         return self._spatial
 
     # Lazy generation of trees
@@ -652,8 +654,11 @@ class SpatialQueries:
         self._spatial_store['directional_graph'] = graph
         return graph
 
+    # TODO: Should probably have public accessors for the graphs (and they should be SimpleNamespaces instead of dicts)?
+
     # Some internal helpers
 
+    # TODO: 'immediate' logic should not live here
     @staticmethod
     def _tag_immediate_factor(result: 'NeighbourResult', dists: np.ndarray, factor: Optional[float]) -> None:
         """
@@ -751,7 +756,8 @@ class SpatialQueries:
         neighb_dists, neighb_indices = knn(self._get_tree('positions'), points, k, drop_self=False)
         g_neighb_indices = self.omm_indices[neighb_indices]
 
-        result = NeighbourResult(self, mask=np.ones(points.shape[0], dtype=bool),
+        result = NeighbourResult(self,
+                                 mask=np.ones(points.shape[0], dtype=bool),
                                  indices=g_neighb_indices, distances=neighb_dists)
         self._tag_immediate_factor(result, neighb_dists, neighbour_dist_factor)
         return result
@@ -1249,6 +1255,7 @@ class EyeView(OmmatidiumView):
         """(G, 3) virtual optical axes matching ghost_positions (cached)."""
         return self._ensure_ghosts()[1]
 
+    # TODO: Decide where ghost creation logic should live, and add a full cloud accessor (real + ghosts)
     def build_ghosts(self, n_rows: Optional[int] = None, **kwargs) -> Tuple[np.ndarray, np.ndarray]:
         """(Re)grow and cache the ghost ring(s)."""
         rows = self.DEFAULT_VIRTUAL_ROWS if n_rows is None else int(n_rows)
