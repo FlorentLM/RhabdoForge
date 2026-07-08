@@ -68,7 +68,7 @@ class Model(SpatialQueries, BaseView):
             flow_direction: Optional[ArrayLike] = None,
             neural_superposition: bool = False,
             lens_packing: float = 0.9,
-            lattice_beta: float = 1.0
+            # lattice_beta: float = 1.0
         ):
 
         self._spatial = {}
@@ -147,8 +147,8 @@ class Model(SpatialQueries, BaseView):
         # Fraction spacing that the lens diameter occupies: 1.0 = fully touching, 0.9 leaves a small interommatidial cuticle gap, etc
         self._lens_packing: float = float(max(0.0, lens_packing))
 
-        # β parameter for the β-skeleton graph: beta slightly <1 keeps edges that shear pushes past 90°
-        self._lattice_beta: float = float(max(0.0, lattice_beta))
+        # # β parameter for the β-skeleton graph: beta slightly <1 keeps edges that shear pushes past 90°
+        # self._lattice_beta: float = float(max(0.0, lattice_beta))
 
         # Build IOA / tilt / order / is_edge / trust, and the spacing used for apertures
         ioa_spacing = self._compute_lattice_properties(ioa_override=interommatidial_angles_rad)
@@ -1119,21 +1119,21 @@ class Model(SpatialQueries, BaseView):
 
         self._bump_spatial_ver()
 
-    @property
-    def lattice_beta(self) -> float:
-        return self._lattice_beta
-
-    @lattice_beta.setter
-    def lattice_beta(self, value: float) -> None:
-
-        value = float(max(0.0, value))
-        if self._lattice_beta == value:
-            return
-
-        # Beta changes the topology of the first-ring graph
-        self._bump_spatial_ver()
-        ioa_spacing = self._compute_lattice_properties()
-        self._buf['aperture_um'] = self._estimate_apertures(ioa_spacing)
+    # @property
+    # def lattice_beta(self) -> float:
+    #     return self._lattice_beta
+    #
+    # @lattice_beta.setter
+    # def lattice_beta(self, value: float) -> None:
+    #
+    #     value = float(max(0.0, value))
+    #     if self._lattice_beta == value:
+    #         return
+    #
+    #     # Beta changes the topology of the first-ring graph
+    #     self._bump_spatial_ver()
+    #     ioa_spacing = self._compute_lattice_properties()
+    #     self._buf['aperture_um'] = self._estimate_apertures(ioa_spacing)
 
     @property
     def wiring_trace(self) -> Optional[dict]:

@@ -1114,7 +1114,6 @@ if __name__ == "__main__":
     #     bundle=honeybee_bundle(),
     #     orientation=aligner,
     #     neural_superposition=False,     # Apposition eyes
-    #     lattice_beta=0.9                # The Stürzl procedural lattice has zones artifacts, lowering the beta helps
     # )
 
     # ----------------------------------------------------------------------
