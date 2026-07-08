@@ -1,6 +1,5 @@
 from typing import TYPE_CHECKING, Sequence, List, Callable, Tuple, Optional
 import numpy as np
-from numpy._typing import ArrayLike
 from numpy.typing import ArrayLike
 
 from insectvision.geometry.linalg import principal_axes
@@ -186,74 +185,29 @@ def bearings_to_angles(bearings: ArrayLike, degrees: bool = False) -> np.ndarray
 
 # Lattice graph measurements
 
-def first_ring_gap(
-        points2d: ArrayLike,
-        neighbours: 'NeighbourGraph',
-        degrees: bool = False
-    ) -> np.ndarray:
-    """
-    Largest empty angular sector between consecutive first-ring neighbour bearings
-
-    Complete ring (incl 5- or 7-fold disclinations) should have ~ 2*pi/degree
-    Any cell missing a sector should be >= ~2*pi/3
-    """
-
-    points2d = np.asarray(points2d, dtype=np.float64)
-    neighbours_list = ragged_neighbours(neighbours)
-    gap = np.full(len(points2d), 2.0 * np.pi)
-
-    for i, neighb_indices in enumerate(neighbours_list):
-        if neighb_indices.size < 2:
-            continue
-
-        d = points2d[neighb_indices] - points2d[i]
-        ang = np.sort(np.arctan2(d[:, 1], d[:, 0]))
-        diffs = np.diff(np.concatenate([ang, ang[:1] + 2.0 * np.pi]))
-        gap[i] = diffs.max()
-
-    return np.rad2deg(gap) if degrees else gap
-
-
 def lattice_confidence(
         hex_order: ArrayLike,
-        max_gap: Optional[ArrayLike] = None,
-        is_edge: Optional[ArrayLike] = None,        # TODO: may be a bit redundant with max_gap tbh
+        is_boundary: ArrayLike,
         hex_order_lo: float = 0.25,
         hex_order_hi: float = 0.9,
         edge_weight: float = 0.25,
-        gap_full: float = np.pi / 3.0,        # 60 deg: a closed hexagonal ring
-        gap_empty: float = 2.0 * np.pi / 3.0,  # 120 deg: a full missing sector
     ) -> np.ndarray:
     """
     Per-lens confidence in [0, 1] that the *local* lattice metric can be trusted.
     Used for the fitting and during model construction (spacing, IOA, whitening covariance).
 
-    Combines:
-      - Hexatic order |Psi6|
-      - Ring completeness from max_gap (open boundary ring -> low trust)
-      - Topological edge flag, down-weighted by edge_weight (a clean-but-edge cell still keeps a little trust)
-
     Args:
-        - hex_order: (N,) |Psi6| in [0, 1]
-        - max_gap: (N,) largest first-ring bearing gap (rad), or None to skip
-        - is_edge: (N,) bool topological boundary flag, or None to skip
-        - order_lo: |Psi6| at/below which the order cue contributes 0
-        - order_hi: |Psi6| at/above which the order cue contributes 1
-        - edge_weight: multiplier applied to edge points (0 = distrust edges entirely)
-        - gap_full / gap_empty: ring-completeness ramp min max (rad)
+        hex_order: (N,) |Psi6| in [0, 1]
+        is_boundary: (N,) bool mask (e.g. from identify_boundary_points)
+        hex_order_lo/hi: linear ramp for order contribution
+        edge_weight: multiplier for boundary points (distrust cue)
     """
     hex_order = np.asarray(hex_order, dtype=np.float64)
+    is_boundary = np.asarray(is_boundary, dtype=bool)
+
     conf = np.clip((hex_order - hex_order_lo) / max(hex_order_hi - hex_order_lo, 1e-9), 0.0, 1.0)
 
-    if max_gap is not None:
-        gap = np.asarray(max_gap, dtype=np.float64)
-        conf = conf * np.clip((gap_empty - gap) / max(gap_empty - gap_full, 1e-9), 0.0, 1.0)
-
-    if is_edge is not None:
-        edge = np.asarray(is_edge, dtype=bool)
-        conf = conf * np.where(edge, float(edge_weight), 1.0)
-
-    return conf.astype(np.float32)
+    return (conf * np.where(is_boundary, float(edge_weight), 1.0)).astype(np.float32)
 
 
 # Row tracing

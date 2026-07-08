@@ -12,15 +12,14 @@ import logging
 from typing import TYPE_CHECKING, Optional, Tuple, Union, Generator, Dict
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree, Delaunay
 
 from insectvision.utils import norm_l2
 
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
 from insectvision.geometry.ghosting import ghosts_from_growth_3d
 from insectvision.geometry.linalg import tangent_frames, local_to_world
-from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_neighbours
-from insectvision.geometry.lattice import first_ring_gap
+from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_edges, identify_boundary_points, first_ring_gap
 from insectvision.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo, radius_of_curvature
 )
@@ -556,12 +555,13 @@ class SpatialQueries:
     def _get_first_ring_graph(self) -> dict:
         """
         First-ring β-skeleton graph for this view's ommatidia.
-
         Built once on a stereographic projection of the optical axes, and cached.
 
         Returns:
             Dict containing:
             - adjacency (list of local-index arrays)
+            - max_gap
+            - is_boundary
             - degree (n,)
             - pair_keys (set of undirected global-index edge keys)
             - big (key multiplier)
@@ -579,23 +579,47 @@ class SpatialQueries:
         if n < 3:
             adj = [np.delete(np.arange(n, dtype=np.intp), i) for i in range(n)]
             pts2d = np.zeros((n, 2))
+            # Base boundary mask for tiny clusters
+            is_boundary = np.ones(n, dtype=bool)
+            max_gap = np.full(n, 2.0 * np.pi)
+            edges = np.zeros((0, 2), dtype=int)
+            delaunay_simplices = None
         else:
             pts2d, *_ = sphere_to_stereo(self.directions)
-            adj = beta_skeleton_neighbours(pts2d, beta=self.model.lattice_beta)
 
-        max_gap = first_ring_gap(pts2d, adj) if n >= 3 else np.full(n, 2.0 * np.pi)
+            delaunay_simplices = Delaunay(pts2d).simplices
 
-        pair_keys = set()
-        for i_loc, a in enumerate(adj):
-            gi = int(omm[i_loc])
-            for j_loc in a.tolist():
-                gj = int(omm[j_loc])
-                lo, hi = (gi, gj) if gi < gj else (gj, gi)
-                pair_keys.add(lo * big + hi)
+            # Topology
+            edges = beta_skeleton_edges(pts2d, beta=self.model.lattice_beta, simplices=delaunay_simplices)
+
+            # Convert edge list to adjacency list
+            adj = [[] for _ in range(n)]
+            for a, b in edges.tolist():
+                adj[a].append(b)
+                adj[b].append(a)
+            adj = [np.array(nb, dtype=np.intp) for nb in adj]
+
+            # Boundary detection
+            is_boundary = identify_boundary_points(pts2d, adj)
+
+            # Still keep max_gap for Pass 1 logic if needed
+            max_gap = first_ring_gap(pts2d, adj)
+
+        if edges.size > 0:
+            gi = omm[edges[:, 0]].astype(np.int64)
+            gj = omm[edges[:, 1]].astype(np.int64)
+            lo = np.minimum(gi, gj)
+            hi = np.maximum(gi, gj)
+            pair_keys = set((lo * big + hi).tolist())
+        else:
+            pair_keys = set()
 
         g = {
+            # TODO: Several of these cached things are not used as much as they should be
             'adjacency': adj,
             'max_gap': max_gap,
+            'simplices': delaunay_simplices,
+            'is_boundary': is_boundary,  # cached for confidence & edge propagation
             'degree': np.fromiter((a.size for a in adj), dtype=np.int32, count=n),
             'pair_keys': pair_keys,
             'big': big,

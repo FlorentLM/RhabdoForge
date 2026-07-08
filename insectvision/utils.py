@@ -101,7 +101,8 @@ def broadcast_to_shape(
         values: ArrayLike,
         shape: Sequence[int],
         accepted: Sequence[Sequence[int]],
-        name: str = 'value', dtype=np.float32
+        name: str = 'value',
+        dtype=np.float32
     ) -> np.ndarray:
 
     arr = np.asarray(values, dtype=dtype)

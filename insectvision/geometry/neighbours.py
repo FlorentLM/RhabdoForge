@@ -1,7 +1,7 @@
 from typing import List, Optional, Tuple, Sequence, Callable, Union
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.spatial import cKDTree, Delaunay
+from scipy.spatial import Delaunay, ConvexHull, cKDTree
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
@@ -29,7 +29,10 @@ def ragged_neighbours(neighbours: NeighbourGraph) -> List[np.ndarray]:
     return out
 
 
-def padded_neighbours(neighbours: NeighbourGraph, pad_value: int = -1, masked: bool = True) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+def padded_neighbours(
+        neighbours: NeighbourGraph,
+        pad_value: int = -1,
+        masked: bool = True) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     Densify a NeighbourGraph to a (N, kmax) int array padded with 'pad_value'.
 
@@ -39,56 +42,84 @@ def padded_neighbours(neighbours: NeighbourGraph, pad_value: int = -1, masked: b
     If 'masked' is True, this returns the dense indices with padding clamped to 0
     (so it can be used for fancy-indexing without going out of bounds) and the validity boolean mask.
     """
+
+    # If it's already a 2D array, just ensure type
     if isinstance(neighbours, np.ndarray) and neighbours.ndim == 2:
-        neighb = np.asarray(neighbours, dtype=np.intp)
+        res_indices = np.asarray(neighbours, dtype=np.intp)
+
     else:
+        # It's a list/sequence of arrays (ragged)
         n = len(neighbours)
-        kmax = max((len(nb) for nb in neighbours), default=0)
-        neighb = np.full((n, kmax), pad_value, dtype=np.intp)
-        for i, nb in enumerate(neighbours):
-            nb = np.asarray(nb, dtype=np.intp)
-            neighb[i, :nb.size] = nb
+        if n == 0:
+            res_indices = np.zeros((0, 0), dtype=np.intp)
+        else:
+            # Find width of the widest neighbourhood
+            kmax = max((len(nb) for nb in neighbours), default=0)
+            res_indices = np.full((n, kmax), pad_value, dtype=np.intp)
+
+            for i, nb in enumerate(neighbours):
+                nb_arr = np.asarray(nb, dtype=np.intp)
+                if nb_arr.size > 0:
+                    res_indices[i, :nb_arr.size] = nb_arr
 
     if masked:
-        valid_mask = neighb >= 0
-        safe_neighb = np.where(valid_mask, neighb, 0)
-        return safe_neighb, valid_mask
+        valid_mask = res_indices >= 0
+        # Replace padding with 0 so fancy indexing doesn't crash,
+        # mask will tells which values to ignore later
+        safe_indices = np.where(valid_mask, res_indices, 0)
+        return safe_indices, valid_mask
 
-    return neighb
+    return res_indices
 
 
-# 2D neighbour graphs
+# Neighbour graphs and first ring detection
 
-def _delaunay_pairs(points2d: np.ndarray) -> set:
-    """Unique undirected (i, j) Delaunay edges (i < j)."""
-    tri = Delaunay(points2d)
+def _delaunay_pairs(points: np.ndarray, simplices: Optional[np.ndarray] = None) -> set:
+    """Unique undirected (i, j) Delaunay edges (i < j), 2D or 3D."""
+
+    if points.shape[1] == 2:
+        simplices = simplices if simplices is not None else Delaunay(points).simplices
+    elif points.shape[1] == 3:
+        simplices = simplices if simplices is not None else ConvexHull(norm_l2(points)).simplices
+    else:
+        raise ValueError("delaunay_edges only supports 2D planar or 3D spherical points")
+
     pairs = set()
-    for sx in tri.simplices:
+    for sx in simplices:
         for i in range(3):
             a, b = int(sx[i]), int(sx[(i + 1) % 3])
             pairs.add((a, b) if a < b else (b, a))
     return pairs
 
 
-def delaunay_edges(points2d: np.ndarray, max_length_factor: float = 0.0) -> np.ndarray:
+def delaunay_edges(
+        points: ArrayLike,
+        max_length_factor: float = 0.0,
+        tree: Optional[cKDTree] = None,
+        simplices: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
     """
-    Unique undirected Delaunay edges in the plane, as a sorted (E, 2) int array.
+    Undirected Delaunay edges (2D plane or 3D sphere), as a sorted (E, 2) int array.
     max_length_factor > 0 prunes edges longer than max_length_factor x local spacing. Disabled if <= 0.
     """
 
-    points2d = np.asarray(points2d, dtype=np.float64)
-    pairs = _delaunay_pairs(points2d)
+    points = np.asarray(points, dtype=np.float64)
+    if points.shape[1] == 3:
+        points = norm_l2(points)  # ensure unit vectors for correct 3D chord math
+
+    pairs = _delaunay_pairs(points, simplices=simplices)
     edges = np.array(sorted(pairs)) if pairs else np.zeros((0, 2), dtype=int)
 
     if max_length_factor > 0 and len(edges):
-        # Local spacing is the kNN mean distance at each endpoint, an edge survives iff
-        # its length is below max_length_factor x the mean of its two endpoints' spacing.
+        if tree is None:
+            tree = cKDTree(points)
 
         # The criterion is symmetric, so the surviving graph is symmetric too
         # (edge i-j is kept for both i and j, or for neither)
-        spacing = ball_spacing(cKDTree(points2d), None, k=min(6, max(1, len(points2d) - 1)))
+        spacing = metric_spacing(tree=tree, query_points=None, k=min(6, max(1, len(points) - 1)))
 
-        lengths = np.linalg.norm(points2d[edges[:, 0]] - points2d[edges[:, 1]], axis=1)
+        lengths = np.linalg.norm(points[edges[:, 0]] - points[edges[:, 1]], axis=1)
+
         mean_local = 0.5 * (spacing[edges[:, 0]] + spacing[edges[:, 1]])
         keep = lengths < mean_local * max_length_factor
         edges = edges[keep]
@@ -96,19 +127,20 @@ def delaunay_edges(points2d: np.ndarray, max_length_factor: float = 0.0) -> np.n
     return edges
 
 
-def delaunay_neighbours(points2d: ArrayLike, max_length_factor: float = 0.0) -> List[np.ndarray]:
+def delaunay_neighbours(
+        points: ArrayLike,
+        max_length_factor: float = 0.0,
+        tree: Optional[cKDTree] = None,
+        simplices: Optional[np.ndarray] = None,
+    ) -> List[np.ndarray]:
     """
-    One-ring neighbour lists from a 2D Delaunay triangulation.
-
-    This is the adjacency-list view of delaunay_edges, so the optional
-    max_length_factor pruning uses the exact same (symmetric) criterion: an edge
-    is kept for both endpoints or for neither.
+    First-ring neighbour lists from a Delaunay triangulation (2D plane or 3D sphere).
     """
 
-    points2d = np.asarray(points2d, dtype=np.float64)
-    neighbour_lists: List[list] = [[] for _ in range(len(points2d))]
+    points = np.asarray(points, dtype=np.float64)
+    neighbour_lists: List[list] = [[] for _ in range(len(points))]
 
-    for a, b in delaunay_edges(points2d, max_length_factor=max_length_factor):
+    for a, b in delaunay_edges(points, max_length_factor=max_length_factor, tree=tree, simplices=simplices):
         a, b = int(a), int(b)
         neighbour_lists[a].append(b)
         neighbour_lists[b].append(a)
@@ -116,7 +148,11 @@ def delaunay_neighbours(points2d: ArrayLike, max_length_factor: float = 0.0) -> 
     return [np.array(s, dtype=np.intp) for s in neighbour_lists]
 
 
-def beta_skeleton_edges(points2d: ArrayLike, beta: float = 1.0) -> np.ndarray:
+def beta_skeleton_edges(
+        points2d: ArrayLike,
+        beta: float = 1.0,
+        simplices: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
     """
     β-skeleton restricted to Delaunay edges: a Delaunay subgraph for beta <= 1
         - beta = 1.0 is the Gabriel graph
@@ -129,21 +165,21 @@ def beta_skeleton_edges(points2d: ArrayLike, beta: float = 1.0) -> np.ndarray:
     the forbidden region is a subset of the diametral disk
     """
 
-    p = np.asarray(points2d, dtype=np.float64)
-    n = len(p)
+    points2d = np.asarray(points2d, dtype=np.float64)
+    n = len(points2d)
     if n < 3:
         i, j = np.triu_indices(n, k=1)
         return np.stack([i, j], axis=1).astype(int)
 
     cos_tc = np.cos(np.pi - np.arcsin(beta))  # beta <= 1
 
-    s = Delaunay(p).simplices
+    s = simplices if simplices is not None else Delaunay(points2d).simplices
 
     i = s[:, [0, 1, 2]].ravel()
     j = s[:, [1, 2, 0]].ravel()
     k = s[:, [2, 0, 1]].ravel()
 
-    a, b = p[i] - p[k], p[j] - p[k]
+    a, b = points2d[i] - points2d[k], points2d[j] - points2d[k]
     cos_ang = np.einsum('ab,ab->a', a, b) / (
             np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1) + 1e-300)
 
@@ -161,7 +197,11 @@ def beta_skeleton_edges(points2d: ArrayLike, beta: float = 1.0) -> np.ndarray:
     return np.stack([good // n, good % n], axis=1).astype(int)
 
 
-def beta_skeleton_neighbours(points2d: ArrayLike, beta: float = 1.0) -> List[np.ndarray]:
+def beta_skeleton_neighbours(
+        points2d: ArrayLike,
+        beta: float = 1.0,
+        simplices: Optional[np.ndarray] = None,
+    ) -> List[np.ndarray]:
     """
     First-ring neighbour lists.
     """
@@ -170,12 +210,30 @@ def beta_skeleton_neighbours(points2d: ArrayLike, beta: float = 1.0) -> List[np.
 
     nb: List[list] = [[] for _ in range(len(points2d))]
 
-    for a, b in beta_skeleton_edges(points2d, beta):
+    for a, b in beta_skeleton_edges(points2d=points2d, beta=beta, simplices=simplices):
         a, b = int(a), int(b)
         nb[a].append(b)
         nb[b].append(a)
 
     return [np.array(s, dtype=np.intp) for s in nb]
+
+
+def neighbour_bearings(points2d: ArrayLike, neighbours: NeighbourGraph) -> List[np.ndarray]:
+    """
+    Return a ragged list of relative neighbour bearings (in radians) for each point.
+    """
+    points2d = np.asarray(points2d, dtype=np.float64)
+    nbr = ragged_neighbours(neighbours)
+
+    out = []
+    for i, nb in enumerate(nbr):
+        if nb.size == 0:
+            out.append(np.array([], dtype=np.float64))
+            continue
+        d = points2d[nb] - points2d[i]
+        out.append(np.arctan2(d[:, 1], d[:, 0]))
+
+    return out
 
 
 # kNN queries
@@ -300,10 +358,12 @@ def k_lookat(
 
 # Two ways to measure local spacing:
 #
-#   ball_spacing: metric (kNN ball), robust to topology/defects
-#   graph_spacing: topological (explicit edges), reflects actual bond lengths
+#   metric_spacing: metric (kNN), robust to topology/defects
+#   topological_spacing: graph (explicit edges), reflects actual bond lengths
 
-def ball_spacing(
+# TODO: Topological spacing should probably be preferred in at least some of the 8 places that use metric_spacing
+
+def metric_spacing(
         tree: Optional[cKDTree] = None,
         query_points: Optional[np.ndarray] = None,
         k: int = 6,
@@ -322,8 +382,8 @@ def ball_spacing(
     return reduce(dist, axis=1)
 
 
-def graph_spacing(
-        points2d: ArrayLike,
+def topological_spacing(
+        points: ArrayLike,
         neighbours: 'NeighbourGraph',
         reduce: Callable = np.mean
     ) -> np.ndarray:
@@ -333,13 +393,80 @@ def graph_spacing(
     'reduce' must accept an 'axis' argument (np.mean, np.median, np.min, np.max...)
     NaN for isolated points.
     """
-    points2d = np.asarray(points2d, dtype=float)
-    nbr = ragged_neighbours(neighbours)
-    out = np.full(len(points2d), np.nan)
-    for i, nb in enumerate(nbr):
+    points = np.asarray(points, dtype=float)
+    neigh_ragged = ragged_neighbours(neighbours)
+
+    out = np.full(len(points), np.nan)
+
+    for i, nb in enumerate(neigh_ragged):
         if nb.size:
-            out[i] = reduce(np.linalg.norm(points2d[nb] - points2d[i], axis=1), axis=-1)
+            out[i] = reduce(np.linalg.norm(points[nb] - points[i], axis=1), axis=-1)
     return out
+
+
+def first_ring_gap(
+        points2d: ArrayLike,
+        neighbours: 'NeighbourGraph',
+        degrees: bool = False
+    ) -> np.ndarray:
+    """
+    Return largest empty angular sector between consecutive first-ring neighbour bearings
+    Complete ring (5- or 7-fold disclinations) should have ~ 2*pi/degree
+    Any cell missing a sector should be >= ~2*pi/3
+    """
+    bearings = neighbour_bearings(points2d, neighbours)
+    gap = np.full(len(points2d), 2.0 * np.pi)
+
+    for i, ang in enumerate(bearings):
+        if ang.size < 2:
+            continue
+        ang = np.sort(ang)
+        diffs = np.diff(np.concatenate([ang, ang[:1] + 2.0 * np.pi]))
+        gap[i] = diffs.max()
+
+    return np.rad2deg(gap) if degrees else gap
+
+
+def identify_boundary_points(
+        points2d: ArrayLike,
+        neighbours: NeighbourGraph,
+        gap_threshold_deg: float = 135.0,
+        n_rings: int = 1
+    ) -> np.ndarray:
+    """
+    Boundary detection and propagation.
+
+    Args:
+        points2d: (N, 2) coordinates
+        neighbours: topological neighbour graph
+        gap_threshold_deg: angular gap above which a point is 'seed boundary'
+        n_rings: how many rows to grow the boundary flag inward
+    """
+
+    # Detection
+    gap = first_ring_gap(points2d, neighbours, degrees=True)
+    neigh_ragged = ragged_neighbours(neighbours)
+    deg = np.array([len(nb) for nb in neigh_ragged])
+
+    is_boundary = (gap > gap_threshold_deg) | (deg <= 2)
+
+    if n_rings <= 1:
+        return is_boundary
+
+    # Propagation
+    labelled = is_boundary.copy()
+    frontier = np.where(is_boundary)[0]
+
+    for _ in range(n_rings - 1):
+        if not frontier.size:
+            break
+        # Find all neighbours of the current frontier
+        nxt = np.unique(np.concatenate([neigh_ragged[i] for i in frontier]))
+        # only keep those not yet labelled
+        frontier = nxt[~labelled[nxt]]
+        labelled[frontier] = True
+
+    return labelled
 
 
 def merge_close_points(points: ArrayLike, radius: ArrayLike, reduce: Optional[Callable] = np.mean) -> np.ndarray:

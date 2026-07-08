@@ -9,7 +9,7 @@ from scipy.interpolate import RegularGridInterpolator, griddata
 from insectvision.geometry.linalg import rotate2d
 from insectvision.geometry.polygons import Polygon2D
 from insectvision.geometry.ghosting import ghosts_from_mirror, ghosts_from_growth_2d
-from insectvision.geometry.neighbours import delaunay_edges, ball_spacing
+from insectvision.geometry.neighbours import delaunay_edges, metric_spacing
 
 
 def align_grid(grid: ArrayLike, points2d: ArrayLike) -> np.ndarray:
@@ -19,8 +19,7 @@ def align_grid(grid: ArrayLike, points2d: ArrayLike) -> np.ndarray:
     grid = np.asarray(grid, float)
     points2d = np.asarray(points2d, float)
 
-    tree_raw = cKDTree(points2d)
-    domain = Polygon2D.from_points(points2d)
+    source_domain = Polygon2D.from_points(points2d)
 
     def loss(p):
         cos, sin = np.cos(p[2]), np.sin(p[2])
@@ -29,10 +28,10 @@ def align_grid(grid: ArrayLike, points2d: ArrayLike) -> np.ndarray:
 
         t_tree = cKDTree(t)
         d_fwd, _ = t_tree.query(points2d)
-        mask = domain.inside(t)
+        mask = source_domain.inside(t)
 
         if np.any(mask):
-            d_bwd, _ = tree_raw.query(t[mask])
+            d_bwd, _ = source_domain.tree.query(t[mask])
         else:
             d_bwd = np.array([1e3])
 
@@ -269,7 +268,7 @@ def density_correct(
 
     for it in range(n_iter):
 
-        s_ach = ball_spacing(query_points=pts, k=k)
+        s_ach = metric_spacing(query_points=pts, k=k)
         s_tgt = target_spacing_fn(pts).ravel()
 
         # Positive where the lattice is too dense, negative where too sparse

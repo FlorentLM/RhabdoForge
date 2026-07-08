@@ -6,9 +6,9 @@ from scipy.spatial import cKDTree
 
 from insectvision.geometry.hexatic import compute_psi6, hexatic_order
 from insectvision.geometry.neighbours import (
-    NeighbourGraph, padded_neighbours, knn, beta_skeleton_neighbours, graph_spacing
+    NeighbourGraph, padded_neighbours, knn, beta_skeleton_neighbours, topological_spacing, identify_boundary_points
 )
-from insectvision.geometry.lattice import first_ring_gap, lattice_confidence
+from insectvision.geometry.lattice import lattice_confidence
 
 
 # Discrete graph smoothing
@@ -281,9 +281,8 @@ def interpolate_hexatic_field(
         points2d: ArrayLike,
         neighbours: Optional[NeighbourGraph] = None,
         smoothing: float = 0.5,
-        min_hex_order: float = 0.5,
-        return_confidence: bool = False
-    ) -> Union[Callable, Tuple[Callable, Callable]]:
+        min_hex_order: float = 0.5
+    ) -> Callable:
     """
     Creates a continuous function Theta(x, y) for local lattice orientation.
 
@@ -315,16 +314,7 @@ def interpolate_hexatic_field(
         q = np.atleast_2d(np.asarray(q, dtype=np.float64))
         return (np.angle(rbf_re(q) + 1j * rbf_im(q)) / 6.0).astype(np.float64)
 
-    if not return_confidence:
-        return theta_fn
-
-    rbf_c = RBFInterpolator(points2d[keep], order[keep], kernel='thin_plate_spline', smoothing=smoothing)
-
-    def conf_fn(q):
-        q = np.atleast_2d(np.asarray(q, dtype=np.float64))
-        return np.clip(rbf_c(q), 0.0, 1.0)
-
-    return theta_fn, conf_fn
+    return theta_fn
 
 
 def interpolate_spacing_field(
@@ -333,7 +323,7 @@ def interpolate_spacing_field(
         smoothing: float = 0.1,
         clip_norm: Tuple[float, float] = (0.1, 2.0),
         min_confidence: float = 0.5,
-        return_mean_spacing: bool = False
+        return_ref_spacing: bool = False
     ) -> Union[Callable, Tuple[Callable, float]]:
     """
     Creates a continuous function S(x, y) for local lattice spacing
@@ -348,46 +338,51 @@ def interpolate_spacing_field(
                 (prevents the field from exploding at boundaries)
         - min_confidence: Threshold for self-derived lattice confidence
 
-    Returns (spacing_fn, mean_spacing), where spacing_fn maps (M, 2) -> (M,).
+    Returns (spacing_fn, ref_spacing), where spacing_fn maps (M, 2) -> (M,).
     """
     points2d = np.asarray(points2d, dtype=np.float64)
-    spacing = graph_spacing(points2d, neighbours)
+    spacing = topological_spacing(points2d, neighbours)
 
-    valid = np.isfinite(spacing)
-    if not np.all(valid) and np.any(valid):
-        _, nn = cKDTree(points2d[valid]).query(points2d[~valid])
-        spacing[~valid] = spacing[valid][nn]
-    elif not np.any(valid):
-        spacing[:] = 1.0
+    # topological_spacing can return NaNs at the very edge or for isolated points
+    mask_valid = np.isfinite(spacing)
+    if not np.any(mask_valid):
+        return (lambda q: np.ones(len(q))), 1.0
 
-    # no NaNs anymore so mean smoothing over the first-ring graph
+    global_median = np.median(spacing[mask_valid])
+    spacing[~mask_valid] = global_median
+
+    # Smooth the discrete values over the graph to remove local noise
     spacing = smooth_scalars(values=spacing, neighbours=neighbours, method='mean', n_iter=3)
 
-    # Self-derived fit confidence (no eye object / no external trust at fit time)
-    # disordered or open-ring boundary points are dropped from the fit
+    # Filter by confidence: drop disordered or open-ring boundary points from the fit
     conf = lattice_confidence(
         hex_order=hexatic_order(compute_psi6(points2d, neighbours)),
-        max_gap=first_ring_gap(points2d, neighbours),
+        is_boundary=identify_boundary_points(points2d, neighbours)
     )
 
     keep = conf >= float(min_confidence)
-    if keep.sum() < 4:  # safety: nothing trusted
+    if keep.sum() < 4:  # fallback if the eye is extremely disordered
         keep = np.ones(len(points2d), dtype=bool)
 
-    # Ref scale from trusted points only so boundary doesn't inflates it)
-    trusted = spacing[keep]
-    lo, hi = np.percentile(trusted, [5, 95])  # inner 90%
-    core = (trusted >= lo) & (trusted <= hi)
-    mean_spacing = trusted[core].mean() if core.any() else trusted.mean()
+    ref_spacing = np.median(spacing[keep])
 
-    rbf = RBFInterpolator(points2d[keep], trusted / mean_spacing, kernel='thin_plate_spline', smoothing=smoothing)
+    # Fit the RBF on normalised values
+    rbf = RBFInterpolator(
+        points2d[keep],
+        spacing[keep] / ref_spacing,
+        kernel='thin_plate_spline',
+        smoothing=smoothing
+    )
 
     def spacing_fn(q):
-        s = rbf(np.atleast_2d(np.asarray(q, dtype=np.float64))).ravel()
-        return np.clip(s, clip_norm[0], clip_norm[1]) * mean_spacing
+        q = np.atleast_2d(np.asarray(q, dtype=np.float64))
+        # Evaluate spline and clip relative to reference to prevent boundary divergence
+        s_rel = rbf(q).ravel()
+        return np.clip(s_rel, clip_norm[0], clip_norm[1]) * ref_spacing
 
-    if return_mean_spacing:
-        return spacing_fn, mean_spacing
+    if return_ref_spacing:
+        return spacing_fn, ref_spacing
+
     return spacing_fn
 
 

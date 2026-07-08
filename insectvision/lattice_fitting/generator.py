@@ -15,9 +15,11 @@ from scipy.spatial import cKDTree
 from insectvision.geometry.fields import interpolate_spacing_field, interpolate_hexatic_field
 from insectvision.geometry.linalg import rotation_matrix2d
 from insectvision.geometry.polygons import resample_contour, Polygon2D
-from insectvision.geometry.neighbours import delaunay_neighbours, ball_spacing, merge_close_points
+from insectvision.geometry.neighbours import (
+    delaunay_neighbours, merge_close_points, topological_spacing, identify_boundary_points
+)
 from insectvision.geometry.lattice import (
-    first_ring_gap, create_hexagonal_grid, base_bond_dirs, compute_lattice_basis, trace_lattice_rows, bearings_to_angles
+    create_hexagonal_grid, base_bond_dirs, compute_lattice_basis, trace_lattice_rows, bearings_to_angles
 )
 from insectvision.lattice_fitting.relaxation import align_grid, density_warp, spring_relaxation, density_correct
 
@@ -98,27 +100,33 @@ def _cull_junk(
 
     pts = np.copy(points2d).astype(np.float64)
 
-    neighbours = delaunay_neighbours(pts, max_length_factor=1.8)
+    # Build KDTree once for the whole pass
+    tree = cKDTree(pts)
 
-    gap = first_ring_gap(pts, neighbours)
-    deg = np.array([len(nb) for nb in neighbours])
+    neighbours = delaunay_neighbours(pts, max_length_factor=1.8, tree=tree)
 
-    local_spacing = target_spacing_fn(pts).ravel()
-    s_ratio = ball_spacing(query_points=pts, k=6) / np.maximum(local_spacing, 1e-12)
+    is_boundary = identify_boundary_points(pts, neighbours=neighbours, gap_threshold_deg=boundary_gap_deg)
+
+    actual_spacing = topological_spacing(pts, neighbours=neighbours, reduce=np.nanmean)
+    target_spacing = target_spacing_fn(pts).ravel()
+    s_ratio = actual_spacing / np.maximum(target_spacing, 1e-12)
+
     d_hull = domain.signed_distance(pts)
 
-    is_boundary = gap > np.deg2rad(boundary_gap_deg)
     is_junk = is_boundary & (
-        (deg <= 2) | (s_ratio > straggler_ratio) | (d_hull > outside_factor * local_spacing)
+            (s_ratio > straggler_ratio) | (d_hull > outside_factor * target_spacing)
     )
     pts = pts[~is_junk]
+
     if verbose:
         print(f'  finalize: culled {int(is_junk.sum())} boundary stragglers')
 
     before = len(pts)
     if merge_factor > 0:
-        merge_radius = merge_factor * target_spacing_fn(pts).ravel()   # per-point, re-evaluated post-cull
+        # Re-evaluate spacing post-cull for merge radius
+        merge_radius = merge_factor * target_spacing_fn(pts).ravel()
         pts = merge_close_points(pts, radius=merge_radius, reduce=np.mean)
+
     if verbose and len(pts) < before:
         print(f'  finalize: merged {before - len(pts)} near-duplicates')
 
@@ -212,26 +220,24 @@ class EyeMeasurements:
         ) -> 'EyeMeasurements':
 
         points2d = np.asarray(points2d, dtype=float)
+        tree = cKDTree(points2d)
 
-        neighbours = delaunay_neighbours(points2d=points2d, max_length_factor=max_length_factor)
+        neighbours = delaunay_neighbours(points=points2d, max_length_factor=max_length_factor, tree=tree)
 
         # Create continuous fields
+
         spacing_fn, mean_spacing = interpolate_spacing_field(
             points2d=points2d,
             neighbours=neighbours,
             smoothing=density_smoothing,
-            return_mean_spacing=True
+            return_ref_spacing=True
         )
 
         theta_fn = interpolate_hexatic_field(
             points2d=points2d,
             neighbours=neighbours,
             smoothing=axes_smoothing,
-            min_hex_order=min_hex_order,
-            return_confidence=False     # TODO: actually why not? could be useful:
-                                        #   interpolate_hexatic_field now shares lattice_confidence's ingredients,
-                                        #   so could route its min_order gate through the (order x completeness)
-                                        #   function so both fields exclude on one consistent rule?
+            min_hex_order=min_hex_order
         )
 
         # Trace the rows to get the 3 primary bearings
@@ -290,12 +296,6 @@ class FittingParameters:
 class LatticeGenerator:
     """
     Generate a lattice from a EyeMeasurements.
-
-    Construct with a profile and (optionally) an FittingParameters, then call run()
-        profile = EyeMeasurements.from_points(points2d)
-        gen = LatticeGenerator(profile, FittingParameters(density_scale=1.1))
-        lattice = gen.run()
-        # gen.stages -> {'init', 'relaxed', 'trimmed', 'final', ...}
     """
 
     def __init__(self,

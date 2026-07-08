@@ -29,6 +29,10 @@ class Polygon2D:
         self._delaunay: 'Delaunay' = Delaunay(self.boundary)
         self._tree: 'cKDTree' = cKDTree(np.asarray(raw_points2d, dtype=float))
 
+    @property
+    def tree(self) -> 'cKDTree':
+        return self._tree
+
     @classmethod
     def from_points(cls, points2d: ArrayLike, smooth: bool = False, n_boundary: int = 300) -> 'Polygon2D':
 
@@ -57,7 +61,6 @@ class Polygon2D:
     def signed_distance(self, points2d: ArrayLike) -> np.ndarray:
         """Signed distance to the hull faces (<0 inside)."""
         return signed_distance(points2d=points2d, domain=self)
-
 
 
 def polygon_area(points2d: ArrayLike, signed: bool = False) -> float:

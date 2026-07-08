@@ -12,6 +12,42 @@ from insectvision.geometry.polygons import Polygon2D
 from insectvision.utils import norm_l2
 
 
+def combine_clouds(
+        real_pos: ArrayLike,
+        ghost_pos: Optional[ArrayLike] = None,
+        real_dirs: Optional[ArrayLike] = None,
+        ghost_dirs: Optional[ArrayLike] = None,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray], np.ndarray]:
+    """
+    Combine real and ghost point clouds, returning the joint arrays and a boolean mask
+    of which points are real. Useful for cleanly building a unified tree for querying closed neighbourhoods.
+
+    Returns:
+        cloud_pos: (N + G, D)
+        cloud_dirs: (N + G, D) if directions provided, else None
+        is_real: (N + G,) bool
+    """
+    real_pos = np.asarray(real_pos, dtype=np.float64)
+    N = len(real_pos)
+
+    if ghost_pos is None or len(ghost_pos) == 0:
+        cloud_pos = real_pos.copy()
+    else:
+        cloud_pos = np.vstack([real_pos, np.asarray(ghost_pos, dtype=np.float64)])
+
+    is_real = np.arange(len(cloud_pos)) < N
+
+    cloud_dirs = None
+    if real_dirs is not None:
+        real_dirs = np.asarray(real_dirs, dtype=np.float64)
+        if ghost_dirs is None or len(ghost_dirs) == 0:
+            cloud_dirs = real_dirs.copy()
+        else:
+            cloud_dirs = np.vstack([real_dirs, np.asarray(ghost_dirs, dtype=np.float64)])
+
+    return cloud_pos, cloud_dirs, is_real
+
+
 # Reject + merge kernel (shared)
 
 def _ghost_growth_kernel(

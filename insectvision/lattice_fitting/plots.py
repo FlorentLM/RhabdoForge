@@ -11,7 +11,7 @@ from scipy.spatial import cKDTree
 from insectvision.geometry.hexatic import compute_psi6, hexatic_order
 from insectvision.geometry.linalg import principal_axes
 from insectvision.geometry.spherical import sphere_to_stereo, chord_to_angle
-from insectvision.geometry.neighbours import delaunay_edges, delaunay_neighbours, graph_spacing, ball_spacing
+from insectvision.geometry.neighbours import delaunay_edges, delaunay_neighbours, topological_spacing, metric_spacing
 from insectvision.geometry.lattice import trace_lattice_rows
 from insectvision.lattice_fitting.generator import EyeMeasurements
 
@@ -133,7 +133,7 @@ def plot_lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diag
     # B. Density residual map
     ax = axs[1, 0]
 
-    ach_pts = ball_spacing(query_points=final, k=6)
+    ach_pts = metric_spacing(query_points=final, k=6)
     tgt_pts = target_spacing_fn(final).ravel()
 
     inside = domain.signed_distance(final) < -hide_margin * gen_ms
@@ -170,7 +170,7 @@ def plot_lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diag
 
     ax.set_aspect('auto')
     for lat, color, label in [(init, '0.6', 'after warp'), (final, '#1f77b4', 'final')]:
-        ach = ball_spacing(query_points=lat, k=6)
+        ach = metric_spacing(query_points=lat, k=6)
         tgt = target_spacing_fn(lat).ravel()
 
         inside = domain.signed_distance(lat) < -hide_margin * gen_ms
@@ -318,7 +318,7 @@ def plot_lattice_3d(
 
     c_values, c_label = None, None
     if adj is not None and color_by == 'spacing':
-        c_values = graph_spacing(pts_2d, adj)
+        c_values = topological_spacing(pts_2d, adj)
         c_label = 'Local spacing (stereo)'
     elif adj is not None and color_by == 'psi6':
         c_values = hexatic_order(compute_psi6(pts_2d, adj))
@@ -470,7 +470,7 @@ def plot_density_3d(
     directions = np.asarray(directions, dtype=float)
 
     # Mean chord to k nearest neighbours on the direction sphere -> great-circle angle
-    chord = ball_spacing(cKDTree(directions), k=k)
+    chord = metric_spacing(cKDTree(directions), k=k)
     ioa_deg = np.rad2deg(chord_to_angle(chord))
 
     fig = plt.figure(figsize=(12, 10))
