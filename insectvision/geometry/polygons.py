@@ -100,6 +100,41 @@ def fan_decompose(points2d: ArrayLike) -> Tuple[np.ndarray, np.ndarray]:
     return centroids, areas
 
 
+def triangle_circumradii(points: np.ndarray, simplices: np.ndarray) -> np.ndarray:
+    """Calculation of triangle circumradii in 2D or 3D."""
+    pts = np.asarray(points)
+    a, b, c = pts[simplices[:, 0]], pts[simplices[:, 1]], pts[simplices[:, 2]]
+
+    # Side lengths
+    ab = np.linalg.norm(a - b, axis=-1)
+    bc = np.linalg.norm(b - c, axis=-1)
+    ca = np.linalg.norm(c - a, axis=-1)
+
+    areas = triangle_areas(a, b, c)
+    return (ab * bc * ca) / (4.0 * areas + 1e-300)
+
+
+def find_boundary_indices(simplices: np.ndarray, n_points: int) -> np.ndarray:
+    """Finds indices of points on the boundary of a triangle mesh (edges used once)."""
+
+    # Sort edges so (i, j) and (j, i) are identical
+    edges = np.sort(np.concatenate([
+        simplices[:, [0, 1]],
+        simplices[:, [1, 2]],
+        simplices[:, [2, 0]]
+    ]), axis=1)
+
+    # Key the edges into 64-bit ints for fast unique counting
+    big = int(n_points + 1)
+    keys = edges[:, 0].astype(np.int64) * big + edges[:, 1]
+
+    unique_keys, counts = np.unique(keys, return_counts=True)
+    boundary_keys = unique_keys[counts == 1]
+
+    # De-key back to point indices
+    return np.unique(np.stack([boundary_keys // big, boundary_keys % big]))
+
+
 def triangle_areas(a: ArrayLike, b: ArrayLike, c: ArrayLike) -> np.ndarray:
     """
     Areas of triangles from their three vertex arrays.

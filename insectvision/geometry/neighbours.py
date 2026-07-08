@@ -5,6 +5,7 @@ from scipy.spatial import Delaunay, ConvexHull, cKDTree
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
+from insectvision.geometry.polygons import find_boundary_indices, triangle_circumradii
 from insectvision.utils import norm_l2
 
 # A neighbour graph, can be:
@@ -72,7 +73,13 @@ def padded_neighbours(
     return res_indices
 
 
-# Neighbour graphs and first ring detection
+# Two ways to get neighbours and detect who is first ring:
+#
+#   Delaunay:
+#   β-skeleton:
+
+# TODO: a pass on all the codebase to make sure delaunay vs beta-skel are used in the right places
+
 
 def _delaunay_pairs(points: np.ndarray, simplices: Optional[np.ndarray] = None) -> set:
     """Unique undirected (i, j) Delaunay edges (i < j), 2D or 3D."""
@@ -361,7 +368,7 @@ def k_lookat(
 #   metric_spacing: metric (kNN), robust to topology/defects
 #   topological_spacing: graph (explicit edges), reflects actual bond lengths
 
-# TODO: Topological spacing should probably be preferred in at least some of the 8 places that use metric_spacing
+# TODO: a pass on all the codebase to make sure metric vs topological are used in the right places
 
 def metric_spacing(
         tree: Optional[cKDTree] = None,
@@ -430,39 +437,66 @@ def first_ring_gap(
 def identify_boundary_points(
         points2d: ArrayLike,
         neighbours: NeighbourGraph,
+        method: str = 'gap',
         gap_threshold_deg: float = 135.0,
-        n_rings: int = 1
-    ) -> np.ndarray:
+        alpha: float = 1.4,
+        n_rings: int = 1,
+        simplices: Optional[np.ndarray] = None,
+) -> np.ndarray:
     """
     Boundary detection and propagation.
 
     Args:
-        points2d: (N, 2) coordinates
-        neighbours: topological neighbour graph
-        gap_threshold_deg: angular gap above which a point is 'seed boundary'
-        n_rings: how many rows to grow the boundary flag inward
+        - points2d: (N, 2) coordinates
+        - neighbours: topological neighbour graph (from Beta-skeleton or Delaunay)
+        - method: 'gap' (Topological/Angular) or 'alpha' (Geometric/Circumradius)
+        - gap_threshold_deg: [For 'gap'] Sector angle above which point is a seed
+        - alpha: [For 'alpha'] Multiplier for circumradius vs. local spacing
+        - simplices: [For 'alpha'] Optional precomputed triangle simplices
+        - n_rings: how many rows inward to tag as boudary
     """
 
-    # Detection
-    gap = first_ring_gap(points2d, neighbours, degrees=True)
-    neigh_ragged = ragged_neighbours(neighbours)
-    deg = np.array([len(nb) for nb in neigh_ragged])
+    pts = np.asarray(points2d, dtype=np.float64)
+    n = len(pts)
 
-    is_boundary = (gap > gap_threshold_deg) | (deg <= 2)
+    if method.lower() == 'gap':     # Method 1: Topological Gap
 
+        gap = first_ring_gap(pts, neighbours, degrees=True)
+        nbrs = ragged_neighbours(neighbours)
+        deg = np.array([len(nb) for nb in nbrs])
+        # Seed is any point with a large gap or very low coordination
+        is_boundary = (gap > gap_threshold_deg) | (deg <= 2)
+
+    elif method.lower() == 'alpha':
+
+        tri = simplices if simplices is not None else Delaunay(pts).simplices
+        radii = triangle_circumradii(pts, tri)
+
+        # Filter triangles by local spacing
+        local_s = topological_spacing(pts, neighbours, reduce=np.median)
+        kept_mask = radii <= (alpha * local_s[tri].mean(axis=1))
+
+        # Identify boundary indices from the kept mesh
+        b_idx = find_boundary_indices(tri[kept_mask], n_points=n)
+        is_boundary = np.zeros(n, dtype=bool)
+        is_boundary[b_idx] = True
+
+    else:
+        raise ValueError(f"Unknown method {method!r}. Use 'gap' or 'alpha'.")
+
+    # Propagation
     if n_rings <= 1:
         return is_boundary
 
-    # Propagation
+    nbrs = ragged_neighbours(neighbours)
     labelled = is_boundary.copy()
     frontier = np.where(is_boundary)[0]
 
     for _ in range(n_rings - 1):
         if not frontier.size:
             break
-        # Find all neighbours of the current frontier
-        nxt = np.unique(np.concatenate([neigh_ragged[i] for i in frontier]))
-        # only keep those not yet labelled
+        # Grow inward along the graph
+        nxt = np.unique(np.concatenate([nbrs[i] for i in frontier]))
         frontier = nxt[~labelled[nxt]]
         labelled[frontier] = True
 

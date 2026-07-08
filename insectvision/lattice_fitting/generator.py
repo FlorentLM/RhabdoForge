@@ -80,6 +80,7 @@ def _warp_init(
 def _cull_junk(
         points2d: ArrayLike,
         domain: 'Polygon2D',
+        tree: cKDTree,
         target_spacing_fn: Callable,
         boundary_gap_deg: float = 110.0,
         straggler_ratio: float = 1.5,
@@ -99,9 +100,6 @@ def _cull_junk(
     """
 
     pts = np.copy(points2d).astype(np.float64)
-
-    # Build KDTree once for the whole pass
-    tree = cKDTree(pts)
 
     neighbours = delaunay_neighbours(pts, max_length_factor=1.8, tree=tree)
 
@@ -151,9 +149,12 @@ def _finalize_lattice(
 
     p = params or FittingParameters()
 
+    tree = cKDTree(points2d)
+
     pts = _cull_junk(
         points2d=points2d,
         domain=domain,
+        tree=tree,
         target_spacing_fn=target_spacing_fn,
         boundary_gap_deg=p.boundary_gap_deg,
         straggler_ratio=p.straggler_ratio,
@@ -164,7 +165,7 @@ def _finalize_lattice(
 
     # Ring points are gap fillers: keep a seed only if no real point is already near
     ring = resample_contour(domain.boundary, target_spacing_fn)
-    d_to_pts, _ = cKDTree(pts).query(ring)
+    d_to_pts, _ = tree.query(ring)
 
     fill = ring[d_to_pts > p.fill_factor * target_spacing_fn(ring).ravel()]
     combined = np.vstack([pts, fill]) if len(fill) else pts

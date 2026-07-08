@@ -141,7 +141,7 @@ def spring_relaxation(
         if ghost_source == 'lattice':
             g = ghosts_from_growth_2d(
                 p, theta_fn, spacing_fn, bond_dirs, domain,
-                avg_spacing=float(np.median(local_spacing)),
+                avg_spacing=np.median(local_spacing),
                 boundary_band=ghost_depth_factor,       # band in units of local spacing
             )
         else:
@@ -164,6 +164,7 @@ def spring_relaxation(
         return (np.vstack([p, g]), g) if len(g) else (p, np.zeros((0, 2)))
 
     cloud, ghosts = build_cloud(pts)
+
     edges = delaunay_edges(cloud, max_length_factor=1.8)
 
     bond_dirs = np.asarray(bond_dirs, dtype=np.float64)
