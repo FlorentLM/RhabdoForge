@@ -107,7 +107,7 @@ def _cull_junk(
 
     is_boundary = identify_boundary_points(pts, neighbours=neighbours, gap_threshold_deg=boundary_gap_deg)
 
-    actual_spacing = topological_spacing(pts, neighbours=neighbours, reduce=np.nanmean)
+    actual_spacing = topological_spacing(pts, neighbours=neighbours, reduce=np.nanmedian)
     target_spacing = target_spacing_fn(pts).ravel()
     s_ratio = actual_spacing / np.maximum(target_spacing, 1e-12)
 
