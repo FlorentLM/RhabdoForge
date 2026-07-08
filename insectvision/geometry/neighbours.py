@@ -92,6 +92,26 @@ def _delaunay_pairs(points: np.ndarray, simplices: Optional[np.ndarray] = None) 
     return pairs
 
 
+def edges_to_neighbours(edges: ArrayLike, n: int) -> List[np.ndarray]:
+    """
+    Convert an undirected edge list to per-node first-ring neighbour lists.
+
+    Args:
+        edges: (E, 2) int array of undirected edges (each pair listed once).
+        n: total number of nodes; nodes with no incident edge get an empty array.
+
+    Returns:
+        Length-n list of (deg_i,) intp arrays. Neighbours appear in edge order.
+    """
+    edges = np.asarray(edges, dtype=np.intp).reshape(-1, 2)
+    nb: List[list] = [[] for _ in range(n)]
+    for a, b in edges:
+        a, b = int(a), int(b)
+        nb[a].append(b)
+        nb[b].append(a)
+    return [np.array(s, dtype=np.intp) for s in nb]
+
+
 def delaunay_edges(
         points: ArrayLike,
         max_length_factor: float = 0.0,
@@ -136,16 +156,9 @@ def delaunay_neighbours(
     """
     First-ring neighbour lists from a Delaunay triangulation (2D plane or 3D sphere).
     """
-
     points = np.asarray(points, dtype=np.float64)
-    neighbour_lists: List[list] = [[] for _ in range(len(points))]
-
-    for a, b in delaunay_edges(points, max_length_factor=max_length_factor, tree=tree, simplices=simplices):
-        a, b = int(a), int(b)
-        neighbour_lists[a].append(b)
-        neighbour_lists[b].append(a)
-
-    return [np.array(s, dtype=np.intp) for s in neighbour_lists]
+    edges = delaunay_edges(points, max_length_factor=max_length_factor, tree=tree, simplices=simplices)
+    return edges_to_neighbours(edges, len(points))
 
 
 def beta_skeleton_edges(
@@ -203,19 +216,11 @@ def beta_skeleton_neighbours(
         simplices: Optional[np.ndarray] = None,
     ) -> List[np.ndarray]:
     """
-    First-ring neighbour lists.
+    First-ring neighbour lists from the β-skeleton edge set.
     """
-
     points2d = np.asarray(points2d, dtype=np.float64)
-
-    nb: List[list] = [[] for _ in range(len(points2d))]
-
-    for a, b in beta_skeleton_edges(points2d=points2d, beta=beta, simplices=simplices):
-        a, b = int(a), int(b)
-        nb[a].append(b)
-        nb[b].append(a)
-
-    return [np.array(s, dtype=np.intp) for s in nb]
+    edges = beta_skeleton_edges(points2d=points2d, beta=beta, simplices=simplices)
+    return edges_to_neighbours(edges=edges, n=len(points2d))
 
 
 def neighbour_bearings(points2d: ArrayLike, neighbours: NeighbourGraph) -> List[np.ndarray]:

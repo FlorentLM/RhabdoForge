@@ -19,7 +19,8 @@ from insectvision.utils import norm_l2
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
 from insectvision.geometry.ghosting import ghosts_from_growth_3d
 from insectvision.geometry.linalg import tangent_frames, local_to_world
-from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_edges, identify_boundary_points, first_ring_gap
+from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_edges, identify_boundary_points, \
+    first_ring_gap, delaunay_edges, edges_to_neighbours
 from insectvision.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo, radius_of_curvature
 )
@@ -590,14 +591,8 @@ class SpatialQueries:
             delaunay_simplices = Delaunay(pts2d).simplices
 
             # Topology
-            edges = beta_skeleton_edges(pts2d, beta=self.model.lattice_beta, simplices=delaunay_simplices)
-
-            # Convert edge list to adjacency list
-            adj = [[] for _ in range(n)]
-            for a, b in edges.tolist():
-                adj[a].append(b)
-                adj[b].append(a)
-            adj = [np.array(nb, dtype=np.intp) for nb in adj]
+            edges = delaunay_edges(pts2d, max_length_factor=1.8, simplices=delaunay_simplices)
+            adj = edges_to_neighbours(edges, n)
 
             # Boundary detection
             is_boundary = identify_boundary_points(pts2d, adj)

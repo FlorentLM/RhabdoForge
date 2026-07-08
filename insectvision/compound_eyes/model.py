@@ -17,10 +17,13 @@ from insectvision.utils import WORLD_FORWARD, norm_l2, broadcast_to_shape, broad
 from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world, tangent_bearing
-from insectvision.geometry.neighbours import knn, topological_spacing, metric_spacing, delaunay_neighbours, \
-    padded_neighbours, identify_boundary_points
+from insectvision.geometry.neighbours import (
+    knn, topological_spacing, metric_spacing, delaunay_neighbours, padded_neighbours, identify_boundary_points
+)
 from insectvision.geometry.fields import smooth_phasors, smooth_field_partitioned
-from insectvision.geometry.spherical import angle_to_chord, sphere_to_stereo
+from insectvision.geometry.spherical import (
+    angle_to_chord, sphere_to_stereo, angular_separation, mean_extreme_separations
+)
 from insectvision.geometry.polygons import triangle_areas
 
 from insectvision.compound_eyes.buffers import Buffer, _BIT_LAYOUT
@@ -648,10 +651,7 @@ class Model(SpatialQueries, BaseView):
             is_immediate = neighbours.immediate
 
             # Optical IOA: angular separation in optical-axis space
-            angular_sep = np.arccos(
-                np.clip(np.einsum('ik,ijk->ij', directions, neighb_dirs), -1.0, 1.0)
-            )
-
+            angular_sep = angular_separation(directions[:, None, :], neighb_dirs)
             bearings = tangent_bearing(neighb_pos, positions, rights, ups)
 
             # Hexatic order over the first ring
@@ -661,12 +661,7 @@ class Model(SpatialQueries, BaseView):
             e_psi6_mag = hexatic_order(z_avg)
 
             # IOA: mean of 2 smallest / 2 largest first ring separations
-            min2 = np.sort(np.where(is_immediate, angular_sep, np.inf), axis=1)[:, :2]
-            max2 = -np.sort(np.where(is_immediate, -angular_sep, np.inf), axis=1)[:, :2]
-
-            with np.errstate(all='ignore'):
-                e_ioa_minor = np.nanmean(np.where(np.isfinite(min2), min2, np.nan), axis=1)
-                e_ioa_major = np.nanmean(np.where(np.isfinite(max2), max2, np.nan), axis=1)
+            e_minor, e_major = mean_extreme_separations(angular_sep, is_immediate)
 
             # Neighbourhood too sparse: fallback to simple mean over whatever is immediate, zero if nothing
             if np.any(sparse_mask := is_immediate.sum(axis=1) < 2):
@@ -676,8 +671,8 @@ class Model(SpatialQueries, BaseView):
 
                 fallback = np.where(np.isfinite(fallback), fallback, 0.0)
 
-                e_ioa_minor = np.where(sparse_mask, fallback, e_ioa_minor)
-                e_ioa_major = np.where(sparse_mask, fallback, e_ioa_major)
+                e_minor = np.where(sparse_mask, fallback, e_minor)
+                e_major = np.where(sparse_mask, fallback, e_major)
                 e_tilts = np.where(sparse_mask, 0.0, e_tilts)
 
             # Ommatidia spacing
@@ -696,8 +691,8 @@ class Model(SpatialQueries, BaseView):
             )
             e_tilts = hexatic_axis_angle(e_tilts_z6_smoothed)  # put angles back in (-pi/6, pi/6]
 
-            ioa_minor[indices] = np.where(np.isfinite(e_ioa_minor), e_ioa_minor, 0.0)
-            ioa_major[indices] = np.where(np.isfinite(e_ioa_major), e_ioa_major, 0.0)
+            ioa_minor[indices] = np.where(np.isfinite(e_minor), e_minor, 0.0)
+            ioa_major[indices] = np.where(np.isfinite(e_major), e_major, 0.0)
             ioa_tilts[indices] = e_tilts
             ioa_order[indices] = e_psi6_mag
             spacing[indices] = e_spacing
@@ -761,29 +756,18 @@ class Model(SpatialQueries, BaseView):
             neighb_dirs = combined_dirs[neighbours]
             neighb_pos = combined_pos[neighbours]
 
-            angular_sep = np.arccos(
-                np.clip(np.einsum('ik,ijk->ij', directions, neighb_dirs), -1.0, 1.0)
-            )
+            # Optical IOA: angular separation in optical-axis space
+            angular_sep = angular_separation(directions[:, None, :], neighb_dirs)
 
-            delta = neighb_pos - positions[:, None, :]
-
-            u = np.einsum('ijk,ik->ij', delta, rights)
-            v = np.einsum('ijk,ik->ij', delta, ups)
-            bearings = np.arctan2(v, u)
-
+            # Hexatic order over the first ring
+            bearings = tangent_bearing(neighb_pos, positions, rights, ups)
             z = resultant(angles=bearings, weights=valid_neighbours, axis=1, fold=6)
 
             e_tilt = hexatic_axis_angle(z)
             e_order = hexatic_order(z)
 
-            # Mask out invalid neighbours so they don't corrupt the min/max separation sorts
-            sep_asc = np.sort(np.where(valid_neighbours, angular_sep, np.inf), axis=1)[:, :2]
-            sep_desc = np.sort(np.where(valid_neighbours, angular_sep, -np.inf), axis=1)[:, -2:]
-
-            with np.errstate(all='ignore'):
-                e_minor = np.nanmean(np.where(np.isfinite(sep_asc), sep_asc, np.nan), axis=1)
-                e_major = np.nanmean(np.where(np.isfinite(sep_desc), sep_desc, np.nan), axis=1)
-
+            # IOA: mean of 2 smallest / 2 largest first ring separations
+            e_minor, e_major = mean_extreme_separations(angular_sep, valid_neighbours)
             e_minor = np.where(np.isfinite(e_minor), e_minor, minor[indices])
             e_major = np.where(np.isfinite(e_major), e_major, e_minor)
 

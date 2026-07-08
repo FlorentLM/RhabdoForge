@@ -131,6 +131,36 @@ def chord_to_angle(chord: ArrayLike) -> np.ndarray:
     return 2.0 * np.arcsin(np.clip(0.5 * np.asarray(chord, dtype=np.float64), -1.0, 1.0))
 
 
+def angular_separation(a: ArrayLike, b: ArrayLike) -> np.ndarray:
+    """
+    Great-circle angle (rad) between unit vectors: arccos of the (clipped) dot.
+    Inputs broadcast on the last (component) axis, e.g. a=(N,1,3), b=(N,k,3) -> (N,k).
+    """
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    return np.arccos(np.clip(np.einsum('...k,...k->...', a, b), -1.0, 1.0))
+
+
+def mean_extreme_separations(
+        separations: ArrayLike,
+        valid: Optional[ArrayLike] = None,
+        n: int = 2,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Per-row (minor, major) interommatidial angle: the mean of the n smallest and
+    n largest *valid* separations.
+    Invalid entries are ignored, a row with no valid entry yields NaN.
+    """
+    sep = np.asarray(separations, dtype=np.float64)
+    valid = np.ones_like(sep, dtype=bool) if valid is None else np.asarray(valid, dtype=bool)
+    asc  = np.sort(np.where(valid, sep,  np.inf), axis=1)[:, :n]
+    desc = np.sort(np.where(valid, sep, -np.inf), axis=1)[:, -n:]
+    with np.errstate(all='ignore'):
+        minor = np.nanmean(np.where(np.isfinite(asc),  asc,  np.nan), axis=1)
+        major = np.nanmean(np.where(np.isfinite(desc), desc, np.nan), axis=1)
+    return minor, major
+
+
 def normals_to_ellipsoid(directions: ArrayLike, rx: float, ry: float, rz: float) -> np.ndarray:
     """
     Map viewing directions to positions on an ellipsoid such that the directions are the surface normals.
