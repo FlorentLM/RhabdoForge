@@ -66,6 +66,23 @@ class SamplingMode(IntEnum):
     Airy = 1        # Physical diffraction pattern
 
 
+def to_enum(val, enum_class):
+    """Helper to convert string, int, or enum to the target Enum class."""
+    if isinstance(val, enum_class):
+        return val
+    if isinstance(val, str):
+        try:
+            return enum_class[val]
+        except KeyError:
+            try:
+                return enum_class[val.capitalize()]
+            except KeyError:
+                pass
+        print(f"Warning: Invalid mode '{val}' for {enum_class.__name__}. Defaulting to {list(enum_class)[0].name}")
+        return list(enum_class)[0]
+    return enum_class(val)
+
+
 # Shared utils
 
 def _match_batch(a: ArrayLike, b: ArrayLike) -> Tuple[np.ndarray, np.ndarray]:

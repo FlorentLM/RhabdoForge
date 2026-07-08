@@ -278,7 +278,7 @@ class SceneBaker:
         self.cpu_verts = np.concatenate(all_verts).ravel() if all_verts else None
         self.cpu_idx = np.concatenate(all_idxs).ravel() if all_idxs else None
         self.cpu_pts = np.concatenate(all_pts).ravel() if all_pts else None
-        self.cpu_blas = np.concatenate(all_nodes).astype(np.float32) if all_nodes else None
+        self.cpu_blas_nodes = np.concatenate(all_nodes).astype(np.float32) if all_nodes else None
 
     def _build_tlas(self):
 
@@ -332,76 +332,33 @@ class SceneBaker:
         ssbo_dat = self._tlas.get_SSBO_bundle(flatten_nodes=False)
 
         self.cpu_tlas_nodes = ssbo_dat['nodes'].astype(np.float32)
-        self.cpu_tlas_idx = ssbo_dat['leaf_ids'].astype(np.uint32)
+        self.cpu_tlas_indices = ssbo_dat['leaf_ids'].astype(np.uint32)
 
         write_pytinybvh_preamble(str(ssbo_dat.get('preamble', '')))
 
-        self.cpu_blas_idx = np.concatenate(self._blas_leaf_chunks).astype(np.uint32)
+        self.cpu_blas_indices = np.concatenate(self._blas_leaf_chunks).astype(np.uint32)
 
     def _push_to_gpu(self):
 
-        # TODO: This thing should probably be done by BufferRegistry.allocate?
-        def _data_or_default(data, dtype, min_elems=1):
-            if data is None or getattr(data, 'nbytes', 0) == 0:
-                return np.zeros((min_elems,), dtype=dtype)
-            return data
+        v_count = self.cpu_verts.size if self.cpu_verts is not None else 0
+        i_count = self.cpu_idx.size if self.cpu_idx is not None else 0
+        p_count = self.cpu_pts.size if self.cpu_pts is not None else 0
+        bn_count = self.cpu_blas_nodes.size if self.cpu_blas_nodes is not None else 0
+        bi_count = self.cpu_blas_indices.size if self.cpu_blas_indices is not None else 0
+        tn_count = self.cpu_tlas_nodes.size if self.cpu_tlas_nodes is not None else 0
+        ti_count = self.cpu_tlas_indices.size if self.cpu_tlas_indices is not None else 0
+        ii_count = self.gpu_inst_info.size if self.gpu_inst_info is not None else 0
+        iv_count = self.cpu_inst_visible.size if self.cpu_inst_visible is not None else 0
 
-        verts = _data_or_default(data=self.cpu_verts, dtype=np.float32, min_elems=5)
-        self.bvh_buffers.allocate('verts',
-                                  dtype=np.float32,
-                                  count=verts.size,
-                                  data=verts)
-
-        indices = _data_or_default(data=self.cpu_idx, dtype=np.uint32, min_elems=3)
-        self.bvh_buffers.allocate('indices',
-                                  dtype=np.uint32,
-                                  count=indices.size,
-                                  data=indices)
-
-        points = _data_or_default(data=self.cpu_pts, dtype=np.float32, min_elems=12)
-        self.bvh_buffers.allocate('points',
-                                  dtype=np.float32,
-                                  count=points.size,
-                                  data=points)
-
-        blas_nodes = _data_or_default(data=self.cpu_blas, dtype=np.float32, min_elems=1)
-        self.bvh_buffers.allocate('blas_nodes',
-                                  dtype=np.float32,
-                                  count=blas_nodes.size,
-                                  data=blas_nodes)
-
-        tlas_nodes = _data_or_default(data=self.cpu_tlas_nodes, dtype=np.float32, min_elems=1)
-        self.bvh_buffers.allocate('tlas_nodes',
-                                  dtype=np.float32,
-                                  count=tlas_nodes.size,
-                                  data=tlas_nodes,
-                                  usage=GL_DYNAMIC_DRAW)
-
-        tlas_indices = _data_or_default(data=self.cpu_tlas_idx, dtype=np.uint32, min_elems=1)
-        self.bvh_buffers.allocate('tlas_indices',
-                                  dtype=np.uint32,
-                                  count=tlas_indices.size,
-                                  data=tlas_indices)
-
-        blas_indices = _data_or_default(data=self.cpu_blas_idx, dtype=np.uint32, min_elems=1)
-        self.bvh_buffers.allocate('blas_indices',
-                                  dtype=np.uint32,
-                                  count=blas_indices.size,
-                                  data=blas_indices)
-
-        inst_info = _data_or_default(data=self.gpu_inst_info, dtype=RENDERABLE_INST_DTYPE, min_elems=1)
-        self.bvh_buffers.allocate('inst_info',
-                                  dtype=RENDERABLE_INST_DTYPE,
-                                  count=inst_info.size,
-                                  data=inst_info,
-                                  usage=GL_DYNAMIC_DRAW)
-
-        inst_visible = _data_or_default(data=self.cpu_inst_visible, dtype=np.uint32, min_elems=1)
-        self.bvh_buffers.allocate('inst_visible',
-                                  dtype=np.uint32,
-                                  count=inst_visible.size,
-                                  data=inst_visible,
-                                  usage=GL_DYNAMIC_DRAW)
+        self.bvh_buffers.allocate('verts', dtype=np.float32, count=v_count, data=self.cpu_verts, min_count=5)
+        self.bvh_buffers.allocate('indices', dtype=np.uint32, count=i_count, data=self.cpu_idx, min_count=3)
+        self.bvh_buffers.allocate('points', dtype=np.float32, count=p_count, data=self.cpu_pts, min_count=12)
+        self.bvh_buffers.allocate('blas_nodes', dtype=np.float32, count=bn_count, data=self.cpu_blas_nodes, min_count=1)
+        self.bvh_buffers.allocate('blas_indices', dtype=np.uint32, count=bi_count, data=self.cpu_blas_indices, min_count=1)
+        self.bvh_buffers.allocate('tlas_nodes', dtype=np.float32, count=tn_count, data=self.cpu_tlas_nodes, min_count=1, usage=GL_DYNAMIC_DRAW)
+        self.bvh_buffers.allocate('tlas_indices', dtype=np.uint32, count=ti_count, data=self.cpu_tlas_indices, min_count=1)
+        self.bvh_buffers.allocate('inst_info', dtype=RENDERABLE_INST_DTYPE, count=ii_count, data=self.gpu_inst_info, min_count=1, usage=GL_DYNAMIC_DRAW)
+        self.bvh_buffers.allocate('inst_visible', dtype=np.uint32, count=iv_count, data= self.cpu_inst_visible, min_count=1, usage=GL_DYNAMIC_DRAW)
 
     # Dynamic updates
 

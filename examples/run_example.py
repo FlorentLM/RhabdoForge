@@ -118,7 +118,7 @@ if __name__ == "__main__":
 
     if not HEADLESS:
         # Interactive mode
-        while context.run_interactive(use_dashboard=True):
+        while context.run_interactive(use_dashboard=False):
 
             context.input()  # processes inputs from keyboard / gamepad etc (optional)
 

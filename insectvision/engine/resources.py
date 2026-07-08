@@ -143,17 +143,17 @@ class ShaderCompiler:
         glCompileShader(shader)
 
         if not glGetShaderiv(shader, GL_COMPILE_STATUS):
-            error = glGetShaderInfoLog(shader).decode()
+            glsl_error = glGetShaderInfoLog(shader).decode()
             glDeleteShader(shader)
-            raise RuntimeError(f"Shader compilation error in {path}:\n{error}")
+            raise RuntimeError(f"Shader compilation error in {path} (or any included):\n{glsl_error}")
 
         return shader
 
     def load_program(self,
-                     path_vert: Optional[Union[str, Path]] = None,
-                     path_frag: Optional[Union[str, Path]] = None,
-                     path_geom: Optional[Union[str, Path]] = None,
-                     path_comp: Optional[Union[str, Path]] = None
+             path_vert: Optional[Union[str, Path]] = None,
+             path_frag: Optional[Union[str, Path]] = None,
+             path_geom: Optional[Union[str, Path]] = None,
+             path_comp: Optional[Union[str, Path]] = None
          ) -> int:
         """
         Compiles and links a shader program (rendering or compute).
@@ -175,7 +175,7 @@ class ShaderCompiler:
 
             # Verification
             success = glGetProgramiv(program, GL_LINK_STATUS)
-            error_log = ""
+            error_log = ''
             if not success:
                 error_log = glGetProgramInfoLog(program).decode()
 
@@ -191,7 +191,7 @@ class ShaderCompiler:
             return program
 
         except Exception as e:
-            # If compile fails halfway through, free previously compiled shaders in this pass
+            # Compile fails halfway through -> free previously compiled shaders in this pass
             for shader in shaders_to_link:
                 glDeleteShader(shader)
             raise e
@@ -233,18 +233,18 @@ class ShaderProgram:
         num_uniforms = glGetProgramiv(self.program_id, GL_ACTIVE_UNIFORMS)
 
         for i in range(num_uniforms):
-            name, size, type_ = glGetActiveUniform(self.program_id, i)
+            name_, size_, type_ = glGetActiveUniform(self.program_id, i)
 
-            if isinstance(name, np.ndarray):
-                name = name.tobytes().decode('utf-8').rstrip('\x00')
+            if isinstance(name_, np.ndarray):
+                name_ = name_.tobytes().decode('utf-8').rstrip('\x00')
             else:
-                name = name.decode('utf-8')
+                name_ = name_.decode('utf-8')
 
-            if name.endswith('[0]'):
-                name = name[:-3]
+            if name_.endswith('[0]'):
+                name_ = name_[:-3]
 
-            self.locations[name] = glGetUniformLocation(self.program_id, name)
-            self.types[name] = type_
+            self.locations[name_] = glGetUniformLocation(self.program_id, name_)
+            self.types[name_] = type_
 
     def __enter__(self):
         self.use()
@@ -485,26 +485,29 @@ class BufferRegistry:
         return {f"BINDING_{b.name.upper()}": b.binding for b in self._buffers.values() if b.binding is not None}
 
     def allocate(self,
-                 name: str,
-                 dtype: np.dtype,
-                 count: int,
-                 target: int = GL_SHADER_STORAGE_BUFFER,
-                 data: Optional[np.ndarray] = None,
-                 usage: int = GL_STATIC_DRAW,
-                 supports_async: bool = False,
-                 _async_reader: Optional[callable] = None,
-                 ) -> BufferObject:
+            name: str,
+            dtype: np.dtype,
+            count: int,
+            target: int = GL_SHADER_STORAGE_BUFFER,
+            data: Optional[np.ndarray] = None,
+            usage: int = GL_STATIC_DRAW,
+            supports_async: bool = False,
+            _async_reader: Optional[callable] = None,
+            min_count: int = 1
+        ) -> BufferObject:
         """Create a new SSBO, allocate GPU memory, and register it."""
 
+        actual_count = max(count, min_count)
         itemsize = np.dtype(dtype).itemsize
-        size_bytes = count * itemsize
+        size_bytes = actual_count * itemsize
 
         handle = glGenBuffers(1)
         glBindBuffer(target, handle)
 
-        if data is not None:
+        if data is not None and data.size > 0:
             data_arr = np.ascontiguousarray(data)
-            glBufferData(target, size_bytes, data_arr.tobytes(), usage)
+            glBufferData(target, size_bytes, None, usage)  # allocate
+            glBufferSubData(target, 0, data_arr.nbytes, data_arr.tobytes())  # partial upload
         else:
             glBufferData(target, size_bytes, None, usage)
 
@@ -518,7 +521,7 @@ class BufferRegistry:
             name=name,
             handle=handle,
             dtype=dtype,
-            count=count,
+            count=actual_count,
             target=target,
             usage=usage,
             binding=binding,

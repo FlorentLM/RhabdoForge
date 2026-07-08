@@ -21,7 +21,7 @@ OMM_STATIC_DTYPE = np.dtype([
     # 16 bytes: saccade dx and dy, lateral amplitude, axial amplitude
     ('saccade_dxdy',  np.float32, 2), ('ampl_lateral', np.float32), ('ampl_axial', np.float32),
 
-    # 16 bytes: Temporal values:            # TODO: use ms instead?
+    # 16 bytes: Temporal values (all in seconds, the compute shaders integrate with dt in s)
     ('tau_rise',        np.float32),        # mechanical rise time (s)
     ('tau_relax',       np.float32),        # mechanical relaxation time (s)
     ('tau_adapt_fast',  np.float32),        # fast adaptation EMA (s)
@@ -63,7 +63,7 @@ RHAB_DYNAMIC_DTYPE = np.dtype([
     ('curr_direction',  np.float32, 3),     # 12 bytes: current (actuated) viewing direction
     ('curr_adaptation', np.float32),        #  4 bytes: current adaptation state
     ('curr_acc_angles', np.float32, 2),     #  8 bytes: current (actuated) acceptance angles (rad)
-    ('optical_scale',   np.float32),        #  4 bytes # TODO: explain
+    ('optical_scale',   np.float32),        #  4 bytes: optical RF-narrowing factor Δρ_eff/Δρ_rest, read for photon concentration
     ('_pad',            np.float32),        #  4 bytes: pad to 32 bytes
 ])  # 32 bytes
 

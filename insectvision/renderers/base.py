@@ -11,7 +11,7 @@ from pyglm import glm
 from pytinybvh import BVH
 
 from insectvision.utils import (
-    EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode, airy_sensitivity_lut
+    to_enum, EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode, airy_sensitivity_lut
 )
 from insectvision.engine.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.resources import (
@@ -97,6 +97,10 @@ class Renderer:
         self._model: 'Model' = model
         self.agent: 'Agent' = agent
 
+        # Track view matrices for parciminious updates
+        self._last_view_matrix = None
+        self._last_persp_view_matrix = None
+
         # Context reference
         from insectvision.engine.context import get_context
         self._context = context or get_context()
@@ -112,8 +116,8 @@ class Renderer:
         self._samples_per_px: int = 1       # number of rays per pixel (third person visualisation only)
         self._noise_threshold = 0.05
         self._use_hybrid_sampling = False
-        self._randomness_mode = self._to_enum(randomness_mode, RandomnessMode)
-        self._sampling_mode = self._to_enum(sampling_mode, SamplingMode)
+        self._randomness_mode = to_enum(randomness_mode, RandomnessMode)
+        self._sampling_mode = to_enum(sampling_mode, SamplingMode)
 
         # Render surfaces and related things
         self._bg_col_linear = tuple(c ** 2.2 for c in self.scene.background_color)  # TODO: what if already linear
@@ -324,6 +328,7 @@ class Renderer:
 
             # Sampling modes
             nb_samples=self._samples_per_rhab,
+            pixel_samples=self._samples_per_px,
             use_hybrid_sampling=self._use_hybrid_sampling,
             sampling_mode=self._sampling_mode,  # 0 = Gaussian, 1 = Airy
             randomness_mode=self._randomness_mode,
@@ -578,8 +583,8 @@ class Renderer:
         # Baker buffers on GPU fixed costs
         fixed_usage_bytes = sum(buf.nbytes for buf in (
             self._baker.cpu_verts, self._baker.cpu_idx, self._baker.cpu_pts,
-            self._baker.cpu_blas, self._baker.cpu_tlas_nodes, self._baker.cpu_tlas_idx,
-            self._baker.cpu_blas_idx, self._baker.gpu_inst_info
+            self._baker.cpu_blas_nodes, self._baker.cpu_tlas_nodes, self._baker.cpu_tlas_indices,
+            self._baker.cpu_blas_indices, self._baker.gpu_inst_info
         ) if buf is not None)
 
         # PBO costs (2x model_size * 16)
@@ -618,21 +623,6 @@ class Renderer:
 
         return batch_size, safe_samples
 
-    @staticmethod
-    def _to_enum(val, enum_class):
-        """Helper to convert string, int, or enum to the target Enum class."""
-        # TODO: Move this to the utils file ?
-
-        if isinstance(val, enum_class):
-            return val
-        if isinstance(val, str):
-            try:
-                return enum_class[val.capitalize()]
-            except KeyError:
-                print(f"Warning: Invalid mode '{val}' for {enum_class.__name__}. Defaulting to {list(enum_class)[0].name}")
-                return list(enum_class)[0]
-        return enum_class(val)
-
     # Main internal rendering calls: Dispatch -> Reduction -> Dynamics
 
     def _dispatch(self) -> None:
@@ -649,10 +639,10 @@ class Renderer:
 
                 with self._baker.scene_textures.bind_all():
 
-                    # Restore number of samples
-                    self._eye_uniforms.update(nb_samples=self._samples_per_rhab)
-                    self._eye_uniforms.update(cam_to_world=glm.inverse(self.agent.view))
-                    # TODO: doesn't need to be updated *every* frame if did not change
+                    current_view = self.agent.view
+                    if current_view != self._last_view_matrix:
+                        self._eye_uniforms.update(cam_to_world=glm.inverse(current_view))
+                        self._last_view_matrix = current_view
 
                     self._eye_uniforms.apply(shader)
                     self._scene_uniforms.apply(shader)
@@ -834,13 +824,17 @@ class Renderer:
 
             with b.grouped_bind(), l.grouped_bind():
                 with self._baker.scene_textures.bind_all():
-                    # Override number of samples for third person
-                    self._eye_uniforms.update(nb_samples=self._samples_per_px)
-                    self._eye_uniforms.update(cam_to_world=glm.inverse(pov.view))
-                    # TODO: These should not be uploaded done unconditionally if nothing changed
+
+                    current_view = pov.view
+                    if current_view != self._last_view_matrix:
+                        self._eye_uniforms.update(cam_to_world=glm.inverse(current_view))
+                        self._last_view_matrix = current_view
 
                     if view_name == 'perspective':
-                        self._eye_uniforms.update(inv_projection=glm.inverse(self.agent.projection))
+                        curr_persp = self.agent.projection
+                        if curr_persp != self._last_persp_view_matrix:
+                            self._eye_uniforms.update(inv_projection=glm.inverse(curr_persp))
+                            self._last_persp_view_matrix =curr_persp
 
                     self._eye_uniforms.apply(shader)
                     self._scene_uniforms.apply(shader)
@@ -1322,6 +1316,7 @@ class Renderer:
     @pixel_samples.setter
     def pixel_samples(self, value: int) -> None:
         self._samples_per_px = max(1, int(value))
+        self._eye_uniforms.update(pixel_samples=self._samples_per_px)
 
     @property
     def max_bounces(self) -> int:
@@ -1399,7 +1394,7 @@ class Renderer:
 
     @sampling_mode.setter
     def sampling_mode(self, value: Union[int, str, 'SamplingMode']) -> None:
-        self._sampling_mode = self._to_enum(value, SamplingMode)
+        self._sampling_mode = to_enum(value, SamplingMode)
         self._eye_uniforms.update(sampling_mode=int(self._sampling_mode))
         print(f"Sampling Mode: {self._sampling_mode.name}")
 
@@ -1464,7 +1459,7 @@ class Renderer:
 
     @randomness_mode.setter
     def randomness_mode(self, value: Union[int, str, RandomnessMode]) -> None:
-        self._randomness_mode = self._to_enum(value, RandomnessMode)
+        self._randomness_mode = to_enum(value, RandomnessMode)
         self._eye_uniforms.update(randomness_mode=int(self._randomness_mode))
         print(f"Randomness Mode: {self._randomness_mode.name}")
 
