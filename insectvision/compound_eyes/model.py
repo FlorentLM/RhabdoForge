@@ -24,7 +24,7 @@ from insectvision.geometry.fields import smooth_phasors, smooth_field_partitione
 from insectvision.geometry.spherical import (
     angle_to_chord, sphere_to_stereo, angular_separation, mean_extreme_separations
 )
-from insectvision.geometry.polygons import triangle_areas
+from insectvision.geometry.polygons import triangle_areas, pack_edge_keys
 
 from insectvision.compound_eyes.buffers import Buffer, _BIT_LAYOUT
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
@@ -848,12 +848,9 @@ class Model(SpatialQueries, BaseView):
             global_tri = eye.omm_indices[simplices]
 
             # Key the 3 edges of every triangle
-            def key_edges(i, j):
-                lo = np.minimum(global_tri[:, i], global_tri[:, j])
-                hi = np.maximum(global_tri[:, i], global_tri[:, j])
-                return lo * big + hi
-
-            k1, k2, k3 = key_edges(0, 1), key_edges(1, 2), key_edges(2, 0)
+            k1 = pack_edge_keys(global_tri[:, 0], global_tri[:, 1], big)
+            k2 = pack_edge_keys(global_tri[:, 1], global_tri[:, 2], big)
+            k3 = pack_edge_keys(global_tri[:, 2], global_tri[:, 0], big)
 
             pair_keys_arr = np.array(list(keys), dtype=np.int64)
             mask_v = np.isin(k1, pair_keys_arr) & np.isin(k2, pair_keys_arr) & np.isin(k3, pair_keys_arr)

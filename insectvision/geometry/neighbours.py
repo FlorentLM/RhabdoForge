@@ -5,7 +5,7 @@ from scipy.spatial import Delaunay, ConvexHull, cKDTree
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
-from insectvision.geometry.polygons import find_boundary_indices, triangle_circumradii
+from insectvision.geometry.polygons import find_boundary_indices, triangle_circumradii, unpack_edge_keys
 from insectvision.utils import norm_l2
 
 # A neighbour graph, can be:
@@ -210,11 +210,11 @@ def beta_skeleton_edges(
     order = np.argsort(key, kind='stable')
 
     uniq, start = np.unique(key[order], return_index=True)
-
     bad = np.maximum.reduceat(reject[order].astype(np.int8), start).astype(bool)
     good = uniq[~bad]
+    lo, hi = unpack_edge_keys(good, n)
 
-    return np.stack([good // n, good % n], axis=1).astype(int)
+    return np.stack([lo, hi], axis=1).astype(int)
 
 
 def beta_skeleton_neighbours(

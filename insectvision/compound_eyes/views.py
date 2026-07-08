@@ -14,15 +14,15 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree, Delaunay
 
+from insectvision.geometry.polygons import pack_edge_keys
 from insectvision.utils import norm_l2
 
 from insectvision.compound_eyes.buffers import _BIT_LAYOUT
 from insectvision.geometry.ghosting import ghosts_from_growth_3d
 from insectvision.geometry.linalg import tangent_frames, local_to_world
-from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_edges, identify_boundary_points, \
-    delaunay_neighbours, delaunay_edges
-from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_edges, identify_boundary_points, \
-    first_ring_gap, delaunay_edges, edges_to_neighbours
+from insectvision.geometry.neighbours import (
+    knn, k_lookat, identify_boundary_points, delaunay_edges, edges_to_neighbours
+)
 from insectvision.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo, radius_of_curvature
 )
@@ -600,9 +600,7 @@ class SpatialQueries:
         if edges.size > 0:
             gi = omm[edges[:, 0]].astype(np.int64)
             gj = omm[edges[:, 1]].astype(np.int64)
-            lo = np.minimum(gi, gj)
-            hi = np.maximum(gi, gj)
-            pair_keys = set((lo * big + hi).tolist())
+            pair_keys = set(pack_edge_keys(gi, gj, big).tolist())
         else:
             pair_keys = set()
 
@@ -706,9 +704,7 @@ class SpatialQueries:
         neighb_ind = np.asarray(neighb_ind, dtype=np.int64)
 
         # Generate unique keys for every found neighbour
-        lo = np.minimum(qi, neighb_ind)
-        hi = np.maximum(qi, neighb_ind)
-        query_keys = lo * big + hi
+        query_keys = pack_edge_keys(qi, neighb_ind, big)
 
         # Convert set to sorted array once for O(log n) search
         if isinstance(pair_keys, set):

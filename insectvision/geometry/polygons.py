@@ -63,6 +63,26 @@ class Polygon2D:
         return signed_distance(points2d=points2d, domain=self)
 
 
+# Some indexing helpers
+
+def pack_edge_keys(i: ArrayLike, j: ArrayLike, big: int) -> np.ndarray:
+    """
+    Encode undirected edges (i, j) as int64 keys: lo*big + hi, with lo=min, hi=max.
+    'big' must exceed the largest node id so the mapping is bijective.
+    """
+    i = np.asarray(i, dtype=np.int64)
+    j = np.asarray(j, dtype=np.int64)
+    lo, hi = np.minimum(i, j), np.maximum(i, j)
+    return lo * np.int64(big) + hi
+
+
+def unpack_edge_keys(keys: ArrayLike, big: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Inverse of pack_edge_keys -> (lo, hi)."""
+    keys = np.asarray(keys, dtype=np.int64)
+    big = np.int64(big)
+    return keys // big, keys % big
+
+
 def polygon_area(points2d: ArrayLike, signed: bool = False) -> float:
     """
     Shoelace area of a 2D polygon whose vertices are given in order.
@@ -124,15 +144,13 @@ def find_boundary_indices(simplices: np.ndarray, n_points: int) -> np.ndarray:
         simplices[:, [2, 0]]
     ]), axis=1)
 
-    # Key the edges into 64-bit ints for fast unique counting
     big = int(n_points + 1)
-    keys = edges[:, 0].astype(np.int64) * big + edges[:, 1]
-
+    keys = pack_edge_keys(edges[:, 0], edges[:, 1], big)
     unique_keys, counts = np.unique(keys, return_counts=True)
     boundary_keys = unique_keys[counts == 1]
+    lo, hi = unpack_edge_keys(boundary_keys, big)
 
-    # De-key back to point indices
-    return np.unique(np.stack([boundary_keys // big, boundary_keys % big]))
+    return np.unique(np.stack([lo, hi]))
 
 
 def triangle_areas(a: ArrayLike, b: ArrayLike, c: ArrayLike) -> np.ndarray:
