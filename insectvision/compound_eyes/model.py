@@ -28,7 +28,7 @@ from insectvision.compound_eyes.helpers.neural_superposition import (
 from insectvision.compound_eyes.helpers.acceptance import (
     SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
 )
-from insectvision.compound_eyes.helpers.alignment import BundlesAligner, apply_chirality, trivial_alignment
+from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 from insectvision.compound_eyes.views import SpatialQueries, BaseView, OmmatidiumView, EyeView, RhabdomereView
 
 if TYPE_CHECKING:
@@ -197,7 +197,7 @@ class Model(SpatialQueries, BaseView):
         use_aligner = (orientation is not None) or (flow_direction is not None) or (self._R > 1)
 
         if bundle_orientations is not None and chiralities is not None:
-            result = apply_chirality(self, bundle_orientations, chiralities)
+            result = BundlesAligner.apply_chirality(self, bundle_orientations, chiralities)
 
         elif use_aligner:
             if orientation is not None:
@@ -210,7 +210,7 @@ class Model(SpatialQueries, BaseView):
             result = aligner.compute(self, override_chi=bundle_orientations, override_chirality=chiralities)
 
         else:
-            result = trivial_alignment(self._N)
+            result = BundlesAligner.trivial_alignment(self._N)
 
             result.saccade_phasor = self._buf['up'].copy()
             # result.saccade_phasor = self._buf['right'].copy()  # debug thing

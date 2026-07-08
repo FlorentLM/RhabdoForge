@@ -9,7 +9,7 @@ from scipy.interpolate import griddata
 from scipy.spatial import cKDTree
 
 from insectvision.geometry.hexatic import compute_psi6, hexatic_order
-from insectvision.geometry.linalg import principal_axis_angle
+from insectvision.geometry.linalg import principal_axes
 from insectvision.geometry.spherical import sphere_to_stereo, chord_to_angle
 from insectvision.geometry.neighbours import delaunay_edges, delaunay_neighbours, graph_spacing, ball_spacing
 from insectvision.geometry.lattice import trace_lattice_rows
@@ -209,7 +209,10 @@ def plot_lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diag
 
     for col, gr, sr, brg, lab in zip(colors, gen_rows, src_rows, bearings, 'XYV'):
 
-        d = np.rad2deg(abs(principal_axis_angle(gr) - brg)) % 180
+        # PCA to get the angle
+        major = principal_axes(gr)[0][:, 0]
+        angle = np.arctan2(major[1], major[0])
+        d = np.rad2deg(np.abs(angle) - brg)  % 180
         d = min(d, 180 - d)
 
         ax.plot(gr[:, 0], gr[:, 1], color=col, lw=2.2, zorder=5, label=f'Row {lab}  \u0394={d:.1f}\u00b0')
@@ -233,7 +236,7 @@ def plot_lattice_diagnostics(stages: dict, save_path: str | Path = 'lattice_diag
     ax.scatter(final[~inside, 0], final[~inside, 1], c='lightgrey', s=8, alpha=0.6)
 
     im = ax.scatter(final[inside, 0], final[inside, 1], c=psi[inside], cmap='RdYlGn',
-                    s=22, vmin=0.5, vmax=1.0, edgecolors='none')
+                    s=22, vmin=0.2, vmax=1.0, edgecolors='none')
 
     defect = inside & (coord != 6)
     ax.scatter(final[defect, 0], final[defect, 1], facecolors='none', edgecolors='k',

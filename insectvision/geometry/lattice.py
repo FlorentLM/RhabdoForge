@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING, Sequence, List, Callable, Tuple, Optional
 import numpy as np
 from numpy.typing import ArrayLike
 
-from insectvision.geometry.linalg import principal_axis_angle
+from insectvision.geometry.linalg import principal_axes
 from insectvision.geometry.neighbours import ragged_neighbours
 from insectvision.utils import norm_l2
 
@@ -310,8 +310,10 @@ def trace_lattice_rows(
         # Combine into a single ordered row: [reversed backward] + [seed_idx] + [forward]
         row_pts = np.vstack([points2d[bwd[::-1]], points2d[[seed_idx]], points2d[fwd]])
 
-        # Fit bearing
-        b = principal_axis_angle(row_pts)
+        # Fit bearing by PCA
+        major = principal_axes(row_pts)[0][:, 0]
+        b = np.arctan2(major[1], major[0])
+
         if not np.isnan(b):
             out_rows.append(row_pts)
             out_bearings.append(b % np.pi)

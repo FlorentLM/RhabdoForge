@@ -136,23 +136,21 @@ def spring_relaxation(
         if not use_ghosts:
             return p, np.zeros((0, 2))
 
-        # TODO: Clean this once the ghost functions signatures are standardised
         if ghost_source == 'lattice':
+            med_spacing = float(np.median(spacing_fn(p).ravel()))
             g = ghosts_from_growth_2d(
                 p, theta_fn, spacing_fn, bond_dirs, domain,
-                avg_spacing=float(np.median(spacing_fn(p).ravel())),
-                boundary_band=ghost_depth / max(np.median(spacing_fn(p).ravel()), 1e-9),
+                avg_spacing=med_spacing,
+                boundary_band=ghost_depth / max(med_spacing, 1e-9),
             )
         elif ghost_source == 'edge':
+            # Mirror across the lattice's own current outer edge (moves with the cloud)
             try:
-                eqs = ConvexHull(p).equations
-                g = ghosts_from_mirror(p, eqs, ghost_depth)
+                g = ghosts_from_mirror(p, ghost_depth, domain=ConvexHull(p))
             except Exception:
                 return p, np.zeros((0, 2))   # degenerate cloud? skip ghosts this pass
-
         else:  # 'hull'
-            eqs = domain.hull.equations
-            g = ghosts_from_mirror(p, eqs, ghost_depth)
+            g = ghosts_from_mirror(p, ghost_depth, domain=domain)
 
         if len(g):
             # Drop ghosts sitting on top of a real point (self-images for 'edge')

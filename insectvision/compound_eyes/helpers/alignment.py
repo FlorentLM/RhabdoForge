@@ -282,55 +282,52 @@ class BundlesAligner:
         model._bundle_orientation_backwrite(result)
         return result
 
+    # Simplified constructors for callers that don't need the full flow pipeline
 
-##
-# Helpers for callers that only need simpler pipeline
+    @staticmethod
+    def trivial_alignment(N: int) -> AlignmentResult:
+        """
+        For R=1 bundles or any case with no bundle to orient.
+        """
+        return AlignmentResult(
+            chi=np.zeros(N, dtype=np.float32),
+            chirality=np.ones(N, dtype=np.float32),
+            saccade_phasor=np.zeros((N, 3), dtype=np.float32),
+        )
 
-# TODO: Move these as class methods in BundlesAligner
+    @staticmethod
+    def apply_chirality(
+        model: 'Model',
+        chi: ArrayLike,
+        chirality: ArrayLike,
+    ) -> AlignmentResult:
+        """
+        Derive an AlignmentResult when the chi and chirality are supplied directly
+        (no flow direction available).
 
-def trivial_alignment(N: int) -> AlignmentResult:
-    """
-    For R=1 bundles or any case with no bundle to orient.
-    """
-    return AlignmentResult(
-        chi=np.zeros(N, dtype=np.float32),
-        chirality=np.ones(N, dtype=np.float32),
-        saccade_phasor=np.zeros((N, 3), dtype=np.float32),
-    )
+        Major axis is bundle.main_axis_rad + chi + chirality
+        saccade phasor is major + bundle.saccade_offset_deg + chirality
 
+        No smoothing.
+        """
 
-def apply_chirality(
-    model: 'Model',
-    chi: ArrayLike,
-    chirality: ArrayLike,
-) -> AlignmentResult:
-    """
-    Derive a OrientationResult when the user supplies chi and chirality directly
-    (no flow direction available).
+        N = model.directions.shape[0]
+        chi = broadcast_1d(chi, N, 'chi')
+        chirality = broadcast_1d(chirality, N, 'chirality')
 
-    Major axis is bundle.main_axis_rad + chi + chirality
-    saccade phasor is major + bundle.saccade_offset_deg + chirality
+        main_rad = float(model.bundle.main_axis_rad)
+        effective_main = np.where(chirality > 0, main_rad, np.pi - main_rad).astype(np.float32)
+        major_angle = chi + effective_main
+        major = local_to_world(
+            np.stack([np.cos(major_angle), np.sin(major_angle)], axis=-1),
+            model.right, model.up,
+        )
 
-    No smoothing (it is presumed the user knows what they want).
-    """
+        sacc = rotate_in_tangent_plane(
+            vectors=major,
+            normals=model.directions,
+            angles=-np.radians(model.bundle.saccade_offset_deg) * chirality,
+            normalize=True
+        )
 
-    N = model.directions.shape[0]
-    chi = broadcast_1d(chi, N, 'chi')
-    chirality = broadcast_1d(chirality, N, 'chirality')
-
-    main_rad = float(model.bundle.main_axis_rad)
-    effective_main = np.where(chirality > 0, main_rad, np.pi - main_rad).astype(np.float32)
-    major_angle = chi + effective_main
-    major = local_to_world(
-        np.stack([np.cos(major_angle), np.sin(major_angle)], axis=-1),
-        model.right, model.up,
-    )
-
-    sacc = rotate_in_tangent_plane(
-        vectors=major,
-        normals=model.directions,
-        angles=-np.radians(model.bundle.saccade_offset_deg) * chirality,
-        normalize=True
-    )
-
-    return AlignmentResult(chi=chi, chirality=chirality, saccade_phasor=sacc, major_axis=major)
+        return AlignmentResult(chi=chi, chirality=chirality, saccade_phasor=sacc, major_axis=major)

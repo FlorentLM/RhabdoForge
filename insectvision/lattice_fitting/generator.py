@@ -257,7 +257,7 @@ class FittingParameters:
     retriangulate_every: int = 5
 
     # Ghosts points (for boundary handling, shared by stage 2 and final settle)
-    ghost_source: str = 'lattice'       # 'lattice' | 'hull' | 'edge' | 'none'
+    ghost_source: str = 'hull'          # 'lattice' | 'hull' | 'edge' | 'none'
     ghost_depth_factor: float = 1.5     # mirror points within this * spacing (from the boundary)
 
     # Stage 3: Density correction
@@ -265,12 +265,12 @@ class FittingParameters:
 
     # Stage 4: Boundary finalisation
     finalize: bool = True
-    keep_tol_factor: float = 0.35        # Coarse distance-trim before finalisation
+    keep_tol_factor: float = 0.35       # Coarse distance-trim before finalisation
     boundary_gap_deg: float = 110.0     # first-ring gap above which a point counts as boundary
     straggler_ratio: float = 1.2        # Cull boundary points sparser than this * target
-    outside_factor: float = 0.5         # Cull boundary points this * spacing outside the hull
+    outside_factor: float = 0.3         # Cull boundary points this * spacing outside the hull
     merge_factor: float = 0.5           # Merge point pairs closer than this * spacing
-    fill_factor: float = 0.75            # Add a point seed if no point is within this * spacing
+    fill_factor: float = 0.75           # Add a point seed if no point is within this * spacing
     settle_iters: int = 40              # Spring relaxation iters for the final settle
 
     def __post_init__(self):
@@ -278,6 +278,7 @@ class FittingParameters:
         if self.ghost_source not in ('lattice', 'hull', 'edge', 'none'):
             raise ValueError(f"ghost_source must be 'lattice', 'hull', 'edge' or 'none', got {self.ghost_source!r}")
 
+    # TODO: Load from yaml
 
 class LatticeGenerator:
     """

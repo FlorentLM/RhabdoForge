@@ -152,27 +152,27 @@ def normals_to_ellipsoid(directions: ArrayLike, rx: float, ry: float, rz: float)
 
 
 def radius_of_curvature(
-        query_pos: ArrayLike,
-        query_dirs: ArrayLike,
+        query_positions: ArrayLike,
+        query_normals: ArrayLike,
         tree: 'cKDTree',
-        cloud_normals: ArrayLike,
+        tree_normals: ArrayLike,
         k: int = 7,
 ) -> np.ndarray:
     """
     Estimate local radius of curvature per query point: R ~= (spatial distance) / (great-circle angle).
 
     Args:
-        - query_pos: (N, 3) positions to evaluate
-        - query_dirs: (N, 3) optical axes at those positions
+        - query_positions: (N, 3) positions to evaluate
+        - query_normals: (N, 3) normals at those positions
         - tree: cKDTree containing the cloud positions
-        - cloud_normals: (M, 3) optical axes corresponding to the tree data
+        - tree_normals: (M, 3) normals of the points corresponding to the tree data
         - k: Number of neighbours to average over
 
     Returns:
         (N,) array of radii. Points with no angular variation return NaN.
     """
-    q_pos = np.atleast_2d(np.asarray(query_pos, dtype=np.float64))
-    q_dir = np.atleast_2d(np.asarray(query_dirs, dtype=np.float64))
+    q_pos = np.atleast_2d(np.asarray(query_positions, dtype=np.float64))
+    q_nrm = np.atleast_2d(np.asarray(query_normals, dtype=np.float64))
 
     dist, idx = knn(tree, q_pos, k=k, drop_self=True)
     if idx.size == 0:
@@ -180,7 +180,7 @@ def radius_of_curvature(
 
     # Calculate angles between query normals and neighbour normals
     # chord length on unit sphere -> angle in radians
-    chords = np.linalg.norm(cloud_normals[idx] - q_dir[:, None, :], axis=-1)
+    chords = np.linalg.norm(tree_normals[idx] - q_nrm[:, None, :], axis=-1)
     angles = chord_to_angle(chords)
 
     # R = arc_length / angle

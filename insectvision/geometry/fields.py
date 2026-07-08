@@ -278,7 +278,7 @@ def smooth_field_partitioned(
 
 def interpolate_hexatic_field(
         points2d: ArrayLike,
-        neighbours: Optional[ArrayLike] = None,     # TODO: should accept NeighbourGraph and do the pad / rag
+        neighbours: Optional[NeighbourGraph] = None,
         smoothing: float = 0.5,
         min_order: float = 0.5,
         return_confidence: bool = False

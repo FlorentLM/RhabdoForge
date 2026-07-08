@@ -41,7 +41,7 @@ def _ghost_growth_kernel(
         - outward_ok: (C,) bool, True where the candidate is 'more outside' than its site
         - satisfied_factor: reject if an existing point is within this * step_len
         - merge_factor: merge survivors closer than this * median(kept step_len)
-        - payload: (C, P) optional per-candidate vector to co-merge (e.g. directions)
+        - payload: (C, P) optional per-candidate vector to co-merge (e.g. normals)
         - normalize_payload: renormalise merged payloads (for unit vectors)
 
     Returns:
@@ -74,6 +74,7 @@ def _ghost_growth_kernel(
 
     # Merge siblings proposed by adjacent sites: greedy, index-order
     # (deterministic: the lowest surviving index claims its ball). Payload averaged in lockstep.
+    # TODO: Would be better to use the merge_close_points function with mean, but the normals payload become a nightmare
     tree = cKDTree(cand)
     done = np.zeros(len(cand), dtype=bool)
     out_pts: List[np.ndarray] = []
@@ -166,7 +167,7 @@ def ghosts_from_growth_2d(
 
 def _one_sphere_ring(
         curr_pos: np.ndarray,
-        curr_dirs: np.ndarray,
+        curr_norms: np.ndarray,
         seeds: np.ndarray,
         theta_fn: Callable,
         frame: Tuple[np.ndarray, np.ndarray, np.ndarray],
@@ -179,12 +180,12 @@ def _one_sphere_ring(
         aniso_axis: str,
     ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    One outward ring on the sphere. Returns (pos, dirs) of accepted ghosts.
+    One outward ring on the sphere. Returns (positions, normals) of accepted ghosts.
     """
 
     fwd, right, up = frame
     P = curr_pos[seeds]        # (M, 3)
-    D = curr_dirs[seeds]       # (M, 3)
+    D = curr_norms[seeds]      # (M, 3)
     M = len(seeds)
 
     # Measured IOA at the nearest *real* ommatidium (seeds may be ghosts in later rings)
@@ -193,10 +194,10 @@ def _one_sphere_ring(
 
     # Local radius of curvature from the current cloud
     R = radius_of_curvature(
-        query_pos=P,
-        query_dirs=D,
+        query_positions=P,
+        query_normals=D,
         tree=cKDTree(curr_pos),
-        cloud_normals=curr_dirs
+        tree_normals=curr_norms
     )
     R = np.where(np.isfinite(R), R, fallback_R)  # (M,)
 
@@ -268,7 +269,7 @@ def ghosts_from_growth_3d(
         - directions: (N, 3) real optical axes
         - is_edge: (N,) bool, boundary ommatidia to seed the first ring from
         - ioa_angles: (N, 2) measured (minor, major) IOA per real ommatidium
-        - n_rows: number of outward rings
+        - n_rows: number of outward rings to grow
         - curvature_radius: fallback radius when the local estimate fails (None -> global median)
         - collision_factor / merge_factor: passed to propose_ghost_ring
         - field_smoothing: smoothing for the hexatic interpolant
@@ -296,10 +297,10 @@ def ghosts_from_growth_3d(
     # Global fallback radius of curvature (same estimator, one shot) if none supplied
     if curvature_radius is None:
         radii = radius_of_curvature(
-            query_pos=positions,
-            query_dirs=directions,
+            query_positions=positions,
+            query_normals=directions,
             tree=real_tree,
-            cloud_normals=directions,
+            tree_normals=directions,
         )
         # Reduce to a single scalar for the global fallback
         fallback_R = np.nanmedian(radii)
@@ -334,22 +335,27 @@ def ghosts_from_growth_3d(
 
 # Planar mirror mode (standalone, does not use the kernel)
 
-# TODO: This should accept 'domain' and have a signature closer to ghosts_from_growth
-#    ...or just get rid of it?
-
-def ghosts_from_mirror(points2d: ArrayLike, equations: ArrayLike, depth: float) -> np.ndarray:
+def ghosts_from_mirror(
+        points2d: ArrayLike,
+        depth: float,
+        domain: Union['Polygon2D', 'ConvexHull']
+    ) -> np.ndarray:
     """
-    Mirror points lying within 'depth' of the hull edges to the outside.
+    Mirror points lying within 'depth' of the boundary edges to the outside.
 
     Creates a symmetric Voronoi pressure that stops edge points from squashing
-    against the boundary. 'equations' are scipy ConvexHull half-plane rows
-    [nx, ny, offset] with outward-pointing normals.
+    against the boundary.
+
+    Supply the mirror planes exactly one of two ways:
+        - domain: a Polygon2D, whose convex-hull faces are used (domain.equations).
+        - equations: scipy ConvexHull half-plane rows [nx, ny, offset] with
+            outward-pointing normals (e.g. ConvexHull(pts).equations, for a mirror
+            plane that tracks the lattice's own current edge).
     """
     points2d = np.asarray(points2d, dtype=np.float64)
-    equations = np.asarray(equations, dtype=np.float64)
 
     mirrored = []
-    for eq in equations:
+    for eq in domain.equations:
         normal, offset = eq[:2], eq[2]
 
         # scipy.ConvexHull convention: normals point outward

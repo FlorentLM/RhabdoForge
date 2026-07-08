@@ -142,22 +142,33 @@ def rotate2d(vecs: ArrayLike, theta: ArrayLike, degrees: bool = False) -> np.nda
     return np.stack([c * x - s * y, s * x + c * y], axis=-1)
 
 
-# TODO: Make this a more generic PCA function?
-def principal_axis_angle(points2d: ArrayLike, degrees: bool = False) -> float:
+def principal_axes(points: ArrayLike) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Orientation of the major principal axis of a point set (PCA).
-    Sign-ambiguous (returns a line orientation in [-pi/2, pi/2]).
-    """
-    points2d = np.asarray(points2d, dtype=float)
-    if len(points2d) < 2:
-        return np.nan
+    Principal axes of a point set (PCA), any dimensionality.
 
-    # Center points and compute covariance
-    c = points2d - points2d.mean(axis=0)
+    Centres the cloud and eigendecomposes its covariance, returning the axes as
+    the columns of 'axes' ordered major -> minor (descending variance) with the
+    matching variances alongside.
+
+    Args:
+        points: (N, D) point cloud (N points in D dimensions).
+
+    Returns:
+        axes: (D, D) unit eigenvectors as columns, sorted by descending variance,
+            so axes[:, 0] is the major axis. Sign is arbitrary (PCA is sign-ambiguous).
+        variances: (D,) eigenvalues (variances) in descending order.
+        Both are NaN-filled when fewer than 2 points are supplied.
+    """
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.ndim != 2:
+        raise ValueError(f'points must be (N, D), got shape {pts.shape}')
+
+    d = pts.shape[1]
+    if pts.shape[0] < 2:
+        return np.full((d, d), np.nan), np.full(d, np.nan)
+
+    c = pts - pts.mean(axis=0)
     evals, evecs = np.linalg.eigh(c.T @ c)
 
-    # Largest eigenvalue is the major axis
-    vec = evecs[:, np.argmax(evals)]
-    angle = np.arctan2(vec[1], vec[0])
-
-    return np.rad2deg(angle) if degrees else angle
+    order = np.argsort(evals)[::-1]     # major -> minor
+    return evecs[:, order], evals[order]

@@ -164,10 +164,10 @@ class BaseView:
             return np.full(self.N, np.nan, dtype=np.float32)
 
         return radius_of_curvature(
-            query_pos=self.positions,
-            query_dirs=self.directions,
+            query_positions=self.positions,
+            query_normals=self.directions,
             tree=tree,
-            cloud_normals=self.directions,
+            tree_normals=self.directions,
         ).astype(np.float32)
 
     # Transformation methods
