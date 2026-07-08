@@ -504,6 +504,7 @@ def wire_neural_superposition(
         plasticity_radius: float = 2.0,
         time_limit_s: float = 60.0,
         n_jobs: int = -1,
+        apply: bool = True,
         collect_trace: bool = False
     ) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -577,6 +578,17 @@ def wire_neural_superposition(
     cs_signed = cartridge_map * R + np.arange(R)
     unwired_mask = (cartridge_map < 0).astype(bool)
     cartridge_src = np.where(unwired_mask, UNWIRED_SRC, cs_signed).astype(np.uint32)
+
+    if apply:
+        # Unwired peripheral slots fallback to self
+        own_src = (np.arange(model._N)[:, None] * model._R + np.arange(model._R)).astype(np.uint32)
+        cartridge_src = np.where(unwired_mask, own_src, cartridge_src).astype(np.uint32)
+
+        model._buf['cartridge_src'] = cartridge_src
+        model._buf['is_wired'] = ~unwired_mask
+
+        model._superposition_wired = True
+        model._conflicts_cache = get_conflict_masks(model.cartridge_map, model._bundle.peripheral_indices)
 
     return cartridge_src, unwired_mask
 

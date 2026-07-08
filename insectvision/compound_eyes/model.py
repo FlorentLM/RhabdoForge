@@ -248,19 +248,9 @@ class Model(SpatialQueries, BaseView):
         self._wiring_trace = None
 
         if neural_superposition and self._R > 1:
-
-            cartridge_src, unwired_mask = wire_neural_superposition(self)
-
-            # Unwired peripheral slots fallback to self-wire
-            own_src = (np.arange(self._N)[:, None] * self._R + np.arange(self._R)).astype(np.uint32)
-            cartridge_src = np.where(unwired_mask, own_src, cartridge_src).astype(np.uint32)
-
-            self._buf['cartridge_src'] = cartridge_src
-            self._buf['is_wired'] = ~unwired_mask
-
-            self._superposition_wired = True
-            self._conflicts_cache = get_conflict_masks(self.cartridge_map, self._bundle.peripheral_indices)
-            # Note: self._conflicts_cache must be set to None by any thing that changes the bundles orientation
+            wire_neural_superposition(self, apply=True)
+            # Note: self._conflicts_cache is initialised with apply=True,
+            #  but it must be set to None by any thing that changes the bundles orientation
 
         else:
             # No superposition: each receptor is its own source
