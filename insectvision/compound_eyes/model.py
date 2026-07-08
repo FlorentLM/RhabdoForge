@@ -229,7 +229,7 @@ class Model(SpatialQueries, BaseView):
         # First-ring neighbour count per ommatidium (Gabriel graph degree)
         neighbour_count = np.zeros(self._N, dtype=np.uint32)
         for eye in self._eyes:
-            neighbour_count[eye.indices] = eye._get_first_ring_graph()['degree'].astype(np.uint32)
+            neighbour_count[eye.indices] = eye._get_first_ring_graph()['degree']
 
         self._buf['neighbour_count'] = neighbour_count
         self._buf['is_binocular'] = self._identify_binocular_ommatidia()
@@ -535,60 +535,6 @@ class Model(SpatialQueries, BaseView):
 
         return is_binocular
 
-    def _identify_edge_ommatidia(self, n_rings: int = 1) -> np.ndarray:
-        """
-        Detect edge ommatidia from the topological boundary of the lattice.
-        """
-
-        ALPHA = 1.4
-        is_edge = np.zeros(self._N, dtype=bool)
-
-        for eye in self._eyes:
-            graph = eye._get_first_ring_graph()
-
-            pts, adj = graph['points2d'], graph['adjacency']
-            n = len(pts)
-            if n < 3:
-                is_edge[eye.indices] = True
-                continue
-
-            local_spacing = topological_spacing(pts, adj, reduce=np.median)
-
-            tri = Delaunay(pts).simplices
-            a, b, c = pts[tri[:, 0]], pts[tri[:, 1]], pts[tri[:, 2]]
-            ab = np.linalg.norm(a - b, axis=1)
-            bc = np.linalg.norm(b - c, axis=1)
-            ca = np.linalg.norm(c - a, axis=1)
-            area = triangle_areas(a, b, c)
-            circumradius = (ab * bc * ca) / (4.0 * area + 1e-300)
-
-            kept = tri[circumradius <= ALPHA * local_spacing[tri].mean(axis=1)]  # alpha-complex
-
-            # Boundary = belongs to exactly one kept triangle
-            e = np.sort(np.concatenate([kept[:, [0, 1]], kept[:, [1, 2]], kept[:, [2, 0]]]), axis=1)
-            key = e[:, 0].astype(np.int64) * n + e[:, 1]
-            uniq, count = np.unique(key, return_counts=True)
-            bkey = uniq[count == 1]
-            ring = np.unique(np.stack([bkey // n, bkey % n], axis=1).ravel())
-
-            # Grow inward along the β-skeleton graph
-            labelled = np.zeros(n, dtype=bool)
-            labelled[ring] = True
-            frontier = ring
-
-            for _ in range(max(0, n_rings - 1)):
-                if not frontier.size:
-                    break
-
-                nxt = np.unique(np.concatenate([adj[i] for i in frontier]))
-                nxt = nxt[~labelled[nxt]]
-                labelled[nxt] = True
-                frontier = nxt
-
-            is_edge[eye.indices[labelled]] = True
-
-        return is_edge
-
     # Private - Facets (lenses) lattice geometry helpers
     #
     # TODO: This is now a lot of logic for lattice properties, should probably move to a file in helpers submodule
@@ -846,7 +792,11 @@ class Model(SpatialQueries, BaseView):
             else:
                 # Only propagate if requested
                 is_edge[indices] = identify_boundary_points(
-                    graph['points2d'], graph['adjacency'], n_rings=n_rings
+                    points2d=graph['points2d'],
+                    neighbours=graph['adjacency'],
+                    simplices=graph['simplices'],       # only if method = 'alpha'
+                    method='gap',
+                    n_rings=n_rings
                 )
 
             trust[indices] = lattice_confidence(
@@ -887,36 +837,39 @@ class Model(SpatialQueries, BaseView):
                 continue
 
             indices = eye.indices
-
             graph = eye._get_first_ring_graph()
-            pts3d = self._buf['position', indices]
 
-            # Reconstruct the 3D triangles from the β-skeleton edges
+            # Only keep triangles whose 3 edges exist in the β-skeleton
             simplices = graph['simplices']
-
-            # Filter to only keep triangles where all 3 edges exist in the β-skeleton
-            # (removes degenerate boundary tris)
-            keys = graph['pair_keys']
             big = graph['big']
+            keys = graph['pair_keys']
 
-            def is_valid_tri(t):
-                edges = [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])]
-                for a, b in edges:
-                    lo, hi = min(a, b), max(a, b)
-                    if (lo * big + hi) not in keys:
-                        return False
-                return True
+            # Map local simplex indices to global indices
+            global_tri = eye.omm_indices[simplices]
 
-            valid_simplices = np.array([t for t in simplices if is_valid_tri(t)])
+            # Key the 3 edges of every triangle
+            def key_edges(i, j):
+                lo = np.minimum(global_tri[:, i], global_tri[:, j])
+                hi = np.maximum(global_tri[:, i], global_tri[:, j])
+                return lo * big + hi
+
+            k1, k2, k3 = key_edges(0, 1), key_edges(1, 2), key_edges(2, 0)
+
+            pair_keys_arr = np.array(list(keys), dtype=np.int64)
+            mask_v = np.isin(k1, pair_keys_arr) & np.isin(k2, pair_keys_arr) & np.isin(k3, pair_keys_arr)
+            valid_simplices = simplices[mask_v]
 
             if len(valid_simplices) == 0:
                 continue
 
+            pts3d = self._buf['position', indices]
+
             # 3D area of each triangle
-            A = pts3d[valid_simplices[:, 0]]
-            B = pts3d[valid_simplices[:, 1]]
-            C = pts3d[valid_simplices[:, 2]]
-            tri_areas = triangle_areas(A, B, C)
+            tri_areas = triangle_areas(
+                pts3d[valid_simplices[:, 0]],
+                pts3d[valid_simplices[:, 1]],
+                pts3d[valid_simplices[:, 2]]
+            )
 
             # Accumulate 1/3 of the triangle's area to each of its 3 vertices
             point_areas = np.zeros(n)
@@ -925,13 +878,14 @@ class Model(SpatialQueries, BaseView):
             np.add.at(point_areas, valid_simplices[:, 2], tri_areas / 3.0)
 
             # Convert area back to hex flat-to-flat diameter
-            mask = point_areas > 0
-            calculated_diameters = self._lens_packing * np.sqrt(2.0 * point_areas[mask] / np.sqrt(3.0))
+            mask_has_area = point_areas > 0
+            calc_diameters = self._lens_packing * np.sqrt(2.0 * point_areas[mask_has_area] / np.sqrt(3.0))
 
             # Apply only to interior points (boundary points just keep their ioa_spacing estimate)
-            update_mask = mask & eye.is_interior
+            update_mask = mask_has_area & eye.is_interior
 
-            diameters[indices[update_mask]] = calculated_diameters[update_mask[mask]]
+            # Map local 'update_mask' back to global 'indices'
+            diameters[indices[update_mask]] = calc_diameters[update_mask[mask_has_area]]
 
         # Denoise
         return self._smooth_aperture_field(diameters, k=6, n_iter=2, method='median', metric='angular')

@@ -20,6 +20,8 @@ from insectvision.compound_eyes.buffers import _BIT_LAYOUT
 from insectvision.geometry.ghosting import ghosts_from_growth_3d
 from insectvision.geometry.linalg import tangent_frames, local_to_world
 from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_edges, identify_boundary_points, \
+    delaunay_neighbours, delaunay_edges
+from insectvision.geometry.neighbours import knn, k_lookat, beta_skeleton_edges, identify_boundary_points, \
     first_ring_gap, delaunay_edges, edges_to_neighbours
 from insectvision.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo, radius_of_curvature
@@ -485,7 +487,6 @@ class SpatialQueries:
         """
         Map global ommatidium indices to local rows.
         """
-
         query = np.asarray(query, dtype=np.intp).reshape(-1)
         omm = self.omm_indices
         if omm.size == 0:
@@ -555,7 +556,7 @@ class SpatialQueries:
 
     def _get_first_ring_graph(self) -> dict:
         """
-        First-ring β-skeleton graph for this view's ommatidia.
+        First-ring graph for this view's ommatidia.
         Built once on a stereographic projection of the optical axes, and cached.
 
         Returns:
@@ -582,7 +583,6 @@ class SpatialQueries:
             pts2d = np.zeros((n, 2))
             # Base boundary mask for tiny clusters
             is_boundary = np.ones(n, dtype=bool)
-            max_gap = np.full(n, 2.0 * np.pi)
             edges = np.zeros((0, 2), dtype=int)
             delaunay_simplices = None
         else:
@@ -595,10 +595,7 @@ class SpatialQueries:
             adj = edges_to_neighbours(edges, n)
 
             # Boundary detection
-            is_boundary = identify_boundary_points(pts2d, adj)
-
-            # Still keep max_gap for Pass 1 logic if needed
-            max_gap = first_ring_gap(pts2d, adj)
+            is_boundary = identify_boundary_points(points2d=pts2d, neighbours=adj, simplices=delaunay_simplices)
 
         if edges.size > 0:
             gi = omm[edges[:, 0]].astype(np.int64)
@@ -612,10 +609,9 @@ class SpatialQueries:
         g = {
             # TODO: Several of these cached things are not used as much as they should be
             'adjacency': adj,
-            'max_gap': max_gap,
             'simplices': delaunay_simplices,
             'is_boundary': is_boundary,  # cached for confidence & edge propagation
-            'degree': np.fromiter((a.size for a in adj), dtype=np.int32, count=n),
+            'degree': np.fromiter((a.size for a in adj), dtype=np.uint32, count=n),
             'pair_keys': pair_keys,
             'big': big,
             'points2d': pts2d,
@@ -629,7 +625,6 @@ class SpatialQueries:
         distance on the unit sphere of optical axes), with each neighbour's
         direction projected into the ommatidium's tangent frame.
         """
-
         graph = self._spatial_store.get('directional_graph')
 
         if graph is not None and graph.get('k') == k:
@@ -677,11 +672,11 @@ class SpatialQueries:
 
     # Some internal helpers
 
-    # TODO: 'immediate' logic should not live here
     @staticmethod
-    def _tag_immediate_factor(result: 'NeighbourResult', dists: np.ndarray, factor: Optional[float]) -> None:
+    def _tag_immediate_fallbackmethod(result: 'NeighbourResult', dists: np.ndarray, factor: Optional[float]) -> None:
         """
         Tag result.immediate where distance <= factor * local scale (mean of nearest 3).
+        Only used for the 'points' branch... not sure this should be even kept tbh
         """
         if factor is None or not dists.size:
             return
@@ -690,26 +685,37 @@ class SpatialQueries:
         local_scale = np.mean(dists[:, :n_ref], axis=1, keepdims=True)
         result.immediate = dists <= (local_scale * float(factor))
 
-    def _tag_immediate_beta(self, result: 'NeighbourResult', valid_global: np.ndarray) -> None:
+    def _tag_immediate_betamethod(self, result: 'NeighbourResult', valid_global: np.ndarray) -> None:
         """
         Tag result.immediate by β-skeleton first-ring membership.
         """
-
-        nb = result.indices
-
-        if not nb.size:
-            result.immediate = np.zeros(nb.shape, dtype=bool)
+        neighb_ind = result.indices
+        if not neighb_ind.size:
+            result.immediate = np.zeros(neighb_ind.shape, dtype=bool)
             return
 
         graph = self._get_first_ring_graph()
-        keys, big = graph['pair_keys'], graph['big']
-        qi = np.asarray(valid_global, dtype=np.int64)[:, None]
+        pair_keys = graph['pair_keys']
+        big = graph['big']
 
-        lo = np.minimum(qi, nb).astype(np.int64)
-        hi = np.maximum(qi, nb).astype(np.int64)
-        flat = (lo * big + hi).ravel().tolist()
+        # Ensure 64-bit for the key calculation
+        qi = np.asarray(valid_global, dtype=np.int64)
+        if qi.ndim == 1:
+            qi = qi[:, None]
 
-        result.immediate = np.fromiter((kk in keys for kk in flat), dtype=bool, count=len(flat)).reshape(nb.shape)
+        neighb_ind = np.asarray(neighb_ind, dtype=np.int64)
+
+        # Generate unique keys for every found neighbour
+        lo = np.minimum(qi, neighb_ind)
+        hi = np.maximum(qi, neighb_ind)
+        query_keys = lo * big + hi
+
+        # Convert set to sorted array once for O(log n) search
+        if isinstance(pair_keys, set):
+            pair_keys = np.fromiter(pair_keys, dtype=np.int64, count=len(pair_keys))
+            pair_keys.sort()
+
+        result.immediate = np.isin(query_keys, pair_keys)
 
     def _omm_chirality(self, omm_global: np.ndarray) -> np.ndarray:
         """
@@ -736,12 +742,11 @@ class SpatialQueries:
         k-nearest ommatidia neighbours within this view.
 
         Provide exactly one of:
-            - query: global ommatidia indices (only those inside this view are used).
-            - positions: (Q, 3) world-space query points.
+            - query: global ommatidia indices (only those inside this view are used)
+            - positions: (Q, 3) world-space query points
 
-        immediate_only restricts to the cached first-ring graph.
-        neighbour_dist_factor tags 'is_immediate' for points queries (d <= factor * local scale).
-            (set to None to skip tagging)
+        immediate_only restricts to the first-ring graph
+        neighbour_dist_factor tags 'is_immediate' for points queries (d <= factor * local scale)
         """
 
         if (query is None) == (positions is None):
@@ -767,18 +772,21 @@ class SpatialQueries:
                 nb_chir = self._omm_chirality(g_neighb_indices.ravel()).reshape(g_neighb_indices.shape)
                 result.same_chirality = nb_chir == q_chir[:, None]
 
-            self._tag_immediate_beta(result, valid_global)
+            self._tag_immediate_betamethod(result, valid_global)
+
             return result
 
         # Points path
+        # TODO: this path is kind of shit, _tag_immediate_fallbackmethod is atrocious
+
         points = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
         neighb_dists, neighb_indices = knn(self._get_tree('positions'), points, k, drop_self=False)
         g_neighb_indices = self.omm_indices[neighb_indices]
 
-        result = NeighbourResult(self,
-                                 mask=np.ones(points.shape[0], dtype=bool),
-                                 indices=g_neighb_indices, distances=neighb_dists)
-        self._tag_immediate_factor(result, neighb_dists, neighbour_dist_factor)
+        result = NeighbourResult(self, mask=np.ones(points.shape[0], dtype=bool), indices=g_neighb_indices, distances=neighb_dists)
+
+        self._tag_immediate_fallbackmethod(result, neighb_dists, neighbour_dist_factor)
+
         return result
 
     def _query_nearest(self,
@@ -790,7 +798,6 @@ class SpatialQueries:
         """
         k nearest ommatidia (by space) to each external query point, with distances.
         """
-
         points = np.asarray(query, dtype=np.float32).reshape(-1, 3)
 
         tree = self._get_tree(space, avoid_conflicts)

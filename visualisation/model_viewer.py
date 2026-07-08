@@ -8,6 +8,7 @@ from numpy.typing import ArrayLike
 from PIL import Image
 from scipy.spatial import Delaunay
 
+from insectvision.geometry.ghosting import combine_clouds
 from insectvision.utils import WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, WORLD_BACKWARD, norm_l2
 from insectvision.geometry.linalg import tangent_frames
 from insectvision.geometry.spherical import sphere_to_stereo
@@ -124,10 +125,9 @@ def make_delaunay_mesh(model: 'Model', ghost_rows: int = 1) -> Tuple[np.ndarray,
         if len(eye) < 3:
             continue
 
-        indices = np.asarray(eye.indices, dtype=np.int_)
-
-        real_pos = np.asarray(eye.positions, dtype=np.float64)
-        real_dirs = norm_l2(eye.directions)
+        indices = eye.indices
+        real_pos = eye.positions
+        real_dirs = eye.directions
 
         if ghost_rows > 0:
             eye.build_ghosts(n_rows=ghost_rows)  # honour the requested ring count
@@ -136,6 +136,8 @@ def make_delaunay_mesh(model: 'Model', ghost_rows: int = 1) -> Tuple[np.ndarray,
             gpos = np.zeros((0, 3))
             gdirs = np.zeros((0, 3))
 
+        # TODO: use combined_cloud helper
+        # TODO: Maybe run a quick spring relax ????
         if len(gpos):
             combined_pos = np.vstack([real_pos, gpos]).astype(np.float32)
             combined_dirs = np.vstack([real_dirs, gdirs])
