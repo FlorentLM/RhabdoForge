@@ -14,7 +14,7 @@ AXES_SMOOTHING    = 0.50        # RBF smoothing of the hexatic-axis field
 MIN_HEX_ORDER     = 0.20        # |psi6| below which a point is dropped from the axis fit
 GHOST_SOURCE      = 'hull'      # 'lattice' | 'hull' | 'edge' | 'none'
 ALIGN             = True        # align init grid to the source cloud (False = purely parametric)
-
+BYPASS_INIT = False             # If True, starts from the source data directly
 
 if __name__ == '__main__':
 
@@ -36,7 +36,7 @@ if __name__ == '__main__':
           f'lattice_angles={np.rad2deg(measurements.lattice_angles_rad).round(1)}°')
 
     # Generate a lattice from those fields
-    params = FittingParameters(density_scale=DENSITY_SCALE, ghost_source=GHOST_SOURCE)
+    params = FittingParameters(density_scale=DENSITY_SCALE, ghost_source=GHOST_SOURCE, bypass_init=BYPASS_INIT)
     gen = LatticeGenerator(measurements, params)
 
     lattice = gen.run(align=ALIGN, verbose=True)

@@ -246,6 +246,8 @@ class FittingParameters:
 
     density_scale: float = 1.0          # > 1 packs more ommatidia
 
+    bypass_init: bool = True                 # If True, starts from the source data directly
+
     # Stage 1: Density warp
     buffer_factor: float = 2.0          # grid kept at this * spacing outside the domain (pre-relaxation)
     warp_exponent: float = 1.0          # > 1 pushes the initial radial density contrast harder
@@ -302,78 +304,89 @@ class LatticeGenerator:
 
     def run(self, align: bool = True, verbose: bool = True) -> np.ndarray:
 
+        p = self.params
+        m = self.measurements
+
         # Determine spacing of the wanted lattice (applies density scale)
-        spacing = self.measurements.mean_spacing / np.sqrt(self.params.density_scale)
-        target_spacing_fn = lambda q: self.measurements.spacing_fn(q) / np.sqrt(self.params.density_scale)
+        spacing = m.mean_spacing / np.sqrt(p.density_scale)
+        target_spacing_fn = lambda q: m.spacing_fn(q) / np.sqrt(p.density_scale)
 
-        if self.measurements.source_points is not None:
-            target_point_count = int(round(len(self.measurements.source_points) * self.params.density_scale))
+        if m.source_points is not None:
+            target_point_count = int(round(len(m.source_points) * p.density_scale))
         else:
-            factor = abs(np.linalg.det(compute_lattice_basis(1.0, self.measurements.lattice_angles_rad)))
-            target_point_count = int(round(self.measurements.domain.area / (factor * spacing ** 2)))
+            factor = abs(np.linalg.det(compute_lattice_basis(1.0, m.lattice_angles_rad)))
+            target_point_count = int(round(m.domain.area / (factor * spacing ** 2)))
 
-        buffer = self.params.buffer_factor * spacing
-        extent = float(np.max(np.abs(self.measurements.domain.boundary)) + 5 * spacing)
+        buffer = p.buffer_factor * spacing
+        extent = float(np.max(np.abs(m.domain.boundary)) + 5 * spacing)
 
-        theta0 = float(self.measurements.theta_fn(self.measurements.domain.boundary.mean(axis=0, keepdims=True))[0])
+        theta0 = float(m.theta_fn(m.domain.boundary.mean(axis=0, keepdims=True))[0])
         rot0 = rotation_matrix2d(theta0)
-        bond_dirs = base_bond_dirs(self.measurements.lattice_angles_rad)
+        bond_dirs = base_bond_dirs(m.lattice_angles_rad)
 
-        align_points = self.measurements.source_points if (align and self.measurements.source_points is not None) else None
+        align_points = m.source_points if (align and m.source_points is not None) else None
 
         # Density match
-        lattice = _warp_init(
-            domain=self.measurements.domain,
-            target_spacing_fn=target_spacing_fn,
-            target_count=target_point_count,
-            rot0=rot0,
-            extent=extent,
-            buffer=buffer,
-            lattice_angles=self.measurements.lattice_angles_rad,
-            align_points=align_points,
-            warp_exponent=self.params.warp_exponent
-        )
+        if p.bypass_init and m.source_points is not None:
+            init = m.source_points.copy()
+            if verbose:
+                print('init: from source points')
+        else:
+            lattice = _warp_init(
+                domain=m.domain,
+                target_spacing_fn=target_spacing_fn,
+                target_count=target_point_count,
+                rot0=rot0,
+                extent=extent,
+                buffer=buffer,
+                lattice_angles=m.lattice_angles_rad,
+                align_points=align_points,
+                warp_exponent=p.warp_exponent
+            )
 
-        # outer scaffold trimmed before relaxing
-        inside = self.measurements.domain.signed_distance(lattice) < self.params.spring_margin_factor * spacing
-        init = lattice[inside]
+            # outer scaffold trimmed before relaxing
+            inside = m.domain.signed_distance(lattice) < p.spring_margin_factor * spacing
+            init = lattice[inside]
+
+            if verbose:
+                print('init: from perfect lattice')
 
         # Curved axes + emergent defects
         relaxed = spring_relaxation(
             points2d=init,
             spacing_fn=target_spacing_fn,
-            theta_fn=self.measurements.theta_fn,
+            theta_fn=m.theta_fn,
             bond_dirs=bond_dirs,
-            max_iter=self.params.spring_iters,
-            dt=self.params.dt,
-            retriangulate_every=self.params.retriangulate_every,
+            max_iter=p.spring_iters,
+            dt=p.dt,
+            retriangulate_every=p.retriangulate_every,
             verbose=verbose,
-            domain=self.measurements.domain,
-            ghost_depth=self.params.ghost_depth_factor * spacing,
-            ghost_source=self.params.ghost_source
+            domain=m.domain,
+            ghost_depth=p.ghost_depth_factor * spacing,
+            ghost_source=p.ghost_source
         )
 
         # Density gets the last word: smooth area-correcting transport
-        if self.params.density_correct_iters > 0:
+        if p.density_correct_iters > 0:
             relaxed = density_correct(
                 points2d=relaxed,
                 target_spacing_fn=target_spacing_fn,
-                domain=self.measurements.domain,
-                n_iter=self.params.density_correct_iters,
+                domain=m.domain,
+                n_iter=p.density_correct_iters,
                 verbose=verbose
             )
 
         # Final trim and then clean the boundary
-        inside = self.measurements.domain.signed_distance(relaxed) < self.params.keep_tol_factor * spacing
+        inside = m.domain.signed_distance(relaxed) < p.keep_tol_factor * spacing
         trimmed = relaxed[inside]
 
-        if self.params.finalize:
+        if p.finalize:
             final = _finalize_lattice(
                 points2d=trimmed,
-                domain=self.measurements.domain,
+                domain=m.domain,
                 target_spacing_fn=target_spacing_fn,
                 avg_spacing=spacing,
-                theta_fn=self.measurements.theta_fn,
+                theta_fn=m.theta_fn,
                 bond_dirs=bond_dirs,
                 params=self.params,
                 verbose=verbose

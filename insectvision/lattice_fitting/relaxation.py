@@ -168,6 +168,8 @@ def spring_relaxation(
         if retriangulate_every and it > 0 and it % retriangulate_every == 0:
             cloud, ghosts = build_cloud(pts)
             edges = delaunay_edges(cloud, max_length_factor=1.8)
+            if verbose:
+                print(f'  spring relaxation [it {it}]: retriangulating')
         else:
             # refresh the (moved) real block, ghosts stay frozen between retriangulations
             cloud = np.vstack([pts, ghosts]) if use_ghosts else pts
@@ -213,11 +215,11 @@ def spring_relaxation(
 
         if np.linalg.norm(disp, axis=1).mean() < convergence_tol * np.median(node_scale):
             if verbose:
-                print(f'  spring relaxation converged at iter {it}')
+                print(f'  spring relaxation [it {it}]: converged')
             return pts
 
     if verbose:
-        print(f'  spring relaxation hit max_iter={max_iter}')
+        print(f'  spring relaxation [it {it}]: hit max_iter={max_iter}')
     return pts
 
 
