@@ -5,10 +5,10 @@ from scipy.interpolate import RBFInterpolator
 from scipy.spatial import cKDTree
 
 from insectvision.geometry.hexatic import compute_psi6, hexatic_order
-from insectvision.geometry.lattice import first_ring_gap, lattice_confidence
 from insectvision.geometry.neighbours import (
     NeighbourGraph, padded_neighbours, knn, beta_skeleton_neighbours, graph_spacing
 )
+from insectvision.geometry.lattice import first_ring_gap, lattice_confidence
 
 
 # Discrete graph smoothing
@@ -281,7 +281,7 @@ def interpolate_hexatic_field(
         points2d: ArrayLike,
         neighbours: Optional[NeighbourGraph] = None,
         smoothing: float = 0.5,
-        min_order: float = 0.5,
+        min_hex_order: float = 0.5,
         return_confidence: bool = False
     ) -> Union[Callable, Tuple[Callable, Callable]]:
     """
@@ -289,14 +289,12 @@ def interpolate_hexatic_field(
 
     Points with |Psi6| < min_order (incomplete rings at the boundary) are excluded from the fit,
     so the boundary inherits the smooth interior field instead of defining its own noisy one.
-    
+
     Args:
         - points2d: (N, 2) lattice coordinates
         - neighbours: Optional graph. If None, a Beta-skeleton is computed
         - smoothing: Regularisation parameter for the RBF interpolator
-        - min_order: Threshold for Hexatic Order (|Psi6|). Points below 
-            this are excluded from the fit, e.g. for allowing the boundary to inherit
-            the orientation of the (better ordered) interior
+        - min_hex_order: Threshold for Hexatic Order (|Psi6|) to exclude from fit
     """
     points2d = np.asarray(points2d, dtype=np.float64)
 
@@ -306,7 +304,7 @@ def interpolate_hexatic_field(
     z6 = compute_psi6(points2d=points2d, neighbours=neighbours)
     order = hexatic_order(z6)
 
-    keep = order >= min_order
+    keep = order >= min_hex_order
     if keep.sum() < 4:  # safety: nothing trusted
         keep = np.ones(len(points2d), dtype=bool)
 
@@ -334,7 +332,7 @@ def interpolate_spacing_field(
         neighbours: NeighbourGraph,
         smoothing: float = 0.1,
         clip_norm: Tuple[float, float] = (0.1, 2.0),
-        min_confidence=0.5,
+        min_confidence: float = 0.5,
         return_mean_spacing: bool = False
     ) -> Union[Callable, Tuple[Callable, float]]:
     """
@@ -348,7 +346,7 @@ def interpolate_spacing_field(
             0.0 forces the surface to pass exactly through every point.
         - clip_norm: (min, max) bounds for the field relative to the global mean
                 (prevents the field from exploding at boundaries)
-
+        - min_confidence: Threshold for self-derived lattice confidence
 
     Returns (spacing_fn, mean_spacing), where spacing_fn maps (M, 2) -> (M,).
     """
@@ -366,7 +364,7 @@ def interpolate_spacing_field(
     spacing = smooth_scalars(values=spacing, neighbours=neighbours, method='mean', n_iter=3)
 
     # Self-derived fit confidence (no eye object / no external trust at fit time)
-    # disordered or open-ring boundary points are dropped from the fit.
+    # disordered or open-ring boundary points are dropped from the fit
     conf = lattice_confidence(
         hex_order=hexatic_order(compute_psi6(points2d, neighbours)),
         max_gap=first_ring_gap(points2d, neighbours),
@@ -376,13 +374,13 @@ def interpolate_spacing_field(
     if keep.sum() < 4:  # safety: nothing trusted
         keep = np.ones(len(points2d), dtype=bool)
 
-    # Reference scale from trusted points only (so boundary doesn't inflates it)
-    ref = spacing[keep]
-    lo, hi = np.percentile(ref, [5, 95])
-    core = (ref >= lo) & (ref <= hi)
-    mean_spacing = ref[core].mean() if core.any() else ref.mean()
+    # Ref scale from trusted points only so boundary doesn't inflates it)
+    trusted = spacing[keep]
+    lo, hi = np.percentile(trusted, [5, 95])  # inner 90%
+    core = (trusted >= lo) & (trusted <= hi)
+    mean_spacing = trusted[core].mean() if core.any() else trusted.mean()
 
-    rbf = RBFInterpolator(points2d[keep], ref / mean_spacing, kernel='thin_plate_spline', smoothing=smoothing)
+    rbf = RBFInterpolator(points2d[keep], trusted / mean_spacing, kernel='thin_plate_spline', smoothing=smoothing)
 
     def spacing_fn(q):
         s = rbf(np.atleast_2d(np.asarray(q, dtype=np.float64))).ravel()

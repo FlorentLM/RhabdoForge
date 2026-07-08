@@ -342,21 +342,41 @@ def graph_spacing(
     return out
 
 
-def merge_close_points(points: ArrayLike, radius: float, reduce: Optional[Callable] = np.mean) -> np.ndarray:
+def merge_close_points(points: ArrayLike, radius: ArrayLike, reduce: Optional[Callable] = np.mean) -> np.ndarray:
     """
     Merge points (2D or 3D) within 'radius' (each group becomes one output point).
 
-    'reduce' must accept an 'axis' argument (np.mean, np.median, np.min, np.max...),
-    or if None, the lowest-index point of each component is preserved.
+    Args:
+        - radius: scalar or a per-point array of shape (N,) # TODO: explain what happens in per-point mode
+        - reduce: must accept an 'axis' argument (np.mean, np.median, np.min, np.max...).
+            If None, the lowest-index point of each component is preserved.
     """
     points = np.asarray(points, dtype=np.float64)
+    radius = np.asarray(radius, dtype=np.float64)
+
     n = len(points)
     if n < 2:
         return points
 
-    pairs = cKDTree(points).query_pairs(r=float(radius), output_type='ndarray')
+    radius = np.asarray(radius, dtype=np.float64)
+    per_point = radius.ndim > 0
+    if per_point and radius.shape[0] != n:
+        raise ValueError(f'Per-point radius must have shape ({n},), got {radius.shape}')
+
+    r_query = float(radius.max()) if per_point else float(radius)
+    if r_query <= 0:
+        return points
+
+    pairs = cKDTree(points).query_pairs(r=r_query, output_type='ndarray')
     if len(pairs) == 0:
         return points
+
+    if per_point:
+        d = np.linalg.norm(points[pairs[:, 0]] - points[pairs[:, 1]], axis=1)
+        thr = np.minimum(radius[pairs[:, 0]], radius[pairs[:, 1]])
+        pairs = pairs[d < thr]
+        if len(pairs) == 0:
+            return points
 
     graph = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
     n_comp, labels = connected_components(graph, directed=False)

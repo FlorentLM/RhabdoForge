@@ -11,8 +11,6 @@ from typing import Optional, Callable, Sequence
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
-from scipy.sparse import coo_matrix
-from scipy.sparse.csgraph import connected_components
 
 from insectvision.geometry.fields import interpolate_spacing_field, interpolate_hexatic_field
 from insectvision.geometry.linalg import rotation_matrix2d
@@ -119,8 +117,8 @@ def _cull_junk(
 
     before = len(pts)
     if merge_factor > 0:
-        merge_radius = merge_factor * target_spacing_fn(pts).ravel()  # per-point, re-evaluated post-cull
-        pts = _merge_local(pts, merge_radius, reduce=np.mean)
+        merge_radius = merge_factor * target_spacing_fn(pts).ravel()   # per-point, re-evaluated post-cull
+        pts = merge_close_points(pts, radius=merge_radius, reduce=np.mean)
     if verbose and len(pts) < before:
         print(f'  finalize: merged {before - len(pts)} near-duplicates')
 
@@ -131,7 +129,6 @@ def _finalize_lattice(
         points2d: ArrayLike,
         domain: 'Polygon2D',
         target_spacing_fn: Callable,
-        avg_spacing: float,
         theta_fn: Callable,
         bond_dirs: ArrayLike,
         params: Optional['FittingParameters'] = None,
@@ -184,7 +181,7 @@ def _finalize_lattice(
         retriangulate_every=p.retriangulate_every,
         verbose=verbose,
         domain=domain,
-        ghost_depth=p.ghost_depth_factor * avg_spacing,
+        ghost_depth_factor=p.ghost_depth_factor,
         ghost_source=p.ghost_source
     )
 
@@ -230,7 +227,7 @@ class EyeMeasurements:
             points2d=points2d,
             neighbours=neighbours,
             smoothing=axes_smoothing,
-            min_order=min_hex_order,
+            min_hex_order=min_hex_order,
             return_confidence=False     # TODO: actually why not? could be useful:
                                         #   interpolate_hexatic_field now shares lattice_confidence's ingredients,
                                         #   so could route its min_order gate through the (order x completeness)
@@ -268,7 +265,7 @@ class FittingParameters:
 
     # Ghosts points (for boundary handling, shared by stage 2 and final settle)
     ghost_source: str = 'hull'          # 'lattice' | 'hull' | 'edge' | 'none'
-    ghost_depth_factor: float = 1.5     # mirror points within this * spacing (from the boundary)
+    ghost_depth_factor: float = 1.5     # mirror points within this * local spacing (from the boundary)
 
     # Stage 3: Density correction
     density_correct_iters: int = 3      # Poisson transport passes (0 = disabled)
@@ -279,7 +276,7 @@ class FittingParameters:
     boundary_gap_deg: float = 110.0     # first-ring gap above which a point counts as boundary
     straggler_ratio: float = 1.2        # Cull boundary points sparser than this * local target (local ratio)
     outside_factor: float = 0.3         # Cull boundary points this * local spacing outside the hull
-    merge_factor: float = 0.5           # Merge point pairs closer than this * local spacing (0 = off)
+    merge_factor: float = 0.7           # Merge point pairs closer than this * local spacing (0 = off)
     fill_factor: float = 0.75           # Add a point seed if no point is within this * local spacing
     settle_iters: int = 40              # Spring relaxation iters for the final settle
 
@@ -370,7 +367,7 @@ class LatticeGenerator:
             retriangulate_every=p.retriangulate_every,
             verbose=verbose,
             domain=m.domain,
-            ghost_depth=p.ghost_depth_factor * spacing,
+            ghost_depth_factor=p.ghost_depth_factor,
             ghost_source=p.ghost_source
         )
 
@@ -393,7 +390,6 @@ class LatticeGenerator:
                 points2d=trimmed,
                 domain=m.domain,
                 target_spacing_fn=target_spacing_fn,
-                avg_spacing=spacing,
                 theta_fn=m.theta_fn,
                 bond_dirs=bond_dirs,
                 params=self.params,

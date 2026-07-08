@@ -344,19 +344,16 @@ def ghosts_from_mirror(
     ) -> np.ndarray:
     """
     Mirror points lying within 'depth' of the boundary edges to the outside.
+    ('depth' can be a scalar or a per-point array)
 
     Creates a symmetric Voronoi pressure that stops edge points from squashing
     against the boundary.
-
-    Supply the mirror planes exactly one of two ways:
-        - domain: a Polygon2D, whose convex-hull faces are used (domain.equations).
-        - equations: scipy ConvexHull half-plane rows [nx, ny, offset] with
-            outward-pointing normals (e.g. ConvexHull(pts).equations, for a mirror
-            plane that tracks the lattice's own current edge).
     """
     points2d = np.asarray(points2d, dtype=np.float64)
+    depth = np.asarray(depth, dtype=np.float64)
+    per_point = depth.ndim > 0
 
-    mirrored = []
+    mirrored, mirror_depths = [], []
     for eq in domain.equations:
         normal, offset = eq[:2], eq[2]
 
@@ -373,8 +370,9 @@ def ghosts_from_mirror(
         # Reflect across the edge
         mirrored_pts = close_pts - 2.0 * dist_close[:, None] * normal[None, :]
         mirrored.append(mirrored_pts)
+        mirror_depths.append(depth[mask] if per_point else np.full(int(mask.sum()), float(depth)))
 
     if not mirrored:
         return np.zeros((0, 2))
 
-    return merge_close_points(np.vstack(mirrored), radius=0.5 * depth, reduce=np.mean)
+    return merge_close_points(np.vstack(mirrored), radius=0.5 * np.concatenate(mirror_depths), reduce=np.mean)

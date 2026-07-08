@@ -99,7 +99,7 @@ def spring_relaxation(
         convergence_tol: float = 1e-3,
         verbose: bool = False,
         domain: Optional['Polygon2D'] = None,
-        ghost_depth: float = 0.0,
+        ghost_depth_factor: float = 0.0,
         ghost_source: str = 'lattice'
     ) -> np.ndarray:
     """
@@ -110,9 +110,10 @@ def spring_relaxation(
     Thus rows curve to follow theta, and periodic retriangulation lets
     dislocations nucleate wherever the lattice can't stay both straight and regular.
 
-    Ghost points (ghost_depth > 0): points within 'ghost_depth' of a reference boundary
-    are mirrored to the outside and added to the cloud before triangulating, to the edge
-    points symmetric spring pressure to prevent the boundary from collapsing inward.
+    Ghost points (ghost_depth_factor > 0): points within 'ghost_depth_factor * local
+    spacing' of a reference boundary are mirrored to the outside and added to the
+    cloud before triangulating, giving the edge points symmetric spring pressure to
+    prevent the boundary from collapsing inward.
 
     ghost_source:
         - 'hull': reflect across domain.hull (the smooth contour), requires 'domain'.
@@ -129,33 +130,37 @@ def spring_relaxation(
     pts = np.copy(points2d).astype(np.float64)
 
     n_real = len(pts)
-    use_ghosts = (ghost_depth > 0.0 and ghost_source != 'none'
+    use_ghosts = (ghost_depth_factor > 0.0 and ghost_source != 'none'
                   and (ghost_source == 'edge' or domain is not None))
 
     def build_cloud(p):
         if not use_ghosts:
             return p, np.zeros((0, 2))
 
+        local_spacing = spacing_fn(p).ravel()
+
         if ghost_source == 'lattice':
-            med_spacing = float(np.median(spacing_fn(p).ravel()))
             g = ghosts_from_growth_2d(
                 p, theta_fn, spacing_fn, bond_dirs, domain,
-                avg_spacing=med_spacing,
-                boundary_band=ghost_depth / max(med_spacing, 1e-9),
+                avg_spacing=float(np.median(local_spacing)),
+                boundary_band=ghost_depth_factor,       # band in units of local spacing
             )
-        elif ghost_source == 'edge':
-            # Mirror across the lattice's own current outer edge (moves with the cloud)
-            try:
-                g = ghosts_from_mirror(p, ghost_depth, domain=ConvexHull(p))
-            except Exception:
-                return p, np.zeros((0, 2))   # degenerate cloud? skip ghosts this pass
-        else:  # 'hull'
-            g = ghosts_from_mirror(p, ghost_depth, domain=domain)
+        else:
+            depth = ghost_depth_factor * local_spacing  # per-point mirror depth
+            if ghost_source == 'edge':
+                # Mirror across the lattice's own current outer edge (moves with the cloud)
+                try:
+                    g = ghosts_from_mirror(p, depth, domain=ConvexHull(p))
+                except Exception:
+                    return p, np.zeros((0, 2))   # degenerate cloud? skip ghosts this pass
+            else:  # 'hull'
+                g = ghosts_from_mirror(p, depth, domain=domain)
 
         if len(g):
-            # Drop ghosts sitting on top of a real point (self-images for 'edge')
+            # Drop ghosts sitting on top of a real point (self-images for 'edge'),
+            # thresholded by the local spacing at each ghost
             d, _ = cKDTree(p).query(g)
-            g = g[d > 0.3 * ghost_depth]
+            g = g[d > 0.3 * spacing_fn(g).ravel()]
 
         return (np.vstack([p, g]), g) if len(g) else (p, np.zeros((0, 2)))
 
