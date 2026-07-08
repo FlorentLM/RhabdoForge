@@ -733,9 +733,12 @@ class EyeViewer:
 
         target_idx = next(self._debug_ids) if self._debug_ids else np.random.randint(0, self.N)
 
-        target_cartridge = self.model.cartridges[target_idx]
+        # Target ommatidium for the tip origins
+        target_omm = self.model.ommatidia[target_idx]
+        cartridge_tips = target_omm.rhabdomeres.positions
+
+        # Wiring map
         donor_omm_indices = self.model.cartridge_map[target_idx]
-        cartridge_tips = target_cartridge.rhabdomeres.positions
 
         target_eye = self.model.eyes[int(self.model.eye_index[target_idx])]
 
@@ -756,40 +759,41 @@ class EyeViewer:
             ))
 
         # Render donor lenses and wiring
-        member_cells = []
-        member_scalars = []
-        label_pts, label_txt = [], []
 
-        target_pos = self.p[target_idx]
+        label_pts, label_txt = [], []
 
         for r_slot, donor_idx in enumerate(donor_omm_indices):
             donor_idx = int(donor_idx)
             if donor_idx < 0:
-                continue  # Unwired slot
+                continue  # unwired slots
 
+            # Draw wiring line
+            target_ommatidium = self.model.ommatidia[target_idx]
+            tip_pos = target_ommatidium.rhabdomeres.positions[r_slot]
+            donor_pos = self.p[donor_idx]
+
+            line = pv.Line(tip_pos, donor_pos)
+            self.actors_debugger.append(
+                self.plotter.add_mesh(line, color=RHAB_COLOURS[r_slot], line_width=3, opacity=0.6)
+            )
+            label_pts.append(donor_pos)
+            label_txt.append(f"R{r_slot + 1}")
+
+            # Colour donor neighbours
             if donor_idx in omm_to_cell:
-                member_cells.append(omm_to_cell[donor_idx])
-                member_scalars.append(r_slot)
-
-            # Draw wiring lines
-            if donor_idx != target_idx:
-                donor_pos = self.p[donor_idx]
-                line = pv.Line(cartridge_tips[r_slot], donor_pos)
-                self.actors_debugger.append(
-                    self.plotter.add_mesh(line, color=RHAB_COLOURS[r_slot], line_width=3, opacity=0.6)
+                cell_id = omm_to_cell[donor_idx]
+                m_single = self.lattice_mesh.extract_cells([cell_id])
+                donor = self.plotter.add_mesh(
+                    m_single,
+                    color=RHAB_COLOURS[r_slot],
+                    show_edges=True,
+                    line_width=2,
+                    edge_color='black',
+                    opacity=0.7,
+                    ambient=0.3,
+                    diffuse=0.8
                 )
-                label_pts.append(donor_pos)
-                label_txt.append(f"R{r_slot + 1}")
-
-        # Highlight active donor lenses
-        if member_cells:
-            m_mem = self.lattice_mesh.extract_cells(member_cells)
-            m_mem.cell_data['r_slot'] = np.array(member_scalars)
-            self.actors_debugger.append(self.plotter.add_mesh(
-                m_mem, scalars='r_slot', cmap=RHAB_COLOURS,
-                clim=[0, len(RHAB_COLOURS) - 1], show_scalar_bar=False,
-                ambient=0.3, diffuse=0.8, show_edges=True, line_width=2, edge_color='black', opacity=0.7
-            ))
+                self.actors_debugger.append(donor)
 
         # Render rhabdomere tips
         tip_radius = np.median(nb_res.distances) * 0.015

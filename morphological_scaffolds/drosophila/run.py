@@ -253,7 +253,12 @@ if __name__ == "__main__":
     pts2d, forward, right, up = sphere_to_stereo(L_dirs)
 
     # Measure source
-    profile = EyeMeasurements.from_points(pts2d)
+    profile = EyeMeasurements.from_points(
+        points2d=pts2d,
+        density_smoothing=0.1,
+        axes_smoothing=0.25,
+        min_hex_order=0.2,
+    )
 
     # Generate
     gen = LatticeGenerator(profile, FittingParameters(density_scale=DENSITY_SCALE))

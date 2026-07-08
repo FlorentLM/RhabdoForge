@@ -256,7 +256,7 @@ class FittingParameters:
     # Stage 2: Spring relaxation (curved axes + emergent defects)
     spring_iters: int = 120
     dt: float = 0.1
-    retriangulate_every: int = 5
+    retriangulate_every: int = 3
 
     # Ghosts points (for boundary handling, shared by stage 2 and final settle)
     ghost_source: str = 'hull'          # 'lattice' | 'hull' | 'edge' | 'none'

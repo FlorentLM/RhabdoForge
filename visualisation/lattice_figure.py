@@ -10,11 +10,11 @@ SVG = 'morphological_scaffolds/drosophila/data/buchner1971_redigitised.svg'
 
 DENSITY_SCALE     = 1.0         # > 1 packs more ommatidia
 DENSITY_SMOOTHING = 0.1         # RBF smoothing of the spacing field
-AXES_SMOOTHING    = 0.50        # RBF smoothing of the hexatic-axis field
-MIN_HEX_ORDER     = 0.20        # |psi6| below which a point is dropped from the axis fit
+AXES_SMOOTHING    = 0.25        # RBF smoothing of the hexatic-axis field
+MIN_HEX_ORDER     = 0.2         # |psi6| below which a point is dropped from the axis fit
 GHOST_SOURCE      = 'hull'      # 'lattice' | 'hull' | 'edge' | 'none'
 ALIGN             = True        # align init grid to the source cloud (False = purely parametric)
-BYPASS_INIT = False             # If True, starts from the source data directly
+BYPASS_INIT       = False       # If True, starts from the source data directly
 
 if __name__ == '__main__':
 

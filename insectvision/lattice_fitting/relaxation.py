@@ -179,12 +179,15 @@ def spring_relaxation(
         mid = 0.5 * (cloud[e0] + cloud[e1])
         cur = cloud[e1] - cloud[e0]
         th = theta_fn(mid).ravel()
-        c, s = np.cos(th), np.sin(th)
 
         # Into lattice frame
         loc = rotate2d(cur, -th)
         u = loc / np.maximum(np.linalg.norm(loc, axis=1, keepdims=True), 1e-12)
-        ideal = bond_dirs[np.argmax(u @ bond_dirs.T, axis=1)]
+
+        bond_dirs_unit = bond_dirs / np.maximum(np.linalg.norm(bond_dirs, axis=1, keepdims=True), 1e-12)
+        best_idx = np.argmax(u @ bond_dirs_unit.T, axis=1)
+
+        ideal = bond_dirs[best_idx]
 
         L = spacing_fn(mid).ravel()
 
