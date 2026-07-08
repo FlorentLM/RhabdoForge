@@ -643,10 +643,6 @@ class Model(SpatialQueries, BaseView):
             ioa_order[indices] = e_psi6_mag
             spacing[indices] = e_spacing
 
-            logger.debug(f"Eye {eye.eye_index} lattice |Ψ6|: {float(np.mean(e_psi6_mag)):.3f}, "
-                         f"median spacing: {float(np.median(e_spacing)):.3f}")
-                        # TODO: Move this log in _lattice_properties, after the second pass
-
         ioa_angles = np.stack([ioa_minor, ioa_major], axis=-1)
 
         return ioa_angles.astype(np.float32), ioa_tilts.astype(np.float32), ioa_order.astype(np.float32), spacing.astype(np.float32)
@@ -814,6 +810,13 @@ class Model(SpatialQueries, BaseView):
             self._buf['ioa_angles'] = r_ioa
             self._buf['ioa_tilt'] = r_tilt
             self._hexatic_order = r_order
+
+        for eye in self._eyes:
+            if len(eye) > 0:
+                logger.debug(
+                    f"Eye {eye.eye_index} lattice |Ψ6|: {float(np.mean(self._hexatic_order[eye.indices])):.3f}, "
+                    f"median spacing: {float(np.median(spacing[eye.indices])):.3f}"
+                )
 
         return spacing
 
@@ -1085,23 +1088,6 @@ class Model(SpatialQueries, BaseView):
                    adjust_scale=adjust_scale
                    )
         return self
-
-    def neighbours(self,
-            query: Optional[ArrayLike] = None,
-            positions: Optional[ArrayLike] = None,
-            k: int = 6,
-            **kwargs
-        ) -> 'NeighbourResult':
-        """
-        Global k-NN query across all eyes.
-        """
-        return super().neighbours(query=query, positions=positions, k=k, **kwargs)
-
-    def directed_neighbours(self, direction: ArrayLike, query: Optional[ArrayLike] = None, **kwargs) -> np.ndarray:
-        """
-        Global directed search across all eyes.
-        """
-        return super().directed_neighbours(direction=direction, query=query, **kwargs)
 
     # Advanced properties
 

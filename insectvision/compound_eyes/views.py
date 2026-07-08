@@ -670,49 +670,6 @@ class SpatialQueries:
 
     # Some internal helpers
 
-    @staticmethod
-    def _tag_immediate_fallbackmethod(result: 'NeighbourResult', dists: np.ndarray, factor: Optional[float]) -> None:
-        """
-        Tag result.immediate where distance <= factor * local scale (mean of nearest 3).
-        Only used for the 'points' branch... not sure this should be even kept tbh
-        """
-        if factor is None or not dists.size:
-            return
-
-        n_ref = min(3, dists.shape[1])
-        local_scale = np.mean(dists[:, :n_ref], axis=1, keepdims=True)
-        result.immediate = dists <= (local_scale * float(factor))
-
-    def _tag_immediate_betamethod(self, result: 'NeighbourResult', valid_global: np.ndarray) -> None:
-        """
-        Tag result.immediate by β-skeleton first-ring membership.
-        """
-        neighb_ind = result.indices
-        if not neighb_ind.size:
-            result.immediate = np.zeros(neighb_ind.shape, dtype=bool)
-            return
-
-        graph = self._get_first_ring_graph()
-        pair_keys = graph['pair_keys']
-        big = graph['big']
-
-        # Ensure 64-bit for the key calculation
-        qi = np.asarray(valid_global, dtype=np.int64)
-        if qi.ndim == 1:
-            qi = qi[:, None]
-
-        neighb_ind = np.asarray(neighb_ind, dtype=np.int64)
-
-        # Generate unique keys for every found neighbour
-        query_keys = pack_edge_keys(qi, neighb_ind, big)
-
-        # Convert set to sorted array once for O(log n) search
-        if isinstance(pair_keys, set):
-            pair_keys = np.fromiter(pair_keys, dtype=np.int64, count=len(pair_keys))
-            pair_keys.sort()
-
-        result.immediate = np.isin(query_keys, pair_keys)
-
     def _omm_chirality(self, omm_global: np.ndarray) -> np.ndarray:
         """
         +1 / -1 chirality for the given (global) ommatidium indices (read from rhabdomere slot 0).
@@ -729,59 +686,60 @@ class SpatialQueries:
 
     def neighbours(self,
             query: Optional[ArrayLike] = None,
-            positions: Optional[ArrayLike] = None,
             k: int = 6,
-            immediate_only: bool = False,
-            neighbour_dist_factor: float = 1.25,
+            immediate_only: bool = False
         ) -> NeighbourResult:
         """
         k-nearest ommatidia neighbours within this view.
 
-        Provide exactly one of:
-            - query: global ommatidia indices (only those inside this view are used)
-            - positions: (Q, 3) world-space query points
-
-        immediate_only restricts to the first-ring graph
-        neighbour_dist_factor tags 'is_immediate' for points queries (d <= factor * local scale)
+        Args:
+            - query: global ommatidia indices to query, if None, queries them all
+            - immediate_only: restricts to the first-ring graph
         """
 
-        if (query is None) == (positions is None):
-            raise ValueError("Provide either 'query' or 'positions' (but not both)")
+        qidx_global = self.omm_indices if query is None else np.asarray(query, dtype=np.intp).reshape(-1)
+        valid_local, in_this_view = self._to_local(qidx_global)
+        valid_global = qidx_global[in_this_view]
 
-        if query is not None:
-            qidx_global = np.asarray(query, dtype=np.intp).reshape(-1)
-            valid_local, in_this_view = self._to_local(qidx_global)
-            valid_global = qidx_global[in_this_view]
+        if immediate_only:
+            graph = self._get_neighbour_graph(k)
+            neighb_indices = graph['neighbour_indices'][valid_local]
+            neighb_dists = graph['neighbour_distances'][valid_local]
+        else:
+            neighb_dists, neighb_indices = knn(self._get_tree('positions'), self.positions[valid_local], k, self_indices=valid_local)
 
-            if immediate_only:
-                graph = self._get_neighbour_graph(k)
-                neighb_indices = graph['neighbour_indices'][valid_local]
-                neighb_dists = graph['neighbour_distances'][valid_local]
-            else:
-                neighb_dists, neighb_indices = knn(self._get_tree('positions'), self.positions[valid_local], k, self_indices=valid_local)
+        g_neighb_indices = self.omm_indices[neighb_indices]
+        result = NeighbourResult(self, mask=in_this_view, indices=g_neighb_indices, distances=neighb_dists)
 
-            g_neighb_indices = self.omm_indices[neighb_indices]
-            result = NeighbourResult(self, mask=in_this_view, indices=g_neighb_indices, distances=neighb_dists)
+        if g_neighb_indices.size:
+            q_chir = self._omm_chirality(valid_global)
+            nb_chir = self._omm_chirality(g_neighb_indices.ravel()).reshape(g_neighb_indices.shape)
+            result.same_chirality = nb_chir == q_chir[:, None]
 
-            if g_neighb_indices.size:
-                q_chir = self._omm_chirality(valid_global)
-                nb_chir = self._omm_chirality(g_neighb_indices.ravel()).reshape(g_neighb_indices.shape)
-                result.same_chirality = nb_chir == q_chir[:, None]
+        neighb_ind = np.asarray(result.indices, dtype=np.int64)
 
-            self._tag_immediate_betamethod(result, valid_global)
-
+        if not neighb_ind.size:
+            result.immediate = np.zeros(neighb_ind.shape, dtype=bool)
             return result
 
-        # Points path
-        # TODO: this path is kind of shit, _tag_immediate_fallbackmethod is atrocious
+        graph = self._get_first_ring_graph()
+        pair_keys = graph['pair_keys']
+        big = graph['big']
 
-        points = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
-        neighb_dists, neighb_indices = knn(self._get_tree('positions'), points, k, drop_self=False)
-        g_neighb_indices = self.omm_indices[neighb_indices]
+        # Ensure 64-bit for the key calculation
+        qi = np.asarray(valid_global, dtype=np.int64)
+        if qi.ndim == 1:
+            qi = qi[:, None]
 
-        result = NeighbourResult(self, mask=np.ones(points.shape[0], dtype=bool), indices=g_neighb_indices, distances=neighb_dists)
+        # Generate unique keys for every found neighbour
+        query_keys = pack_edge_keys(qi, neighb_ind, big)
 
-        self._tag_immediate_fallbackmethod(result, neighb_dists, neighbour_dist_factor)
+        # Convert set to sorted array once for O(log n) search
+        if isinstance(pair_keys, set):
+            pair_keys = np.fromiter(pair_keys, dtype=np.int64, count=len(pair_keys))
+            pair_keys.sort()
+
+        result.immediate = np.isin(query_keys, pair_keys)
 
         return result
 

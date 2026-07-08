@@ -130,7 +130,6 @@ def smooth_nematic_vectors(
     Args:
         values: (M, D) unit vectors
         neighbours: NeighbourGraph (ragged or dense, dense entries < 0 are padding).
-            A dense knn() output (self dropped) is the typical input.
         n_iter: smoothing passes
         include_self: keep each vector's own value in its average
     """
