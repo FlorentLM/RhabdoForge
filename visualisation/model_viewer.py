@@ -260,7 +260,7 @@ class EyeViewer:
             c_field = np.zeros(self.N, dtype=np.float32)
 
             # Unwired (voluntary edge drop / slack)
-            unw = self.model.has_selfwires
+            unw = self.model.unwired_slots.any(axis=-1)
 
             # True conflicts override unwired status (2, 3, 4)
             don = self.model.donation_conflicts

@@ -35,8 +35,6 @@ def get_conflict_masks(cartridge_map: np.ndarray, peripheral_indices: np.ndarray
         - donation: a donor feeding more than one slot (over-subscribed)
         - any: has any receiving | donation
         - unwired_slots: (N, |periph|) bool, peripheral slots with no donor
-        - has_selfwires: any unwired peripheral slot (name kept for the view layer, it really means "has an unwired peripheral slot") # TODO: remove that one?
-        - unwired_count: total unwired peripheral slots
     """
     N = cartridge_map.shape[0]
     own = np.arange(N)
@@ -59,8 +57,6 @@ def get_conflict_masks(cartridge_map: np.ndarray, peripheral_indices: np.ndarray
         donation=donation,
         any=receiving | donation,
         unwired_slots=unwired_slots,
-        has_selfwires=np.any(unwired_slots, axis=1),
-        unwired_count=unwired_slots.sum(axis=1),
     )
 
 
@@ -72,8 +68,6 @@ def get_noconflict_masks(N: int, R: int) -> 'SimpleNamespace':
         donation=np.zeros(N, dtype=bool),
         any=np.zeros(N, dtype=bool),
         unwired_slots=np.zeros((N, R), dtype=bool),
-        has_selfwires=np.zeros(N, dtype=bool),
-        unwired_count=0,
     )
 
 
@@ -650,6 +644,7 @@ def refine_chi(
     scale_ratios = act_rad / np.clip(tpl_rad, 1e-9, None)
     sum_scale = np.bincount(i_idx, weights=scale_ratios * weights, minlength=N)
     sum_w = np.bincount(i_idx, weights=weights, minlength=N)
+    sum_w = np.where(sum_w == 0, np.nanmedian(sum_w), sum_w)
     omm_scale = np.where(sum_w > 0, sum_scale / sum_w, 1.0)
 
     # Mask and smooth

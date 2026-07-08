@@ -426,12 +426,8 @@ class BaseView:
         return self.model._get_conflicts.unwired_slots[self.omm_indices]
 
     @property
-    def has_selfwires(self) -> np.ndarray:
-        return self.model._get_conflicts.has_selfwires[self.omm_indices]
-
-    @property
     def unwired_count(self) -> int:
-        return self.model._get_conflicts.unwired_count[self.omm_indices]
+        return self.unwired_slots.sum(-1)
 
 
 class NeighbourResult:
@@ -513,11 +509,11 @@ class SpatialQueries:
     @property
     def _local_i_conflictfree(self) -> np.ndarray:
         """
-        Local rows of ommatidia that are conflict-free and not self-wired.
+        Local rows of ommatidia that are conflict-free and have no unwired slots.
         """
 
         if 'conflictfree_local_i' not in self._spatial_store:
-            self._spatial_store['conflictfree_local_i'] = np.flatnonzero(~self.has_conflicts & ~self.has_selfwires)
+            self._spatial_store['conflictfree_local_i'] = np.flatnonzero(~self.has_conflicts & ~self.unwired_slots.any(axis=-1))
 
         return self._spatial_store['conflictfree_local_i']
 
