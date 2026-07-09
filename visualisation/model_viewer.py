@@ -257,7 +257,7 @@ class EyeViewer:
         self.saccade_fields = {
             (True, True): self.model.saccade_field,             # applied (A1, S1)
             (False, False): self.result_raw.saccade_phasor,     # neither (A0, S0)
-            (True, False): self.aligner._saccade_from_major(self.model, self.model.main_axis_field, skip_smooth=True),
+            (True, False): self.aligner._saccade_from_major(self.model, self.model.major_axis_field, skip_smooth=True),
             (False, True): self.aligner._saccade_from_major(self.model, self.result_raw.major_axis, skip_smooth=False),
         }
 
@@ -486,7 +486,7 @@ class EyeViewer:
         if self.delaunay_mesh_real.n_cells == 0 or self.R <= 1:
             return
         for field, actor_list in [
-            (self.model.main_axis_field, self.actors_major_smooth),
+            (self.model.major_axis_field, self.actors_major_smooth),
             (self.result_raw.major_axis, self.actors_major_raw),
         ]:
             for mask, color in [
@@ -662,19 +662,13 @@ class EyeViewer:
             pts_all = self.model.positions[:, None, :] + tips_rel
 
             is_mirrored = self.model.chirality < 0
-            mai = self.bundle.main_axis_indices
-            i1, i2 = mai if mai is not None else (-1, -1)
-
             groups = {'gold': [], 'red': [], 'white': [], 'teal': [], 'royalblue': []}
+
             for r in range(self.R):
                 pts_r = pts_all[:, r, :]
 
                 if r == self.bundle.center_index:
                     groups['gold'].append(pts_r)
-                elif r == i1:
-                    groups['red'].append(pts_r)
-                elif r == i2:
-                    groups['white'].append(pts_r)
                 else:
                     groups['teal'].append(pts_r[~is_mirrored])
                     groups['royalblue'].append(pts_r[is_mirrored])
@@ -919,7 +913,7 @@ class EyeViewer:
         def toggle_alignment():
             self.state_alignment_smoothed = not self.state_alignment_smoothed
             self._apply_alignment_visibility()
-            self._apply_saccade_visibility()  # saccade rides on the main axis
+            self._apply_saccade_visibility()  # saccade rides on the major axis
             self._update_alignment_hint()
             self.plotter.render()
 
@@ -975,7 +969,7 @@ class EyeViewer:
         s_state = 'smoothed' if self.state_saccade_smoothed else 'raw'
         a_state = 'smoothed' if self.state_alignment_smoothed else 'raw'
         self._set_hint((0, 1), 'hint_a', f'[A] Alignment: {a_state}')
-        self._set_hint((0, 2), 'hint_a', f'[A] Main axis from {a_state} alignment')
+        self._set_hint((0, 2), 'hint_a', f'[A] Major axis from {a_state} alignment')
         self._set_hint((0, 3), 'hint_s', f'[S] Saccade: {s_state} (from {a_state} alignment)')
 
     def _update_saccade_hint(self) -> None:

@@ -298,7 +298,7 @@ class BaseView:
     # Per-ommatidium rhabdomeres bundles properties
 
     chi = ViewField('chi', 'ommatidia',
-        doc="Bundle orientation chi (main axis) per ommatidium. Shape (N,).")
+        doc="Bundle orientation chi (major axis) per ommatidium. Shape (N,).")
 
     bundle_orientation = chi
 
@@ -314,8 +314,8 @@ class BaseView:
     # Local axes
 
     @property
-    def main_axis_field_local(self) -> np.ndarray:
-        """Bundle chi (main axis) in (right, up) tangent coords. Shape (N, 2)."""
+    def major_axis_field_local(self) -> np.ndarray:
+        """Bundle chi (major axis) in (right, up) tangent coords. Shape (N, 2)."""
         return self._bearing_axis_local(self.chi)
 
     @property
@@ -335,12 +335,12 @@ class BaseView:
     # World-space axes
 
     @property
-    def main_axis_field(self) -> np.ndarray:
-        """Bundle chi (main axis) in world space. Shape (N, 3)."""
-        return local_to_world(self.main_axis_field_local, self.right, self.up)
+    def major_axis_field(self) -> np.ndarray:
+        """Bundle chi (major axis) in world space. Shape (N, 3)."""
+        return local_to_world(self.major_axis_field_local, self.right, self.up)
 
-    chi_field = main_axis_field
-    bundle_orientation_field = main_axis_field
+    chi_field = major_axis_field
+    bundle_orientation_field = major_axis_field
 
     @property
     def reference_field(self) -> np.ndarray:

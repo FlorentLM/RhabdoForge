@@ -2,6 +2,7 @@ import warnings
 from typing import TYPE_CHECKING, Optional, Tuple, Union
 import numpy as np
 from numpy.typing import ArrayLike
+
 from insectvision.utils import broadcast_1d
 
 if TYPE_CHECKING:
@@ -45,12 +46,15 @@ class RhabdomereBundle:
         - ampl_lat_um, ampl_ax_um: float, Max lateral / axial tip displacement at full microsaccade drive (μm).
         - extra_narrowing_ratio: float, Extra, non-optical RF narrowing at full saccade (1.0 = pure optics).
         - center_index: int, Index of the central rhabdomere (e.g. R7/8 in Drosophila is index 6).
-        - main_axis_indices: (int, int), optional, Indices of the two rhabdomeres defining the
-            bundle's main structural axis. If None, the main axis is taken as the bundle's longest axis.
-            For a collapsed or symmetrical bundle this is degenerate, and an arbitrary axis (0 rad) is assigned.
-        - alignment_offset: float or (int, int), Optional. Target angle (deg, mod 180) between the main axis and the
-            external alignment reference. If (int, int), rhabdomere indices: then the offset is derived from th
-            axis defined by these two rhabdomeres indices.
+        - major_axis: float or (int, int), optional. Defines the bundle's major structural axis.
+            If (int, int): indices of the two rhabdomeres whose line is the major axis.
+            If float: the major-axis angle directly (deg, mod 180).
+            If None: the major axis is taken as the bundle's longest axis (origin -> furthest
+            rhabdomere). For a collapsed or symmetrical bundle this is degenerate, and an
+            arbitrary axis (0 rad) is assigned.
+        - alignment_offset: float or (int, int), Optional. Target angle (deg, mod 180) between the major
+            axis and the external alignment reference. A float is the magnitude directly, an (int, int)
+            rhabdomere pair derives it from the angle of that line relative to the major axis.
     """
 
     def __init__(self,
@@ -70,7 +74,7 @@ class RhabdomereBundle:
                  ampl_ax_um: float = 2.0,
                  extra_narrowing_ratio: float = 1.0,
                  center_index: int = 0,
-                 main_axis_indices: Optional[Tuple[int, int]] = None,
+                 major_axis: Union[float, Tuple[int, int], None] = None,
                  alignment_offset: float = 0.0,
                  saccade_offset: Union[float, Tuple[int, int], None] = None,
                  ):
@@ -94,8 +98,7 @@ class RhabdomereBundle:
 
         self.center_index = int(center_index)
 
-        # Alignment: main axis is a line (mod 180) so the offset is |.| mod 180
-        self.alignment_offset_deg = abs(float(alignment_offset)) % 180.0
+        # Alignment: major axis is a line (mod 180) so the offset is |.| mod 180
 
         self.diameters_um = broadcast_1d(diameters_um, R, 'diameters_um')
         self.wavelengths_nm = broadcast_1d(wavelengths_nm, R, 'wavelengths_nm')
@@ -105,24 +108,29 @@ class RhabdomereBundle:
         if not (0 <= self.center_index < R):
             raise ValueError(f'center_index={self.center_index} out of range for R={R}')
 
-        if main_axis_indices is None:
-            self.main_axis_indices = None
-        else:
-            i1, i2 = int(main_axis_indices[0]), int(main_axis_indices[1])
+        # Major axis: None (auto longest) | float (angle deg, mod 180) | (int, int) rhabdomere indices.
+        if major_axis is None:
+            r2 = np.einsum('ij,ij->i', self.offsets_um, self.offsets_um)
+            self._major_axis_rad = self._line_angle(self.offsets_um[int(np.argmax(r2))])
+
+        elif hasattr(major_axis, '__len__') and not isinstance(major_axis, str) and len(major_axis) == 2:
+            i1, i2 = int(major_axis[0]), int(major_axis[1])
+
             if not (0 <= i1 < R and 0 <= i2 < R):
-                raise ValueError(f"main_axis_indices=({i1},{i2}) out of range for R={R}")
+                raise ValueError(f'major_axis=({i1},{i2}) out of range for R={R}')
             if R > 1 and i1 == i2:
                 warnings.warn(
-                    f"RhabdomereBundle '{self.name}': main_axis_indices=({i1},{i2}) are identical, "
-                    "falling back to an arbitrary main axis.",
+                    f"RhabdomereBundle '{self.name}': major_axis=({i1},{i2}) are identical, "
+                    "falling back to an arbitrary major axis.",
                     stacklevel=2,
                 )
-            self.main_axis_indices = (i1, i2)
+            self._major_axis_rad = self._line_angle(self.offsets_um[i2] - self.offsets_um[i1])
 
-        # Resolve main axis angle (offsets are fixed at construction)
-        self._main_axis_rad = self._resolve_main_axis_rad()
+        else:
+            self._major_axis_rad = float(np.deg2rad(abs(float(major_axis)) % 180.0))
 
-        # Saccade axis: an offset (deg, mod 180) from the main axis
+        # Offsets from the major axis (deg, mod 180)
+        self.alignment_offset_deg = self._resolve_offset_deg(alignment_offset, 'alignment_offset')
         self.saccade_offset_deg = self._resolve_saccade_offset_deg(saccade_offset)
 
         if R > 1 and self.focal_um is None:
@@ -155,75 +163,66 @@ class RhabdomereBundle:
 
         raise ValueError('Sensitivity must be a scalar, 1D, or 2D array.')
 
-    def _resolve_main_axis_rad(self) -> float:
-        """
-        Derive the main-axis angle (rad, canonicalised to [0, pi)) from the offsets.
-
-        - If main_axis_indices is given: the line through those two rhabdomeres.
-        - Otherwise: the line from the optical axis (origin) to the furthest rhabdomere.
-        - Degenerate (collapsed / coincident points): arbitrary axis, 0.0 rad.
-        """
-        off = self.offsets_um
-
-        if self.main_axis_indices is not None:
-            i1, i2 = self.main_axis_indices
-            delta = off[i2] - off[i1]
-        else:
-            r2 = np.einsum('ij,ij->i', off, off)
-            delta = off[int(np.argmax(r2))]
-
+    @staticmethod
+    def _line_angle(delta: ArrayLike) -> float:
+        """Undirected line angle of a 2-vector, in [0, pi), 0.0 if degenerate (collapsed)."""
+        delta = np.asarray(delta, dtype=float)
         if float(delta @ delta) < 1e-12:
-            return 0.0  # collapsed / symmetrical -> arbitrary
+            return 0.0
 
         return float(np.arctan2(delta[1], delta[0]) % np.pi)
 
+    def _offset_from_indices(self, spec: Union[float, Tuple[int, int], None], name: str) -> Optional[float]:
+        """
+        If spec is an (int, int) rhabdomere pair, return the angle of that line
+        relative to the major axis (deg, in [0, 180)). Otherwise return None.
+        """
+        if spec is None or isinstance(spec, str) or not hasattr(spec, '__len__') or len(spec) != 2:
+            return None
+
+        R = self.offsets_um.shape[0]
+        j1, j2 = int(spec[0]), int(spec[1])
+
+        if not (0 <= j1 < R and 0 <= j2 < R):
+            raise ValueError(f'{name} indices=({j1},{j2}) out of range for R={R}')
+
+        axis_rad = self._line_angle(self.offsets_um[j2] - self.offsets_um[j1])
+        return float(np.rad2deg((axis_rad - self._major_axis_rad) % np.pi))
+
+    def _resolve_offset_deg(self, spec: Union[float, Tuple[int, int]], name: str) -> float:
+        """
+        Resolve an axis offset from the major axis (deg, in [0, 180)).
+        """
+        from_idx = self._offset_from_indices(spec, name)
+        return from_idx if from_idx is not None else abs(float(spec)) % 180.0
+
     def _resolve_saccade_offset_deg(self, spec: Union[float, Tuple[int, int], None]) -> float:
         """
-        Resolve the saccade axis offset from the main axis (deg, in [0, 180)).
-
-        - float: an explicit magnitude, stored as ``abs(spec) % 180``.
-        - (int, int): the two rhabdomeres defining the saccade axis, its angle is
-            derived from the offsets and reduced modulo the main axis.
-        - None: the bundle's minor principal axis (smallest spatial spread, i.e.
-            least steric hindrance), reduced modulo the main axis.
+        Resolve the saccade axis offset from the major axis (deg, in [0, 180)).
         """
-        R = self.offsets_um.shape[0]
-
-        # Index pair -> derive from structure
-
-        if spec is not None and hasattr(spec, '__len__') and not isinstance(spec, str) and len(spec) == 2:
-            j1, j2 = int(spec[0]), int(spec[1])
-            if not (0 <= j1 < R and 0 <= j2 < R):
-                raise ValueError(f"saccade_offset indices=({j1},{j2}) out of range for R={R}")
-            delta = self.offsets_um[j2] - self.offsets_um[j1]
-            if float(delta @ delta) < 1e-12:
-                return 0.0
-            axis_rad = np.arctan2(delta[1], delta[0])
-            return float(np.degrees((axis_rad - self._main_axis_rad) % np.pi))
-
-        # Explicit magnitude
+        from_idx = self._offset_from_indices(spec, 'saccade_offset')
+        if from_idx is not None:
+            return from_idx
         if spec is not None:
             return abs(float(spec)) % 180.0
 
         # Default: minor principal axis of the offset cloud
         pts = self.offsets_um - self.offsets_um.mean(axis=0)
         if float(np.max(np.einsum('ij,ij->i', pts, pts))) < 1e-12:
-            return 0.0  # collapsed -> arbitrary
+            return 0.0      # collapsed -> arbitrary
 
         cov = pts.T @ pts
         _, evecs = np.linalg.eigh(cov)   # ascending eigenvalues
         minor = evecs[:, 0]              # smallest spread
 
-        axis_rad = np.arctan2(minor[1], minor[0])
-
-        return float(np.degrees((axis_rad - self._main_axis_rad) % np.pi))
+        return float(np.rad2deg((self._line_angle(minor) - self._major_axis_rad) % np.pi))
 
     # Size / lookup / repr
 
     def __repr__(self) -> str:
         return (
             f"RhabdomereBundle(name={self.name!r}, R={self.count}, center={self.center_index}, "
-            f"main axis={self.main_axis_deg:.1f}°, "
+            f"major axis={self.major_axis_deg:.1f}°, "
             f"alignment offset={self.alignment_offset_deg:.1f}°, "
             f"saccade offset={self.saccade_offset_deg:.1f}°)"
         )
@@ -254,28 +253,28 @@ class RhabdomereBundle:
     # Axes / alignment
 
     @property
-    def main_axis_rad(self) -> float:
+    def major_axis_rad(self) -> float:
         """Main structural axis angle in the focal plane (rad, in [0, pi), it is a line)."""
-        return self._main_axis_rad
+        return self._major_axis_rad
 
     @property
-    def main_axis_deg(self) -> float:
-        return float(np.rad2deg(self._main_axis_rad))
+    def major_axis_deg(self) -> float:
+        return float(np.rad2deg(self._major_axis_rad))
 
     @property
     def alignment_offset_rad(self) -> float:
-        """Target main-axis offset from the external reference (rad, in [0, pi))."""
+        """Target major-axis offset from the external reference (rad, in [0, pi))."""
         return float(np.deg2rad(self.alignment_offset_deg))
 
     @property
     def saccade_offset_rad(self) -> float:
-        """Saccade axis offset from the main axis (rad, in [0, pi))."""
+        """Saccade axis offset from the major axis (rad, in [0, pi))."""
         return float(np.deg2rad(self.saccade_offset_deg))
 
     @property
     def saccade_axis_rad(self) -> float:
         """Saccade axis angle in the anatomical focal plane (rad, in [0, pi), it is a line)."""
-        return float((self._main_axis_rad + self.saccade_offset_rad) % np.pi)
+        return float((self._major_axis_rad + self.saccade_offset_rad) % np.pi)
 
     @property
     def saccade_axis_deg(self) -> float:
@@ -314,14 +313,13 @@ class RhabdomereBundle:
             scale: Optional[Union[float, ArrayLike]] = None
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Orient the bundle so its main axis points at chi in each lens's
+        Orient the bundle so its major axis points at chi in each lens's
         (right, up) tangent frame, optionally mirrored by chirality.
 
         Args:
-            - chi: (N,) array_like, Per-lens main-axis bearing (rad).
+            - chi: (N,) array_like, Per-lens major-axis bearing (rad).
             - chirality: (N,) array_like or float, Per-lens handedness (+1 or -1). Defaults to +1 (no flip).
-            - scale: (N,) array, float, or None. If provided, scales the spread of
-                the receptors about the bundle's center_index.
+            - scale: (N,) array, float, or None. If provided, scales the spread of the receptors about the center_index.
 
         Returns:
             rot_dx, rot_dy: (N, R) arrays, Per-(lens, receptor) focal-plane offsets.
@@ -339,13 +337,13 @@ class RhabdomereBundle:
         dx = off[..., 0]
         dy = off[..., 1]
 
-        # To canonical frame: rotate by -main_axis_rad so the main axis lies along +x
-        m = self.main_axis_rad
+        # To canonical frame: rotate by -major_axis_rad so the major axis lies along +x
+        m = self.major_axis_rad
         cos_m, sin_m = np.cos(m), np.sin(m)
         u = cos_m * dx + sin_m * dy
         v = -sin_m * dx + cos_m * dy
 
-        # Chirality: reflect across the main axis (v -> -v) where chirality == -1
+        # Chirality: reflect across the major axis (v -> -v) where chirality == -1
         chir = np.asarray(chirality, dtype=np.float32).reshape(-1, 1)
         v = chir * v
 
@@ -369,7 +367,7 @@ class RhabdomereBundle:
             degrees: bool = False,
         ) -> Tuple['Figure', 'Axes']:
         """
-        Quick visual of the bundle and its main / saccade / alignment axes.
+        Quick visual of the bundle and its major / saccade / alignment axes.
 
         Args:
             spectral: colour receptors by spectral sensitivity instead of index.
@@ -377,7 +375,7 @@ class RhabdomereBundle:
                 If False, shows the oriented view via `rotated_offsets` (the bundle
                 taken to canonical form then placed at `chi` / `chirality`) inside a
                 mod-180 orientation dial with chi = 0 at the top.
-            chi: main-axis bearing (rad) to place the bundle at. Only when raw_orientation=False.
+            chi: major-axis bearing (rad) to place the bundle at. Only when raw_orientation=False.
             chirality: +1 or -1 handedness. Only when raw_orientation=False.
         """
         import matplotlib.pyplot as plt
@@ -387,20 +385,23 @@ class RhabdomereBundle:
 
         if raw_orientation:
             offsets = np.asarray(self.offsets_um, dtype=float)
-            main_angle = self.main_axis_rad
+            major_angle = self.major_axis_rad
             saccade_angle = self.saccade_axis_rad
-            align_angle = (self.main_axis_rad - self.alignment_offset_rad) % np.pi
+            align_angle = (self.major_axis_rad - self.alignment_offset_rad) % np.pi
             disp_rot = 0.0
+
         else:
             rot_dx, rot_dy = self.rotated_offsets(
                 np.full(1, chi, dtype=np.float32),
                 chirality=np.full(1, chirality, dtype=np.float32),
             )
+
             offsets = np.stack([rot_dx[0], rot_dy[0]], axis=-1).astype(float)
-            main_angle = float(chi)
-            # Chirality reflects saccade / alignment axes across the main axis
-            saccade_angle = float(chi) + float(chirality) * self.saccade_offset_rad
-            align_angle = float(chi) - float(chirality) * self.alignment_offset_rad
+            major_angle = chi
+
+            # Chirality reflects saccade / alignment axes across the major axis
+            saccade_angle = chi + chirality * self.saccade_offset_rad
+            align_angle = chi - chirality * self.alignment_offset_rad
             # Display rotation: put chi = 0 at the top (pure +90°, so chirality is preserved)
             disp_rot = np.pi / 2.0
 
@@ -416,6 +417,7 @@ class RhabdomereBundle:
         max_r = max(float(radii.max()), float(self.diameters_um.max()) * 0.5)
         if max_r < 1e-6:
             max_r = 1.0
+
         has_axes = self.count > 1 and float(radii.max()) > 1e-6
         dial_r = max_r * 1.3
         extent = dial_r * (1.28 if not raw_orientation else 1.05)
@@ -423,11 +425,14 @@ class RhabdomereBundle:
         # Orientation dial: mod-180 clock face, 0 at top (aligned mode only)
         if not raw_orientation:
             ax.add_patch(plt.Circle((0, 0), dial_r, fill=False, ec='0.6', lw=1.0, zorder=0))
+
             for s_deg in range(0, 360, 15):
-                s = np.radians(s_deg)
+                s = np.deg2rad(s_deg)
+
                 dvec = np.array([np.cos(s), np.sin(s)])
                 major = (s_deg % 30 == 0)
                 t0 = dial_r * (0.93 if major else 0.965)
+
                 ax.plot([t0 * dvec[0], dial_r * dvec[0]], [t0 * dvec[1], dial_r * dvec[1]],
                         color='0.55', lw=1.2 if major else 0.7, zorder=0)
                 if major:
@@ -451,10 +456,10 @@ class RhabdomereBundle:
             edge = 'white' if spectral else color
             ax.scatter(*pos, color=color, edgecolor=edge, s=30, linewidth=0.5, zorder=3)
 
-        # Axes: main (black), saccade (green), alignment (blue) + small coloured labels
+        # Axes: major (black), saccade (green), alignment (blue) + small coloured labels
         if has_axes:
             for angle, name, col, ls in (
-                (main_angle,    'main',  'black', '--'),
+                (major_angle,   'major', 'black', '--'),
                 (saccade_angle, 'sacc',  'green', ':'),
                 (align_angle,   'align', 'blue',  ':'),
             ):
@@ -462,7 +467,8 @@ class RhabdomereBundle:
                 dx, dy = np.cos(a), np.sin(a)
                 ax.plot([-extent * dx, extent * dx], [-extent * dy, extent * dy],
                         color=col, linestyle=ls, alpha=0.85, lw=1.4, zorder=2)
-                val = np.deg2rad(angle) % 180.0
+
+                val = np.rad2deg(angle) % 180.0
                 ax.text(dial_r * 0.82 * dx, dial_r * 0.82 * dy, f'{name} {val:.0f}°',
                         color=col, fontsize=7, ha='center', va='center', zorder=4,
                         bbox=dict(boxstyle='round,pad=0.15', fc='white', ec=col, lw=0.6, alpha=0.85))
@@ -474,7 +480,7 @@ class RhabdomereBundle:
         mode = 'as supplied' if raw_orientation else 'aligned'
         title = f'Bundle: {self.name} (R={self.count}, {mode}'
         if not raw_orientation:
-            title += f', $\\chi$={np.deg2rad(chi):.0f}°, chir={int(chirality):+d}'
+            title += f', $\\chi$={np.rad2deg(chi):.0f}°, chir={int(chirality):+d}'
         title += ')'
         ax.set_title(title)
         ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=7, title='Receptors')
@@ -528,9 +534,9 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
         ampl_lat_um=2.0,    # upper-range microsaccade, ~6° RF shift
         ampl_ax_um=2.0,     # axial move 17->19 μm (Kemppainen 2022, Table S6)
         center_index=6,
-        main_axis_indices=(2, 5),   # R3-R6 line
-        alignment_offset=81.0,      # main axis sits ~81° (mod 180) off the flow reference
-        saccade_offset=28.6,        # ~R1-R2-R3 line, offset from the main axis
+        major_axis=(2, 5),          # R3-R6 line
+        alignment_offset=81.0,      # major axis sits ~81° (mod 180) off the flow reference
+        saccade_offset=28.6,        # ~R1-R2-R3 line, offset from the major axis
     )
 
 
@@ -574,7 +580,7 @@ def honeybee_bundle(name: str = 'Honeybee') -> RhabdomereBundle:
         ampl_lat_um=0.0,
         ampl_ax_um=0.0,
         center_index=8,             # R9 is the basal cell
-        main_axis_indices=None,     # collapsed bundle -> arbitrary axis
+        major_axis=None,            # collapsed bundle -> arbitrary axis
         alignment_offset=0.0,
     )
 
@@ -585,11 +591,11 @@ if __name__ == '__main__':
     b = drosophila_bundle()
 
     print(b)
-    print(f"  Main axis:         {b.main_axis_deg:.1f}°")
+    print(f"  Major axis:        {b.major_axis_deg:.1f}°")
     print(f"  Alignment offset:  {b.alignment_offset_deg:.1f}°")
     print(f"  Saccade offset:    {b.saccade_offset_deg:.1f}° (axis at {b.saccade_axis_deg:.1f}°)")
     print(f"  UV sensitivity per cell: {b.sensitivity_uv}")
 
-    b.plot(raw_orientation=False, chi=0.0, chirality=1.0)
+    b.plot(raw_orientation=False, chi=-45.0, chirality=1.0, degrees=True)
 
     plt.show()
