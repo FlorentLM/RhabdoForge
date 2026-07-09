@@ -16,7 +16,7 @@ from insectvision.geometry.fields import interpolate_spacing_field, interpolate_
 from insectvision.geometry.linalg import rotation_matrix2d
 from insectvision.geometry.polygons import resample_contour, Polygon2D
 from insectvision.geometry.neighbours import (
-    delaunay_neighbours, merge_close_points, topological_spacing, identify_boundary_points
+    delaunay_neighbours, merge_close_points, topological_spacing, identify_boundary_points, padded_neighbours
 )
 from insectvision.geometry.lattice import (
     create_hexagonal_grid, base_bond_dirs, compute_lattice_basis, trace_lattice_rows, bearings_to_angles
@@ -104,6 +104,8 @@ def _cull_junk(
     pts = np.copy(points2d).astype(np.float64)
 
     neighbours = delaunay_neighbours(pts, max_length_factor=1.8, tree=tree)
+    _, nb_valid = padded_neighbours(neighbours, masked=True)
+    deg = nb_valid.sum(axis=1)
 
     is_boundary = identify_boundary_points(pts, neighbours=neighbours, gap_threshold_deg=boundary_gap_deg)
 
@@ -114,7 +116,7 @@ def _cull_junk(
     d_hull = domain.signed_distance(pts)
 
     is_junk = is_boundary & (
-            (s_ratio > straggler_ratio) | (d_hull > outside_factor * target_spacing)
+            (deg <= 2) | (s_ratio > straggler_ratio) | (d_hull > outside_factor * target_spacing)
     )
     pts = pts[~is_junk]
 
@@ -151,12 +153,12 @@ def _finalize_lattice(
 
     p = params or FittingParameters()
 
-    tree = cKDTree(points2d)
+    tree_pre_cull = cKDTree(points2d)
 
     pts = _cull_junk(
         points2d=points2d,
         domain=domain,
-        tree=tree,
+        tree=tree_pre_cull,
         target_spacing_fn=target_spacing_fn,
         boundary_gap_deg=p.boundary_gap_deg,
         straggler_ratio=p.straggler_ratio,
@@ -165,9 +167,11 @@ def _finalize_lattice(
         verbose=verbose
     )
 
+    tree_after_cull = cKDTree(pts)
+
     # Ring points are gap fillers: keep a seed only if no real point is already near
     ring = resample_contour(domain.boundary, target_spacing_fn)
-    d_to_pts, _ = tree.query(ring)
+    d_to_pts, _ = tree_after_cull.query(ring)
 
     fill = ring[d_to_pts > p.fill_factor * target_spacing_fn(ring).ravel()]
     combined = np.vstack([pts, fill]) if len(fill) else pts
@@ -273,7 +277,7 @@ class FittingParameters:
     retriangulate_every: int = 3
 
     # Ghosts points (for boundary handling, shared by stage 2 and final settle)
-    ghost_source: str = 'hull'          # 'lattice' | 'hull' | 'edge' | 'none'
+    ghost_source: str = 'lattice'            # 'lattice' | 'hull' | 'edge' | 'none'
     ghost_depth_factor: float = 1.5     # mirror points within this * local spacing (from the boundary)
 
     # Stage 3: Density correction
@@ -286,7 +290,7 @@ class FittingParameters:
     straggler_ratio: float = 1.2        # Cull boundary points sparser than this * local target (local ratio)
     outside_factor: float = 0.3         # Cull boundary points this * local spacing outside the hull
     merge_factor: float = 0.7           # Merge point pairs closer than this * local spacing (0 = off)
-    fill_factor: float = 0.75           # Add a point seed if no point is within this * local spacing
+    fill_factor: float = 0.7            # Add a point seed if no point is within this * local spacing
     settle_iters: int = 40              # Spring relaxation iters for the final settle
 
     def __post_init__(self):

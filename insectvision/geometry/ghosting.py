@@ -1,13 +1,13 @@
 from typing import List, Optional, Tuple, Union, Callable
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree, ConvexHull
 
 from insectvision.geometry.fields import interpolate_hexatic_field
 from insectvision.geometry.lattice import bond_ioa
-from insectvision.geometry.linalg import rotate2d, project_to_tangent, tangent_frames
-from insectvision.geometry.neighbours import merge_close_points, delaunay_edges
-from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere, radius_of_curvature
+from insectvision.geometry.linalg import rotate2d, tangent_frames
+from insectvision.geometry.neighbours import merge_close_points
+from insectvision.geometry.spherical import sphere_to_stereo, radius_of_curvature
 from insectvision.geometry.polygons import Polygon2D
 from insectvision.utils import norm_l2
 
@@ -291,11 +291,11 @@ def ghosts_from_growth_3d(
         directions: ArrayLike,
         is_edge: ArrayLike,
         ioa_angles: ArrayLike,
-        n_rows: int = 2,
+        n_rows: int = 3,
         curvature_radius: Optional[float] = None,
-        collision_factor: float = 0.7,
-        merge_factor: float = 1.1,
-        field_smoothing: float = 0.1,
+        collision_factor: float = 0.5,
+        merge_factor: float = 0.7,
+        field_smoothing: float = 0.2,
         aniso_axis: str = 'hexatic',
     ) -> Tuple[np.ndarray, np.ndarray]:
     """
