@@ -260,17 +260,17 @@ class RhabdomereBundle:
 
     @property
     def main_axis_deg(self) -> float:
-        return float(np.degrees(self._main_axis_rad))
+        return float(np.rad2deg(self._main_axis_rad))
 
     @property
     def alignment_offset_rad(self) -> float:
         """Target main-axis offset from the external reference (rad, in [0, pi))."""
-        return float(np.radians(self.alignment_offset_deg))
+        return float(np.deg2rad(self.alignment_offset_deg))
 
     @property
     def saccade_offset_rad(self) -> float:
         """Saccade axis offset from the main axis (rad, in [0, pi))."""
-        return float(np.radians(self.saccade_offset_deg))
+        return float(np.deg2rad(self.saccade_offset_deg))
 
     @property
     def saccade_axis_rad(self) -> float:
@@ -279,7 +279,7 @@ class RhabdomereBundle:
 
     @property
     def saccade_axis_deg(self) -> float:
-        return float(np.degrees(self.saccade_axis_rad))
+        return float(np.rad2deg(self.saccade_axis_rad))
 
     # Phenomenological extra narrowing
 
@@ -365,41 +365,80 @@ class RhabdomereBundle:
             spectral: bool = False,
             raw_orientation: bool = True,
             chi: float = 0.0,
-            chirality: float = 1.0
+            chirality: float = 1.0,
+            degrees: bool = False,
         ) -> Tuple['Figure', 'Axes']:
         """
-        Quick visual of the bundle and its main axis.
+        Quick visual of the bundle and its main / saccade / alignment axes.
 
         Args:
             spectral: colour receptors by spectral sensitivity instead of index.
-            raw_orientation: if True, shows offsets as supplied. If False, shows
-                the oriented view via `rotated_offsets`, i.e. the bundle taken to
-                canonical form and then placed at `chi` / `chirality`.
+            raw_orientation: if True, shows offsets as supplied (anatomical frame).
+                If False, shows the oriented view via `rotated_offsets` (the bundle
+                taken to canonical form then placed at `chi` / `chirality`) inside a
+                mod-180 orientation dial with chi = 0 at the top.
             chi: main-axis bearing (rad) to place the bundle at. Only when raw_orientation=False.
             chirality: +1 or -1 handedness. Only when raw_orientation=False.
         """
         import matplotlib.pyplot as plt
 
+        if degrees:
+            chi = np.deg2rad(chi)
+
         if raw_orientation:
-            offsets = self.offsets_um
-            axis_angle = self.main_axis_rad
+            offsets = np.asarray(self.offsets_um, dtype=float)
+            main_angle = self.main_axis_rad
             saccade_angle = self.saccade_axis_rad
+            align_angle = (self.main_axis_rad - self.alignment_offset_rad) % np.pi
+            disp_rot = 0.0
         else:
             rot_dx, rot_dy = self.rotated_offsets(
                 np.full(1, chi, dtype=np.float32),
                 chirality=np.full(1, chirality, dtype=np.float32),
             )
-            offsets = np.stack([rot_dx[0], rot_dy[0]], axis=-1)
-            axis_angle = float(chi)
-            # Chirality reflects the saccade axis to the other side of the main axis
+            offsets = np.stack([rot_dx[0], rot_dy[0]], axis=-1).astype(float)
+            main_angle = float(chi)
+            # Chirality reflects saccade / alignment axes across the main axis
             saccade_angle = float(chi) + float(chirality) * self.saccade_offset_rad
+            align_angle = float(chi) - float(chirality) * self.alignment_offset_rad
+            # Display rotation: put chi = 0 at the top (pure +90°, so chirality is preserved)
+            disp_rot = np.pi / 2.0
+
+        # Rotate the receptor cloud into display coordinates
+        cr, sr = np.cos(disp_rot), np.sin(disp_rot)
+        offsets_disp = offsets @ np.array([[cr, sr], [-sr, cr]])
 
         fig, ax = plt.subplots(figsize=(6, 6))
         max_sens = float(np.max(self.sensitivity))
         norm = max_sens if max_sens > 0 else 1.0
 
+        radii = np.linalg.norm(offsets, axis=1) if self.count else np.zeros(1)
+        max_r = max(float(radii.max()), float(self.diameters_um.max()) * 0.5)
+        if max_r < 1e-6:
+            max_r = 1.0
+        has_axes = self.count > 1 and float(radii.max()) > 1e-6
+        dial_r = max_r * 1.3
+        extent = dial_r * (1.28 if not raw_orientation else 1.05)
+
+        # Orientation dial: mod-180 clock face, 0 at top (aligned mode only)
+        if not raw_orientation:
+            ax.add_patch(plt.Circle((0, 0), dial_r, fill=False, ec='0.6', lw=1.0, zorder=0))
+            for s_deg in range(0, 360, 15):
+                s = np.radians(s_deg)
+                dvec = np.array([np.cos(s), np.sin(s)])
+                major = (s_deg % 30 == 0)
+                t0 = dial_r * (0.93 if major else 0.965)
+                ax.plot([t0 * dvec[0], dial_r * dvec[0]], [t0 * dvec[1], dial_r * dvec[1]],
+                        color='0.55', lw=1.2 if major else 0.7, zorder=0)
+                if major:
+                    # Dial value: 0 at top (screen 90°), increasing CCW with chi, mod 180
+                    val = int(round((s_deg - 90) % 180))
+                    ax.text(*(dial_r * 1.1 * dvec), f'{val}', color='0.4', fontsize=6.5,
+                            ha='center', va='center', zorder=0)
+
+        # Receptors
         for r in range(self.count):
-            pos = offsets[r]
+            pos = offsets_disp[r]
             d = self.diameters_um[r]
 
             if spectral:
@@ -412,27 +451,33 @@ class RhabdomereBundle:
             edge = 'white' if spectral else color
             ax.scatter(*pos, color=color, edgecolor=edge, s=30, linewidth=0.5, zorder=3)
 
-        # Main axis (black dashed) and saccade axis (green dotted)
-        radii = np.linalg.norm(offsets, axis=1)
-        if self.count > 1 and float(np.max(radii)) > 1e-6:
-            extent = float(np.max(radii)) * 1.2
-            for angle, col, ls, lab in (
-                (axis_angle, 'black', '--', 'Main axis'),
-                (saccade_angle, 'limegreen', ':', 'Saccade axis'),
+        # Axes: main (black), saccade (green), alignment (blue) + small coloured labels
+        if has_axes:
+            for angle, name, col, ls in (
+                (main_angle,    'main',  'black', '--'),
+                (saccade_angle, 'sacc',  'green', ':'),
+                (align_angle,   'align', 'blue',  ':'),
             ):
-                dx, dy = np.cos(angle), np.sin(angle)
+                a = angle + disp_rot
+                dx, dy = np.cos(a), np.sin(a)
                 ax.plot([-extent * dx, extent * dx], [-extent * dy, extent * dy],
-                        color=col, linestyle=ls, alpha=0.8, label=lab)
+                        color=col, linestyle=ls, alpha=0.85, lw=1.4, zorder=2)
+                val = np.deg2rad(angle) % 180.0
+                ax.text(dial_r * 0.82 * dx, dial_r * 0.82 * dy, f'{name} {val:.0f}°',
+                        color=col, fontsize=7, ha='center', va='center', zorder=4,
+                        bbox=dict(boxstyle='round,pad=0.15', fc='white', ec=col, lw=0.6, alpha=0.85))
 
         ax.set_aspect('equal')
+        ax.set_xlim(-extent, extent)
+        ax.set_ylim(-extent, extent)
 
         mode = 'as supplied' if raw_orientation else 'aligned'
         title = f'Bundle: {self.name} (R={self.count}, {mode}'
         if not raw_orientation:
-            title += f', $\\chi$={np.degrees(chi):.0f}°, chir={int(chirality):+d}'
+            title += f', $\\chi$={np.deg2rad(chi):.0f}°, chir={int(chirality):+d}'
         title += ')'
         ax.set_title(title)
-        ax.legend(loc='upper right', bbox_to_anchor=(1.45, 1))
+        ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=7, title='Receptors')
 
         if spectral:
             ax.set_facecolor('#222222')
