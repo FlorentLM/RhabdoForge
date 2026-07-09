@@ -972,12 +972,16 @@ class EyeViewer:
         )
 
     def _update_alignment_hint(self) -> None:
-        state = 'smoothed' if self.state_alignment_smoothed else 'raw'
-        self._set_hint((0, 1), 'hint_a', f'[A] alignment: {state}')
+        s_state = 'smoothed' if self.state_saccade_smoothed else 'raw'
+        a_state = 'smoothed' if self.state_alignment_smoothed else 'raw'
+        self._set_hint((0, 1), 'hint_a', f'[A] Alignment: {a_state}')
+        self._set_hint((0, 2), 'hint_a', f'[A] Main axis from {a_state} alignment')
+        self._set_hint((0, 3), 'hint_s', f'[S] Saccade: {s_state} (from {a_state} alignment)')
 
     def _update_saccade_hint(self) -> None:
-        state = 'smoothed' if self.state_saccade_smoothed else 'raw'
-        self._set_hint((0, 3), 'hint_s', f'[S] saccade: {state}')
+        s_state = 'smoothed' if self.state_saccade_smoothed else 'raw'
+        a_state = 'smoothed' if self.state_alignment_smoothed else 'raw'
+        self._set_hint((0, 3), 'hint_s', f'[S] Saccade: {s_state} (from {a_state} alignment)')
 
     def _update_heatmap_hint(self) -> None:
         mode = 'Collinearity' if self.state_heatmap == 0 else 'Smoothness'

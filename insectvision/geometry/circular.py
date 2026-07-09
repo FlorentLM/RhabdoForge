@@ -33,9 +33,20 @@ def resultant(
     return np.divide(num, den, out=np.zeros_like(num), where=den > 0)
 
 
+def fold_angle(angles: ArrayLike, degrees: bool = False) -> np.ndarray:
+    """
+    Wrap angle(s) to [0, pi/2.0] (or [0, 90] if degrees is True).
+    (Nematic distance to the nearest axis)
+    """
+    period = 180.0 if degrees else np.pi
+    a = np.asarray(angles)
+    wrapped = a % period
+    return np.minimum(wrapped, period - wrapped)
+
+
 def wrap_angle(angles: ArrayLike, degrees: bool = False) -> np.ndarray:
     """
-    Wrap angle(s) to (-pi, pi]
+    Wrap angle(s) to (-pi, pi] (or (-180, 180] if degrees is True).
     """
     a = np.deg2rad(angles) if degrees else np.asarray(angles)
     wrapped = (a + np.pi) % (2.0 * np.pi) - np.pi

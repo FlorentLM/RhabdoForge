@@ -5,7 +5,7 @@ from numpy.typing import ArrayLike
 
 from insectvision.utils import broadcast_1d, norm_l2
 from insectvision.geometry.linalg import tangent_frames, project_to_tangent, local_to_world, projected_bearing
-from insectvision.geometry.circular import wrap_angle
+from insectvision.geometry.circular import wrap_angle, fold_angle
 from insectvision.geometry.fields import smooth_field_partitioned
 
 if TYPE_CHECKING:
@@ -251,12 +251,16 @@ class BundlesAligner:
 
         if verbose:
             if 'align_mean' in diag:
-                print(f"[ align ] offset from flow: mean={diag['align_mean']:5.1f}deg, std={diag['align_std']:4.1f}deg, "
-                      f"target={diag['align_target']:.1f}deg, within+-{diag['tol_deg']:g}deg: {100 * diag['align_frac']:.0f}%")
+                print(f"[ align ] offset from flow: mean={diag['align_mean']:5.1f}deg, "
+                      f"std={diag['align_std']:4.1f}deg, target={diag['align_target']:.1f}deg, "
+                      f"within+-{diag['tol_deg']:g}deg: {100 * diag['align_frac']:.0f}%, "
+                      f"resulting mean error {diag['align_error_pct']:.1f}%")
 
             if 'saccade_mean' in diag:
-                print(f"[saccade] offset from main: mean={diag['saccade_mean']:5.1f}deg, std={diag['saccade_std']:4.1f}deg, "
-                      f"target={diag['saccade_target']:.1f}deg, within+-{diag['tol_deg']:g}deg: {100 * diag['saccade_frac']:.0f}%")
+                print(f"[saccade] offset from main: mean={diag['saccade_mean']:5.1f}deg, "
+                      f"std={diag['saccade_std']:4.1f}deg, target={diag['saccade_target']:.1f}deg, "
+                      f"within+-{diag['tol_deg']:g}deg: {100 * diag['saccade_frac']:.0f}%, "
+                      f"resulting mean error {diag['saccade_error_pct']:.1f}%")
 
         result.diagnostics = diag
 
@@ -273,33 +277,41 @@ class BundlesAligner:
 
         right, up = model.right, model.up
 
-        def fold(deg):
-            return np.minimum(deg % 180.0, 180.0 - (deg % 180.0))
-
-        b_major = projected_bearing(result.major_axis, right, up)
-        b_flow = projected_bearing(result.flow_line, right, up)
-        b_sacc = projected_bearing(result.saccade_phasor, right, up)
+        b_major = projected_bearing(result.major_axis, right, up, degrees=True)
+        b_flow = projected_bearing(result.flow_line, right, up, degrees=True)
+        b_sacc = projected_bearing(result.saccade_phasor, right, up, degrees=True)
 
         valid = np.linalg.norm(result.flow_line, axis=1) > 1e-3   # skip the un-combed antipode
-        da = (b_major - b_flow) % np.pi
 
-        align_off = np.degrees(np.minimum(da, np.pi - da))[valid]
-        ds = (b_sacc - b_major) % np.pi
+        # Differences (mod 180)
+        da = (b_major - b_flow) % 180.0
+        align_off = np.minimum(da, 180.0 - da)[valid]
 
-        sacc_off = np.degrees(np.minimum(ds, np.pi - ds))
+        ds = (b_sacc - b_major) % 180.0
+        sacc_off = np.minimum(ds, 180.0 - ds)
 
-        a_t = fold(model.bundle.alignment_offset_deg)
-        s_t = fold(model.bundle.saccade_offset_deg)
+        a_t = fold_angle(model.bundle.alignment_offset_deg, degrees=True)
+        s_t = fold_angle(model.bundle.saccade_offset_deg, degrees=True)
 
         d = {'tol_deg': float(tol_deg), 'align_target': float(a_t), 'saccade_target': float(s_t)}
 
         if align_off.size:
-            d.update(align_mean=float(align_off.mean()), align_std=float(align_off.std()),
-                     align_frac=float(np.mean(np.abs(align_off - a_t) <= tol_deg)))
+            mae = np.mean(np.abs(align_off - a_t))
+            d.update(
+                align_mean=float(align_off.mean()),
+                align_std=float(align_off.std()),
+                align_frac=float(np.mean(np.abs(align_off - a_t) <= tol_deg)),
+                align_error_pct=float((mae / a_t * 100) if a_t > 0 else 0.0)  # <--- NEW
+            )
 
         if sacc_off.size:
-            d.update(saccade_mean=float(sacc_off.mean()), saccade_std=float(sacc_off.std()),
-                     saccade_frac=float(np.mean(np.abs(sacc_off - s_t) <= tol_deg)))
+            mae = np.mean(np.abs(sacc_off - s_t))
+            d.update(
+                saccade_mean=float(sacc_off.mean()),
+                saccade_std=float(sacc_off.std()),
+                saccade_frac=float(np.mean(np.abs(sacc_off - s_t) <= tol_deg)),
+                saccade_error_pct=float((mae / s_t * 100) if s_t > 0 else 0.0)  # <--- NEW
+            )
 
         return d
 
