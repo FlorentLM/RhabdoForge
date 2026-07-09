@@ -41,10 +41,9 @@ def _comb_field(
     e_z: np.ndarray,
     side_sign: np.ndarray,
     equator_sign: np.ndarray,
-    strength: float = 1.0,
     falloff: float = 0.7,
-    diagonal_strength: float = 1.0,
-    diagonal_angle_deg: float = 45.0,
+    strength: float = 1.0,
+    angle_deg: float = 45.0,
 ) -> np.ndarray:
     """
     De-singularised optic-flow reference direction, per ommatidium (unit, world).
@@ -59,10 +58,9 @@ def _comb_field(
 
     proj = project_to_tangent(e_x, directions)          # Radial flow (singularity at +/-e_x)
 
-    a = float(np.radians(diagonal_angle_deg))
-    sqrt2 = float(np.sqrt(2.0))                          # Keeps total diagonal magnitude ~constant
-    lateral = diagonal_strength * np.cos(a) * sqrt2
-    vertical = diagonal_strength * np.sin(a) * sqrt2
+    a = np.radians(angle_deg)
+    lateral = np.cos(a)
+    vertical = np.sin(a)
 
     local_coords = np.stack([
         -np.ones(len(side_sign)),
@@ -70,8 +68,7 @@ def _comb_field(
         equator_sign * vertical
     ], axis=-1)
 
-    target_world = local_to_world(local_coords, e_x, e_y, e_z).astype(np.float32)
-
+    target_world = local_to_world(local_coords, e_x, e_y, e_z)
     pnorm = np.linalg.norm(proj, axis=1, keepdims=True)
 
     target = project_to_tangent(target_world, directions)
@@ -82,7 +79,7 @@ def _comb_field(
 
     combed = (1.0 - w[:, None]) * proj + w[:, None] * target
 
-    return norm_l2(combed).astype(np.float32)
+    return norm_l2(combed)
 
 
 class BundlesAligner:
@@ -107,7 +104,7 @@ class BundlesAligner:
     Args:
         - ref_direction: (3,) array_like. External reference (flow) direction in head coords,
             the point of expansion is at -ref_direction on the unit sphere.
-        - combing_strength / combing_angle_deg / falloff / strength: combing knobs.
+        - combing_strength / combing_angle_deg / combing_falloff: combing knobs.
         - alignment_smoothing_iter: nematic passes on the main-axis field (per zone).
         - saccade_smoothing_iter: nematic passes on the saccade field (per eye).
         - smoothing_k: neighbours per point for the smoothing passes.
@@ -119,7 +116,6 @@ class BundlesAligner:
 
     def __init__(self,
             ref_direction: ArrayLike,
-            strength: float = 1.0,  # TODO: redundant with combing_strength, remove
             combing_strength: float = 1.0,
             combing_angle_deg: float = 45.0,
             combing_falloff: float = 0.7,
@@ -135,12 +131,11 @@ class BundlesAligner:
 
         if S.shape != (3,):
             raise ValueError(f'Reference direction must be a 3-vector, got shape {S.shape}')
-        n = float(np.linalg.norm(S))
+        n = np.linalg.norm(S)
         if n < 1e-8:
             raise ValueError('Reference direction has zero magnitude')
 
         self.ref_direction = (S / n).astype(np.float32)
-        self.strength = float(strength)
         self.combing_strength = float(combing_strength)
         self.combing_angle_deg = float(combing_angle_deg)
         self.combing_falloff = float(combing_falloff)
@@ -189,32 +184,33 @@ class BundlesAligner:
         rgt, up_f = tangent_frames(e_x)
         e_y, e_z = -rgt, up_f
 
-        # Zone signs
         side, equator = self._zone_signs(model, e_z)
 
         ref_flow_line = _comb_field(
-            model.directions, e_x, e_y, e_z, side, equator,
-            strength=self.strength,
+            directions=model.directions,
+            e_x=e_x, e_y=e_y, e_z=e_z,
+            side_sign=side, equator_sign=equator,
             falloff=self.combing_falloff,
-            diagonal_strength=self.combing_strength,
-            diagonal_angle_deg=self.combing_angle_deg,
+            strength=self.combing_strength,
+            angle_deg=self.combing_angle_deg,
         )
         ref_flow_bearing = projected_bearing(ref_flow_line, right, up)
 
         # Chirality (four zones)
         if override_chirality is not None:
-            chirality = broadcast_1d(override_chirality, N, 'chirality').astype(np.float32)
+            chirality = broadcast_1d(override_chirality, N, 'chirality')
         else:
-            chirality = (side * equator).astype(np.float32)
+            chirality = side * equator
 
         # Main axis: fixed offset from flow, signed by chirality, then smoothed per zone
         offset = model.bundle.alignment_offset_rad
         if override_chi is not None:
-            chi = broadcast_1d(override_chi, N, 'chi').astype(np.float32)
-            major = local_to_world(np.stack([np.cos(chi), np.sin(chi)], -1), right, up).astype(np.float32)
+            chi = broadcast_1d(override_chi, N, 'chi')
+            major = local_to_world(np.stack([np.cos(chi), np.sin(chi)], -1), right, up)
+
         else:
             chi0 = wrap_angle(ref_flow_bearing + chirality * offset)
-            major = local_to_world(np.stack([np.cos(chi0), np.sin(chi0)], -1), right, up).astype(np.float32)
+            major = local_to_world(np.stack([np.cos(chi0), np.sin(chi0)], -1), right, up)
 
             if self.alignment_smoothing_iter > 0:
                 align_partition = (np.asarray(model.eye_index, dtype=np.int64) * 2
@@ -224,14 +220,14 @@ class BundlesAligner:
                     positions=model.positions, k=self.smoothing_k,
                     n_iter=self.alignment_smoothing_iter,
                 )
-                major = norm_l2(major).astype(np.float32)
+                major = norm_l2(major)
 
-            chi = wrap_angle(projected_bearing(major, right, up)).astype(np.float32)
+            chi = wrap_angle(projected_bearing(major, right, up))
 
-            # Polarity: the residual 180 deg (arrow) DOF
+            # Polarity: the residual 180 deg DOF
             if self.flip_polarity:
-                chi = wrap_angle(chi + np.pi).astype(np.float32)
-                major = local_to_world(np.stack([np.cos(chi), np.sin(chi)], -1), right, up).astype(np.float32)
+                chi = wrap_angle(chi + np.pi)
+                major = local_to_world(np.stack([np.cos(chi), np.sin(chi)], -1), right, up)
 
         # Saccade axis: derived from the (smoothed) main axis, then smoothed per eye
         saccade = self._saccade_from_major(model, major, chirality, equator, skip_smooth=False)
@@ -281,7 +277,7 @@ class BundlesAligner:
         b_flow = projected_bearing(result.flow_line, right, up, degrees=True)
         b_sacc = projected_bearing(result.saccade_phasor, right, up, degrees=True)
 
-        valid = np.linalg.norm(result.flow_line, axis=1) > 1e-3   # skip the un-combed antipode
+        valid = np.linalg.norm(result.flow_line, axis=1) > 1e-3   # Skip the un-combed antipode
 
         # Differences (mod 180)
         da = (b_major - b_flow) % 180.0
@@ -301,7 +297,7 @@ class BundlesAligner:
                 align_mean=float(align_off.mean()),
                 align_std=float(align_off.std()),
                 align_frac=float(np.mean(np.abs(align_off - a_t) <= tol_deg)),
-                align_error_pct=float((mae / a_t * 100) if a_t > 0 else 0.0)  # <--- NEW
+                align_error_pct=float((mae / a_t * 100) if a_t > 0 else 0.0)
             )
 
         if sacc_off.size:
@@ -310,7 +306,7 @@ class BundlesAligner:
                 saccade_mean=float(sacc_off.mean()),
                 saccade_std=float(sacc_off.std()),
                 saccade_frac=float(np.mean(np.abs(sacc_off - s_t) <= tol_deg)),
-                saccade_error_pct=float((mae / s_t * 100) if s_t > 0 else 0.0)  # <--- NEW
+                saccade_error_pct=float((mae / s_t * 100) if s_t > 0 else 0.0)
             )
 
         return d
@@ -346,7 +342,7 @@ class BundlesAligner:
         saccade = local_to_world(
             np.stack([np.cos(sacc_bearing), np.sin(sacc_bearing)], axis=-1),
             model.right, model.up,
-        ).astype(np.float32)
+        )
 
         if self.saccade_smoothing_iter > 0 and not skip_smooth:
             saccade = smooth_field_partitioned(
@@ -354,7 +350,7 @@ class BundlesAligner:
                 positions=model.positions, k=self.smoothing_k,
                 n_iter=self.saccade_smoothing_iter,
             )
-            saccade = norm_l2(saccade).astype(np.float32)
+            saccade = norm_l2(saccade)
 
         return saccade
 
@@ -387,11 +383,11 @@ class BundlesAligner:
         the saccade axis is chi + chirality * saccade_offset.
         """
         N = model.directions.shape[0]
-        chi = broadcast_1d(chi, N, 'chi').astype(np.float32)
-        chirality = broadcast_1d(chirality, N, 'chirality').astype(np.float32)
+        chi = broadcast_1d(chi, N, 'chi')
+        chirality = broadcast_1d(chirality, N, 'chirality')
 
         sacc_bearing = chi + chirality * model.bundle.saccade_offset_rad
-        major = local_to_world(np.stack([np.cos(chi), np.sin(chi)], -1), model.right, model.up).astype(np.float32)
-        saccade = local_to_world(np.stack([np.cos(sacc_bearing), np.sin(sacc_bearing)], -1), model.right, model.up).astype(np.float32)
+        major = local_to_world(np.stack([np.cos(chi), np.sin(chi)], -1), model.right, model.up)
+        saccade = local_to_world(np.stack([np.cos(sacc_bearing), np.sin(sacc_bearing)], -1), model.right, model.up)
 
         return AlignmentResult(chi=chi, chirality=chirality, saccade_phasor=saccade, major_axis=major)

@@ -214,7 +214,6 @@ class EyeViewer:
             combing_strength=self.aligner.combing_strength,
             combing_angle_deg=self.aligner.combing_angle_deg,
             combing_falloff=self.aligner.combing_falloff,
-            strength=self.aligner.strength,
             alignment_smoothing_iter=0,
             saccade_smoothing_iter=0,
             equatorial_discontinuity=self.aligner.equatorial_discontinuity,
