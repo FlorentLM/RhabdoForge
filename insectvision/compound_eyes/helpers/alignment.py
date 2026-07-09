@@ -4,7 +4,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from insectvision.utils import broadcast_1d, norm_l2
-from insectvision.geometry.linalg import tangent_frames, project_to_tangent, local_to_world
+from insectvision.geometry.linalg import tangent_frames, project_to_tangent, local_to_world, projected_bearing
 from insectvision.geometry.circular import wrap_angle
 from insectvision.geometry.fields import smooth_field_partitioned
 
@@ -34,7 +34,7 @@ class AlignmentResult:
     diagnostics: Dict[str, float] = field(default_factory=dict)
 
 
-def _combed_flow_field(
+def _comb_field(
     directions: np.ndarray,
     e_x: np.ndarray,
     e_y: np.ndarray,
@@ -64,26 +64,25 @@ def _combed_flow_field(
     lateral = diagonal_strength * np.cos(a) * sqrt2
     vertical = diagonal_strength * np.sin(a) * sqrt2
 
-    target_world = (
-        -e_x[None, :]
-        + lateral * (-side_sign[:, None]) * e_y[None, :]
-        + vertical * equator_sign[:, None] * e_z[None, :]
-    ).astype(np.float32)
+    local_coords = np.stack([
+        -np.ones(len(side_sign)),
+        -side_sign * lateral,
+        equator_sign * vertical
+    ], axis=-1)
 
-    target = project_to_tangent(target_world, directions)
+    target_world = local_to_world(local_coords, e_x, e_y, e_z).astype(np.float32)
 
-    tnorm = np.linalg.norm(target, axis=1, keepdims=True)
     pnorm = np.linalg.norm(proj, axis=1, keepdims=True)
 
-    target = np.where(tnorm > 1e-6, target / np.clip(tnorm, 1e-8, None) * pnorm, proj)
+    target = project_to_tangent(target_world, directions)
+    target = norm_l2(target) * pnorm
 
     dist = np.linalg.norm(directions - (-e_x)[None, :], axis=1)
     w = np.clip(1.0 - dist * falloff, 0.0, None) * strength
 
     combed = (1.0 - w[:, None]) * proj + w[:, None] * target
-    combed /= np.clip(np.linalg.norm(combed, axis=1, keepdims=True), 1e-8, None)
 
-    return combed.astype(np.float32)
+    return norm_l2(combed).astype(np.float32)
 
 
 class BundlesAligner:
@@ -168,10 +167,6 @@ class BundlesAligner:
 
         return side, equator
 
-    @staticmethod
-    def _bearing(v: np.ndarray, right: np.ndarray, up: np.ndarray) -> np.ndarray:
-        return np.arctan2(np.einsum('ij,ij->i', v, up), np.einsum('ij,ij->i', v, right))
-
     def compute(self,
             model: 'Model',
             override_chi: Optional[ArrayLike] = None,
@@ -197,14 +192,14 @@ class BundlesAligner:
         # Zone signs
         side, equator = self._zone_signs(model, e_z)
 
-        ref_flow_line = _combed_flow_field(
+        ref_flow_line = _comb_field(
             model.directions, e_x, e_y, e_z, side, equator,
             strength=self.strength,
             falloff=self.combing_falloff,
             diagonal_strength=self.combing_strength,
             diagonal_angle_deg=self.combing_angle_deg,
         )
-        ref_flow_bearing = self._bearing(ref_flow_line, right, up)
+        ref_flow_bearing = projected_bearing(ref_flow_line, right, up)
 
         # Chirality (four zones)
         if override_chirality is not None:
@@ -231,7 +226,7 @@ class BundlesAligner:
                 )
                 major = norm_l2(major).astype(np.float32)
 
-            chi = wrap_angle(self._bearing(major, right, up)).astype(np.float32)
+            chi = wrap_angle(projected_bearing(major, right, up)).astype(np.float32)
 
             # Polarity: the residual 180 deg (arrow) DOF
             if self.flip_polarity:
@@ -281,9 +276,9 @@ class BundlesAligner:
         def fold(deg):
             return np.minimum(deg % 180.0, 180.0 - (deg % 180.0))
 
-        b_major = self._bearing(result.major_axis, right, up)
-        b_flow = self._bearing(result.flow_line, right, up)
-        b_sacc = self._bearing(result.saccade_phasor, right, up)
+        b_major = projected_bearing(result.major_axis, right, up)
+        b_flow = projected_bearing(result.flow_line, right, up)
+        b_sacc = projected_bearing(result.saccade_phasor, right, up)
 
         valid = np.linalg.norm(result.flow_line, axis=1) > 1e-3   # skip the un-combed antipode
         da = (b_major - b_flow) % np.pi
@@ -328,7 +323,7 @@ class BundlesAligner:
             if equator_sign is None:
                 equator_sign = equator
 
-        chi = self._bearing(major, model.right, model.up)
+        chi = projected_bearing(major, model.right, model.up)
         sacc_bearing = chi + chirality * model.bundle.saccade_offset_rad
 
         # Per-eye polarity

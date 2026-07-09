@@ -1135,7 +1135,7 @@ if __name__ == "__main__":
 
     # ----------------------------------------------------------------------
 
-    # model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
+    model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
 
     viewer = EyeViewer(model, aligner=aligner)
     viewer.show()

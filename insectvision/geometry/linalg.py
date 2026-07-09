@@ -43,28 +43,49 @@ def tangent_frames(
     return right, up
 
 
-def tangent_bearing(
-        target_directions: ArrayLike,
-        home_directions: ArrayLike,
+def projected_bearing(
+        vectors: ArrayLike,
         right: ArrayLike,
         up: ArrayLike,
         degrees: bool = False,
 ) -> np.ndarray:
     """
-    Project (target - home) onto a (right, up) tangent plane and return the bearing.
+    Angular bearing of vectors projected onto a (right, up) plane.
+
+    Args:
+        vectors: (..., 3) array of vectors to project.
+        right: (..., 3) basis vector representing the 0-radian axis.
+        up: (..., 3) basis vector representing the pi/2-radian axis.
+        degrees: If True, returns result in degrees, otherwise radians.
     """
+    v = np.asarray(vectors, dtype=np.float64)
+    r = np.asarray(right, dtype=np.float64)
+    u = np.asarray(up, dtype=np.float64)
 
-    target, home = _match_batch(target_directions, home_directions)
-    delta = target - home
+    # Project vectors onto the basis axes
+    x = np.einsum('...k,...k->...', v, r)
+    y = np.einsum('...k,...k->...', v, u)
 
+    bearing = np.arctan2(y, x)
+    return np.rad2deg(bearing) if degrees else bearing
+
+
+def tangent_bearing(
+        target_directions: ArrayLike,
+        ref_directions: ArrayLike,
+        right: ArrayLike,
+        up: ArrayLike,
+        degrees: bool = False,
+) -> np.ndarray:
+    """
+    Project (target - reference) onto a (right, up) tangent plane and return the bearing.
+    """
+    target, ref = _match_batch(target_directions, ref_directions)
+    delta = target - ref
     r_vec = _match_batch(delta, right)[1]
     u_vec = _match_batch(delta, up)[1]
 
-    u = np.einsum('...k,...k->...', delta, r_vec)
-    v = np.einsum('...k,...k->...', delta, u_vec)
-
-    bearing = np.arctan2(v, u)
-    return np.rad2deg(bearing) if degrees else bearing
+    return projected_bearing(delta, r_vec, u_vec, degrees=degrees)
 
 
 def project_to_tangent(vectors: np.ndarray, normals: np.ndarray) -> np.ndarray:
