@@ -7,6 +7,8 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from insectvision.geometry.circular import wrap_angle
 from insectvision.geometry.fields import smooth_field_partitioned
+from insectvision.geometry.linalg import rotate2d, local_to_world, project_to_tangent
+from insectvision.utils import norm_l2
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes.model import Model
@@ -110,7 +112,8 @@ def _make_solver_context(model: 'Model', **p) -> 'SimpleNamespace':
         **{k: p[k] for k in (
             'assign_radius', 'scale_dev', 'min_snap_matches', 'k_search',
             'top_k', 'identity_bias', 'unassigned_penalty', 'allow_plasticity',
-            'plasticity_radius', 'time_limit_s', 'collect_trace'
+            'plasticity_radius', 'time_limit_s', 'collect_trace', 'min_whiten_ring',
+            'max_anisotropy'
         )}
     )
 
@@ -141,21 +144,26 @@ def _enumerate_candidates(
         imm = neighb.immediate[i_loc] & (neighb.indices[i_loc] != i_glob)
         ring = neighb_uv[imm]
 
-        if ring.shape[0] >= 4:
-            C = (ring.T @ ring) / ring.shape[0]
+        n_ring = ring.shape[0]
+        edge_flags = zone.is_edge
+
+        # Anisotropic whitening is only trustworthy when the ring surrounds the point
+        W = np.eye(2)
+        use_aniso = n_ring >= solver_context.min_whiten_ring and not edge_flags[i_loc]
+        if use_aniso:
+            C = (ring.T @ ring) / n_ring
             evals, evecs = np.linalg.eigh(C)
             evals = np.clip(evals, 1e-12, None)
-            # Cap per-axis stretch (3:1) so a one-sided boundary ring can't blow up
-            evals = np.maximum(evals, evals.max() / 9.0)
+            use_aniso = (evals.max() / evals.min()) <= solver_context.max_anisotropy ** 2
+
+        if use_aniso:
+            evals = np.maximum(evals, evals.max() / solver_context.max_anisotropy ** 2)
             W = evecs @ np.diag(evals ** -0.5) @ evecs.T
             neighb_w = neighb_uv @ W.T
             scale = np.nanmedian(np.linalg.norm(neighb_w[imm], axis=1))
-
         else:
-            neighb_w = neighb_uv  # too few first-ring neighbours: isotropic
+            neighb_w = neighb_uv
             scale = np.nanmedian(np.linalg.norm(ring, axis=1)) if ring.size else 1.0
-
-            W = np.eye(2) # just for the trace storage
 
         if not np.isfinite(scale) or scale < 1e-9:
             scale = 1.0
@@ -219,7 +227,7 @@ def _enumerate_candidates(
                     seen.add(topo)
                     omm_cands.append(
                         WiringCandidate(
-                            solver_context.identity_bias * float(np.abs(w - 1.0)),
+                            solver_context.identity_bias * float(np.abs(w - 1.0)) ** 2,
                             np.array(slots_g),
                             np.array(donors_g),
                             md[keep],
@@ -497,12 +505,14 @@ def wire_neural_superposition(
         scale_dev: float = 0.75,
         min_snap_matches: int = 2,
         k_search: int = 20,
-        top_k: int = 3,
+        top_k: int = 10,
         identity_bias: float = 0.05,
         unassigned_penalty: float = 10.0,
         allow_plasticity: bool = True,
         plasticity_radius: float = 2.0,
         time_limit_s: float = 60.0,
+        max_anisotropy: float = 3.0,
+        min_whiten_ring: int = 5,
         n_jobs: int = -1,
         apply: bool = True,
         collect_trace: bool = False
@@ -542,8 +552,9 @@ def wire_neural_superposition(
     solver_context = _make_solver_context(
         model=model, angular_dev=angular_dev, assign_radius=assign_radius, scale_dev=scale_dev,
         min_snap_matches=min_snap_matches, k_search=k_search, top_k=top_k, identity_bias=identity_bias,
-        unassigned_penalty=unassigned_penalty, allow_plasticity=allow_plasticity,
-        plasticity_radius=plasticity_radius, time_limit_s=time_limit_s, collect_trace=collect_trace
+        unassigned_penalty=unassigned_penalty, allow_plasticity=allow_plasticity, min_whiten_ring=min_whiten_ring,
+        plasticity_radius=plasticity_radius, time_limit_s=time_limit_s, max_anisotropy=max_anisotropy,
+        collect_trace=collect_trace
     )
 
     zones = [(eye.eye_index, sign, zv)
@@ -628,8 +639,9 @@ def refine_chi(
 
     donor_dirs = model.directions[j_idx]
 
-    u_act = np.einsum('ij,ij->i', donor_dirs, model.right[i_idx]) * focal[i_idx]
-    v_act = np.einsum('ij,ij->i', donor_dirs, model.up[i_idx]) * focal[i_idx]
+    donor_tan = project_to_tangent(donor_dirs, model.directions[i_idx])
+    u_act = np.einsum('ij,ij->i', donor_tan, model.right[i_idx]) * focal[i_idx]
+    v_act = np.einsum('ij,ij->i', donor_tan, model.up[i_idx]) * focal[i_idx]
 
     # Actual angles and radii in the focal plane
     act_ang = np.arctan2(v_act, u_act)
@@ -664,19 +676,8 @@ def refine_chi(
     omm_err[~measurable] = 0.0
     omm_scale[~measurable] = 1.0
 
-    groups = []
-    neighbours = []
-    for eye in model.eyes:
-
-        adj = eye._get_first_ring_graph()['adjacency']
-        width = max((a.size for a in adj), default=0)
-        nb = np.full((len(adj), max(width, 1)), -1, dtype=np.intp)
-
-        for i, a in enumerate(adj):
-            nb[i, :a.size] = a
-
-        groups.append(eye.indices)
-        neighbours.append(nb)
+    groups = [eye.indices for eye in model.eyes]
+    neighbours = [eye._get_first_ring_graph()['adjacency'] for eye in model.eyes]
 
     smoothed_err = smooth_field_partitioned(
         values=omm_err, neighbours=neighbours, kind='scalar', groups=groups, mask=measurable, n_iter=smooth_iters
@@ -710,24 +711,13 @@ def refine_chi(
 
     # Update microsaccade vectors to stay aligned with the new chi
     sacc_vecs = model.buffer['saccade_dxdy']
-
-    c, s = np.cos(smoothed_err), np.sin(smoothed_err)
-
-    new_sacc = np.empty_like(sacc_vecs)
-    new_sacc[:, 0] = c * sacc_vecs[:, 0] - s * sacc_vecs[:, 1]
-    new_sacc[:, 1] = s * sacc_vecs[:, 0] + c * sacc_vecs[:, 1]
+    new_sacc = rotate2d(sacc_vecs, smoothed_err)
 
     model.buffer['saccade_dxdy'] = new_sacc.astype(np.float32)
 
     tip_local = np.stack([new_dx, new_dy, np.broadcast_to(-focal[:, None], (N, R))], axis=-1)
-    new_dirs_world = (
-        tip_local[..., 0, None] * model.right[:, None, :] +
-        tip_local[..., 1, None] * model.up[:, None, :] +
-        tip_local[..., 2, None] * model.directions[:, None, :]
-    )
-
-    view_dirs = -new_dirs_world
-    view_dirs /= np.linalg.norm(view_dirs, axis=-1, keepdims=True)
+    tip_world = local_to_world(tip_local, model.right, model.up, model.directions)
+    view_dirs = norm_l2(-tip_world)
 
     model.buffer['curr_direction'] = view_dirs.astype(np.float32)
     model._conflicts_cache = None

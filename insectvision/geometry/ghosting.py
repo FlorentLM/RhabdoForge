@@ -5,7 +5,7 @@ from scipy.spatial import cKDTree
 
 from insectvision.geometry.fields import interpolate_hexatic_field
 from insectvision.geometry.lattice import bond_ioa
-from insectvision.geometry.linalg import rotate2d
+from insectvision.geometry.linalg import rotate2d, project_to_tangent
 from insectvision.geometry.neighbours import merge_close_points
 from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere, radius_of_curvature
 from insectvision.geometry.polygons import Polygon2D
@@ -246,7 +246,7 @@ def _one_sphere_ring(
     uv = np.stack([np.cos(base_angle), np.sin(base_angle)], axis=1)
     d1 = stereo_to_sphere(q_seed + 1e-6 * uv, fwd, right, up)
     t = d1 - D
-    t = t - np.einsum('md,md->m', t, D)[:, None] * D      # project onto tangent plane of D
+    t = project_to_tangent(t, D)
     base_tan = norm_l2(t)
     cross_db = np.cross(D, base_tan)
 

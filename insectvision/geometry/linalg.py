@@ -67,6 +67,15 @@ def tangent_bearing(
     return np.rad2deg(bearing) if degrees else bearing
 
 
+def project_to_tangent(vectors: np.ndarray, normals: np.ndarray) -> np.ndarray:
+    """
+    Project vectors onto the tangent planes defined by the given normals.
+    Assumes normals are unit vectors.
+    """
+    dot = np.einsum('...i,...i->...', vectors, normals)
+    return vectors - dot[..., None] * normals
+
+
 def rotate_in_tangent_plane(
         vectors: ArrayLike,
         normals: ArrayLike,

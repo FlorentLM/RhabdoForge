@@ -3,7 +3,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from insectvision.utils import norm_l2
-from insectvision.geometry.linalg import tangent_frames, local_to_world
+from insectvision.geometry.linalg import tangent_frames, local_to_world, project_to_tangent
 from insectvision.geometry.neighbours import knn
 
 if TYPE_CHECKING:
@@ -87,9 +87,10 @@ def sphere_to_stereo(
 
     denom = 1.0 + (directions @ forward)
 
+    v_proj = project_to_tangent(directions, forward)
     points2d = np.column_stack([
-        (directions @ right) / denom,
-        (directions @ up) / denom,
+        (v_proj @ right) / denom,
+        (v_proj @ up) / denom,
     ])
 
     return points2d, forward, right, up

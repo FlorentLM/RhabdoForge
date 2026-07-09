@@ -4,7 +4,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from insectvision.utils import norm_l2, broadcast_1d
-from insectvision.geometry.linalg import tangent_frames, rotate_in_tangent_plane, local_to_world
+from insectvision.geometry.linalg import tangent_frames, rotate_in_tangent_plane, local_to_world, project_to_tangent
 from insectvision.geometry.fields import smooth_field_partitioned
 from insectvision.geometry.circular import wrap_angle
 
@@ -31,8 +31,6 @@ class AlignmentResult:
     flow_frame: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
 
 
-
-# TODO: Maybe this helper can be absorbed by more generic pure functions
 
 def _alignment_phasor_field(
     lens_directions: np.ndarray,
@@ -62,7 +60,8 @@ def _alignment_phasor_field(
                  45° -> equal lateral and vertical (default)
                  90° -> purely vertical (collapses the L/R distinction)
     """
-    proj_S = e_x[None, :] - (lens_directions @ e_x)[:, None] * lens_directions
+
+    proj_S = project_to_tangent(e_x, lens_directions)
 
     a = float(np.radians(diagonal_angle_deg))
 
@@ -77,8 +76,8 @@ def _alignment_phasor_field(
             + vertical_scale * hemisphere_sign[:, None] * e_z[None, :]
     ).astype(np.float32)
 
-    target_proj = target_world - np.sum(target_world * lens_directions,
-                                        axis=1, keepdims=True) * lens_directions
+    target_proj = project_to_tangent(target_world, lens_directions)
+
     target_norm = np.linalg.norm(target_proj, axis=1, keepdims=True)
     proj_S_mag = np.linalg.norm(proj_S, axis=1, keepdims=True)
     target_proj = np.where(
@@ -199,7 +198,7 @@ class BundlesAligner:
         rotated = rotate_in_tangent_plane(
             vectors=alignment,
             normals=model.directions,
-            angles=np.deg2rad(model.bundle.flow_axis_deg) * bilateral_sign,
+            angles=model.bundle.flow_axis_rad * bilateral_sign,
             normalize=False
         )
 
