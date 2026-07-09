@@ -315,7 +315,7 @@ class BundlesAligner:
         chirality = broadcast_1d(chirality, N, 'chirality')
 
         main_rad = float(model.bundle.main_axis_rad)
-        effective_main = np.where(chirality > 0, main_rad, np.pi - main_rad).astype(np.float32)
+        effective_main = np.where(chirality > 0, main_rad + np.pi, -main_rad)
         major_angle = chi + effective_main
         major = local_to_world(
             np.stack([np.cos(major_angle), np.sin(major_angle)], axis=-1),
