@@ -1087,7 +1087,7 @@ if __name__ == "__main__":
         flow_direction=np.array([0.0, np.sin(droso_head_ptich), np.cos(droso_head_ptich)]),   # optic flow in flight
         diagonal_strength=1.0,
         diagonal_angle_deg=45.0,
-        alignment_smoothing_iter=4,
+        alignment_smoothing_iter=0,
         saccade_smoothing_iter=5,
     )
 

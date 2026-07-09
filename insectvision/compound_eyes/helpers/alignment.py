@@ -108,8 +108,8 @@ class BundlesAligner:
             1.0 equal pull (default), <1.0 makes the field more aligned with the flow, >1.0 pushes it off-axis.
         - diagonal_angle_deg: float, Angle of the diagonal pull in the focus tangent plane (default 45°).
             0° -> purely lateral, 45° -> balanced, 90° -> purely vertical.
-        - alignment_smoothing_iterations: int, Per-zone nematic smoothing passes on the alignment phasor field.
-        - saccade_smoothing_iterations: int, Per-eye nematic smoothing passes on the saccade phasor field.
+        - alignment_smoothing_iter: int, Per-zone nematic smoothing passes on the alignment phasor field.
+        - saccade_smoothing_iter: int, Per-eye nematic smoothing passes on the saccade phasor field.
         - falloff: float, Spatial falloff of the diagonal target (away from the point of expansion).
         - strength: float, Overall weighting of the combed target vs. raw flow projection.
     """
@@ -117,7 +117,7 @@ class BundlesAligner:
              flow_direction: ArrayLike,
              diagonal_strength: float = 1.0,
              diagonal_angle_deg: float = 45.0,
-             alignment_smoothing_iter: int = 5,
+             alignment_smoothing_iter: int = 0,
              saccade_smoothing_iter: int = 5,
              equatorial_discontinuity: bool = True,
              falloff: float = 0.7,
@@ -138,8 +138,8 @@ class BundlesAligner:
         self.diagonal_strength = float(diagonal_strength)
         self.diagonal_angle_deg = float(diagonal_angle_deg)
 
-        self.alignment_smoothing_iterations = int(alignment_smoothing_iter)
-        self.saccade_smoothing_iterations = int(saccade_smoothing_iter)
+        self.alignment_smoothing_iter = int(alignment_smoothing_iter)
+        self.saccade_smoothing_iter = int(saccade_smoothing_iter)
 
         self.falloff = float(falloff)
         self.strength = float(strength)
@@ -181,18 +181,18 @@ class BundlesAligner:
             diagonal_angle_deg=self.diagonal_angle_deg,
         )
 
-        if self.alignment_smoothing_iterations > 0:
-            zone_labels = (
-                    (bilateral_sign > 0).astype(np.int32) * 2 + (equatorial_sign > 0).astype(np.int32)
-            )
-            alignment = smooth_field_partitioned(
-                values=alignment,
-                kind='nematic',
-                partition=zone_labels,
-                positions=model.positions,
-                k=8,
-                n_iter=self.alignment_smoothing_iterations,
-            ).astype(np.float32)
+        # if self.alignment_smoothing_iter > 0:
+        #     zone_labels = (
+        #             (bilateral_sign > 0).astype(np.int32) * 2 + (equatorial_sign > 0).astype(np.int32)
+        #     )
+        #     alignment = smooth_field_partitioned(
+        #         values=alignment,
+        #         kind='nematic',
+        #         partition=zone_labels,
+        #         positions=model.positions,
+        #         k=8,
+        #         n_iter=self.alignment_smoothing_iter,
+        #     ).astype(np.float32)
 
         # Major axis: alignment rotated by +/- flow_axis_deg, per eye
         rotated = rotate_in_tangent_plane(
@@ -240,14 +240,14 @@ class BundlesAligner:
             normalize=True
         )
 
-        if self.saccade_smoothing_iterations > 0:
+        if self.saccade_smoothing_iter > 0:
             sacc = smooth_field_partitioned(
                 values=sacc,
                 kind='nematic',
                 partition=model.eye_index,
                 positions=model.positions,
                 k=8,
-                n_iter=self.saccade_smoothing_iterations,
+                n_iter=self.saccade_smoothing_iter,
             ).astype(np.float32)
 
         # Polarise: saccade phasor consistently 'up' in the flow frame

@@ -5,8 +5,8 @@ from scipy.spatial import cKDTree
 
 from insectvision.geometry.fields import interpolate_hexatic_field
 from insectvision.geometry.lattice import bond_ioa
-from insectvision.geometry.linalg import rotate2d, project_to_tangent
-from insectvision.geometry.neighbours import merge_close_points
+from insectvision.geometry.linalg import rotate2d, project_to_tangent, tangent_frames
+from insectvision.geometry.neighbours import merge_close_points, delaunay_edges
 from insectvision.geometry.spherical import sphere_to_stereo, stereo_to_sphere, radius_of_curvature
 from insectvision.geometry.polygons import Polygon2D
 from insectvision.utils import norm_l2
@@ -83,38 +83,35 @@ def _ghost_growth_kernel(
     Returns:
         (G, D) ghosts, or ((G, D), (G, P)) if 'payload' is given. Possibly empty.
     """
-    existing = np.asarray(existing, dtype=np.float64)
     candidates = np.asarray(candidates, dtype=np.float64)
     step_len = np.asarray(step_len, dtype=np.float64).ravel()
     outward_ok = np.asarray(outward_ok, dtype=bool).ravel()
 
-    D = candidates.shape[1] if candidates.ndim == 2 else 2
-    pay = None if payload is None else np.asarray(payload, dtype=np.float64)
-    P = D if pay is None else (pay.shape[1] if pay.ndim == 2 else D)
-
-    def _empty():
-        return (np.zeros((0, D)), np.zeros((0, P))) if pay is not None else np.zeros((0, D))
-
     if len(candidates) == 0:
-        return _empty()
+        return (np.zeros((0, candidates.shape[1])),
+                np.zeros((0, payload.shape[1]))) if payload is not None else np.zeros((0, candidates.shape[1]))
 
-    # Reject: bonds already satisfied by an existing point, and inward candidates
+    # Reject candidates that are too close to existing points or pointing inward
     d_near, _ = cKDTree(existing).query(candidates)
-    step_floor = 0.5 * float(np.median(step_len)) if step_len.size else 0.0
-    reject_r = satisfied_factor * np.maximum(step_len, step_floor)
+
+    # Scale rejection by the local step length (spacing)
+    reject_r = satisfied_factor * step_len
     keep = (d_near > reject_r) & outward_ok
+
     if not keep.any():
-        return _empty()
+        return (np.zeros((0, candidates.shape[1])),
+                np.zeros((0, payload.shape[1]))) if payload is not None else np.zeros((0, candidates.shape[1]))
 
     cand = candidates[keep]
-    pay = None if pay is None else pay[keep]
+    pay = payload[keep] if payload is not None else None
+
+    # Determine merge radius based on the median spacing of surviving candidates
     merge_r = merge_factor * float(np.median(step_len[keep]))
 
-    # Merge siblings proposed by adjacent sites: greedy, index-order
-    # (deterministic: the lowest surviving index claims its ball). Payload averaged in lockstep.
-    # TODO: Would be better to use the merge_close_points function with mean, but the normals payload become a nightmare
+    # Greedy merge (prevents chaining/collapsing the ring)
     tree = cKDTree(cand)
     done = np.zeros(len(cand), dtype=bool)
+
     out_pts: List[np.ndarray] = []
     out_pay: List[np.ndarray] = []
 
@@ -122,16 +119,32 @@ def _ghost_growth_kernel(
         if done[i]:
             continue
 
-        grp = tree.query_ball_point(cand[i], r=merge_r)
-        out_pts.append(cand[grp].mean(axis=0))
+        # Find all proposal siblings within merge_r
+        indices = tree.query_ball_point(cand[i], r=merge_r)
+
+        # Only consider those not already consumed by a previous merge
+        valid = [idx for idx in indices if not done[idx]]
+        if not valid:
+            continue
+
+        # Merge the cluster
+        cluster_idx = np.array(valid)
+        out_pts.append(cand[cluster_idx].mean(axis=0))
 
         if pay is not None:
-            v = pay[grp].mean(axis=0)
-            out_pay.append(v / max(np.linalg.norm(v), 1e-12) if normalize_payload else v)
-        done[grp] = True
+            v = pay[cluster_idx].mean(axis=0)
+            if normalize_payload:
+                v /= np.linalg.norm(v) + 1e-12
+            out_pay.append(v)
 
-    merged = np.asarray(out_pts)
-    return (merged, np.asarray(out_pay)) if pay is not None else merged
+        # Mark all points in this cluster as consumed
+        done[cluster_idx] = True
+
+    merged_pts = np.array(out_pts)
+    if pay is not None:
+        return merged_pts, np.array(out_pay)
+
+    return merged_pts
 
 
 # Ghost producers
@@ -216,60 +229,47 @@ def _one_sphere_ring(
         collision_factor: float,
         merge_factor: float,
         aniso_axis: str,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    One outward ring on the sphere. Returns (positions, normals) of accepted ghosts.
-    """
+) -> Tuple[np.ndarray, np.ndarray]:
 
-    fwd, right, up = frame
-    P = curr_pos[seeds]        # (M, 3)
-    D = curr_norms[seeds]      # (M, 3)
+    P = curr_pos[seeds]
+    D = curr_norms[seeds]
     M = len(seeds)
 
-    # Measured IOA at the nearest *real* ommatidium (seeds may be ghosts in later rings)
     _, j = real_tree.query(P)
     minor, major = real_ioa[j, 0], real_ioa[j, 1]
 
-    # Local radius of curvature from the current cloud
-    R = radius_of_curvature(
-        query_positions=P,
-        query_normals=D,
-        tree=cKDTree(curr_pos),
-        tree_normals=curr_norms
-    )
-    R = np.where(np.isfinite(R), R, fallback_R)  # (M,)
+    R = radius_of_curvature(P, D, cKDTree(curr_pos), curr_norms)
+    R = np.where(np.isfinite(R), R, fallback_R)
 
-    # Base tangent from the local hexatic bearing
-    q_seed, *_ = sphere_to_stereo(D, frame)   # (M, 2)
-    base_angle = np.asarray(theta_fn(q_seed), dtype=np.float64).ravel()
+    T_right, T_up = tangent_frames(D)
 
-    uv = np.stack([np.cos(base_angle), np.sin(base_angle)], axis=1)
-    d1 = stereo_to_sphere(q_seed + 1e-6 * uv, fwd, right, up)
-    t = d1 - D
-    t = project_to_tangent(t, D)
-    base_tan = norm_l2(t)
-    cross_db = np.cross(D, base_tan)
+    # Get local lattice orientation
+    q_seed, *_ = sphere_to_stereo(D, frame)
+    th = np.asarray(theta_fn(q_seed), dtype=np.float64).ravel()
 
-    # 6-fold bond fan, anisotropic IOA as the angular step
-    phi = np.arange(6) * (np.pi / 3.0)
-    cph, sph = np.cos(phi), np.sin(phi)
-    axis = base_angle if aniso_axis == 'hexatic' else np.zeros(M)
-    bearings = base_angle[:, None] + phi[None, :]         # (M, 6)
-    step_ioa = bond_ioa(bearings, minor[:, None], major[:, None], axis[:, None])  # (M, 6)
+    # Construct 6-fold bond fan
+    phi = np.deg2rad(np.arange(0, 360, 60))
+    bearings = th[:, None] + phi[None, :]  # (M, 6)
 
-    step_vec = (base_tan[:, None, :] * cph[None, :, None]
-                + cross_db[:, None, :] * sph[None, :, None])                       # (M, 6, 3)
-    v_dir = norm_l2(D[:, None, :] * np.cos(step_ioa)[..., None]
-                    + step_vec * np.sin(step_ioa)[..., None])                      # (M, 6, 3)
-    v_pos = P[:, None, :] + R[:, None, None] * (v_dir - D[:, None, :])             # (M, 6, 3)
-    step_len = R[:, None] * step_ioa                                               # (M, 6) arc len
+    # Calculate IOA for each bond in the fan
+    aniso = th if aniso_axis == 'hexatic' else 0.0
+    step_ioa = bond_ioa(bearings, minor[:, None], major[:, None], axis=aniso[:, None])
+
+    # Construct unit direction vectors for each bond
+    tan_vec = (T_right[:, None, :] * np.cos(bearings)[..., None] +
+               T_up[:, None, :] * np.sin(bearings)[..., None])
+
+    v_dir = D[:, None, :] * np.cos(step_ioa)[..., None] + tan_vec * np.sin(step_ioa)[..., None]
+    v_dir = norm_l2(v_dir.reshape(-1, 3))
+
+    # Calculate step positions
+    v_pos = P[:, None, :] + R[:, None, None] * (v_dir.reshape(M, 6, 3) - D[:, None, :])
+    step_len = R[:, None] * step_ioa
 
     # Outward test
-    v_dir_flat = v_dir.reshape(-1, 3)
-    q_cand, *_ = sphere_to_stereo(v_dir_flat, frame)
+    q_cand, *_ = sphere_to_stereo(v_dir, frame)
     cand_sd = stereo_domain.signed_distance(q_cand).reshape(M, 6)
     seed_sd = stereo_domain.signed_distance(q_seed)
-
     outward_ok = (cand_sd > seed_sd[:, None]).ravel()
 
     return _ghost_growth_kernel(
@@ -279,8 +279,8 @@ def _one_sphere_ring(
         outward_ok=outward_ok,
         satisfied_factor=collision_factor,
         merge_factor=merge_factor,
-        payload=v_dir_flat,
-        normalize_payload=True,
+        payload=v_dir,
+        normalize_payload=True
     )
 
 
@@ -375,40 +375,42 @@ def ghosts_from_growth_3d(
 
 def ghosts_from_mirror(
         points2d: ArrayLike,
-        depth: float,
-        domain: Union['Polygon2D', 'ConvexHull']
-    ) -> np.ndarray:
+        depth: Union[float, ArrayLike],
+        domain: Union['Polygon2D', 'ConvexHull'],
+        merge_factor: float = 0.5,
+) -> np.ndarray:
     """
     Mirror points lying within 'depth' of the boundary edges to the outside.
-    ('depth' can be a scalar or a per-point array)
-
     Creates a symmetric Voronoi pressure that stops edge points from squashing
     against the boundary.
-    """
-    points2d = np.asarray(points2d, dtype=np.float64)
-    depth = np.asarray(depth, dtype=np.float64)
-    per_point = depth.ndim > 0
 
-    mirrored, mirror_depths = [], []
+    Args:
+        - points2d: (N, 2) array of real ommatidia positions.
+        - depth: float or (N,) array, local search distance for mirroring.
+        - domain: Polygon2D or ConvexHull containing the .equations [nx, ny, offset].
+        - merge_factor: factor of local depth used for merging overlapping ghosts.
+    """
+    pts = np.asarray(points2d, dtype=np.float64)
+    d_limit = np.broadcast_to(np.asarray(depth, dtype=np.float64), pts.shape[0])
+
+    mirrored = []
+
     for eq in domain.equations:
         normal, offset = eq[:2], eq[2]
 
-        # scipy.ConvexHull convention: normals point outward
-        dist = points2d @ normal + offset
+        d_face = pts @ normal + offset
 
-        mask = (dist > -depth) & (dist <= 0)  # inside the hull and within 'depth' of the edge
-        if not np.any(mask):
-            continue
+        # points within 'depth' of this specific edge
+        mask = (d_face > -d_limit) & (d_face <= 0)
 
-        close_pts = points2d[mask]
-        dist_close = dist[mask]
-
-        # Reflect across the edge
-        mirrored_pts = close_pts - 2.0 * dist_close[:, None] * normal[None, :]
-        mirrored.append(mirrored_pts)
-        mirror_depths.append(depth[mask] if per_point else np.full(int(mask.sum()), float(depth)))
+        if np.any(mask):
+            # Reflect: since dist is negative (inside), this moves the point outside
+            mirrored.append(pts[mask] - 2.0 * d_face[mask, None] * normal[None, :])
 
     if not mirrored:
         return np.zeros((0, 2))
 
-    return merge_close_points(np.vstack(mirrored), radius=0.5 * np.concatenate(mirror_depths), reduce=np.mean)
+    all_ghosts = np.vstack(mirrored)
+    m_rad = merge_factor * np.median(d_limit)
+
+    return merge_close_points(all_ghosts, radius=m_rad, reduce=np.median)

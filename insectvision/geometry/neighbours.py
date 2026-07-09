@@ -508,7 +508,12 @@ def identify_boundary_points(
     return labelled
 
 
-def merge_close_points(points: ArrayLike, radius: ArrayLike, reduce: Optional[Callable] = np.mean) -> np.ndarray:
+def merge_close_points(
+        points: ArrayLike,
+        radius: ArrayLike,
+        reduce: Optional[Callable] = np.mean,
+        return_labels: bool = False
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     Merge points (2D or 3D) within 'radius' (each group becomes one output point).
 
@@ -551,21 +556,20 @@ def merge_close_points(points: ArrayLike, radius: ArrayLike, reduce: Optional[Ca
     if reduce is None:
         first = np.full(n_comp, n, dtype=np.intp)
         np.minimum.at(first, labels, np.arange(n))
-        return points[first]
+        out = points[first]
 
     # Fast path for mean
     if reduce is np.mean:
         counts = np.bincount(labels, minlength=n_comp)
         sums = np.stack([np.bincount(labels, weights=points[:, d], minlength=n_comp)
                          for d in range(points.shape[1])], axis=1)
-        return sums / counts[:, None]
+        out = sums / counts[:, None]
 
     # Generic reduction (np.median, np.max, etc.)
-    idx = np.argsort(labels)
-    sorted_labels = labels[idx]
-    sorted_points = points[idx]
+    else:
+        idx = np.argsort(labels)
+        diff = np.where(np.diff(labels[idx]))[0] + 1
+        groups = np.split(points[idx], diff)
+        out = np.array([reduce(g, axis=0) for g in groups])
 
-    diff = np.where(np.diff(sorted_labels))[0] + 1
-    groups = np.split(sorted_points, diff)
-
-    return np.array([reduce(g, axis=0) for g in groups])
+    return (out, labels) if return_labels else out

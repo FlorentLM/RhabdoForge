@@ -1248,6 +1248,7 @@ class EyeView(OmmatidiumView):
             n_rows=rows,
             **kwargs,
         )
+        polish
         self._spatial_store['ghosts'] = ghosts
         return ghosts
 
