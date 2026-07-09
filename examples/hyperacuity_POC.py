@@ -100,9 +100,9 @@ def build_eye(extra_narrowing):
     optic_flow = np.array([0.0, np.sin(head_pitch), np.cos(head_pitch)])
 
     aligner = BundlesAligner(
-        flow_direction=optic_flow,
-        diagonal_strength=1.0,
-        diagonal_angle_deg=45.0,
+        ref_direction=optic_flow,
+        combing_strength=1.0,
+        combing_angle_deg=45.0,
         alignment_smoothing_iter=4,
         saccade_smoothing_iter=15,
     )

@@ -298,7 +298,8 @@ class BaseView:
     # Per-ommatidium rhabdomeres bundles properties
 
     chi = ViewField('chi', 'ommatidia',
-        doc="Per-ommatidium bundle orientation (chi)")
+        doc="Bundle orientation chi (main axis) per ommatidium. Shape (N,).")
+
     bundle_orientation = chi
 
     @property
@@ -306,30 +307,25 @@ class BaseView:
         """Returns +1 or -1 for each ommatidium."""
         return self._omm_chirality(self.omm_indices)
 
-    def _focal_axis_local(self, theta) -> np.ndarray:
-        """
-        A focal-plane unit axis at angle 'theta' (rad, in the bundle's own frame),
-        expressed in each ommatidium's (right, up) tangent coords, shape (N, 2).
-        """
-        chi = self._buffer['chi', self.omm_indices]
-        vx = np.cos(theta) * self.chirality  # mirror x by chirality
-        vy = np.broadcast_to(np.float32(np.sin(theta)), chi.shape)
-        c, s = np.cos(chi), np.sin(chi)  # rotate by chi
-        lx = c * vx - s * vy
-        ly = s * vx + c * vy
-        return np.stack([lx, ly], axis=-1).astype(np.float32)
+    def _bearing_axis_local(self, bearing) -> np.ndarray:
+        """A unit line at 'bearing' (rad) in each ommatidium's (right, up) tangent coords. Shape (N, 2)."""
+        return np.stack([np.cos(bearing), np.sin(bearing)], axis=-1).astype(np.float32)
 
-    # Local (tangent-plane, 2D) axes
-
-    @property
-    def orientation_field_local(self) -> np.ndarray:
-        """Bundle local X-axis (chi) in (right, up) tangent coords. Shape (N, 2)."""
-        return self._focal_axis_local(self.bundle.flow_axis_rad)
+    # Local axes
 
     @property
     def main_axis_field_local(self) -> np.ndarray:
-        """Bundle main axis (e.g. R3-R6) in (right, up) tangent coords. Shape (N, 2)."""
-        return self._focal_axis_local(self.bundle.main_axis_rad)
+        """Bundle chi (main axis) in (right, up) tangent coords. Shape (N, 2)."""
+        return self._bearing_axis_local(self.chi)
+
+    @property
+    def reference_field_local(self) -> np.ndarray:
+        """
+        Bundle flow reference (alignment) axis in (right, up) tangent coords. Shape (N, 2).
+        Note: this is an implied, post-smoothing reconstructed version of the orientation field.
+        """
+        ref = self.chi - self.chirality * self.bundle.alignment_offset_rad
+        return self._bearing_axis_local(ref)
 
     @property
     def saccade_field_local(self) -> np.ndarray:
@@ -339,18 +335,21 @@ class BaseView:
     # World-space axes
 
     @property
-    def orientation_field(self) -> np.ndarray:
-        """Bundle local X-axis (chi) projected into world space. Shape (N, 3)."""
-        return local_to_world(self.orientation_field_local, self.right, self.up)
+    def main_axis_field(self) -> np.ndarray:
+        """Bundle chi (main axis) in world space. Shape (N, 3)."""
+        return local_to_world(self.main_axis_field_local, self.right, self.up)
+
+    chi_field = main_axis_field
+    bundle_orientation_field = main_axis_field
 
     @property
-    def main_axis_field(self) -> np.ndarray:
-        """Bundle main axis (e.g. R3-R6) projected into world space. Shape (N, 3)."""
-        return local_to_world(self.main_axis_field_local, self.right, self.up)
+    def reference_field(self) -> np.ndarray:
+        """Bundle flow reference (alignment) axis in world space. Shape (N, 3)."""
+        return local_to_world(self.reference_field_local, self.right, self.up)
 
     @property
     def saccade_field(self) -> np.ndarray:
-        """Microsaccade actuation axis in world coordinates. Shape (N, 3)."""
+        """Microsaccade actuation axis in world space. Shape (N, 3)."""
         return local_to_world(self.saccade_field_local, self.right, self.up)
 
     # retina_field = ViewField('retina_dxdy', 'ommatidia')      # TODO: disabled for now

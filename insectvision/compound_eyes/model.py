@@ -190,7 +190,7 @@ class Model(SpatialQueries, BaseView):
         use_aligner = (orientation is not None) or (flow_direction is not None) or (self._R > 1)
 
         if bundle_orientations is not None and chiralities is not None:
-            result = BundlesAligner.apply_chirality(self, bundle_orientations, chiralities)
+            result = BundlesAligner.explicit_alignment(self, bundle_orientations, chiralities)
 
         elif use_aligner:
             if orientation is not None:
@@ -481,8 +481,12 @@ class Model(SpatialQueries, BaseView):
 
         sacc = orientation.saccade_phasor.astype(np.float32)
 
-        self._buf['saccade_dxdy'][:, 0] = np.einsum('ij,ij->i', sacc, self._buf['right'])
-        self._buf['saccade_dxdy'][:, 1] = np.einsum('ij,ij->i', sacc, self._buf['up'])
+        sx = np.einsum('ij,ij->i', sacc, self._buf['right'])
+        sy = np.einsum('ij,ij->i', sacc, self._buf['up'])
+        mag = np.hypot(sx, sy).clip(min=1e-8)
+
+        self._buf['saccade_dxdy'][:, 0] = sx / mag
+        self._buf['saccade_dxdy'][:, 1] = sy / mag
 
         # Write per-rhabdomere data
 

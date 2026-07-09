@@ -49,8 +49,8 @@ if __name__ == "__main__":
 
 
     # Setup compound eyes model
-    scaffold_file = 'assets/drosophila_scaffold.npz'
-    # scaffold_file = 'assets/honeybee_scaffold_s10.npz'
+    # scaffold_file = 'assets/drosophila_scaffold.npz'
+    scaffold_file = 'assets/honeybee_scaffold_s10.npz'
     # scaffold_file = 'assets/drosophila_scaffold_k22.npz'
 
     model = Model.from_file(

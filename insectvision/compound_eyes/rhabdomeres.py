@@ -1,8 +1,13 @@
 import warnings
-from typing import Optional, Tuple, Union
+from typing import TYPE_CHECKING, Optional, Tuple, Union
 import numpy as np
 from numpy.typing import ArrayLike
 from insectvision.utils import broadcast_1d
+
+if TYPE_CHECKING:
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure
+
 
 RHAB_COLOURS = [
     '#ffad13',  # R1
@@ -20,36 +25,32 @@ class RhabdomereBundle:
     Model of the rhabdomere bundle (inside a single ommatidium).
 
     Args:
-        - name: str, Identifier (e.g. species name)
-        - offsets_um: (R, 2) array_like, Rhabdomere offsets in the focal plane (μm). R is the bundle size.
-        - diameters_um: float or (R,) array_like, Waveguide diameters (μm). Scalar broadcasts to all receptors.
-        - focal_um: float (optional), Effective nodal->tip distance at the rhabdomere's dark-resting position (μm).
-            This is the lever arm converting lateral focal-plane offsets into angular shifts,
-            and the distance at which the optical (Snyder) acceptance angle is evaluated.
-            Required when R > 1.
-        - sensitivity: scalar, (3,), (R,), or (R, 3) array_like, Spectral multipliers in the order (UV, Green, Blue).
+        - name: str, Identifier (e.g. species name).
+        - offsets_um: (R, 2) array_like, Rhabdomere offsets in the focal plane (μm),
+            relative to the optical axis. R is the bundle size.
+        - diameters_um: float or (R,) array_like, Waveguide diameters (μm). Scalar broadcasts.
+        - focal_um: float (optional), Nodal->tip distance at the rhabdomere's dark-resting
+            position (μm). Lever arm converting focal-plane offsets into angular shifts, and
+            the distance at which the Snyder acceptance angle is evaluated. Required when R > 1.
+        - sensitivity: scalar, (3,), (R,), or (R, 3) array_like, Spectral multipliers (UV, Green, Blue).
             UV (slot 0) is rendered in the red sub-pixel of the output.
-            Shapes:
                 scalar: applied uniformly to (R, 3)
                 (3,)  : per-channel, broadcast to all receptors
                 (R,)  : per-receptor grayscale, tiled across channels
                 (R, 3): explicit per-receptor, per-channel values
-        - wavelengths_nm: float or (R,) array_like, Per-receptor peak wavelengths (nm).
-            Used by the Snyder diffraction term. Scalar broadcasts.
+        - wavelengths_nm: float or (R,) array_like, Per-receptor peak wavelengths (nm). Scalar broadcasts.
         - tau_membrane: float, Membrane RC integration time (s).
-            The receptor's output is an EMA with this time constant. ~0.012 s in Drosophila.
         - tau_rise, tau_relax: float, Mechanical rise / relaxation time constants of the microsaccade (s).
-        - tau_fast, tau_adapt: float, Fast (~PIP2 hydrolysis, ~5 ms) and slow (~Ca²+, ~50 ms) adaptation EMA times (s).
-        - ampl_lat_um, ampl_ax_um: float, Max lateral / axial rhabdomere tip displacement at full microsaccade drive (μm).
-        - extra_narrowing_ratio: float, Extra, non-optical RF narrowing at full saccade (i.e. ~ voltage-level hyperacuity).
-            1.0 = pure optics
+        - tau_fast, tau_adapt: float, Fast and slow adaptation EMA times (s).
+        - ampl_lat_um, ampl_ax_um: float, Max lateral / axial tip displacement at full microsaccade drive (μm).
+        - extra_narrowing_ratio: float, Extra, non-optical RF narrowing at full saccade (1.0 = pure optics).
         - center_index: int, Index of the central rhabdomere (e.g. R7/8 in Drosophila is index 6).
-        - main_axis_indices: (int, int), Indices of the two rhabdomeres defining the bundle's main structural axis.
-            R3, R6 in Drosophila, indices (2, 5).
-        - flow_axis_deg: float, Optic flow alignment axis, in degrees offset from the main axis.
-            In Drosophila this is ~-81° (more or less the R2-R5 line).
-        - saccade_offset_deg: float, Microsaccade actuation axis, in degrees offset from the main axis.
-            In Drosophila this is ~28.6° (more or less the R1-R2-R3 line).
+        - main_axis_indices: (int, int), optional, Indices of the two rhabdomeres defining the
+            bundle's main structural axis. If None, the main axis is taken as the bundle's longest axis.
+            For a collapsed or symmetrical bundle this is degenerate, and an arbitrary axis (0 rad) is assigned.
+        - alignment_offset: float or (int, int), Optional. Target angle (deg, mod 180) between the main axis and the
+            external alignment reference. If (int, int), rhabdomere indices: then the offset is derived from th
+            axis defined by these two rhabdomeres indices.
     """
 
     def __init__(self,
@@ -69,13 +70,13 @@ class RhabdomereBundle:
                  ampl_ax_um: float = 2.0,
                  extra_narrowing_ratio: float = 1.0,
                  center_index: int = 0,
-                 main_axis_indices: Tuple[int, int] = (0, 0),
-                 flow_axis_deg: float = 0.0,
-                 saccade_offset_deg: float = 0.0
+                 main_axis_indices: Optional[Tuple[int, int]] = None,
+                 alignment_offset: float = 0.0,
+                 saccade_offset: Union[float, Tuple[int, int], None] = None,
                  ):
 
         self.name = str(name)
-        self.focal_um = float(focal_um)
+        self.focal_um = float(focal_um) if focal_um is not None else None
         self.fused_rhabdoms = bool(fused_rhabdoms)
 
         self.tau_membrane = float(tau_membrane)
@@ -88,13 +89,13 @@ class RhabdomereBundle:
 
         self._extra_narrowing_ratio = float(min(max(0.0, extra_narrowing_ratio), 1.0))
 
-        self.center_index = int(center_index)
-        self.main_axis_indices = (int(main_axis_indices[0]), int(main_axis_indices[1]))
-        self.flow_axis_deg = float(flow_axis_deg)
-        self.saccade_offset_deg = float(saccade_offset_deg)
-
         self.offsets_um = np.atleast_2d(np.asarray(offsets_um, dtype=np.float32)).reshape(-1, 2)
         R = self.offsets_um.shape[0]
+
+        self.center_index = int(center_index)
+
+        # Alignment: main axis is a line (mod 180) so the offset is |.| mod 180
+        self.alignment_offset_deg = abs(float(alignment_offset)) % 180.0
 
         self.diameters_um = broadcast_1d(diameters_um, R, 'diameters_um')
         self.wavelengths_nm = broadcast_1d(wavelengths_nm, R, 'wavelengths_nm')
@@ -102,18 +103,27 @@ class RhabdomereBundle:
 
         # Validation
         if not (0 <= self.center_index < R):
-            raise ValueError(f"center_index={self.center_index} out of range for R={R}")
+            raise ValueError(f'center_index={self.center_index} out of range for R={R}')
 
-        i1, i2 = self.main_axis_indices
-        if not (0 <= i1 < R and 0 <= i2 < R):
-            raise ValueError(f"main_axis_indices=({i1},{i2}) out of range for R={R}")
+        if main_axis_indices is None:
+            self.main_axis_indices = None
+        else:
+            i1, i2 = int(main_axis_indices[0]), int(main_axis_indices[1])
+            if not (0 <= i1 < R and 0 <= i2 < R):
+                raise ValueError(f"main_axis_indices=({i1},{i2}) out of range for R={R}")
+            if R > 1 and i1 == i2:
+                warnings.warn(
+                    f"RhabdomereBundle '{self.name}': main_axis_indices=({i1},{i2}) are identical, "
+                    "falling back to an arbitrary main axis.",
+                    stacklevel=2,
+                )
+            self.main_axis_indices = (i1, i2)
 
-        if R > 1 and i1 == i2:
-            warnings.warn(
-                f"RhabdomereBundle '{self.name}': R={R} but main_axis_indices=({i1},{i2}) "
-                "are identical; bundle orientation pipeline cannot derive an alignment axis.",
-                stacklevel=2,
-            )
+        # Resolve main axis angle (offsets are fixed at construction)
+        self._main_axis_rad = self._resolve_main_axis_rad()
+
+        # Saccade axis: an offset (deg, mod 180) from the main axis
+        self.saccade_offset_deg = self._resolve_saccade_offset_deg(saccade_offset)
 
         if R > 1 and self.focal_um is None:
             warnings.warn(
@@ -126,6 +136,7 @@ class RhabdomereBundle:
 
     @staticmethod
     def _resolve_sensitivity(sensitivity: Union[float, ArrayLike], R: int) -> np.ndarray:
+
         spec = np.atleast_1d(np.asarray(sensitivity, dtype=np.float32))
 
         if spec.ndim == 1:
@@ -135,21 +146,86 @@ class RhabdomereBundle:
                 return np.tile(spec, (R, 1)).astype(np.float32)
             if spec.size == R:
                 return np.column_stack([spec, spec, spec]).astype(np.float32)
-            raise ValueError(f"1D sensitivity must be size 1, 3, or R={R}; got {spec.size}.")
+            raise ValueError(f'1D sensitivity must be size 1, 3, or R={R}, got {spec.size}.')
 
         if spec.ndim == 2:
             if spec.shape == (R, 3):
                 return spec.astype(np.float32).copy()
-            raise ValueError(f"2-D sensitivity must be shape ({R}, 3); got {spec.shape}.")
-        raise ValueError("sensitivity must be a scalar, 1-D, or 2-D array.")
+            raise ValueError(f'2D sensitivity must be shape ({R}, 3), got {spec.shape}.')
+
+        raise ValueError('Sensitivity must be a scalar, 1D, or 2D array.')
+
+    def _resolve_main_axis_rad(self) -> float:
+        """
+        Derive the main-axis angle (rad, canonicalised to [0, pi)) from the offsets.
+
+        - If main_axis_indices is given: the line through those two rhabdomeres.
+        - Otherwise: the line from the optical axis (origin) to the furthest rhabdomere.
+        - Degenerate (collapsed / coincident points): arbitrary axis, 0.0 rad.
+        """
+        off = self.offsets_um
+
+        if self.main_axis_indices is not None:
+            i1, i2 = self.main_axis_indices
+            delta = off[i2] - off[i1]
+        else:
+            r2 = np.einsum('ij,ij->i', off, off)
+            delta = off[int(np.argmax(r2))]
+
+        if float(delta @ delta) < 1e-12:
+            return 0.0  # collapsed / symmetrical -> arbitrary
+
+        return float(np.arctan2(delta[1], delta[0]) % np.pi)
+
+    def _resolve_saccade_offset_deg(self, spec: Union[float, Tuple[int, int], None]) -> float:
+        """
+        Resolve the saccade axis offset from the main axis (deg, in [0, 180)).
+
+        - float: an explicit magnitude, stored as ``abs(spec) % 180``.
+        - (int, int): the two rhabdomeres defining the saccade axis, its angle is
+            derived from the offsets and reduced modulo the main axis.
+        - None: the bundle's minor principal axis (smallest spatial spread, i.e.
+            least steric hindrance), reduced modulo the main axis.
+        """
+        R = self.offsets_um.shape[0]
+
+        # Index pair -> derive from structure
+
+        if spec is not None and hasattr(spec, '__len__') and not isinstance(spec, str) and len(spec) == 2:
+            j1, j2 = int(spec[0]), int(spec[1])
+            if not (0 <= j1 < R and 0 <= j2 < R):
+                raise ValueError(f"saccade_offset indices=({j1},{j2}) out of range for R={R}")
+            delta = self.offsets_um[j2] - self.offsets_um[j1]
+            if float(delta @ delta) < 1e-12:
+                return 0.0
+            axis_rad = np.arctan2(delta[1], delta[0])
+            return float(np.degrees((axis_rad - self._main_axis_rad) % np.pi))
+
+        # Explicit magnitude
+        if spec is not None:
+            return abs(float(spec)) % 180.0
+
+        # Default: minor principal axis of the offset cloud
+        pts = self.offsets_um - self.offsets_um.mean(axis=0)
+        if float(np.max(np.einsum('ij,ij->i', pts, pts))) < 1e-12:
+            return 0.0  # collapsed -> arbitrary
+
+        cov = pts.T @ pts
+        _, evecs = np.linalg.eigh(cov)   # ascending eigenvalues
+        minor = evecs[:, 0]              # smallest spread
+
+        axis_rad = np.arctan2(minor[1], minor[0])
+
+        return float(np.degrees((axis_rad - self._main_axis_rad) % np.pi))
 
     # Size / lookup / repr
 
     def __repr__(self) -> str:
         return (
-            f"RhabdomereBundle(name={self.name!r}, R={self.count}, "
-            f"center={self.center_index}, "
-            f"main_axis={self.main_axis_indices}, flow_axis_deg={self.flow_axis_deg:g})"
+            f"RhabdomereBundle(name={self.name!r}, R={self.count}, center={self.center_index}, "
+            f"main axis={self.main_axis_deg:.1f}°, "
+            f"alignment offset={self.alignment_offset_deg:.1f}°, "
+            f"saccade offset={self.saccade_offset_deg:.1f}°)"
         )
 
     def __len__(self) -> int:
@@ -175,6 +251,36 @@ class RhabdomereBundle:
         """Indices of peripheral rhabdomeres (all except the central one)."""
         return np.array([i for i in self.indices if i != self.center_index])
 
+    # Axes / alignment
+
+    @property
+    def main_axis_rad(self) -> float:
+        """Main structural axis angle in the focal plane (rad, in [0, pi), it is a line)."""
+        return self._main_axis_rad
+
+    @property
+    def main_axis_deg(self) -> float:
+        return float(np.degrees(self._main_axis_rad))
+
+    @property
+    def alignment_offset_rad(self) -> float:
+        """Target main-axis offset from the external reference (rad, in [0, pi))."""
+        return float(np.radians(self.alignment_offset_deg))
+
+    @property
+    def saccade_offset_rad(self) -> float:
+        """Saccade axis offset from the main axis (rad, in [0, pi))."""
+        return float(np.radians(self.saccade_offset_deg))
+
+    @property
+    def saccade_axis_rad(self) -> float:
+        """Saccade axis angle in the anatomical focal plane (rad, in [0, pi), it is a line)."""
+        return float((self._main_axis_rad + self.saccade_offset_rad) % np.pi)
+
+    @property
+    def saccade_axis_deg(self) -> float:
+        return float(np.degrees(self.saccade_axis_rad))
+
     # Phenomenological extra narrowing
 
     @property
@@ -184,35 +290,6 @@ class RhabdomereBundle:
     @extra_narrowing_ratio.setter
     def extra_narrowing_ratio(self, val: float):
         self._extra_narrowing_ratio = float(min(max(0.0, val), 1.0))
-
-    # Axes
-
-    @property
-    def main_axis_rad(self) -> float:
-        """Main structural axis angle in the focal plane (rad)."""
-        i1, i2 = self.main_axis_indices
-        if i1 == i2:
-            return 0.0
-        delta = self.offsets_um[i2] - self.offsets_um[i1]
-        return float(np.arctan2(delta[1], delta[0]))
-
-    @property
-    def main_axis_deg(self) -> float:
-        return float(np.degrees(self.main_axis_rad))
-
-    @property
-    def flow_axis_rad(self) -> float:
-        """Optic flow alignment axis angle in the focal plane (rad)."""
-        return self.main_axis_rad + float(np.radians(self.flow_axis_deg))
-
-    @property
-    def saccade_axis_rad(self) -> float:
-        """Microsaccade actuation axis angle in the focal plane (rad)."""
-        return self.main_axis_rad + float(np.radians(self.saccade_offset_deg))
-
-    @property
-    def saccade_axis_deg(self) -> float:
-        return self.main_axis_deg + self.saccade_offset_deg
 
     # Spectral accessors
 
@@ -232,24 +309,23 @@ class RhabdomereBundle:
 
     def rotated_offsets(
             self,
-            chi: np.ndarray,
-            chirality: np.ndarray,
+            chi: ArrayLike,
+            chirality: ArrayLike = 1.0,
             scale: Optional[Union[float, ArrayLike]] = None
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Per-lens rotation and chirality flip of focal-plane offsets, with optional scaling.
+        Orient the bundle so its main axis points at chi in each lens's
+        (right, up) tangent frame, optionally mirrored by chirality.
 
         Args:
-            chi: (N,) array, Bundle yaw in each lens tangent frame (rad).
-            chirality: (N,) array, Per-lens chirality (+1 or -1). Mirrors the
-                bundle across the x-axis *before* rotating by chi.
-            scale: (N,) array, float, or None. If provided, scales the spread of
+            - chi: (N,) array_like, Per-lens main-axis bearing (rad).
+            - chirality: (N,) array_like or float, Per-lens handedness (+1 or -1). Defaults to +1 (no flip).
+            - scale: (N,) array, float, or None. If provided, scales the spread of
                 the receptors about the bundle's center_index.
 
         Returns:
             rot_dx, rot_dy: (N, R) arrays, Per-(lens, receptor) focal-plane offsets.
         """
-
         off = np.asarray(self.offsets_um)
 
         # Optional scaling about the centre
@@ -257,39 +333,77 @@ class RhabdomereBundle:
             s = np.asarray(scale)
             if s.ndim > 0:
                 s = s.reshape(-1, 1, 1)
-
             c = off[self.center_index]
             off = c + s * (off - c)
 
         dx = off[..., 0]
         dy = off[..., 1]
-        dx_chiral = dx * chirality[:, np.newaxis]
 
-        cos_chi = np.cos(chi)[:, np.newaxis]
-        sin_chi = np.sin(chi)[:, np.newaxis]
+        # To canonical frame: rotate by -main_axis_rad so the main axis lies along +x
+        m = self.main_axis_rad
+        cos_m, sin_m = np.cos(m), np.sin(m)
+        u = cos_m * dx + sin_m * dy
+        v = -sin_m * dx + cos_m * dy
 
-        rot_dx = cos_chi * dx_chiral - sin_chi * dy
-        rot_dy = sin_chi * dx_chiral + cos_chi * dy
+        # Chirality: reflect across the main axis (v -> -v) where chirality == -1
+        chir = np.asarray(chirality, dtype=np.float32).reshape(-1, 1)
+        v = chir * v
+
+        # Rotate the (possibly mirrored) canonical bundle to chi
+        chi = np.asarray(chi, dtype=np.float32).reshape(-1)
+        cos_c = np.cos(chi)[:, np.newaxis]
+        sin_c = np.sin(chi)[:, np.newaxis]
+
+        rot_dx = cos_c * u - sin_c * v
+        rot_dy = sin_c * u + cos_c * v
 
         return rot_dx, rot_dy
 
     # Visualisation
 
-    def plot(self, spectral: bool = False):
-        """Quick visual of the bundle."""
+    def plot(self,
+            spectral: bool = False,
+            raw_orientation: bool = True,
+            chi: float = 0.0,
+            chirality: float = 1.0
+        ) -> Tuple['Figure', 'Axes']:
+        """
+        Quick visual of the bundle and its main axis.
+
+        Args:
+            spectral: colour receptors by spectral sensitivity instead of index.
+            raw_orientation: if True, shows offsets as supplied. If False, shows
+                the oriented view via `rotated_offsets`, i.e. the bundle taken to
+                canonical form and then placed at `chi` / `chirality`.
+            chi: main-axis bearing (rad) to place the bundle at. Only when raw_orientation=False.
+            chirality: +1 or -1 handedness. Only when raw_orientation=False.
+        """
         import matplotlib.pyplot as plt
+
+        if raw_orientation:
+            offsets = self.offsets_um
+            axis_angle = self.main_axis_rad
+            saccade_angle = self.saccade_axis_rad
+        else:
+            rot_dx, rot_dy = self.rotated_offsets(
+                np.full(1, chi, dtype=np.float32),
+                chirality=np.full(1, chirality, dtype=np.float32),
+            )
+            offsets = np.stack([rot_dx[0], rot_dy[0]], axis=-1)
+            axis_angle = float(chi)
+            # Chirality reflects the saccade axis to the other side of the main axis
+            saccade_angle = float(chi) + float(chirality) * self.saccade_offset_rad
 
         fig, ax = plt.subplots(figsize=(6, 6))
         max_sens = float(np.max(self.sensitivity))
         norm = max_sens if max_sens > 0 else 1.0
 
         for r in range(self.count):
-            pos = self.offsets_um[r]
+            pos = offsets[r]
             d = self.diameters_um[r]
 
             if spectral:
                 uv, g, b = self.sensitivity[r] / norm
-                # UV -> red, with hint of UV into blue so UV shows as purple
                 color = [float(uv), float(g), float(min(1.0, b + uv))]
             else:
                 color = plt.cm.viridis(r / max(1, self.count - 1))
@@ -298,17 +412,26 @@ class RhabdomereBundle:
             edge = 'white' if spectral else color
             ax.scatter(*pos, color=color, edgecolor=edge, s=30, linewidth=0.5, zorder=3)
 
-        if self.count > 1 or self.saccade_offset_deg != 0:
-            angle = np.radians(self.saccade_axis_deg)
-            dx, dy = np.cos(angle), np.sin(angle)
-            extent = float(np.max(self.diameters_um)) * 1.5
-            p0 = self.center - extent * np.array([dx, dy])
-            p1 = self.center + extent * np.array([dx, dy])
-            ax.plot([p0[0], p1[0]], [p0[1], p1[1]],
-                    color='black', linestyle='--', alpha=0.7, label='Microsaccade axis')
+        # Main axis (black dashed) and saccade axis (green dotted)
+        radii = np.linalg.norm(offsets, axis=1)
+        if self.count > 1 and float(np.max(radii)) > 1e-6:
+            extent = float(np.max(radii)) * 1.2
+            for angle, col, ls, lab in (
+                (axis_angle, 'black', '--', 'Main axis'),
+                (saccade_angle, 'limegreen', ':', 'Saccade axis'),
+            ):
+                dx, dy = np.cos(angle), np.sin(angle)
+                ax.plot([-extent * dx, extent * dx], [-extent * dy, extent * dy],
+                        color=col, linestyle=ls, alpha=0.8, label=lab)
 
         ax.set_aspect('equal')
-        ax.set_title(f'Bundle: {self.name} (R={self.count})')
+
+        mode = 'as supplied' if raw_orientation else 'aligned'
+        title = f'Bundle: {self.name} (R={self.count}, {mode}'
+        if not raw_orientation:
+            title += f', $\\chi$={np.degrees(chi):.0f}°, chir={int(chirality):+d}'
+        title += ')'
+        ax.set_title(title)
         ax.legend(loc='upper right', bbox_to_anchor=(1.45, 1))
 
         if spectral:
@@ -352,7 +475,7 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
         diameters_um=[1.8, 1.6, 1.6, 1.6, 1.6, 1.8, 1.0],  # Kemppainen 2022: R1/R6 1.8, R2-R5 1.6, R7/8 1.0
         sensitivity=sensitivity,
         focal_um=21.36,     # lens nodal point -> rhabdomere tip distance
-        tau_membrane = 0.005,
+        tau_membrane=0.005,
         tau_rise=0.015,
         tau_relax=0.060,
         tau_fast=0.005,
@@ -360,9 +483,9 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
         ampl_lat_um=2.0,    # upper-range microsaccade, ~6° RF shift
         ampl_ax_um=2.0,     # axial move 17->19 μm (Kemppainen 2022, Table S6)
         center_index=6,
-        main_axis_indices=(2, 5),    # R3-R6
-        flow_axis_deg=-81.0,
-        saccade_offset_deg=28.6,
+        main_axis_indices=(2, 5),   # R3-R6 line
+        alignment_offset=81.0,      # main axis sits ~81° (mod 180) off the flow reference
+        saccade_offset=28.6,        # ~R1-R2-R3 line, offset from the main axis
     )
 
 
@@ -387,7 +510,6 @@ def honeybee_bundle(name: str = 'Honeybee') -> RhabdomereBundle:
     sens[[5, 6]] = [0.0, 0.0, 1.0]              # Blue
     sens[[0, 3, 4, 7, 8]] = [0.0, 1.0, 0.0]     # Green
 
-    # Peak wavelengths (nm)
     wavelengths = np.zeros(9, dtype=np.float32)
     wavelengths[[1, 2]] = 340.0
     wavelengths[[5, 6]] = 436.0
@@ -404,15 +526,11 @@ def honeybee_bundle(name: str = 'Honeybee') -> RhabdomereBundle:
         focal_um=55.0,      # apposition eye focal length
         sensitivity=sens,
         wavelengths_nm=wavelengths,
-
-        # TODO: ?
         ampl_lat_um=0.0,
         ampl_ax_um=0.0,
-
         center_index=8,             # R9 is the basal cell
-        main_axis_indices=(0, 3),   # arbitrary since offsets are 0
-        flow_axis_deg=0.0,
-        saccade_offset_deg=0.0,
+        main_axis_indices=None,     # collapsed bundle -> arbitrary axis
+        alignment_offset=0.0,
     )
 
 
@@ -422,10 +540,11 @@ if __name__ == '__main__':
     b = drosophila_bundle()
 
     print(b)
-    print(f"  Main axis: {b.main_axis_deg:.1f}°")
-    print(f"  Flow axis: {np.degrees(b.flow_axis_rad):.1f}°")
-    print(f"  Saccade axis: {b.saccade_axis_deg:.1f}°")
+    print(f"  Main axis:         {b.main_axis_deg:.1f}°")
+    print(f"  Alignment offset:  {b.alignment_offset_deg:.1f}°")
+    print(f"  Saccade offset:    {b.saccade_offset_deg:.1f}° (axis at {b.saccade_axis_deg:.1f}°)")
     print(f"  UV sensitivity per cell: {b.sensitivity_uv}")
-    b.plot(spectral=True)
+
+    b.plot(raw_orientation=False, chi=0.0, chirality=1.0)
 
     plt.show()

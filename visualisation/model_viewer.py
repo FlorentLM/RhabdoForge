@@ -205,24 +205,24 @@ class EyeViewer:
 
         if aligner is None:
             flow = optic_flow_world if optic_flow_world is not None else WORLD_BACKWARD
-            aligner = BundlesAligner(flow_direction=flow)
+            aligner = BundlesAligner(ref_direction=flow)
 
-        self.aligner_smooth = aligner
+        self.aligner = aligner
 
         self.aligner_raw = BundlesAligner(
-            flow_direction=aligner.flow_direction,
-            diagonal_strength=aligner.diagonal_strength,
-            diagonal_angle_deg=getattr(aligner, 'diagonal_angle_deg', 45.0),
+            ref_direction=self.aligner.ref_direction,
+            combing_strength=self.aligner.combing_strength,
+            combing_angle_deg=self.aligner.combing_angle_deg,
+            combing_falloff=self.aligner.combing_falloff,
+            strength=self.aligner.strength,
             alignment_smoothing_iter=0,
             saccade_smoothing_iter=0,
-            falloff=aligner.falloff,
-            strength=aligner.strength,
+            equatorial_discontinuity=self.aligner.equatorial_discontinuity,
+            flip_polarity=self.aligner.flip_polarity,
         )
 
-        self.optic_flow_world = aligner.flow_direction.astype(np.float32)
-
-        self.result_smooth = self.aligner_smooth.compute(self.model)
-        self.result_raw = self.aligner_raw.compute(self.model)
+        self.optic_flow_world = self.aligner.ref_direction.astype(np.float32)
+        self.result_raw = self.aligner_raw.compute(self.model, verbose=False)
 
         # Cache geometry
         self.p = model.positions
@@ -254,6 +254,13 @@ class EyeViewer:
         # Per-lens chirality
         self.chirality = self.model.chirality.astype(np.float32)
 
+        self.saccade_fields = {
+            (True, True): self.model.saccade_field,             # applied (A1, S1)
+            (False, False): self.result_raw.saccade_phasor,     # neither (A0, S0)
+            (True, False): self.aligner._saccade_from_major(self.model, self.model.main_axis_field, skip_smooth=True),
+            (False, True): self.aligner._saccade_from_major(self.model, self.result_raw.major_axis, skip_smooth=False),
+        }
+
         # Heatmap scalars
         self.collinearity = self._compute_collinearity()
         self.smoothness = self._compute_smoothness()
@@ -280,10 +287,6 @@ class EyeViewer:
         # Plot bookkeeping
         self.plotter = None
         self.actors_meshing_debug = []
-        self.actors_alignment_smooth = []
-        self.actors_alignment_raw = []
-        self.actors_saccade_smooth = []
-        self.actors_saccade_raw = []
         self.actors_bundles = []
         self.actors_conflicts = []
         self.actors_debugger = []
@@ -294,6 +297,11 @@ class EyeViewer:
         self.actors_collinearity = []
         self.actors_smoothness = []
         self.actors_ioa = []
+        self.actors_alignment_smooth = []
+        self.actors_alignment_raw = []
+        self.actors_major_smooth = []
+        self.actors_major_raw = []
+        self.actors_saccade = {}
 
         self.state_alignment_smoothed = True
         self.state_saccade_smoothed = True
@@ -463,13 +471,13 @@ class EyeViewer:
             return
 
         m_smooth = self.delaunay_mesh_real.copy()
-        m_smooth.point_data['AlignmentSmooth'] = self.model.orientation_field
+        m_smooth.point_data['AlignmentSmooth'] = self.model.reference_field
         g_smooth = self._glyph_phasors(m_smooth, 'AlignmentSmooth')
         a_smooth = self.plotter.add_mesh(g_smooth, color='green', line_width=2)
         self.actors_alignment_smooth.append(a_smooth)
 
         m_raw = self.delaunay_mesh_real.copy()
-        m_raw.point_data['AlignmentRaw'] = self.result_raw.alignment_phasor.astype(np.float32)
+        m_raw.point_data['AlignmentRaw'] = self.result_raw.flow_line.astype(np.float32)
         g_raw = self._glyph_phasors(m_raw, 'AlignmentRaw')
         a_raw = self.plotter.add_mesh(g_raw, color='#8c8c00', line_width=2)
         self.actors_alignment_raw.append(a_raw)
@@ -477,36 +485,38 @@ class EyeViewer:
     def _add_major_axis_panel(self) -> None:
         if self.delaunay_mesh_real.n_cells == 0 or self.R <= 1:
             return
-
-        for mask, color in [
-            (self.chirality < 0, CHIRALITY_NEG_COLOR),
-            (self.chirality > 0, CHIRALITY_POS_COLOR)
+        for field, actor_list in [
+            (self.model.main_axis_field, self.actors_major_smooth),
+            (self.result_raw.major_axis, self.actors_major_raw),
         ]:
-            if not np.any(mask):
-                continue
-
-            pd = pv.PolyData(self.p[mask].astype(np.float32))
-            pd.point_data['MajorAxis'] = -self.model.main_axis_field[mask]
-
-            arrows = pd.glyph(geom=_arrow_template(), orient='MajorAxis', factor=self.arrow_len, scale=False)
-            self.plotter.add_mesh(arrows, color=color, ambient=0.4, diffuse=0.7, smooth_shading=True)
+            for mask, color in [
+                (self.chirality < 0, CHIRALITY_NEG_COLOR),
+                (self.chirality > 0, CHIRALITY_POS_COLOR),
+            ]:
+                if not np.any(mask):
+                    continue
+                pd = pv.PolyData(self.p[mask].astype(np.float32))
+                pd.point_data['MajorAxis'] = -field[mask]
+                arrows = pd.glyph(geom=_arrow_template(), orient='MajorAxis', factor=self.arrow_len, scale=False)
+                a = self.plotter.add_mesh(arrows, color=color, ambient=0.4, diffuse=0.7, smooth_shading=True)
+                actor_list.append(a)
 
     def _add_saccade_panel(self) -> None:
+
         if self.delaunay_mesh_real.n_cells == 0:
             return
 
-        m_smooth = self.delaunay_mesh_real.copy()
-        m_smooth.point_data['SaccadeSmooth'] = self.model.saccade_field
-        g_smooth = self._glyph_arrows(m_smooth, 'SaccadeSmooth')
-        a_smooth = self.plotter.add_mesh(g_smooth, color='red',
-                                         ambient=0.4, diffuse=0.7, smooth_shading=True)
-        self.actors_saccade_smooth.append(a_smooth)
-
-        m_raw = self.delaunay_mesh_real.copy()
-        m_raw.point_data['SaccadeRaw'] = self.result_raw.saccade_phasor.astype(np.float32)
-        g_raw = self._glyph_phasors(m_raw, 'SaccadeRaw')
-        a_raw = self.plotter.add_mesh(g_raw, color='#FF94BD', line_width=2)
-        self.actors_saccade_raw.append(a_raw)
+        for (a_on, s_on), field in self.saccade_fields.items():
+            m = self.delaunay_mesh_real.copy()
+            key = 'Saccade_%d%d' % (int(a_on), int(s_on))
+            m.point_data[key] = field.astype(np.float32)
+            if s_on:
+                g = self._glyph_arrows(m, key)
+                actor = self.plotter.add_mesh(g, color='red', ambient=0.4, diffuse=0.7, smooth_shading=True)
+            else:
+                g = self._glyph_phasors(m, key)
+                actor = self.plotter.add_mesh(g, color='#FF94BD', line_width=2)
+            self.actors_saccade[(a_on, s_on)] = actor
 
     def _add_collinearity_panel(self) -> None:
         """Per-lens |raw flow . combed alignment phasor|, as a coloured surface."""
@@ -652,7 +662,8 @@ class EyeViewer:
             pts_all = self.model.positions[:, None, :] + tips_rel
 
             is_mirrored = self.model.chirality < 0
-            i1, i2 = self.bundle.main_axis_indices
+            mai = self.bundle.main_axis_indices
+            i1, i2 = mai if mai is not None else (-1, -1)
 
             groups = {'gold': [], 'red': [], 'white': [], 'teal': [], 'royalblue': []}
             for r in range(self.R):
@@ -830,12 +841,15 @@ class EyeViewer:
             a.SetVisibility(self.state_alignment_smoothed)
         for a in self.actors_alignment_raw:
             a.SetVisibility(not self.state_alignment_smoothed)
+        for a in self.actors_major_smooth:
+            a.SetVisibility(self.state_alignment_smoothed)
+        for a in self.actors_major_raw:
+            a.SetVisibility(not self.state_alignment_smoothed)
 
     def _apply_saccade_visibility(self) -> None:
-        for a in self.actors_saccade_smooth:
-            a.SetVisibility(self.state_saccade_smoothed)
-        for a in self.actors_saccade_raw:
-            a.SetVisibility(not self.state_saccade_smoothed)
+        active = (self.state_alignment_smoothed, self.state_saccade_smoothed)
+        for key, actor in self.actors_saccade.items():
+            actor.SetVisibility(key == active)
 
     def _apply_bigpanel_visibility(self) -> None:
         s = self.state_bigpanel
@@ -882,14 +896,14 @@ class EyeViewer:
         local_flow = np.stack([dot_r / mag, dot_u / mag], axis=-1)
 
         # compare to alignment field (already in local tangent coords)
-        alignment_local = self.model.orientation_field_local
+        alignment_local = self.model.reference_field_local
         return np.abs(np.einsum('ij,ij->i', local_flow, alignment_local))
 
     def _compute_smoothness(self) -> np.ndarray | None:
         """|raw saccade phasor . smoothed saccade phasor| (1.0 = unchanged)."""
         if self.R <= 1:
             return None
-        s = np.einsum('ij,ij->i', self.result_raw.saccade_phasor, self.result_smooth.saccade_phasor)
+        s = np.einsum('ij,ij->i', self.result_raw.saccade_phasor, self.model.saccade_field)
         return np.abs(s).astype(np.float32)
 
     ##
@@ -905,6 +919,7 @@ class EyeViewer:
         def toggle_alignment():
             self.state_alignment_smoothed = not self.state_alignment_smoothed
             self._apply_alignment_visibility()
+            self._apply_saccade_visibility()  # saccade rides on the main axis
             self._update_alignment_hint()
             self.plotter.render()
 
@@ -1083,12 +1098,14 @@ if __name__ == "__main__":
     droso_head_ptich = np.deg2rad(10.1)     # drosophila head pitch in flight
 
     aligner = BundlesAligner(
-        equatorial_discontinuity=True,  # important for drosophila rhabdomere bundles alignment
-        flow_direction=np.array([0.0, np.sin(droso_head_ptich), np.cos(droso_head_ptich)]),   # optic flow in flight
-        diagonal_strength=1.0,
-        diagonal_angle_deg=45.0,
-        alignment_smoothing_iter=0,
+        ref_direction=np.array([0.0, np.sin(droso_head_ptich), np.cos(droso_head_ptich)]),   # optic flow in flight
+        combing_strength=1.0,
+        combing_angle_deg=45.0,
+        alignment_smoothing_iter=5,
         saccade_smoothing_iter=5,
+        flip_polarity=False,
+        flip_saccade_polarity=True,
+        equatorial_discontinuity=True,  # important for drosophila rhabdomere bundles alignment
     )
 
     model = Model.from_file(
@@ -1105,8 +1122,8 @@ if __name__ == "__main__":
     #     flow_direction=WORLD_BACKWARD,   # optic flow in flight
     #     diagonal_strength=1.0,
     #     diagonal_angle_deg=45.0,
-    #     alignment_smoothing_iterations=4,
-    #     saccade_smoothing_iterations=5,
+    #     alignment_smoothing_iter=4,
+    #     saccade_smoothing_iter=5,
     # )
     #
     # model = Model.from_file(
@@ -1118,7 +1135,7 @@ if __name__ == "__main__":
 
     # ----------------------------------------------------------------------
 
-    model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
+    # model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
 
     viewer = EyeViewer(model, aligner=aligner)
     viewer.show()
