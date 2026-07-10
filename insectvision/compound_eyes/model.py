@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union, Tuple, List
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.spatial import Delaunay, cKDTree
+from scipy.spatial import cKDTree
+
+from insectvision.types import WORLD_FORWARD, METADATA_BIT_LAYOUT
+from insectvision.utils import norm_l2, broadcast_to_shape, broadcast_1d
 
 from insectvision.engine.meshes import icosphere, fibonacci_sphere
 from insectvision.geometry.ghosting import combine_clouds
 from insectvision.geometry.lattice import lattice_confidence
-from insectvision.utils import WORLD_FORWARD, norm_l2, broadcast_to_shape, broadcast_1d
-
 from insectvision.geometry.circular import resultant
 from insectvision.geometry.hexatic import hexatic_axis_angle, hexatic_order
 from insectvision.geometry.linalg import tangent_frames, local_to_world, tangent_bearing
@@ -26,7 +27,7 @@ from insectvision.geometry.spherical import (
 )
 from insectvision.geometry.polygons import triangle_areas, pack_edge_keys
 
-from insectvision.compound_eyes.buffers import Buffer, _BIT_LAYOUT
+from insectvision.compound_eyes.buffers import Buffer
 from insectvision.compound_eyes.rhabdomeres import RhabdomereBundle
 from insectvision.compound_eyes.helpers.neural_superposition import (
     wire_neural_superposition, get_conflict_masks, get_noconflict_masks, refine_chi
@@ -38,7 +39,6 @@ from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 from insectvision.compound_eyes.views import SpatialQueries, BaseView, OmmatidiumView, EyeView, RhabdomereView
 
 if TYPE_CHECKING:
-    from insectvision.compound_eyes.views import NeighbourResult
     from insectvision.compound_eyes.helpers.acceptance import AcceptanceModel
     from insectvision.compound_eyes.helpers.alignment import AlignmentResult
 
@@ -123,7 +123,7 @@ class Model(SpatialQueries, BaseView):
         if eye_indices is not None:
             arr = np.asarray(eye_indices, dtype=np.uint32).reshape(-1)
 
-            _, eye_id_bits = _BIT_LAYOUT['eye_id']
+            _, eye_id_bits = METADATA_BIT_LAYOUT['eye_id']
             max_eyes = self._buf.max_value('eye_id')
 
             if arr.size != self._N:

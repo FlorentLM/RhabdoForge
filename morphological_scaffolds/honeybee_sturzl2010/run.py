@@ -15,8 +15,7 @@ from scipy.interpolate import interp1d
 from insectvision.lattice_fitting.relaxation import mirror_bilateral
 from insectvision.lattice_fitting.plots import plot_eye_scaffold_3d
 from insectvision.geometry.spherical import spherical_to_cartesian
-from insectvision.utils import akima_interp_fn
-
+from insectvision.LUTs import akima_interp_fn
 
 IOA_H_MIN = 2.4  # degrees
 IOA_H_MID = 3.7  # degrees

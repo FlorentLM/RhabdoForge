@@ -10,17 +10,6 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
 
-RHAB_COLOURS = [
-    '#ffad13',  # R1
-    '#FF1C25',  # R2
-    '#880015',  # R3
-    '#8000ff',  # R4
-    '#008000',  # R5
-    '#0000ff',  # R6
-    '#aaa712',  # R7/8
-]
-
-
 class RhabdomereBundle:
     """
     Model of the rhabdomere bundle (inside a single ommatidium).

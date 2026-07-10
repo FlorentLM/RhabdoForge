@@ -1,9 +1,12 @@
 from pyglm import glm
-from ..utils import WORLD_UP
+from ..types import WORLD_UP
 from .movement import TransformMixin
 
 
+# TODO: Better type annotate this file
+
 class Agent(TransformMixin):
+
     def __init__(self,
                  position=(0.0, 0.0, 0.0),
                  yaw=0.0,
@@ -28,8 +31,8 @@ class Agent(TransformMixin):
 
     def __repr__(self):
         p = self.position
-        return (f"<Agent | pos=({p.x:.2f}, {p.y:.2f}, {p.z:.2f}) | "
-                f"yaw={self.yaw:.1f}° pitch={self.pitch:.1f}° roll={self.roll:.1f}° | fov={self.fov:.0f}°>")
+        return (f'<Agent | pos=({p.x:.2f}, {p.y:.2f}, {p.z:.2f}) | '
+                f'yaw={self.yaw:.1f}° pitch={self.pitch:.1f}° roll={self.roll:.1f}° | fov={self.fov:.0f}°>')
 
     # Projection setters
 
@@ -97,8 +100,8 @@ class OrbitCamera:
 
     def __repr__(self):
         t = self.target.position
-        return (f"<OrbitCamera | target=({t.x:.2f}, {t.y:.2f}, {t.z:.2f}) | "
-                f"dist={self.distance:.2f} | az={self.azimuth:.1f}° el={self.elevation:.1f}°>")
+        return (f'<OrbitCamera | target=({t.x:.2f}, {t.y:.2f}, {t.z:.2f}) | '
+                f'dist={self.distance:.2f} | az={self.azimuth:.1f}° el={self.elevation:.1f}°>')
 
     def pan(self, az_delta, el_delta):
         self.azimuth += az_delta

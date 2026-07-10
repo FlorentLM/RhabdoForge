@@ -2,27 +2,27 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
+from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple, Sequence, Any, List
 import glfw
 from pathlib import Path
 import random
-from typing import TYPE_CHECKING, Optional, Union, Dict, Tuple, Sequence, Any, List
 import numpy as np
 from pyglm import glm
 from pytinybvh import BVH
 
-from insectvision.utils import (
-    to_enum, EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode, airy_sensitivity_lut
+from insectvision.types import (
+    EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode, to_enum, OMM_STATIC_DTYPE,
+    OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, RHAB_DYNAMIC_DTYPE
 )
+from insectvision.LUTs import airy_sensitivity_lut
 from insectvision.engine.meshes import CONE_VERTICES, SPHERE_VERTICES
 from insectvision.engine.resources import (
-    ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry, TextureRegistry, HDRRenderTarget, TextureViewer,
-    StaticRenderTarget
+    ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry, TextureRegistry, HDRRenderTarget,
+    TextureViewer, StaticRenderTarget
 )
 from insectvision.engine.materials_utils import constant_sh
 from insectvision.renderers.baking import SceneBaker
 from insectvision.renderers.helpers import VisualOutput
-
-from insectvision.compound_eyes.buffers import OMM_STATIC_DTYPE, OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, RHAB_DYNAMIC_DTYPE
 
 if TYPE_CHECKING:
     from insectvision.engine.scene import Scene

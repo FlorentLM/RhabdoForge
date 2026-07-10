@@ -1,53 +1,11 @@
 from abc import ABC, abstractmethod
 from typing import Union, Sequence, Optional
-from enum import Enum, auto
 from numpy.typing import ArrayLike
 import numpy as np
 from pyglm import glm
 
-from ..utils import WORLD_UP
+from insectvision.types import WORLD_UP, DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE, LightType
 from .movement import TransformMixin
-
-DIR_LIGHT_DTYPE = np.dtype([
-    ('direction', np.float32, 3),
-    ('angular_radius', np.float32),
-    ('color', np.float32, 3),
-    ('intensity', np.float32),
-    ('cast_shadows', np.uint32),
-    ('_pad', np.uint32, 3),
-])  # total 48 bytes
-
-POINT_LIGHT_DTYPE = np.dtype([
-    ('position', np.float32, 3),
-    ('radius', np.float32),
-    ('color', np.float32, 3),
-    ('intensity', np.float32),
-    ('constant_atten', np.float32),
-    ('linear_atten', np.float32),
-    ('quadratic_atten', np.float32),
-    ('cast_shadows', np.uint32),
-])  # total 48 bytes
-
-AREA_LIGHT_DTYPE = np.dtype([
-    ('position', np.float32, 3),
-    ('width', np.float32),
-    ('normal', np.float32, 3),
-    ('height', np.float32),
-    ('tangent', np.float32, 3),
-    ('intensity', np.float32),
-    ('bitangent', np.float32, 3),
-    ('cast_shadows', np.uint32),
-    ('color', np.float32, 3),
-    ('two_sided', np.uint32),
-])  # total 64 bytes
-
-# TODO: these three datatypes could be optimised a bit
-
-
-class LightType(Enum):
-    Directional = auto()    # Infinitely distant (sun, moon)
-    Point = auto()          # Omnidirectional (with falloff)
-    Area = auto()           # Rectangular/disk emitter
 
 
 class Light(ABC, TransformMixin):

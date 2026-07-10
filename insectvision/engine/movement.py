@@ -4,8 +4,11 @@ import numpy as np
 from numpy.typing import ArrayLike
 from pyglm import glm
 
-from ..utils import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
+from ..types import WORLD_RIGHT, WORLD_UP, WORLD_FORWARD
 from insectvision.geometry.linalg import tangent_frames
+
+
+# TODO: Better type-annotate this file
 
 
 class TransformMixin:
@@ -16,7 +19,7 @@ class TransformMixin:
     _transform: glm.mat4
     _transform_rev: int = 0
 
-    def _euler_quat(self, yaw, pitch, roll, degrees=True):
+    def _euler_quat(self, yaw, pitch, roll, degrees: bool = True):
         """Build a quaternion from YXZ Euler angles."""
         if degrees:
             yaw, pitch, roll = glm.radians(yaw), glm.radians(pitch), glm.radians(roll)

@@ -4,8 +4,8 @@ import numpy as np
 import collections
 from pyglm import glm
 
-from insectvision.compound_eyes.rhabdomeres import RHAB_COLOURS
-from insectvision.utils import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode
+from insectvision.types import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode, \
+    RHAB_COLOURS
 
 if TYPE_CHECKING:
     from insectvision.renderers.helpers import VisualOutput

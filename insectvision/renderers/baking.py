@@ -8,27 +8,12 @@ from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, instance_dtype, Layout, supports_layout
 
-from insectvision.engine.scene import AssetType, MeshAsset, PointsAsset
-from insectvision.engine.lights import DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE
+from insectvision.types import RENDERABLE_DTYPE, DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE, AssetType
+from insectvision.engine.scene import MeshAsset, PointsAsset
 from insectvision.engine.resources import write_pytinybvh_preamble, GPUResourceManager, BufferRegistry, TextureRegistry
 
 if TYPE_CHECKING:
     from insectvision.engine.scene import Scene
-
-
-RENDERABLE_INST_DTYPE = np.dtype([
-    ('transform', np.float32, (4, 4)),
-    ('inverse_transform', np.float32, (4, 4)),
-    ('blas_node_offset', np.uint32),
-    ('vertex_or_point_offset', np.uint32),
-    ('index_offset', np.uint32),
-    ('material_id', np.uint32),
-    ('is_points', np.uint32),
-    ('prim_index_offset', np.uint32),
-    ('radius_factor', np.float32),
-    ('is_srgb', np.uint32),
-])  # 160 bytes
-# TODO: reorganise this struct
 
 
 class SceneBaker:
@@ -289,7 +274,7 @@ class SceneBaker:
         num_instances = len(all_instances)
 
         tlas_build_data = np.zeros(num_instances, dtype=instance_dtype)
-        self.gpu_inst_info = np.zeros(num_instances, dtype=RENDERABLE_INST_DTYPE)
+        self.gpu_inst_info = np.zeros(num_instances, dtype=RENDERABLE_DTYPE)
 
         for i, inst in enumerate(all_instances):
             blas_map = self._asset_blas_map[inst.asset.id]
@@ -357,7 +342,7 @@ class SceneBaker:
         self.bvh_buffers.allocate('blas_indices', dtype=np.uint32, count=bi_count, data=self.cpu_blas_indices, min_count=1)
         self.bvh_buffers.allocate('tlas_nodes', dtype=np.float32, count=tn_count, data=self.cpu_tlas_nodes, min_count=1, usage=GL_DYNAMIC_DRAW)
         self.bvh_buffers.allocate('tlas_indices', dtype=np.uint32, count=ti_count, data=self.cpu_tlas_indices, min_count=1)
-        self.bvh_buffers.allocate('inst_info', dtype=RENDERABLE_INST_DTYPE, count=ii_count, data=self.gpu_inst_info, min_count=1, usage=GL_DYNAMIC_DRAW)
+        self.bvh_buffers.allocate('inst_info', dtype=RENDERABLE_DTYPE, count=ii_count, data=self.gpu_inst_info, min_count=1, usage=GL_DYNAMIC_DRAW)
         self.bvh_buffers.allocate('inst_visible', dtype=np.uint32, count=iv_count, data= self.cpu_inst_visible, min_count=1, usage=GL_DYNAMIC_DRAW)
 
     # Dynamic updates

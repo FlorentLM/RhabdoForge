@@ -1,14 +1,13 @@
 from .context import Context
 from .agent import Agent, OrbitCamera
-from .lights import LightType, Light, DirectionalLight, PointLight, AreaLight, Sun
+from .lights import Light, DirectionalLight, PointLight, AreaLight, Sun
 from .movement import TransformMixin, CollisionMixin, Trajectory, Curve
-from .scene import AssetType, Asset, Instance, Sky, Scene
+from .scene import Asset, Instance, Sky, Scene
 
 __all__ = [
     'Context',
     'Agent',
     'OrbitCamera',
-    'LightType',
     'Light',
     'DirectionalLight',
     'PointLight',
@@ -18,7 +17,6 @@ __all__ = [
     'CollisionMixin',
     'Trajectory',
     'Curve',
-    'AssetType',
     'Asset',
     'Instance',
     'Sky',

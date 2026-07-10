@@ -12,6 +12,7 @@ from insectvision.utils import norm_l2
 #   ragged: a sequence (list / object-array) of per-point neighbour-index arrays
 #   dense: an (N, k) integer array with entries < 0 used as padding
 NeighbourGraph = np.ndarray | Sequence[ArrayLike]
+# TODO: Move this to types.py and eventually merge with the NeighbourResult dataclass?
 
 
 def ragged_neighbours(neighbours: NeighbourGraph) -> List[np.ndarray]:

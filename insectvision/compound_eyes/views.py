@@ -17,7 +17,7 @@ from scipy.spatial import cKDTree, Delaunay
 from insectvision.geometry.polygons import pack_edge_keys
 from insectvision.utils import norm_l2
 
-from insectvision.compound_eyes.buffers import _BIT_LAYOUT
+from insectvision.types import METADATA_BIT_LAYOUT
 from insectvision.geometry.ghosting import ghosts_from_growth_3d
 from insectvision.geometry.linalg import tangent_frames, local_to_world
 from insectvision.geometry.neighbours import (
@@ -43,8 +43,8 @@ class ViewField:
     def __init__(self, field_name: str, level: str, doc: Optional[str] = None):
         self.field_name = field_name
         self.level = level      # 'ommatidia' or 'rhabdomere'
-        self.is_metadata = field_name in _BIT_LAYOUT    # TODO: can be removed when the per-ommatidium metadata is moved
-        self.is_flag = self.is_metadata and _BIT_LAYOUT[field_name][1] == 1  # single-bit metadata = booleans:
+        self.is_metadata = field_name in METADATA_BIT_LAYOUT    # TODO: can be removed when the per-ommatidium metadata is moved
+        self.is_flag = self.is_metadata and METADATA_BIT_LAYOUT[field_name][1] == 1  # single-bit metadata = booleans:
         self.__doc__ = doc
 
     def _index(self, obj):

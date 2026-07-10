@@ -9,8 +9,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
 
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
-from insectvision.utils import airy_sensitivity_lut
-
+from insectvision.LUTs import airy_sensitivity_lut
 
 MM_PER_IN = 25.4
 

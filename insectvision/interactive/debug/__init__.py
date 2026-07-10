@@ -33,7 +33,7 @@ Examples:
 """
 
 from typing import Optional
-from insectvision.utils import DisplayMode
+from ...types import DisplayMode
 
 from .debug_renderer import DebugRenderer
 from .drawables import (

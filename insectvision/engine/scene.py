@@ -1,34 +1,25 @@
 import OpenGL
+
+from insectvision.utils import pretty_size
+
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
 from typing import TYPE_CHECKING, Dict, List, Optional, Union, Sequence, Set
 from numpy.typing import ArrayLike
-from enum import Enum, auto
 from pathlib import Path
 import numpy as np
 from PIL import Image
 import trimesh
 from pyglm import glm
 
+from insectvision.types import AssetType
 from insectvision.engine.lights import Sun, Light, DirectionalLight, PointLight, AreaLight
 from insectvision.engine.movement import TransformMixin
 from insectvision.engine.materials_utils import load_exr_equirect, sh_irradiance, get_exr_sun
 
 if TYPE_CHECKING:
     from PIL.ImageFile import ImageFile
-
-
-def human_format(num: float) -> str:
-    # Source - https://stackoverflow.com/a/45846841
-    # Posted by rtaft
-    # Retrieved 2026-06-22, License - CC BY-SA 3.0
-    num = float(f'{num:.3g}')
-    magnitude = 0
-    while abs(num) >= 1000:
-        magnitude += 1
-        num /= 1000.0
-    return f'{num:f}'.rstrip('0').rstrip('.') + ['', 'K', 'M', 'B', 'T'][magnitude]
 
 
 def trimesh_from_arrays(
@@ -139,14 +130,6 @@ class MaterialData:
         self.base_color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
         self.specular = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)  # w = shininess
         self.emission = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-
-
-class AssetType(Enum):
-    """
-    Distinguishes between different types of geometry assets.
-    """
-    Mesh = auto()
-    Points = auto()
 
 
 class Asset:
@@ -488,8 +471,8 @@ class MeshAsset(Asset):
         return 0 if self._indices is None else len(self._indices)
 
     def _geom_summary(self) -> str:
-        nb_tris = human_format(self.nb_triangles)
-        nb_vert = 0 if self._vertices4 is None else human_format(len(self._vertices4))
+        nb_tris = pretty_size(self.nb_triangles)
+        nb_vert = 0 if self._vertices4 is None else pretty_size(len(self._vertices4))
         return f"{nb_tris} tris / {nb_vert} verts"
 
     def shading_vertices(self) -> np.ndarray:
@@ -580,7 +563,7 @@ class PointsAsset(Asset):
         return 0 if self._points is None else len(self._points)
 
     def _geom_summary(self) -> str:
-        return f"{human_format(self.nb_points)} points"
+        return f"{pretty_size(self.nb_points)} points"
 
     def packed_points(self) -> np.ndarray:
         """(P, 12) [pos(3), radius, normal(3), colour(3), pad(2)] for the GPU points SSBO."""

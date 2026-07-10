@@ -2,7 +2,7 @@ import numpy as np
 from insectvision.utils import norm_l2
 
 
-# TODO: these functions could be cleaned up a bit
+# TODO: Create dataclasses for primitives
 
 
 def cone_vertices(radius=1.0, height=1.0, segments=16):

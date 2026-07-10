@@ -5,19 +5,18 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment, LinearConstraint, milp, Bounds
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
+
+from insectvision.types import UNWIRED_SRC
+from insectvision.utils import norm_l2
 from insectvision.geometry.circular import wrap_angle
 from insectvision.geometry.fields import smooth_field_partitioned
 from insectvision.geometry.linalg import rotate2d, local_to_world, project_to_tangent
-from insectvision.utils import norm_l2
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes.model import Model
     from insectvision.compound_eyes.views import OmmatidiumView, NeighbourResult
 
 logger = logging.getLogger(__name__)
-
-# Sentinel stored in cartridge_src for a slot is not wired
-UNWIRED_SRC = np.uint32(0xFFFFFFFF)
 
 
 class WiringCandidate(NamedTuple):

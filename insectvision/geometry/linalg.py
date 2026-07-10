@@ -2,7 +2,8 @@ from typing import Optional, Tuple
 import numpy as np
 from numpy.typing import ArrayLike
 
-from insectvision.utils import _match_batch, norm_l2
+from insectvision.types import WORLD_UP, WORLD_RIGHT
+from insectvision.utils import match_batch, norm_l2
 
 
 def tangent_frames(
@@ -16,7 +17,6 @@ def tangent_frames(
     Handles poles / gimbal lock by blending the reference vector near the
     singularity. Accepts a single (3,) vector or an (N, 3) batch.
     """
-    from insectvision.utils import WORLD_UP, WORLD_RIGHT
 
     if world_up is None:
         world_up = WORLD_UP
@@ -80,10 +80,10 @@ def tangent_bearing(
     """
     Project (target - reference) onto a (right, up) tangent plane and return the bearing.
     """
-    target, ref = _match_batch(target_directions, ref_directions)
+    target, ref = match_batch(target_directions, ref_directions)
     delta = target - ref
-    r_vec = _match_batch(delta, right)[1]
-    u_vec = _match_batch(delta, up)[1]
+    r_vec = match_batch(delta, right)[1]
+    u_vec = match_batch(delta, up)[1]
 
     return projected_bearing(delta, r_vec, u_vec, degrees=degrees)
 
@@ -131,11 +131,11 @@ def local_to_world(coords: ArrayLike, *basis: ArrayLike) -> np.ndarray:
     if coords.shape[-1] != len(basis):
         raise ValueError(f'local_to_world: coords last axis must equal number of basis vectors')
 
-    b0 = _match_batch(out_coords, basis[0])[1]
+    b0 = match_batch(out_coords, basis[0])[1]
     out = out_coords[..., 0, None] * b0
 
     for i in range(1, len(basis)):
-        bi = _match_batch(out_coords, basis[i])[1]
+        bi = match_batch(out_coords, basis[i])[1]
         out = out + out_coords[..., i, None] * bi
     return out
 

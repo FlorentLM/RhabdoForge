@@ -1,16 +1,18 @@
+from typing import Sequence, Optional, Tuple
 import numpy as np
+from numpy.typing import ArrayLike
 from pathlib import Path
 
 
-def checkerboard_texture(width, height, block_size=1, ratio=0.5):
+def checkerboard_texture(width: int, height: int, block_size: int = 1, ratio: float = 0.5) -> np.ndarray:
     """
     Generate a full contrast chequerboard pattern.
 
-    Parameters:
-        width (int): Texture width (pixels)
-        height (int): Texture height (pixels)
-        block_size (float): Size of each block
-        ratio (float): Ratio of black vs. white squares
+    Args:
+        - width (int): Texture width (pixels)
+        - height (int): Texture height (pixels)
+        - block_size (float): Size of each block
+        - ratio (float): Ratio of black vs. white squares
     """
 
     low_res_w = width // block_size
@@ -24,18 +26,17 @@ def checkerboard_texture(width, height, block_size=1, ratio=0.5):
     return pattern.astype(np.uint8)
 
 
-def grating_texture(width, height, num_bands=18, orientation='vertical', angle=None, wave_type='square'):
+def grating_texture(width: int, height: int, num_bands: int = 18, orientation: str='vertical', angle: Optional[float] = None, wave_type: str = 'square') -> np.ndarray:
     """
     Generate a full contrast grating texture.
 
-    Parameters:
-        width (int): Texture width (pixels)
-        height (int): Texture height (pixels)
-        num_bands (float): Number of repeating periods in the texture
-        orientation (str): 'vertical' or 'horizontal' (ignored if angle is provided)
-        angle (float, optional): Angle of the bands in degrees (0 = vertical bands).
-                                 Overrides `orientation` if provided.
-        wave_type (str): 'square' (hard black/white bands) or 'sine' (smooth gradient)
+    Args:
+        - width (int): Texture width (pixels)
+        - height (int): Texture height (pixels)
+        - num_bands (float): Number of repeating periods in the texture
+        - orientation (str): 'vertical' or 'horizontal' (ignored if angle is provided)
+        - angle (float, optional): Angle of the bands in degrees (0 = vertical bands). Overrides `orientation` if provided.
+        - wave_type (str): 'square' (hard black/white bands) or 'sine' (smooth gradient)
     """
     if angle is not None:
         theta = np.deg2rad(angle)
@@ -106,7 +107,7 @@ def chirp_texture(resolution: int, f_start: float, f_end: float, phase: float, a
     return pattern
 
 
-def load_exr_equirect(input_path: str | Path, max_height: int = 2048):
+def load_exr_equirect(input_path: str | Path, max_height: int = 2048) -> np.ndarray:
     """
     Load an HDR equirectangular EXR as a linear float32 RGB array (H, W, 3). No tonemapping.
     """
@@ -142,13 +143,14 @@ def load_exr_equirect(input_path: str | Path, max_height: int = 2048):
     return img
 
 
-def sh_irradiance(equirect_rgb: np.ndarray):
+def sh_irradiance(equirect_rgb: ArrayLike) -> np.ndarray:
     """
     Project an HDR equirect (H, W, 3, linear) onto 9 SH coeffs scaled for diffuse irradiance.
     Returns (9, 3) float32 array such that  irradiance(N) = sum_i c_i * Y_i(N)  (multiply by albedo).
     """
 
-    H, W, _ = equirect_rgb.shape
+    equirect_rgb = np.asarray(equirect_rgb, dtype=np.float32)
+    H, W = equirect_rgb.shape[:2]
 
     # Coordinates generation
     u = (np.arange(W) + 0.5) / W
@@ -186,18 +188,18 @@ def sh_irradiance(equirect_rgb: np.ndarray):
     return coeffs.astype(np.float32)
 
 
-def constant_sh(bg_color):
+def constant_sh(bg_color: Sequence[float]) -> np.ndarray:
     c = np.zeros((9, 3), np.float32)
     c[0] = np.power(np.asarray(bg_color, np.float32), 2.2) / 0.282095  # linear bg as constant irradiance
     return c
 
 
-def get_exr_sun(exr_path, sun_percentile=99.95):
+def get_exr_sun(exr_path: str | Path, sun_percentile: float = 99.95)-> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     import os
-    os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+    os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
     import cv2
 
-    img = cv2.imread(exr_path, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYCOLOR)[:, :, :3][:, :, ::-1]
+    img = cv2.imread(str(exr_path), cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYCOLOR)[:, :, :3][:, :, ::-1]
     img = np.nan_to_num(img.astype(np.float32), posinf=1e4, neginf=0.0)
     H, W = img.shape[:2]
     L = img @ np.array([0.2126, 0.7152, 0.0722], np.float32)

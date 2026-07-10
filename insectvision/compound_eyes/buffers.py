@@ -3,95 +3,8 @@ Packed data container for compound-eye buffers.
 """
 from typing import Tuple, Sequence
 import numpy as np
+from insectvision.types import OMM_STATIC_DTYPE, OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, RHAB_DYNAMIC_DTYPE, METADATA_BIT_LAYOUT
 
-# Per-ommatidium data
-
-OMM_STATIC_DTYPE = np.dtype([
-
-    # 16 bytes: ommatidium's position xyz and chi
-    ('position',    np.float32, 3),         ('chi',         np.float32),
-
-    # 16 bytes x 3: Frame of ref (12 bytes) + other 4 bytes things float4-align
-
-    # Ommatidium's frame of ref (in world)
-    ('forward', np.float32, 3),              ('focal_um',    np.float32),   # focal length (μm) (lens-to-rhabdomere lever arm)
-    ('right',   np.float32, 3),              ('aperture_um', np.float32),   # lens aperture (μm) (used for diffraction)
-    ('up',      np.float32, 3),              ('ioa_tilt',    np.float32),   # local hexatic lattice angle (rad) = lens anisotropic distortion
-
-    # 16 bytes: saccade dx and dy, lateral amplitude, axial amplitude
-    ('saccade_dxdy',  np.float32, 2), ('ampl_lateral', np.float32), ('ampl_axial', np.float32),
-
-    # 16 bytes: Temporal values (all in seconds, the compute shaders integrate with dt in s)
-    ('tau_rise',        np.float32),        # mechanical rise time (s)
-    ('tau_relax',       np.float32),        # mechanical relaxation time (s)
-    ('tau_adapt_fast',  np.float32),        # fast adaptation EMA (s)
-    ('tau_adapt_slow',  np.float32),        # slow adaptation EMA (s)
-
-    # 16 bytes: The two remaining 8 bytes things
-    ('ioa_angles',      np.float32, 2),     # (minor, major) interommatidial angles (rad)
-    ('retina_dxdy',     np.float32, 2),     # retinal shift local dy and dx
-])  # 112 bytes
-
-
-OMM_DYNAMIC_DTYPE = np.dtype([
-    ('curr_lum_fast',       np.float32),    # 4 bytes: fast luminance tracker (EMA), for saccade drive
-    ('curr_lum_slow',       np.float32),    # 4 bytes: slow luminance baseline (EMA)
-    ('curr_lateral_disp',   np.float32),    # 4 bytes: current lateral displacement (μm)
-    ('curr_axial_disp',     np.float32),    # 4 bytes: current axial contraction (μm)
-])  # 16 bytes
-
-
-# Per-rhabdomere data
-
-RHAB_STATIC_DTYPE = np.dtype([
-    # 16 bytes: 12 bytes (UV, G, B) channel sensitivity multipliers, and 4 bytes peak wavelength (μm)
-    ('sensitivity',     np.float32, 3),     ('wavelength_um',   np.float32),
-
-    # 16 bytes: Rest position and acceptance angles
-    ('rest_acc_angles', np.float32, 2),     # 8 bytes: acceptance angles (minor, major) at rest (rad)
-    ('rest_offset',     np.float32, 2),     # 8 bytes: offset (at rest) from the ommatidium optical axis (μm), post chi/chirality
-
-    # 16 bytes: the 3 remaining 4 bytes fields, and the packed metadata
-    ('tau_membrane',    np.float32),        # 4 bytes: Rhabdomere membrane RC (s)
-    ('cartridge_src',   np.uint32),         # 4 bytes: Rhabdomere index (global) of the neural-superposition source
-    ('diameter_um',     np.float32),        # 4 bytes: Rhabdomere diameter (μm)
-    ('metadata',        np.uint32)          # 4 bytes: bit-packed, see _BIT_LAYOUT below
-])  # 48 bytes
-
-
-RHAB_DYNAMIC_DTYPE = np.dtype([
-    ('curr_direction',  np.float32, 3),     # 12 bytes: current (actuated) viewing direction
-    ('curr_adaptation', np.float32),        #  4 bytes: current adaptation state
-    ('curr_acc_angles', np.float32, 2),     #  8 bytes: current (actuated) acceptance angles (rad)
-    ('optical_scale',   np.float32),        #  4 bytes: optical RF-narrowing factor Δρ_eff/Δρ_rest, read for photon concentration
-    ('_pad',            np.float32),        #  4 bytes: pad to 32 bytes
-])  # 32 bytes
-
-# TODO: Move most metadata to per-ommatidium ?? Only rhab_R, chirality and is_wired are per-rhabdomere
-
-# Metadata bitfield
-#
-#   Bits    Field            Width    Notes
-#   ------------------------------------------------------------------------------------
-#   0-3     eye_id           4        Up to 16 distinct eyes (main L/R, DRA, ocelli...)
-#   4-7     rhab_R           4        Rhabdomere type within bundle (R1=0, R2=1, ...)
-#   8-11    neighbour_count  4        Number of immediate lattice neighbours
-#   12-27   omm_id           16       Parent ommatidium index (up to 65535)
-#   28      chirality_neg    1        0 = +1 chirality (normal), 1 = -1 (mirrored)
-#   29      is_binocular     1        Whether the rhabdomere is in an ommatidium of the binocular area
-#   30      is_wired         1        Whether the rhabdomere is correctly wired in the superposition
-#   31      is_edge          1        Whether the rhabdomere is in an ommatidium that is at the edge of the eye
-
-_BIT_LAYOUT = {
-    'eye_id':           (0,  4),
-    'rhab_R':           (4,  4),
-    'neighbour_count':  (8,  4),
-    'omm_id':           (12, 16),
-    'chirality_neg':    (28,  1),
-    'is_binocular':     (29,  1),
-    'is_wired':         (30,  1),
-    'is_edge':          (31,  1),
-}
 
 OMM_PROPS = set(OMM_STATIC_DTYPE.names).union(set(OMM_DYNAMIC_DTYPE.names))
 RHAB_PROPS = set(RHAB_STATIC_DTYPE.names).union(set(RHAB_DYNAMIC_DTYPE.names))
@@ -101,13 +14,13 @@ DYNAM_PROPS = set(OMM_DYNAMIC_DTYPE.names).union(set(RHAB_DYNAMIC_DTYPE.names))
 
 def get_metadata_field(metadata: np.ndarray, field: str) -> np.ndarray:
     """Extract one bit-packed field (returned as uint32)."""
-    shift, bits = _BIT_LAYOUT[field]
+    shift, bits = METADATA_BIT_LAYOUT[field]
     return (np.asarray(metadata) >> np.uint32(shift)) & np.uint32((1 << bits) - 1)
 
 
 def set_metadata_field(metadata: np.ndarray, field: str, value) -> np.ndarray:
     """Return 'metadata' with 'field' replaced by 'value' (out-of-range values truncate)."""
-    shift, bits = _BIT_LAYOUT[field]
+    shift, bits = METADATA_BIT_LAYOUT[field]
     mask = np.uint32((1 << bits) - 1)
     clear = np.uint32(~(mask << np.uint32(shift)) & np.uint32(0xFFFFFFFF))
     v = (np.asarray(value, dtype=np.uint32) & mask) << np.uint32(shift)
@@ -176,15 +89,15 @@ class Buffer:
 
     @property
     def fields(self):
-        return sorted(OMM_PROPS.union(RHAB_PROPS).union(_BIT_LAYOUT.keys()) - {'_pad', 'metadata'})
+        return sorted(OMM_PROPS.union(RHAB_PROPS).union(METADATA_BIT_LAYOUT.keys()) - {'_pad', 'metadata'})
 
     def max_value(self, field: str) -> int:
         """
         Return the maximum possible value for a given metadata bit-field.
         """
-        if field not in _BIT_LAYOUT:
+        if field not in METADATA_BIT_LAYOUT:
             raise KeyError(f"'{field}' is not a valid metadata field.")
-        _, bits = _BIT_LAYOUT[field]
+        _, bits = METADATA_BIT_LAYOUT[field]
         return (1 << bits) - 1
 
     # Internal helpers
@@ -202,7 +115,7 @@ class Buffer:
     def __getitem__(self, key):
         field, idx = key if isinstance(key, tuple) else (key, slice(None))
 
-        if field in _BIT_LAYOUT:
+        if field in METADATA_BIT_LAYOUT:
             meta = self.structured_arrays['rhabdomere']['static']['metadata'][idx]
             out = np.asarray(get_metadata_field(meta, field))
             if isinstance(idx, slice) and idx == slice(None):  # only reshape if looking at the whole array
@@ -224,7 +137,7 @@ class Buffer:
         field, idx = key if isinstance(key, tuple) else (key, slice(None))
         values = np.asanyarray(values)
 
-        if field in _BIT_LAYOUT:
+        if field in METADATA_BIT_LAYOUT:
             level = 'rhabdomere'
             meta = self.structured_arrays[level]['static']['metadata']
 
