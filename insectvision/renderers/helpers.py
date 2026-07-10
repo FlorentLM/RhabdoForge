@@ -282,6 +282,8 @@ class VisualOutput(SignalView):
         """Alias to central_signal"""
         return self.central_signal
 
+    # TODO: The str-based modes selection is crap, need to replace 
+
     def plot(self,
             ax: Optional['Axes'] = None,
             pathway: str = 'all',
