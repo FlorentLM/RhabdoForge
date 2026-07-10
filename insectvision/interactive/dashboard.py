@@ -4,7 +4,7 @@ import numpy as np
 import collections
 from pyglm import glm
 
-from insectvision.types import EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode, \
+from insectvision.types import EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingMode, \
     RHAB_COLOURS
 
 if TYPE_CHECKING:
@@ -235,10 +235,10 @@ class Dashboard:
                         )
 
                         dpg.add_combo(
-                            list(Colormap.__members__.keys()),
+                            list(OverlayColormap.__members__.keys()),
                             label='Colormap',
                             default_value=self.ctx.renderer._overlay_colormap.name,
-                            callback=lambda s, a: self.ctx.renderer.set_overlay(colormap=Colormap[a])
+                            callback=lambda s, a: self.ctx.renderer.set_overlay(colormap=OverlayColormap[a])
                         )
 
                         dpg.add_separator()

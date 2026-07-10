@@ -41,7 +41,7 @@ class OmmatidiaProjection(IntEnum):
     OpticalAxis = 1  # Positions from optical axis directions
 
 
-class Colormap(IntEnum):
+class OverlayColormap(IntEnum):
     """
     Colours for the overlay view (heatmap)
     """
@@ -87,16 +87,6 @@ class LightType(Enum):
     Point = auto()          # Omnidirectional (with falloff)
     Area = auto()           # Rectangular/disk emitter
 
-
-RHAB_COLOURS = [
-    '#ffad13',  # R1
-    '#FF1C25',  # R2
-    '#880015',  # R3
-    '#8000ff',  # R4
-    '#008000',  # R5
-    '#0000ff',  # R6
-    '#aaa712',  # R7/8
-]
 
 def to_enum(val, enum_class):
     """Helper to convert string, int, or enum to the target Enum class."""
@@ -263,3 +253,16 @@ METADATA_BIT_LAYOUT = {
 
 # Sentinel value for a rhabdomere slot left unwired (neural superposition)
 UNWIRED_SRC = np.uint32(0xFFFFFFFF)
+
+
+# ______ Custom colours ______
+
+RHAB_COLOURS = [
+    '#ffad13',  # R1
+    '#FF1C25',  # R2
+    '#880015',  # R3
+    '#8000ff',  # R4
+    '#008000',  # R5
+    '#0000ff',  # R6
+    '#aaa712',  # R7/8
+]

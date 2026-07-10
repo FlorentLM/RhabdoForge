@@ -11,7 +11,7 @@ from pyglm import glm
 from pytinybvh import BVH
 
 from insectvision.types import (
-    EyeOutput, OmmatidiaProjection, Colormap, DisplayMode, RandomnessMode, SamplingMode, to_enum, OMM_STATIC_DTYPE,
+    EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingMode, to_enum, OMM_STATIC_DTYPE,
     OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, RHAB_DYNAMIC_DTYPE
 )
 from insectvision.LUTs import airy_sensitivity_lut
@@ -193,7 +193,7 @@ class Renderer:
         self._selected_omm_indices = np.full(10, -1, dtype=np.int32)
 
         # Overlay parameters
-        self._overlay_colormap: 'Colormap' = Colormap.Thermal
+        self._overlay_colormap: 'OverlayColormap' = OverlayColormap.Thermal
         self._overlay_range: Tuple[float, float] = (0.0, 1.0)
         self._overlay_current_peak: float = 0.0
         self._overlay_compression: float = 1.0         # power exponent for range compression (1.0 = linear, 0.5 = sqrt, etc)
@@ -1012,12 +1012,12 @@ class Renderer:
         return out
 
     def set_overlay(self,
-            values: Optional[Union[Dict['EyeView', np.array], np.array]] = None,
-            range: Optional[Tuple[float, float]] = None,
-            colormap: 'Colormap' = Colormap.Thermal,
-            compression: float = 0.5,
-            autorange_perc: int = 98
-        ) -> None:
+                    values: Optional[Union[Dict['EyeView', np.array], np.array]] = None,
+                    range: Optional[Tuple[float, float]] = None,
+                    colormap: 'OverlayColormap' = OverlayColormap.Thermal,
+                    compression: float = 0.5,
+                    autorange_perc: int = 98
+                    ) -> None:
         """
         Upload data for overlay visualisation.
 
@@ -1043,7 +1043,7 @@ class Renderer:
                 overlay_fallback=True,
                 overlay_data_min=0.0,
                 overlay_data_max=1.0,
-                overlay_colormap=int(Colormap.Thermal),
+                overlay_colormap=int(OverlayColormap.Thermal),
                 overlay_compression=1.0
             )
             return
@@ -1087,7 +1087,7 @@ class Renderer:
 
             range_bound = max(self._overlay_current_peak, 1e-6)
 
-            if colormap == Colormap.Diverging:
+            if colormap == OverlayColormap.Diverging:
                 self._overlay_range = (-range_bound, range_bound)
             else:
                 self._overlay_range = (0.0, range_bound)
@@ -1484,7 +1484,7 @@ class Renderer:
                 overlay_fallback=True,
                 overlay_data_min=0.0,
                 overlay_data_max=1.0,
-                overlay_colormap=int(Colormap.Thermal),
+                overlay_colormap=int(OverlayColormap.Thermal),
                 overlay_compression=1.0
             )
             # dummy call to initialise the buffer

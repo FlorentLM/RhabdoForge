@@ -29,11 +29,10 @@ import matplotlib.pyplot as plt
 from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.helpers.acceptance import SnyderAcceptance
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
-from insectvision.types import RHAB_COLOURS
+from insectvision.types import WORLD_FORWARD, RHAB_COLOURS
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.engine.meshes import plane_geom
-from insectvision.utils import WORLD_FORWARD
 from insectvision.renderers import Renderer
 
 # Config ----------------------------------------------------------

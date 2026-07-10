@@ -6,11 +6,10 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 from insectvision.compound_eyes import Model
-from insectvision.utils import WORLD_FORWARD
 from insectvision.renderers import Renderer
 from insectvision.engine import Context, Agent, Scene, Asset
 from insectvision.utils import norm_minmax
-from insectvision.types import Colormap
+from insectvision.types import WORLD_FORWARD, OverlayColormap
 from insectvision.engine.meshes import plane_geom
 from insectvision.engine.materials_utils import checkerboard_texture
 from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD, GradientFlowDetector
@@ -251,7 +250,7 @@ def run_trial(cfg: Configuration, context: Context, renderer: 'Renderer',
         if draw:
             renderer.set_overlay(
                 {left_eye: left_motion, right_eye: right_motion},
-                colormap=Colormap.Diverging, compression=0.8)
+                colormap=OverlayColormap.Diverging, compression=0.8)
 
             context.display()
 
