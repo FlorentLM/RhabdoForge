@@ -282,13 +282,13 @@ class VisualOutput(SignalView):
         """Alias to central_signal"""
         return self.central_signal
 
-    # TODO: The str-based modes selection is crap, need to replace 
+    # TODO: The str-based modes selection is crap, need to replace
 
     def plot(self,
             ax: Optional['Axes'] = None,
             pathway: str = 'all',
-            draw_edges: bool = False,
             projection: str = 'equirectangular',
+            edgecolor: Optional[str] = None, # None for seamless, or a colour ('#000000', 'black', 'k', etc) for outlines
             gamma: float = 2.2
         ) -> 'Axes':
         """
@@ -385,9 +385,12 @@ class VisualOutput(SignalView):
             ax.grid(True, alpha=0.3)
 
         # Anti-aliasing workaround: 'face' draws a mini border of the polygon's colour over the gaps left by matplotlib
-        edge_c = 'white' if draw_edges else 'face'
-        ax.add_collection(
-            PolyCollection(polygons, facecolors=rgb, edgecolors=edge_c, linewidths=0.5, antialiaseds=True))
+        edgecolor = str(edgecolor).lower() or 'none'
+        edge_c = 'face' if edgecolor == 'none' else edgecolor
+        pc = PolyCollection(polygons, facecolors=rgb, edgecolors=edge_c, linewidths=0.5, antialiaseds=True)
+        ax.add_collection(pc)
+
+        # TODO: Add title to plot
 
         return ax
 
@@ -553,11 +556,11 @@ class VisualOutput(SignalView):
 
         ax.set_xlabel('Time step')
         ax.set_ylabel('Signal amplitude')
-        title = f"Temporal signal ({pathway})"
+        title = f'Temporal signal ({pathway})'
         if index == 'mean':
-            title += " - Global mean"
+            title += ' - Global mean'
         else:
-            title += f" - Unit {index}"
+            title += f' - Unit {index}'
         ax.set_title(title)
         ax.legend()
         ax.grid(True, alpha=0.3)
