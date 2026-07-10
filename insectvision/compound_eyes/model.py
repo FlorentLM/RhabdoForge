@@ -406,19 +406,24 @@ class Model(SpatialQueries, BaseView):
         return self._buf
 
     @property
-    def omm_indices(self):
+    def omm_indices(self) -> np.ndarray:
         return np.arange(self._N, dtype=np.intp)
 
     @property
-    def rhab_indices(self):
+    def indices(self) -> np.ndarray:
+        """Alias for omm_indices, allowing Model to duck-type as a view."""
+        return self.omm_indices
+
+    @property
+    def rhab_indices(self) -> np.ndarray:
         return np.arange(self._N * self._R, dtype=np.intp)
 
     @property
-    def rhabdomeres(self):
+    def rhabdomeres(self) -> 'RhabdomereView':
         return RhabdomereView(self, self.rhab_indices)
 
     @property
-    def ommatidia(self):
+    def ommatidia(self) -> 'OmmatidiumView':
         return OmmatidiumView(self, self.omm_indices)
 
     # Private - Data management helpers
