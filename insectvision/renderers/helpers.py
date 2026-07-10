@@ -108,7 +108,7 @@ class VisualOutput(SignalView):
     """
     Per-rhabdomere output array with various biological pathway mappings conveniences.
 
-    The renderers return a float array where the last axis is (R/UV, G, B, radiance).
+    The renderers return a float array where the last axis is (R, G, B, radiance).
     This class supports both single snapshots (shape: N, 4) and timeseries (shape: T, N, 4).
 
     Layouts / pathways:
@@ -283,14 +283,12 @@ class VisualOutput(SignalView):
         return self.central_signal
 
     def plot(self,
-             ax: Optional['Axes'] = None,
-             pathway: str = 'all',
-             false_colors: bool = False,
-             uv_encoding: bool = False,
-             draw_edges: bool = False,
-             projection: str = 'equirectangular',
-             gamma: float = 2.2
-             ) -> 'Axes':
+            ax: Optional['Axes'] = None,
+            pathway: str = 'all',
+            draw_edges: bool = False,
+            projection: str = 'equirectangular',
+            gamma: float = 2.2
+        ) -> 'Axes':
         """
         Displays the visual output as a gapless Voronoi tessellation.
         """
@@ -358,12 +356,6 @@ class VisualOutput(SignalView):
         if 'periph' in pathway:
             rgb = np.repeat(np.mean(rgb, axis=-1, keepdims=True), 3, axis=-1)
 
-        # False colour modes
-        if uv_encoding:
-            rgb[:, 2] = np.clip(rgb[:, 2] + rgb[:, 0], 0.0, 1.0)
-        elif false_colors:
-            rgb[:, 0] = 0.0
-
         # Voronoi cells on the unwrapped cylinder
         pts = np.column_stack((az, el))
         pts_left = np.column_stack((az - 2 * np.pi, el))
@@ -398,14 +390,12 @@ class VisualOutput(SignalView):
         return ax
 
     def plot_timeseries(self,
-                        ax: Optional['Axes'] = None,
-                        pathway: str = 'peripheral',
-                        false_colors: bool = False,
-                        uv_encoding: bool = False,
-                        max_items: int = 100,
-                        sort_by: str = 'azimuth',
-                        gamma: float = 2.2
-                        ) -> 'Axes':
+            ax: Optional['Axes'] = None,
+            pathway: str = 'peripheral',
+            max_items: int = 100,
+            sort_by: str = 'azimuth',
+            gamma: float = 2.2
+        ) -> 'Axes':
         """
         Plots a spatio-temporal heatmap of the visual output over time.
         """
@@ -433,7 +423,7 @@ class VisualOutput(SignalView):
                 case 'cartridge':
                     view = self.per_cartridge
                 case _:
-                    raise ValueError(f"Invalid pathway: {pathway}")
+                    raise ValueError(f'Invalid pathway: {pathway}')
         else:
             view = self
 
@@ -454,7 +444,7 @@ class VisualOutput(SignalView):
             az = self._model.rhabdomeres.azimuth
             ylabel_default = 'Rhabdomeres'
         else:
-            raise ValueError(f"Unsupported shape for timeseries: {data.shape}")
+            raise ValueError(f'Unsupported shape for timeseries: {data.shape}')
 
         plot_data = np.clip(plot_data[..., :3], 0.0, 1.0)
 
@@ -464,12 +454,6 @@ class VisualOutput(SignalView):
 
         if 'periph' in pathway:
             plot_data = np.repeat(np.mean(plot_data, axis=-1, keepdims=True), 3, axis=-1)
-
-        # False colour modes
-        if uv_encoding:
-            plot_data[..., 2] = np.clip(plot_data[..., 2] + plot_data[..., 0], 0.0, 1.0)
-        elif false_colors:
-            plot_data[..., 0] = 0.0
 
         # Transpose to (space, time, RGB) for imshow
         plot_data = np.transpose(plot_data, (1, 0, 2))
@@ -494,5 +478,86 @@ class VisualOutput(SignalView):
             ylabel = 'Ommatidia'
 
         ax.set_ylabel(ylabel + (' (sorted Left to Right)' if 'az' in sort_by else ''))
+
+        return ax
+
+    def plot_curves(self,
+            ax: Optional['Axes'] = None,
+            pathway: str = 'peripheral',
+            index: Union[int, str] = 'mean',
+            mode: str = 'rgb',
+        ) -> 'Axes':
+        """
+        Plots the temporal signal (RGB or luminance) as lines over time.
+
+        Args:
+            - ax: Optional, Matplotlib axes.
+            - pathway: The neural pathway to plot ('peripheral', 'central', 'all', etc.)
+            - index: The index of the ommatidium/rhabdomere to plot. Use 'mean' to plot the average across the whole slice.
+            - mode: 'rgb' to plot individual color channels, 'luminance' for a single intensity line.
+        """
+        import matplotlib.pyplot as plt
+
+        if not self._is_time_series:
+            raise ValueError('This visualisation requires a VisualOutput containing multiple timesteps.')
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(10, 4))
+
+        pathway = str(pathway).lower()
+        if pathway != 'all':
+            if self._coords != 'rhabdomeres':
+                raise ValueError('Cannot derive pathways from data already grouped.')
+            match pathway:
+                case 'peripheral' | 'periph':
+                    view = self.peripheral_signal
+                case 'central':
+                    view = self.central_signal
+                case 'ommatidium' | 'omm':
+                    view = self.per_ommatidium
+                case 'cartridge':
+                    view = self.per_cartridge
+                case _:
+                    raise ValueError(f'Invalid pathway: {pathway}')
+        else:
+            view = self
+
+        data = view.data
+
+        # Spatial reduction: specific index or global mean
+        if index == 'mean':
+            signal = np.mean(data, axis=1)
+        else:
+            signal = data[:, int(index)]
+
+        # If data is still grouped by Rhabdomeres, mean across R
+        if signal.ndim == 3:
+            signal = np.mean(signal, axis=1)
+
+        rgb = np.clip(signal[..., :3], 0.0, 1.0)
+
+        time_steps = np.arange(len(rgb))
+
+        if mode.lower() == 'rgb':
+            r, g, b = rgb[:, 0], rgb[:, 1], rgb[:, 2]
+
+            ax.plot(time_steps, r, color='red', label='Red', alpha=0.8)
+            ax.plot(time_steps, g, color='green', label='Green', alpha=0.8)
+            ax.plot(time_steps, b, color='blue', label='Blue', alpha=0.8)
+        else:
+            # Luminance mode
+            lum = np.mean(rgb, axis=-1)
+            ax.plot(time_steps, lum, color='black', label='Luminance')
+
+        ax.set_xlabel('Time step')
+        ax.set_ylabel('Signal amplitude')
+        title = f"Temporal signal ({pathway})"
+        if index == 'mean':
+            title += " - Global mean"
+        else:
+            title += f" - Unit {index}"
+        ax.set_title(title)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
 
         return ax
