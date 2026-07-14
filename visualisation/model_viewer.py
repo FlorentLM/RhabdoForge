@@ -301,6 +301,7 @@ class EyeViewer:
         self.actors_major_smooth = []
         self.actors_major_raw = []
         self.actors_saccade = {}
+        self.actors_decorations = []
 
         self.state_alignment_smoothed = True
         self.state_saccade_smoothed = True
@@ -364,8 +365,8 @@ class EyeViewer:
         eq = pv.Plane(center=(0, 0, 0), direction=WORLD_UP, i_size=plane_size, j_size=plane_size)
         sag = pv.Plane(center=(0, 0, 0), direction=WORLD_RIGHT, i_size=plane_size, j_size=plane_size)
 
-        self.plotter.add_mesh(eq, color=EQUATOR_COLOR, opacity=PLANE_OPAC)
-        self.plotter.add_mesh(sag, color=SAGITTAL_COLOR, opacity=PLANE_OPAC)
+        a1 = self.plotter.add_mesh(eq, color=EQUATOR_COLOR, opacity=PLANE_OPAC)
+        a2 = self.plotter.add_mesh(sag, color=SAGITTAL_COLOR, opacity=PLANE_OPAC)
 
         # Optic flow direction (big arrow at the head front)
         flow_arrow = pv.Arrow(
@@ -373,7 +374,10 @@ class EyeViewer:
             direction=self.optic_flow_world.tolist(),
             scale=self.r_sphere * 0.6,
         )
-        self.plotter.add_mesh(flow_arrow, color=FLOW_COLOR, lighting=False, opacity=0.85)
+        a3 = self.plotter.add_mesh(flow_arrow, color=FLOW_COLOR, lighting=False, opacity=0.85)
+
+        self.actors_decorations.extend([a1, a2, a3])
+
         self.plotter.add_axes(interactive=False)
 
     def _add_eye_surface(
@@ -657,7 +661,7 @@ class EyeViewer:
 
         # Mode 1: rhabdomere-tip bundles overview
         if self.R > 1:
-            tips_rel = self.model.rhabdomeres.relative_positions.reshape(self.N, self.R, 3)
+            tips_rel = self.model.rhabdomeres.relative_positions.reshape(self.N, self.R, 3) * 1.3
             pts_all = self.model.positions[:, None, :] + tips_rel
 
             is_mirrored = self.model.chirality < 0
@@ -676,7 +680,7 @@ class EyeViewer:
                 arrays = [a for a in pts_list if len(a) > 0]
                 if not arrays:
                     continue
-                act = self.plotter.add_points(np.vstack(arrays), color=color, point_size=8, render_points_as_spheres=True)
+                act = self.plotter.add_points(np.vstack(arrays), color=color, point_size=4, render_points_as_spheres=True)
 
                 self.actors_bundles.append(act)
 
@@ -994,10 +998,21 @@ class EyeViewer:
         folder = f"eye_viewer_snaps_{timestamp}"
         os.makedirs(folder, exist_ok=True)
 
+        for actor in self.actors_decorations:
+            actor.SetVisibility(False)
+
         print(f"Exporting snapshots to {folder}...")
 
-        img_array = self.plotter.screenshot(None, return_img=True, scale=3)
+        img_array = self.plotter.screenshot(
+            None,
+            return_img=True,
+            scale=3,
+            transparent_background=True
+        )
         full_img = Image.fromarray(img_array)
+
+        for actor in self.actors_decorations:
+            actor.SetVisibility(True)
 
         # grid dimensions
         rows, cols = 2, 4
@@ -1012,19 +1027,22 @@ class EyeViewer:
             (0, 3, 1, "04_saccade_axes"),
             (1, 0, 1, "05_heatmaps"),
             (1, 1, 1, "06_ioa"),
-            (1, 2, 2, "07_big_panel"),  # merged panel is 2 columns wide
+            (1, 2, 2, "07_big_panel"),
         ]
 
         for r, c, span, name in panels:
-            left = c * cw
-            top = r * rh
-            right = (c + span) * cw
-            bottom = (r + 1) * rh
+            offset_x = (span - 1) * (cw / 2)
+            left = int(c * cw + offset_x)
+            top = int(r * rh)
+            right = int(left + cw)
+            bottom = int(top + rh)
 
             panel_img = full_img.crop((left, top, right, bottom))
             path = os.path.join(folder, f"{name}.png")
             panel_img.save(path)
-            print(f"  > Saved {path}")
+            print(f"  > Saved {path} (Size: {panel_img.size})")
+
+        self.plotter.render()  # refresh to show decorations again
 
     def _setup_camera(self) -> None:
         cam_dir = WORLD_FORWARD + WORLD_RIGHT + WORLD_UP
@@ -1039,7 +1057,7 @@ class EyeViewer:
         self.plotter = pv.Plotter(
             shape=(2, 4),
             groups=[(1, slice(2, 4))],
-            window_size=list((2400, 1100)),
+            window_size=[2400, 1200],  # Changed from 1100 to 1200 (4:2 ratio)
             border=True,
         )
 
