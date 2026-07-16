@@ -26,6 +26,7 @@ from insectvision.geometry.neighbours import (
 from insectvision.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo, radius_of_curvature
 )
+from insectvision.compound_eyes.helpers.resampling import SamplingGrid, DiscreteResampler
 
 if TYPE_CHECKING:
     from insectvision.compound_eyes.model import Model
@@ -1013,6 +1014,19 @@ class SpatialQueries:
             return indices, weights.astype(np.float32)
 
         return indices
+
+    def remapper(self, target: 'SamplingGrid', k: int = 1, method: str = 'topology') -> 'DiscreteResampler':
+        """
+        Generates and caches a DiscreteResampler from this view onto the 'target' SamplingGrid.
+        """
+        key = ('remapper', id(target), self.model._spatial_version, k, method)
+
+        cached = self._spatial_store.get(key)
+        if cached is None:
+            src = SamplingGrid.from_model(self, name=repr(self))
+            cached = self._spatial_store[key] = DiscreteResampler(src, target, k=k, method=method)
+
+        return cached
 
 
 class OmmatidiumView(SpatialQueries, BaseView):
