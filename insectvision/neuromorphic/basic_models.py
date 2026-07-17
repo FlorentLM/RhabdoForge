@@ -39,12 +39,13 @@ class HassensteinReichardtEMD:
         # Baseline selection:
         # it should be large enough to capture motion but constrained by the eye's own optical 'blur'
         median_ioa = np.median(eye.interommatidial_angles[:, 0])
-        span_rad = median_ioa * 2.0  # 2-facet baseline
+        # Baseline: at least 2 ommatidia, but not less than 1.5 degrees
+        self.baseline = max(median_ioa * 2.0, np.radians(1.5))
 
         # Pooling:
         if pooling_k is None:
             # Auto: pool over the same area as the correlation span
-            self.pooling_k = max(1, int(round(span_rad / median_ioa)))
+            self.pooling_k = max(1, int(round(self.baseline / median_ioa)))
         else:
             self.pooling_k = max(1, pooling_k)
 
@@ -52,7 +53,7 @@ class HassensteinReichardtEMD:
 
         target_indices, weights = eye.directed_neighbours(
             direction=direction,
-            distance=span_rad,
+            distance=self.baseline,
             k=1,
             coordinate=coordinate,
             return_weights=True,
@@ -60,8 +61,13 @@ class HassensteinReichardtEMD:
         )
         self.local_targets, _ = eye._to_local(target_indices)
 
-        # Normalisation
-        self.weights = weights / span_rad
+        # Angular distance for every pair
+        dirs_self = self.eye.directions
+        dirs_target = self.eye.model.directions[target_indices]
+        self.delta_phi = np.arccos(np.clip(np.sum(dirs_self * dirs_target, axis=1), -1.0, 1.0))
+
+        # Normalise by the distance sampled
+        self.weights = weights / (self.delta_phi + 1e-4)
 
         self.tau_delay, self.tau_hp = tau_delay, tau_highpass
         self._mean_lum = None
@@ -151,23 +157,26 @@ class GradientFlowDetector:
 
         # Resolution-appropriate baseline for the derivative
         median_ioa = np.median(eye.interommatidial_angles[:, 0])
-        baseline = max(median_ioa, np.radians(1.5))
+        # Baseline: at least 2 ommatidia, but not less than 1.5 degrees
+        self.baseline = max(median_ioa * 2.0, np.radians(1.5))
 
         if pooling_k is None:
             # Auto: pool over the distance used for the spatial derivative
-            self.pooling_k = max(1, int(round(baseline / median_ioa)))
+            self.pooling_k = max(1, int(round(self.baseline / median_ioa)))
         else:
             self.pooling_k = max(1, pooling_k)
 
         self.pool_graph = eye._get_neighbour_graph(k=self.pooling_k)['neighbour_indices']
 
-        target_indices, self.weights = eye.directed_neighbours(
+        target_indices, weights = eye.directed_neighbours(
             direction=direction,
-            distance=baseline,
+            distance=self.baseline,
             k=1,
             coordinate=coordinate,
             return_weights=True
         )
+
+        self.weights = weights  # delta_phi used inside process()
         self.local_targets, _ = eye._to_local(target_indices)
 
         # delta phi between pooled pairs
