@@ -72,19 +72,6 @@ def get_noconflict_masks(N: int, R: int) -> 'SimpleNamespace':
     )
 
 
-def _too_similar(
-        new_key: Tuple[Hashable, ...] | Set,
-        existing_keys: Tuple[Hashable, ...] | Set,
-        threshold: float = 0.8
-    ) -> bool:
-    new_set = set(new_key)
-    for existing in existing_keys:
-        shared = len(new_set.intersection(set(existing)))
-        if shared / len(new_set) >= threshold:
-            return True
-    return False
-
-
 def _make_solver_context(model: 'Model', **p) -> 'SimpleNamespace':
     """
     Read-only template data + tuning params shared by the solver for every zone.
@@ -144,11 +131,10 @@ def _enumerate_candidates(
         ring = neighb_uv[imm]
 
         n_ring = ring.shape[0]
-        edge_flags = zone.is_edge
 
         # Anisotropic whitening is only trustworthy when the ring surrounds the point
         W = np.eye(2)
-        use_aniso = n_ring >= solver_context.min_whiten_ring and not edge_flags[i_loc]
+        use_aniso = n_ring >= solver_context.min_whiten_ring
         if use_aniso:
             C = (ring.T @ ring) / n_ring
             evals, evecs = np.linalg.eigh(C)
@@ -191,6 +177,7 @@ def _enumerate_candidates(
             continue
 
         # Dedup candidates that are essentially the same
+        W_ROUND = 3
 
         ws_dedup = {(1.0, 0.0)}     # set can't contain complex numbers so stored as tuple of floats
 
@@ -204,11 +191,12 @@ def _enumerate_candidates(
 
                 for w in ws[ok]:
                     # Rounding for dedup
-                    ws_dedup.add((float(np.round(w.real, 3)), float(np.round(w.imag, 2))))
+                    ws_dedup.add((float(np.round(w.real, W_ROUND)), float(np.round(w.imag, W_ROUND))))
 
-        omm_cands, seen = [], set()
+        # Build every candidate
+        raw = []
 
-        for wr, wi in ws_dedup:
+        for wr, wi in sorted(ws_dedup):
             w = wr + 1j * wi    # Rebuild the complex number from the tuple key
 
             d = np.where(valid_neighb[None, :], np.abs((w * tpl_i[periph])[:, None] - neighb_i[None, :]), np.inf)
@@ -216,23 +204,35 @@ def _enumerate_candidates(
             md = d[r_idx, c_idx]
             keep = (md < solver_context.assign_radius) & np.isfinite(md)
 
-            if int(keep.sum()) >= solver_context.min_snap_matches:
-                donors_g = neighb.indices[i_loc][c_idx[keep]].astype(int).tolist()
-                slots_g = periph[r_idx[keep]].astype(int).tolist()
+            if int(keep.sum()) < solver_context.min_snap_matches:
+                continue
 
-                topo = tuple(sorted(zip(slots_g, donors_g)))
+            donors_g = neighb.indices[i_loc][c_idx[keep]].astype(int).tolist()
+            slots_g = periph[r_idx[keep]].astype(int).tolist()
 
-                if topo not in seen and not _too_similar(topo, seen):
-                    seen.add(topo)
-                    omm_cands.append(
-                        WiringCandidate(
-                            solver_context.identity_bias * float(np.abs(w - 1.0)) ** 2,
-                            np.array(slots_g),
-                            np.array(donors_g),
-                            md[keep],
-                            w
-                        )
-                    )
+            topo = tuple(sorted(zip(slots_g, donors_g)))
+            cost = solver_context.identity_bias * float(np.abs(w - 1.0)) ** 2
+
+            raw.append((cost, topo, WiringCandidate(
+                cost,
+                np.array(slots_g),
+                np.array(donors_g),
+                md[keep],
+                w
+            )))
+
+        # Greedy dedup in cost order
+        raw.sort(key=lambda t: (t[0], t[1]))
+
+        omm_cands, seen = [], set()
+
+        for cost, topo, cand in raw:
+            if topo in seen:
+                continue
+            seen.add(topo)
+            omm_cands.append(cand)
+            if len(omm_cands) >= solver_context.top_k:
+                break
 
         # Plastic matching fallback
         if not omm_cands and solver_context.allow_plasticity:
@@ -254,8 +254,7 @@ def _enumerate_candidates(
                     )
                 )
 
-        omm_cands.sort(key=lambda t: t.cost)
-        candidates[i_loc] = omm_cands[:solver_context.top_k]
+        candidates[i_loc] = omm_cands
 
     return candidates, omm_geo
 
@@ -444,12 +443,8 @@ def solve_zone(zone: 'OmmatidiumView', solver_context: 'SimpleNamespace') -> Tup
     if o_count < 2:
         return [], 0, ({} if trace else None)
 
-    if trace:
-        # Query whole eye just so the trace can store different-chirality neighbours
-        eye = zone.model.eyes[zone.eye_index[0]]
-        neighb = eye.neighbours(query=zone.indices, k=min(solver_context.k_search, len(eye) - 1))
-    else:
-        neighb = zone.neighbours(query=zone.indices, k=min(solver_context.k_search, o_count - 1))
+    eye = zone.model.eyes[zone.eye_index[0]]
+    neighb = eye.neighbours(query=zone.indices, k=min(solver_context.k_search, len(eye) - 1))
 
     if not neighb:
         return [], 0, ({} if trace else None)
@@ -499,11 +494,11 @@ def solve_zone(zone: 'OmmatidiumView', solver_context: 'SimpleNamespace') -> Tup
 
 def wire_neural_superposition(
         model: 'Model',
-        assign_radius: float = 0.5,
+        assign_radius: float = 0.3,
         angular_dev: float = 40.0,
         scale_dev: float = 0.75,
         min_snap_matches: int = 2,
-        k_search: int = 20,
+        k_search: int = 18,
         top_k: int = 10,
         identity_bias: float = 0.05,
         unassigned_penalty: float = 10.0,
@@ -511,7 +506,7 @@ def wire_neural_superposition(
         plasticity_radius: float = 2.0,
         time_limit_s: float = 60.0,
         max_anisotropy: float = 3.0,
-        min_whiten_ring: int = 5,
+        min_whiten_ring: int = 3,
         n_jobs: int = -1,
         apply: bool = True,
         collect_trace: bool = False
@@ -556,9 +551,14 @@ def wire_neural_superposition(
         collect_trace=collect_trace
     )
 
-    zones = [(eye.eye_index, sign, zv)
-             for eye in model.eyes
-             for sign, zv in eye.ommatidia_by_chirality().items()]
+    zones = []
+    for eye in model.eyes:
+        if len(eye) >= 2:
+            # Warm per-eye caches
+            eye.neighbours(query=eye.indices[:1], k=min(k_search, len(eye) - 1))
+
+        for sign, zv in eye.ommatidia_by_chirality().items():
+            zones.append((eye.eye_index, sign, zv))
 
     if n_jobs == 1:
         results = [solve_zone(zone=zv, solver_context=solver_context) for _, _, zv in zones]

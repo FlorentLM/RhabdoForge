@@ -261,6 +261,7 @@ class Model(SpatialQueries, BaseView):
             method: str = 'icosphere',
             force_isotropic: bool = False,
             separation: Optional[float] = 100.0,
+            midline_eps: float = 1e-9,
             **kwargs,
         ) -> 'Model':
         """
@@ -282,15 +283,24 @@ class Model(SpatialQueries, BaseView):
         if dirs is None:
             raise ValueError("Method must be 'icosphere' or 'fibonacci'")
 
+        split_eyes = separation is not None and separation >= 0.0
+
+        if split_eyes:
+            # Drop the row exactly on the split
+            on_midline = np.abs(dirs[:, 0]) <= midline_eps
+            if on_midline.any():
+                logger.debug(f'from_sphere: dropped {int(on_midline.sum())} lens(es) on the sagittal plane')
+                dirs = dirs[~on_midline]
+
         if force_isotropic:
             # Theoretical IOA for N facets (lenses) tiled hexagonally on a sphere
-            kwargs['interommatidial_angles_rad'] = [np.sqrt((4.0 * np.pi) / (n * np.sqrt(3.0) / 2.0))] * 2
+            n_actual = len(dirs)
+            kwargs['interommatidial_angles_rad'] = [np.sqrt((4.0 * np.pi) / (n_actual * np.sqrt(3.0) / 2.0))] * 2
 
         positions = (dirs * float(eye_radius)).astype(np.float32)
 
-        split_eyes = separation is not None and separation >= 0.0
         if split_eyes:
-            right = dirs[:, 0] >= 0.0
+            right = dirs[:, 0] > 0.0  # strict: nothing sits on the plane any more
             kwargs['eye_indices'] = right.astype(np.uint32)  # 0 = left (-x), 1 = right (+x)
 
             shift = 0.5 * float(separation)

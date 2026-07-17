@@ -33,7 +33,10 @@ def tangent_frames(
     dots = np.abs(forward @ world_up)
 
     blend = np.clip((dots - 0.98) / (1.0 - 0.98), 0.0, 1.0)[:, np.newaxis]
-    ref_ups = (1.0 - blend) * world_up + blend * world_right
+    sgn = np.sign(forward @ world_right)[:, np.newaxis]
+    sgn[sgn == 0.0] = 1.0
+
+    ref_ups = (1.0 - blend) * world_up + blend * sgn * world_right
 
     right = norm_l2(np.cross(forward, ref_ups))
     up = norm_l2(np.cross(right, forward))
