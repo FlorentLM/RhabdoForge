@@ -1188,9 +1188,9 @@ if __name__ == "__main__":
 
     # aligner = BundlesAligner(
     #     equatorial_discontinuity=False,  # no equatorial discontinuity in the bee
-    #     flow_direction=WORLD_BACKWARD,   # optic flow in flight
-    #     diagonal_strength=1.0,
-    #     diagonal_angle_deg=45.0,
+    #     ref_direction=WORLD_BACKWARD,   # optic flow in flight
+    #     combing_strength=1.0,
+    #     combing_angle_deg=45.0,
     #     alignment_smoothing_iter=4,
     #     saccade_smoothing_iter=5,
     # )

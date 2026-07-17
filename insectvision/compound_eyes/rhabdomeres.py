@@ -499,7 +499,7 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
 
     # R1-R6 panchromatic, R7/8 strong UV bias
     sensitivity = np.ones((7, 3), dtype=np.float32)
-    sensitivity[6] = [1.0, 0.2, 0.6]
+    # sensitivity[6] = [1.0, 0.2, 0.6]      # using human colours for now
 
     return RhabdomereBundle(
         name=name,
@@ -545,10 +545,12 @@ def honeybee_bundle(name: str = 'Honeybee') -> RhabdomereBundle:
     # - 1 Basal cell (R9) - typically UV or Green
 
     # Sensitivities in [UV, Green, Blue] channels
-    sens = np.zeros((9, 3), dtype=np.float32)
-    sens[[1, 2]] = [1.0, 0.0, 0.0]              # UV
-    sens[[5, 6]] = [0.0, 0.0, 1.0]              # Blue
-    sens[[0, 3, 4, 7, 8]] = [0.0, 1.0, 0.0]     # Green
+    # sens = np.zeros((9, 3), dtype=np.float32)
+    # sens[[1, 2]] = [1.0, 0.0, 0.0]              # UV
+    # sens[[5, 6]] = [0.0, 0.0, 1.0]              # Blue
+    # sens[[0, 3, 4, 7, 8]] = [0.0, 1.0, 0.0]     # Green
+
+    sens = np.ones((9, 3), dtype=np.float32)    # Using human colours for now
 
     wavelengths = np.zeros(9, dtype=np.float32)
     wavelengths[[1, 2]] = 340.0
