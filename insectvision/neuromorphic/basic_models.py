@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 import numpy as np
 from numpy.typing import ArrayLike
 
@@ -25,37 +25,47 @@ class HassensteinReichardtEMD:
     """
 
     def __init__(self,
-                 eye: 'EyeView',
-                 direction: ArrayLike,
-                 tau_delay: float = 0.020,      # 20 ms
-                 tau_highpass: float = 0.08,    # 80 ms
-                 target_velocity: float = 5.0,  # rad/s
-                 pooling_k: int = 1,
-                 coordinate='cartesian'
-                 ):
+            eye: 'EyeView',
+            direction: ArrayLike,
+            tau_delay: float = 0.020,      # 20 ms
+            tau_highpass: float = 0.08,    # 80 ms
+            pooling_k: Optional[int] = None,
+            coordinate='cartesian'
+        ):
 
         self.eye = eye
         self.local_indices = np.arange(len(eye))
-        self.pool_graph = eye._get_neighbour_graph(k=pooling_k)['neighbour_indices']
 
-        self.tau_delay = tau_delay
-        self.tau_hp = tau_highpass
+        # Baseline selection:
+        # it should be large enough to capture motion but constrained by the eye's own optical 'blur'
+        median_ioa = np.median(eye.interommatidial_angles[:, 0])
+        span_rad = median_ioa * 2.0  # 2-facet baseline
 
-        self._mean_lum = None
-        self.last_estimate = 0.0
+        # Pooling:
+        if pooling_k is None:
+            # Auto: pool over the same area as the correlation span
+            self.pooling_k = max(1, int(round(span_rad / median_ioa)))
+        else:
+            self.pooling_k = max(1, pooling_k)
 
-        # Required spatial span to match the velocity and delay
-        # Δφ = ω * τ
-        span_rad = target_velocity * tau_delay
+        self.pool_graph = eye._get_neighbour_graph(k=self.pooling_k)['neighbour_indices']
 
-        target_indices, self.weights = eye.directed_neighbours(
+        target_indices, weights = eye.directed_neighbours(
             direction=direction,
             distance=span_rad,
             k=1,
             coordinate=coordinate,
-            return_weights=True
+            return_weights=True,
+            k_search=20
         )
         self.local_targets, _ = eye._to_local(target_indices)
+
+        # Normalisation
+        self.weights = weights / span_rad
+
+        self.tau_delay, self.tau_hp = tau_delay, tau_highpass
+        self._mean_lum = None
+        self.last_estimate = 0.0
 
         # Split ON/OFF delay lines
         self._delayed_ON_A = None
@@ -76,7 +86,9 @@ class HassensteinReichardtEMD:
             return np.zeros(len(self.eye), dtype=np.float32)
 
         self._mean_lum += alpha_hp * (luminance - self._mean_lum)
-        contrast = (luminance - self._mean_lum) / (self._mean_lum + 1e-6)
+
+        # Contrast normalisation (L1-style)
+        contrast = (luminance - self._mean_lum) / (self._mean_lum + 1e-2)
 
         # Split into ON (L1->T4) and OFF (L2->T5) pathways
         signal_ON = np.maximum(contrast, 0.0)
@@ -87,7 +99,7 @@ class HassensteinReichardtEMD:
         A_OFF = signal_OFF[self.local_indices]
         B_OFF = signal_OFF[self.local_targets]
 
-        # Medulla delay lines
+        # Correlation with delay
         alpha_delay = dt / (self.tau_delay + dt)
 
         if self._delayed_ON_A is None:
@@ -102,17 +114,14 @@ class HassensteinReichardtEMD:
         self._delayed_OFF_A += alpha_delay * (A_OFF - self._delayed_OFF_A)
         self._delayed_OFF_B += alpha_delay * (B_OFF - self._delayed_OFF_B)
 
-        # Correlate ON with ON, OFF with OFF
         motion_ON = B_ON * self._delayed_ON_A - A_ON * self._delayed_ON_B
         motion_OFF = B_OFF * self._delayed_OFF_A - A_OFF * self._delayed_OFF_B
 
-        # Recombine T4 and T5 (this is per lens)
-        total_motion = (motion_ON + motion_OFF) * self.weights
+        # Saturation and output
+        total_motion = np.tanh(motion_ON + motion_OFF) * self.weights
 
-        # A EMD is arguably direction-specific and should not return negative values
-        # total_motion = np.maximum(total_motion, 0.0)
-
-        self.last_estimate = np.mean(total_motion)  # estimate is the mean over the whole eye
+        # Pooling for the control estimate
+        self.last_estimate = np.median(total_motion)
 
         return total_motion
 
@@ -130,25 +139,31 @@ class GradientFlowDetector:
     """
 
     def __init__(self,
-        eye: 'EyeView',
-        direction: ArrayLike,
-        target_velocity: float = 5.0,
-        pooling_k: int = 1,
-        coordinate: str = 'cartesian',
-        eps: float = 1e-9,
-        tau_smooth: float = 0.05    # 50 ms smoothing time constant
+            eye: 'EyeView',
+            direction: ArrayLike,
+            tau_smooth: float = 0.05,  # 50 ms smoothing time constant
+            pooling_k: Optional[int] = None,
+            coordinate: str = 'cartesian'
         ):
 
         self.eye = eye
         self.local_indices = np.arange(len(eye))
-        self.pool_graph = eye._get_neighbour_graph(k=pooling_k)['neighbour_indices']
 
-        span_rad = target_velocity * tau_smooth
-        span_rad = float(np.clip(span_rad, 0.0, np.radians(15.0)))
+        # Resolution-appropriate baseline for the derivative
+        median_ioa = np.median(eye.interommatidial_angles[:, 0])
+        baseline = max(median_ioa, np.radians(1.5))
+
+        if pooling_k is None:
+            # Auto: pool over the distance used for the spatial derivative
+            self.pooling_k = max(1, int(round(baseline / median_ioa)))
+        else:
+            self.pooling_k = max(1, pooling_k)
+
+        self.pool_graph = eye._get_neighbour_graph(k=self.pooling_k)['neighbour_indices']
 
         target_indices, self.weights = eye.directed_neighbours(
             direction=direction,
-            distance=span_rad,
+            distance=baseline,
             k=1,
             coordinate=coordinate,
             return_weights=True
@@ -158,9 +173,8 @@ class GradientFlowDetector:
         # delta phi between pooled pairs
         dirs_self = self.eye.directions
         dirs_target = self.eye.model.directions[target_indices]
-        self.delta_phi = np.arccos(np.clip(np.sum(dirs_self * dirs_target, axis=1), -1.0, 1.0))
+        self.delta_phi = np.maximum(np.arccos(np.clip(np.sum(dirs_self * dirs_target, axis=1), -1.0, 1.0)), 1e-4)
 
-        self.eps = eps
         self.tau_smooth = tau_smooth
 
         self._prev_self = None      # previous-frame home-lens luminance
@@ -187,7 +201,7 @@ class GradientFlowDetector:
         I_x = 0.5 * ((I_target - I_self) + (self._prev_target - self._prev_self)) / self.delta_phi
 
         # Average temporal gradient across self and target lenses
-        I_t = 0.5 * ((I_self - self._prev_self) + (I_target - self._prev_target)) / dt
+        I_t_grad = 0.5 * ((I_self - self._prev_self) + (I_target - self._prev_target)) / dt
 
         self._prev_self = I_self.copy()
         self._prev_target = I_target.copy()
@@ -195,15 +209,16 @@ class GradientFlowDetector:
         # Pooled (Lucas-Kanade) estimate: ratio of sums -> A/k cancellation
         alpha = dt / (self.tau_smooth + dt)
 
-        inst_num = np.sum(self.weights * I_t * I_x)
+        inst_num = np.sum(self.weights * I_t_grad * I_x)
         inst_den = np.sum(self.weights * I_x * I_x)
         self._num_ema += alpha * (inst_num - self._num_ema)
         self._den_ema += alpha * (inst_den - self._den_ema)
 
-        den_floor = 1e-3 * self.weights.sum()  # scale to pooled magnitude
-        self.last_estimate = float(np.clip(abs(-self._num_ema / (self._den_ema + den_floor)), 0.0, 1000.0))
+        # Dynamic stability floor
+        den_floor = 1e-4 + 0.05 * np.max(self._den_ema)
+        self.last_estimate = float(abs(-self._num_ema / (self._den_ema + den_floor)))
 
         # Per-lens local velocity (for the heatmap overlay and the mean balance)
-        v_local = -(I_t * I_x) / (I_x * I_x + 1e-3)
+        v_local = -(I_t_grad * I_x) / (I_x * I_x + 1e-3)
 
         return (v_local * self.weights).astype(np.float32)

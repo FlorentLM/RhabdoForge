@@ -1,18 +1,24 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
-import matplotlib
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+from matplotlib.lines import Line2D
+from matplotlib.markers import MarkerStyle
+from matplotlib.path import Path
+from matplotlib.transforms import Affine2D
 
 from insectvision.compound_eyes import Model
 from insectvision.renderers import Renderer
 from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.utils import norm_minmax
 from insectvision.types import WORLD_FORWARD, OverlayColormap
 from insectvision.engine.meshes import plane_geom
 from insectvision.engine.materials_utils import checkerboard_texture
 from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD, GradientFlowDetector
+
+from visualisation.plot_settings import (
+    PlotSettings, Z_RASTER, Z_TEXT, panel_letter, column_header, row_header, placeholder
+)
 
 # Configuration
 
@@ -62,11 +68,11 @@ class Configuration:
 
     # Eyes param
     tau_membrane: float = 0.012
-    eye_model_path: str = 'assets/drosophila_scaffold.npz'
-    # eye_model_path: str = 'assets/honeybee_scaffold_s10.npz'
+    # eye_model_path: str = 'assets/drosophila_scaffold.npz'
+    eye_model_path: str = 'assets/honeybee_scaffold_s10.npz'
 
     # EMD params
-    emd_pooling: int = 1
+    emd_pooling: Optional[int] = None       # auto
 
     # Batch
     n_trials: int = 1
@@ -180,11 +186,8 @@ def run_trial(cfg: Configuration, context: Context, renderer: 'Renderer',
 
     EMD = MODEL_CLASS[model_name]
 
-    # Tuning the EMD to the expected forward velocity
-    target_v = cfg.flight_speed / (cfg.width / 2.0)  # expected angular velocity at tunnel centre
-
-    left_emd = EMD(eye=left_eye, direction=-WORLD_FORWARD, target_velocity=target_v, pooling_k=cfg.emd_pooling)
-    right_emd = EMD(eye=right_eye, direction=-WORLD_FORWARD, target_velocity=target_v, pooling_k=cfg.emd_pooling)
+    left_emd = EMD(eye=left_eye, direction=-WORLD_FORWARD, pooling_k=cfg.emd_pooling)
+    right_emd = EMD(eye=right_eye, direction=-WORLD_FORWARD, pooling_k=cfg.emd_pooling)
 
     log = RunLog()
     w, l = cfg.width, cfg.length
@@ -344,21 +347,40 @@ def _representative(runs: List[RunLog]) -> RunLog:
     return runs[int(np.argsort(key)[len(key) // 2])]
 
 
+NEEDLE = Path([(0.0, 0.0), (1.0, 0.0)])
+
+def _steady_offset(run: RunLog, cfg: Configuration, last_frac: float = 0.25) -> float:
+    """Signed mean lateral position over the final `last_frac` of the tunnel."""
+
+    x = run.arr('x')
+    d = run.dist
+    if x.size == 0:
+        return np.nan
+
+    return float(np.mean(x[d >= d.max() - last_frac * cfg.length]))
+
+
 def _trajectory_panel(
         ax,
         results: Results,
         wall_condition: str,
         model_name: str,
         cfg: Configuration,
-        title: str
+        s: PlotSettings,
+        show_xlabel: bool = True,
+        show_ylabel: bool = True,
+        show_legend: bool = False
     ):
+
+    # Everything below Z_RASTER is flattened to pixels on PDF/EPS export
+    ax.set_rasterization_zorder(Z_RASTER)
 
     for mode in (MODE_YAW, MODE_STRAFE):
         runs = results.get((wall_condition, mode, model_name), [])
         colour = MODE_COLOUR[mode]
 
         for r in runs:
-            ax.plot(r.dist, r.arr('x'), color=colour, lw=0.8, alpha=0.22, zorder=2)
+            ax.plot(r.dist, r.arr('x'), color=colour, lw=0.5, alpha=0.22, zorder=2)
 
         rep = _representative(runs)
 
@@ -371,116 +393,228 @@ def _trajectory_panel(
         samples = np.linspace(d.min(), d.max(), cfg.n_quivers + offset)
         idx = np.clip(np.searchsorted(d, samples), 0, d.size - 1)
 
+        yaws = rep.arr('yaw')
+
         for i in idx:
             ax.plot(d[i], x[i],
                     marker='o',
-                    markersize=8,
+                    markersize=3.2,
                     markerfacecolor=colour,
-                    markeredgewidth=1.5,
+                    markeredgewidth=0.5,
                     markeredgecolor='white',
-                    zorder=6)
-
-            yw = rep.arr('yaw')[i]
-
-            t = matplotlib.markers.MarkerStyle(marker='_')
-            t._transform = t.get_transform().translate(0.5, 0.0).rotate_deg(yw)
+                    zorder=Z_RASTER + 2)
 
             ax.plot(d[i], x[i],
-                    marker=t,
-                    markersize=10,
+                    marker=MarkerStyle(NEEDLE, transform=Affine2D().scale(0.5).rotate_deg(yaws[i])),
+                    markersize=5.0,
                     color=colour,
-                    zorder=7)
-
-        ax.plot([], [], color=colour, label=mode, lw=1.1, zorder=0)
+                    markeredgewidth=0.8,
+                    zorder=Z_RASTER + 3)
 
     half_width = cfg.width / 2
     lim = half_width * 1.25
 
-    ax.axhline(0.0, color='k', ls='--', lw=0.6)
-    ax.axhline(-half_width, color='grey', lw=1.0)
-    ax.axhline(half_width, color='grey', lw=1.0)
+    ax.axhline(0.0, color=s.frame, ls='--', lw=0.5, zorder=1)
+    ax.axhline(-half_width, color=s.dark, lw=1.0, zorder=1)
+    ax.axhline(half_width, color=s.dark, lw=1.0, zorder=1)
 
     ax.set_xlim(0, cfg.length)
     ax.set_ylim(-lim, lim)
+    ax.set_yticks([-half_width, 0.0, half_width])
+    ax.tick_params(labelsize=s.base)
 
-    ax.set_xlabel('Distance down tunnel (m)')
-    ax.set_ylabel('R ←  Position x (m)  → L')
+    if show_xlabel:
+        ax.set_xlabel('Distance down tunnel (m)', fontsize=s.small)
+    else:
+        ax.tick_params(labelbottom=False)
+
+    if show_ylabel:
+        ax.set_ylabel('R  $\\leftarrow$  Position x (m)  $\\rightarrow$  L', fontsize=s.small)
+    else:
+        ax.tick_params(labelleft=False)
+
     ax.invert_yaxis()   # Left on top
 
-    ax.set_title(title)
+    if show_legend:
+        handles = [Line2D([0], [0], color=MODE_COLOUR[m], lw=1.4, label=MODE_LABEL[m])
+                   for m in (MODE_YAW, MODE_STRAFE)]
+        leg = ax.legend(handles=handles, fontsize=s.tiny, loc='lower right',
+                        ncol=2, handlelength=1.1, handletextpad=0.4,
+                        columnspacing=0.9, borderpad=0.25)
+        leg.get_frame().set_edgecolor(s.frame)
+        leg.get_frame().set_linewidth(0.3)
+        leg.get_frame().set_facecolor('white')
+        leg.get_frame().set_alpha(0.92)
+        leg.set_zorder(Z_TEXT)
 
-    ax.legend(fontsize=7, loc='upper right')
 
+def _flow_panel(ax, results: Results, cfg: Configuration, s: PlotSettings):
+    """Bilateral flow + balance error for one representative run."""
 
-def make_figure(
-        results: Results,
-        cfg: Configuration
-) -> plt.Figure:
+    ax.set_rasterization_zorder(Z_RASTER)
 
-    fig = plt.figure(figsize=(11, 17), constrained_layout=True)
-    fig.suptitle('Optic-flow centering', fontsize=14, fontweight='bold')
-
-    # Row 0: summary, Rows 1-2: HRC / gradient trajectories, Row 3: flow + error
-    gs = GridSpec(4, 2, figure=fig, height_ratios=[1.0, 0.9, 0.9, 0.9])
-
-    # A: task-summary placeholder
-    axA = fig.add_subplot(gs[0, :])
-    axA.text(0.5, 0.5, '(graphical summary)',
-             ha='center', va='center', fontsize=12, color='grey',
-             transform=axA.transAxes)
-
-    axA.set_xticks([])
-    axA.set_yticks([])
-
-    asym_title = f'Asymmetric walls (right {cfg.asym_factor}x larger)'
-
-    # Row 1: Hassenstein-Reichardt correlator
-    _trajectory_panel(fig.add_subplot(gs[1, 0]), results, WALL_SYMMETRIC, MODEL_HRC, cfg,
-                      f'{MODEL_LABEL[MODEL_HRC]} — Symmetric walls')
-    _trajectory_panel(fig.add_subplot(gs[1, 1]), results, WALL_ASYMMETRIC, MODEL_HRC, cfg,
-                      f'{MODEL_LABEL[MODEL_HRC]} — {asym_title}')
-
-    # Row 2: Gradient (ratio) detector
-    _trajectory_panel(fig.add_subplot(gs[2, 0]), results, WALL_SYMMETRIC, MODEL_GRADIENT, cfg,
-                      f'{MODEL_LABEL[MODEL_GRADIENT]} — Symmetric walls')
-    _trajectory_panel(fig.add_subplot(gs[2, 1]), results, WALL_ASYMMETRIC, MODEL_GRADIENT, cfg,
-                      f'{MODEL_LABEL[MODEL_GRADIENT]} — {asym_title}')
-
-    # D: bilateral flow + balance error (representative HRC symmetric-yaw)
-    axD = fig.add_subplot(gs[3, :])
     rep = _representative(results.get((WALL_SYMMETRIC, MODE_YAW, MODEL_HRC), []))
-
-    left_flow = rep.arr('left_flow')
-    right_flow = rep.arr('right_flow')
-
-    left_flow_norm = norm_minmax(left_flow)
-    right_flow_norm = norm_minmax(right_flow)
-
-    err = rep.arr('error')
     dist = rep.dist
 
-    axD.plot(dist, left_flow_norm, color=COL_LEFT, lw=0.9, alpha=0.8, label='left eye')
-    axD.plot(dist, right_flow_norm, color=COL_RIGHT, lw=0.9, alpha=0.8, label='right eye')
+    l_raw = rep.arr('left_flow')
+    r_raw = rep.arr('right_flow')
 
-    axD.axhline(0.0, color='k', ls='--', lw=0.5)
-    axD.set_xlabel('Distance down tunnel (m)')
-    axD.set_ylabel('Mean EMD response')
-    axD.set_ylim(-0.05, 1.05)
+    # min/max across both eyes for this trial
+    g_min = min(l_raw.min(), r_raw.min())
+    g_max = max(l_raw.max(), r_raw.max())
 
-    axD.set_title('Bilateral flow & balance error')
-    axD.legend(fontsize=7, loc='upper left')
+    left_flow_norm = (l_raw - g_min) / (g_max - g_min + 1e-6)
+    right_flow_norm = (r_raw - g_min) / (g_max - g_min + 1e-6)
 
-    axErr = axD.twinx()
+    ax.plot(dist, left_flow_norm, color=COL_LEFT, lw=s.curve_lw, alpha=0.85,
+            label='left eye', zorder=4)
+    ax.plot(dist, right_flow_norm, color=COL_RIGHT, lw=s.curve_lw, alpha=0.85,
+            label='right eye', zorder=4)
 
-    axErr.plot(dist, err, color='grey', lw=0.8, alpha=0.7)
-    axErr.axhline(0.0, color='grey', ls='--', lw=0.5)
-    axErr.set_ylabel('balance error', color='grey')
+    ax.axhline(0.0, color=s.frame, ls='--', lw=0.5, zorder=1)
+    ax.set_xlim(0, cfg.length)
+    ax.set_ylim(-0.05, 1.05)
+
+    ax.set_xlabel('Distance down tunnel (m)', fontsize=s.small)
+    ax.set_ylabel('Mean EMD response', fontsize=s.small)
+    ax.tick_params(labelsize=s.base)
+
+    ax.set_title('Bilateral flow & balance error', fontsize=s.title,
+                 loc='left', pad=11)
+
+    # -> which of the eight cells this representative run came from
+    ax.annotate(f'{MODEL_LABEL[MODEL_HRC]} / {MODE_LABEL[MODE_YAW].lower()} / symmetric',
+                xy=(0.0, 1.012), xycoords='axes fraction', ha='left', va='bottom',
+                fontsize=s.tiny, color=s.frame)
+
+    axErr = ax.twinx()
+    axErr.plot(dist, rep.arr('error'), color=s.frame, lw=0.7, alpha=0.9,
+               zorder=3, label='balance error')
+    axErr.set_ylabel('Balance error', color=s.frame, fontsize=s.small)
     axErr.set_ylim(-1.05, 1.05)
-    axErr.tick_params(axis='y', colors='grey')
+    axErr.tick_params(axis='y', colors=s.frame, labelsize=s.base)
+    axErr.spines['right'].set_color(s.frame)
+
+    handles = [Line2D([0], [0], color=COL_LEFT, lw=1.2, label='Left eye'),
+               Line2D([0], [0], color=COL_RIGHT, lw=1.2, label='Right eye'),
+               Line2D([0], [0], color=s.frame, lw=1.0, label='Balance error')]
+    leg = ax.legend(handles=handles, fontsize=s.tiny, loc='upper left',
+                    handlelength=1.1, handletextpad=0.4, borderpad=0.25,
+                    labelspacing=0.2)
+
+    leg.get_frame().set_edgecolor(s.frame)
+    leg.get_frame().set_linewidth(0.3)
+
+    leg.set_zorder(Z_TEXT)
+
+
+def _offset_panel(ax, results: Results, cfg: Configuration, s: PlotSettings):
+    """
+    Steady-state lateral offset per cell: does the agent hold the midline?
+    """
+
+    cells = [(WALL_SYMMETRIC, MODEL_HRC), (WALL_ASYMMETRIC, MODEL_HRC),
+             (WALL_SYMMETRIC, MODEL_GRADIENT), (WALL_ASYMMETRIC, MODEL_GRADIENT)]
+    half_width = cfg.width / 2
+
+    ax.axhspan(-half_width, half_width, color=s.grid, zorder=0)
+    ax.axhline(0.0, color=s.frame, ls='--', lw=0.5, zorder=1)
+
+    for j, cell in enumerate(cells):
+        for k, mode in enumerate((MODE_YAW, MODE_STRAFE)):
+
+            offs = np.array(
+                [_steady_offset(r, cfg) for r in results.get((cell[0], mode, cell[1]), [])]
+            )
+
+            offs = offs[np.isfinite(offs)]
+            if offs.size == 0:
+                continue
+
+            xpos = j + (k - 0.5) * 0.30
+            jitter = np.zeros_like(offs) if offs.size == 1 else np.linspace(-0.055, 0.055, offs.size)
+
+            ax.plot(xpos + jitter, offs, ls='none', marker='o', ms=2.4,
+                    mfc=MODE_COLOUR[mode], mec='white', mew=0.3, alpha=0.9, zorder=4)
+            ax.plot([xpos - 0.10, xpos + 0.10], [np.median(offs)] * 2,
+                    color=s.dark, lw=1.1, solid_capstyle='butt', zorder=5)
+
+    ax.set_xticks(range(len(cells)))
+
+    ax.set_xticklabels(['Sym', 'Asym', 'Sym', 'Asym'], fontsize=s.small)
+
+    ax.set_xlim(-0.5, len(cells) - 0.5)
+    ax.set_ylim(-half_width * 1.25, half_width * 1.25)
+
+    ax.set_yticks([-half_width, 0.0, half_width])
+
+    ax.invert_yaxis()
+
+    ax.tick_params(labelsize=s.base)
+    ax.set_ylabel('R  $\\leftarrow$  x (m)  $\\rightarrow$  L', fontsize=s.small)
+
+    ax.set_title('Steady-state offset (final 25% of tunnel)',
+                 fontsize=s.title, loc='left', pad=3)
+
+    # Group the four cells into their two models along the bottom.
+    for xc, label in ((0.5, MODEL_LABEL[MODEL_HRC]), (2.5, MODEL_LABEL[MODEL_GRADIENT])):
+        ax.annotate(label, xy=(xc, -0.135), xycoords=('data', 'axes fraction'),
+                    ha='center', va='top', fontsize=s.tiny, color=s.dark,
+                    annotation_clip=False)
+
+    ax.annotate('median', xy=(0.99, 0.03), xycoords='axes fraction',
+                ha='right', va='bottom', fontsize=s.tiny, color=s.dark)
+
+
+def make_figure(results: Results, cfg: Configuration, s: Optional[PlotSettings] = None) -> plt.Figure:
+
+    s = (s or PlotSettings.nature_double(height_mm=170.0)).apply()
+
+    fig = s.new_figure()
+
+    gs = GridSpec(3, 1, figure=fig, height_ratios=[0.50, 2.00, 0.90], hspace=0.40)
+    gsB = gs[1].subgridspec(2, 2, hspace=0.14, wspace=0.10)
+    gsCD = gs[2].subgridspec(1, 2, wspace=0.46)
+
+    # A: task-summary placeholder
+    axA = fig.add_subplot(gs[0])
+    placeholder(axA, s,'(schematic: tunnel geometry, etc)')
+
+    # B: 2 models x 2 wall conditions
+    cells = {}
+    for i, model_name in enumerate((MODEL_HRC, MODEL_GRADIENT)):
+        for j, wall in enumerate((WALL_SYMMETRIC, WALL_ASYMMETRIC)):
+            ax = fig.add_subplot(gsB[i, j])
+            _trajectory_panel(ax, results, wall, model_name, cfg, s,
+                              show_xlabel=(i == 1),
+                              show_ylabel=(j == 0),
+                              show_legend=(i == 0 and j == 0))
+            cells[(i, j)] = ax
+
+    # C / D: mechanism and outcome
+    axC = fig.add_subplot(gsCD[0])
+    _flow_panel(axC, results, cfg, s)
+
+    axD = fig.add_subplot(gsCD[1])
+    _offset_panel(axD, results, cfg, s)
+
+    fig.subplots_adjust(left=0.135, right=0.955, top=0.945, bottom=0.075)
+
+    column_header(fig, s, cells[(0, 0)], 'Symmetric walls')
+    column_header(fig, s, cells[(0, 1)],
+                  f'Asymmetric walls (right {cfg.asym_factor}$\\times$ larger)')
+    row_header(fig, s, cells[(0, 0)], MODEL_LABEL[MODEL_HRC], dx=0.098, colour=s.dark)
+    row_header(fig, s, cells[(1, 0)], MODEL_LABEL[MODEL_GRADIENT], dx=0.098, colour=s.dark)
+
+    panel_letter(fig, s, 'A', axA)
+    panel_letter(fig, s, 'B', cells[(0, 0)], dx=-0.076, dy=0.030)
+    panel_letter(fig, s, 'C', axC, dx=-0.014)
+    panel_letter(fig, s, 'D', axD, dx=-0.014)
 
     return fig
 
-# --------------------------------------------------------------------------
+
+## --------------------------------------------------------------------------
 
 if __name__ == '__main__':
 
@@ -488,8 +622,6 @@ if __name__ == '__main__':
 
     results = run_all_trials(cfg)
 
-    fig = make_figure(results, cfg)
-    fig.savefig('centering_figure.png', dpi=200)
-    # fig.savefig('centering_figure.svg', format='svg')
-
-    plt.show()
+    settings = PlotSettings.nature_double(height_mm=170.0)
+    fig = make_figure(results, cfg, settings)
+    settings.savefig(fig, 'centering_figure', formats=['png', 'pdf', 'svg'])

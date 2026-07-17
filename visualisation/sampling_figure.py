@@ -11,125 +11,10 @@ from matplotlib.lines import Line2D
 from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
 from insectvision.LUTs import airy_sensitivity_lut
 
-MM_PER_IN = 25.4
+from visualisation.plot_settings import (
+    PlotSettings, Z_RASTER, Z_TEXT, panel_letter, column_header, row_header, despine, placeholder
+) # TODO: now that these are in a module, use them here
 
-
-# TODO: Move this dataclass somewhere else and use it for other figures
-
-@dataclass
-class PlotSettings:
-
-    width_mm: float = 183.0            # Nature double column (PLOS max 190.5)
-    height_mm: Optional[float] = None  # if None, derived from 'aspect'
-    aspect: float = 0.95               # height / width when height_mm is None
-    dpi: int = 600                     # raster image export (PNG/TIFF)
-    raster_dpi: int = 300              # resolution of rasterised layers inside EPS/PDF (halftone min)
-    screen_dpi: int = 100              # on-screen dpi for the interactive viewer (NOT the export dpi)
-
-    font_family: Sequence[str] = ('Arial', 'Helvetica', 'DejaVu Sans')
-    base: float = 7.0                  # body text + tick labels
-    small: float = 6.5                 # secondary annotations, legends
-    tiny: float = 6.0                  # densest labels
-    title: float = 8.0                 # panel titles
-    header: float = 8.5                # column / row-group headers
-    initials: float = 14               # Big letters for subfigures (A, B, C ...)
-
-    axis_lw: float = 0.6
-    curve_lw: float = 0.8
-    grid_lw: float = 0.5
-
-    bg: str = 'white'
-    yellorange: str = '#FFC32F'
-    green: str = '#27AE60'
-    blue: str = '#2980B9'
-    red: str = '#C0392B'
-    dark: str = '#34495E'
-    frame: str = '#7F8C8D'
-    grid: str = '#EAECEE'
-
-    formats: Sequence[str] = ('eps', 'pdf', 'png')
-    rasterize: bool = True
-
-    @property
-    def width_in(self) -> float:
-        return self.width_mm / MM_PER_IN
-
-    @property
-    def height_in(self) -> float:
-        if self.height_mm is not None:
-            return self.height_mm / MM_PER_IN
-        return self.width_in * self.aspect
-
-    @property
-    def figsize(self):
-        return (self.width_in, self.height_in)
-
-    def apply(self) -> 'PlotSettings':
-        import shutil
-        import platform
-        if 'Windows' in platform.system():
-            gs_bin = 'gswin64c'
-        else:
-            gs_bin = 'gs'
-        if shutil.which(gs_bin):
-            plt.rcParams['ps.usedistiller'] = 'ghostscript'
-
-        plt.rcParams.update({
-            'font.family': 'sans-serif',
-            'font.sans-serif': list(self.font_family),
-            'font.size': self.base,
-            'axes.titlesize': self.title,
-            'axes.titleweight': 'normal',
-            'axes.labelsize': self.base,
-            'xtick.labelsize': self.base,
-            'ytick.labelsize': self.base,
-            'legend.fontsize': self.small,
-            'axes.linewidth': self.axis_lw,
-            'xtick.major.width': self.axis_lw,
-            'ytick.major.width': self.axis_lw,
-            'lines.linewidth': self.curve_lw,
-            'mathtext.fontset': 'dejavusans',
-            'axes.unicode_minus': True,
-            'svg.fonttype': 'none',
-            'pdf.fonttype': 42,   # embed TrueType in PDF
-            'ps.fonttype': 42,    # embed TrueType in EPS/PS
-            'ps.useafm': False,
-            'figure.dpi': self.screen_dpi,   # only interactive window, export dpi is set in savefig()
-            'savefig.dpi': self.dpi,
-            'figure.facecolor': self.bg,
-            'savefig.facecolor': self.bg,
-        })
-        return self
-
-    def new_figure(self) -> plt.Figure:
-        return plt.figure(figsize=self.figsize, dpi=self.screen_dpi, facecolor=self.bg)
-
-    def savefig(self, fig: plt.Figure, name: str, formats: Optional[Sequence[str]] = None):
-        raster_exts = {'png', 'tif', 'tiff', 'jpg', 'jpeg'}
-        for ext in (formats or self.formats):
-            dpi = self.dpi if ext.lower() in raster_exts else self.raster_dpi
-            fig.savefig(f'{name}.{ext}', format=ext, dpi=dpi, facecolor=self.bg)
-
-    @classmethod
-    def nature_double(cls, **kw) -> 'PlotSettings':
-        """Nature double column: 183 mm, 5-7 pt type."""
-        return cls(width_mm=183.0, base=7.0, small=6.5, tiny=6.0,
-                   title=8.0, header=8.5, dpi=600, **kw)
-
-    @classmethod
-    def nature_single(cls, **kw) -> 'PlotSettings':
-        """Nature single column: 89 mm."""
-        return cls(width_mm=89.0, base=6.0, small=5.5, tiny=5.0,
-                   title=7.0, header=7.0, dpi=600, **kw)
-
-    @classmethod
-    def plos(cls, **kw) -> 'PlotSettings':
-        """PLOS: up to 190.5 mm, 8-12 pt type."""
-        return cls(width_mm=183.0, base=8.0, small=7.0, tiny=7.0,
-                   title=9.0, header=9.5, dpi=600, **kw)
-
-
-# ===========================================================================
 
 # Model / content config
 
@@ -157,10 +42,6 @@ SPREAD_MULT = 2.0          # proposal = spread_mult * acceptance
 AIRY_LUT_RES = 256
 AIRY_RANGE = 4.0
 AIRY_LUT = airy_sensitivity_lut(AIRY_LUT_RES, range=AIRY_RANGE)
-
-# zorder threshold: everything below this goes into one rasterised layer per ax (EPS-safe translucency)
-Z_RASTER = 8.0
-Z_TEXT = 12.0   # text remains vector
 
 # Line widths
 
