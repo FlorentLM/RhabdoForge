@@ -307,6 +307,10 @@ class EyeViewer:
         self.state_saccade_smoothed = True
         self.state_meshing_debug = False
 
+        self.state_refined = False
+        self._unrefined_state = None
+        self._refined_state = None
+
         # Big panel state: 0 = bundles, 1 = debugger, 2 = conflicts heatmap
         self.state_bigpanel = 1
         self._BIGPANEL_LABELS = [
@@ -653,11 +657,13 @@ class EyeViewer:
         )
         self.actors_neighbours.append(act)
 
-    def _add_bigpanel(self) -> None:
-        """Bottom-right panel (wide)."""
+    def _redraw_bundles(self) -> None:
+        if self._debugger_subplot is not None:
+            self.plotter.subplot(*self._debugger_subplot)
 
-        self._add_eye_surface(faint=True)
-        self._add_debug_meshing()
+        for act in self.actors_bundles:
+            self.plotter.remove_actor(act)
+        self.actors_bundles.clear()
 
         # Mode 1: rhabdomere-tip bundles overview
         if self.R > 1:
@@ -681,8 +687,17 @@ class EyeViewer:
                 if not arrays:
                     continue
                 act = self.plotter.add_points(np.vstack(arrays), color=color, point_size=4, render_points_as_spheres=True)
-
+                act.SetVisibility(self.state_bigpanel == 0)
                 self.actors_bundles.append(act)
+
+    def _add_bigpanel(self) -> None:
+        """Bottom-right panel (wide)."""
+
+        self._add_eye_surface(faint=True)
+        self._add_debug_meshing()
+
+        # Mode 1: rhabdomere-tip bundles overview
+        self._redraw_bundles()
 
         # Mode 2: conflicts heatmap
         if self.conflicts_field is not None and self.lattice_mesh.n_cells > 0:
@@ -946,7 +961,43 @@ class EyeViewer:
             self._redraw_debugger()
             self.plotter.render()
 
+        def toggle_refinement():
+            if not self.model.neural_superposition or self.R <= 1:
+                return
+
+            if self._unrefined_state is None:
+                print("Computing bundle refinement...")
+                self._unrefined_state = {
+                    'rest_offsets': self.model.buffer['rest_offset'].copy(),
+                    'chi': self.model.chi.copy(),
+                    'saccade_dxdy': self.model.buffer['saccade_dxdy'].copy(),
+                    'curr_direction': self.model.buffer['curr_direction'].copy(),
+                }
+                self.model.refine_superposition(smooth_iters=3, adjust_scale=True, adjust_anisotropy=True)
+                self._refined_state = {
+                    'rest_offsets': self.model.buffer['rest_offset'].copy(),
+                    'chi': self.model.chi.copy(),
+                    'saccade_dxdy': self.model.buffer['saccade_dxdy'].copy(),
+                    'curr_direction': self.model.buffer['curr_direction'].copy(),
+                }
+                self.state_refined = True
+            else:
+                self.state_refined = not self.state_refined
+
+            state = self._refined_state if self.state_refined else self._unrefined_state
+            self.model.buffer['rest_offset'] = state['rest_offsets']
+            self.model.chi = state['chi']
+            self.model.buffer['saccade_dxdy'] = state['saccade_dxdy']
+            self.model.buffer['curr_direction'] = state['curr_direction']
+
+            self._redraw_bundles()
+            self._redraw_debugger()
+            self._update_bigpanel_hint()
+            self.plotter.render()
+            print(f"Refinement state: {'ON' if self.state_refined else 'OFF'}")
+
         self.plotter.add_key_event('h', toggle_heatmap)
+        self.plotter.add_key_event('r', toggle_refinement)
         self.plotter.add_key_event('a', toggle_alignment)
         self.plotter.add_key_event('s', toggle_saccade)
         self.plotter.add_key_event('d', toggle_debug)
@@ -986,9 +1037,10 @@ class EyeViewer:
 
     def _update_bigpanel_hint(self) -> None:
         label = self._BIGPANEL_LABELS[self.state_bigpanel]
+        ref_str = 'ON' if self.state_refined else 'OFF'
         self._set_hint(
             (1, 2), 'hint_bn',
-            f'[B] showing: {label}\n[N] next random cartridge',
+            f'[B] showing: {label}\n[N] next random cartridge\n[R] toggle refinement: {ref_str}',
         )
 
     def _dump_snapshots(self):
@@ -1116,6 +1168,7 @@ if __name__ == "__main__":
         ref_direction=np.array([0.0, np.sin(droso_head_ptich), np.cos(droso_head_ptich)]),   # optic flow in flight
         combing_strength=1.0,
         combing_angle_deg=45.0,
+        combing_falloff=0.7,
         alignment_smoothing_iter=5,
         saccade_smoothing_iter=5,
         flip_polarity=False,
@@ -1149,8 +1202,6 @@ if __name__ == "__main__":
     # )
 
     # ----------------------------------------------------------------------
-
-    model.refine_superposition(smooth_iters=2, relax=0.5, adjust_scale=True)
 
     viewer = EyeViewer(model, aligner=aligner)
     viewer.show()

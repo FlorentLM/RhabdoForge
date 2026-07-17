@@ -1069,8 +1069,11 @@ class Model(SpatialQueries, BaseView):
         min_donors: int = 2,
         smooth_iters: int = 0,
         relax: float = 0.5,
-        max_nudge_deg: float = 20.0,
-        adjust_scale: bool = True
+        max_nudge_deg: float = 30.0,
+        adjust_scale: bool = True,
+        adjust_anisotropy: bool = False,
+        rewire: bool = False,
+        **rewire_kwargs
     ) -> 'Model':
         """
         Refines the geometric layout of individual ommatidium bundles to best match
@@ -1084,14 +1087,20 @@ class Model(SpatialQueries, BaseView):
             relax: float, under-relaxation parameter (1.0 = strict geometry solve)
             max_nudge_deg: float, maximum rotation allowed (degrees)
             adjust_scale: bool, whether to also dynamically stretch/shrink bundles
+            adjust_anisotropy: bool, whether to optionally apply a continuous 2x2 affine shear/squish
+            rewire: bool, whether to re-run the neural superposition wiring after adjusting the bundles
+            **rewire_kwargs: kwargs to pass to wire_neural_superposition if rewire is True
         """
         refine_chi(self,
                    min_donors=min_donors,
                    smooth_iters=smooth_iters,
                    relax=relax,
                    max_nudge_deg=max_nudge_deg,
-                   adjust_scale=adjust_scale
+                   adjust_scale=adjust_scale,
+                   adjust_anisotropy=adjust_anisotropy
                    )
+        if rewire:
+            wire_neural_superposition(self, apply=True, **rewire_kwargs)
         return self
 
     # Advanced properties

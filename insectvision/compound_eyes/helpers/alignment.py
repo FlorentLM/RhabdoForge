@@ -63,7 +63,7 @@ def _comb_field(
     vertical = np.sin(a)
 
     local_coords = np.stack([
-        -np.ones(len(side_sign)),
+        np.ones(len(side_sign)),
         -side_sign * lateral,
         equator_sign * vertical
     ], axis=-1)

@@ -609,12 +609,13 @@ def refine_chi(
         smooth_iters: int = 3,
         relax: float = 0.5,
         max_nudge_deg: float = 15.0,
-        adjust_scale: bool = True
+        adjust_scale: bool = True,
+        adjust_anisotropy: bool = False
 ):
     """
-    Nudges individual ommatidium bundle yaw (chi) and radial scale to better
-    align the theoretical receptor lines of sight with the ommatidia
-    selected as donors by the neural superposition wiring solver.
+    Nudges individual ommatidium bundle yaw (chi) and radial scale (or 2x2 stretch matrix)
+    to better align the theoretical receptor lines of sight with the targeted lenses
+    selected by the neural superposition wiring solver.
     """
     if not model.neural_superposition or model.shape[1] <= 1:
         return
@@ -629,51 +630,41 @@ def refine_chi(
     cmap = model.cartridge_map
     focal = model.focal_length
 
-    # Project donor directions into home focal plane
+    # Project target cartridge directions into donor's focal plane
     cmap_periph = cmap[:, periph]
     valid_mask = cmap_periph >= 0
     i_idx, r_idx = np.nonzero(valid_mask)
     j_idx = cmap_periph[valid_mask]
     p_idx = periph[r_idx]
 
-    donor_dirs = model.directions[j_idx]
+    target_dirs = model.directions[i_idx]
 
-    donor_tan = project_to_tangent(donor_dirs, model.directions[i_idx])
-    u_act = np.einsum('ij,ij->i', donor_tan, model.right[i_idx]) * focal[i_idx]
-    v_act = np.einsum('ij,ij->i', donor_tan, model.up[i_idx]) * focal[i_idx]
+    # Required offsets for rhabdomere in donor j to look at target i
+    u_req = -np.einsum('ij,ij->i', target_dirs, model.right[j_idx]) * focal[j_idx]
+    v_req = -np.einsum('ij,ij->i', target_dirs, model.up[j_idx]) * focal[j_idx]
 
-    # Actual angles and radii in the focal plane
-    act_ang = np.arctan2(v_act, u_act)
-    act_rad = np.hypot(u_act, v_act)
+    act_ang = np.arctan2(v_req, u_req)
+    act_rad = np.hypot(u_req, v_req)
 
     # Theoretical template positions at current chi
-    # Template UV is derived from chi and chirality
     rot_dx, rot_dy = bundle.rotated_offsets(chi, chirality)
     tdx = rot_dx - rot_dx[:, center:center + 1]
     tdy = rot_dy - rot_dy[:, center:center + 1]
 
-    tpl_ang = np.arctan2(tdy, tdx)[i_idx, p_idx]
-    tpl_rad = np.hypot(tdx, tdy)[i_idx, p_idx]
+    tpl_ang = np.arctan2(tdy, tdx)[j_idx, p_idx]
+    tpl_rad = np.hypot(tdx, tdy)[j_idx, p_idx]
 
-    # Per-ommatidium rotation error and scale ratio
+    # Per-ommatidium rotation error
     weights = tpl_rad
-
     ang_err = wrap_angle(act_ang - tpl_ang)
 
-    sum_sin = np.bincount(i_idx, weights=np.sin(ang_err) * weights, minlength=N)
-    sum_cos = np.bincount(i_idx, weights=np.cos(ang_err) * weights, minlength=N)
+    # Accumulate into donor (j_idx)
+    sum_sin = np.bincount(j_idx, weights=np.sin(ang_err) * weights, minlength=N)
+    sum_cos = np.bincount(j_idx, weights=np.cos(ang_err) * weights, minlength=N)
     omm_err = np.arctan2(sum_sin, sum_cos)
 
-    scale_ratios = act_rad / np.clip(tpl_rad, 1e-9, None)
-    sum_scale = np.bincount(i_idx, weights=scale_ratios * weights, minlength=N)
-    sum_w = np.bincount(i_idx, weights=weights, minlength=N)
-    sum_w = np.where(sum_w == 0, np.nanmedian(sum_w), sum_w)
-    omm_scale = np.where(sum_w > 0, sum_scale / sum_w, 1.0)
-
-    # Mask and smooth
-    measurable = np.bincount(i_idx, minlength=N) >= min_donors
+    measurable = (np.bincount(j_idx, minlength=N) >= min_donors).astype(bool)
     omm_err[~measurable] = 0.0
-    omm_scale[~measurable] = 1.0
 
     groups = [eye.indices for eye in model.eyes]
     neighbours = [eye._get_first_ring_graph()['adjacency'] for eye in model.eyes]
@@ -686,7 +677,72 @@ def refine_chi(
     lim = np.radians(max_nudge_deg)
     smoothed_err = np.clip(smoothed_err * relax, -lim, lim)
 
-    if adjust_scale:
+    # Apply rotation nudge
+    model.chi = wrap_angle(chi + smoothed_err).astype(np.float32)
+
+    if adjust_anisotropy:
+        # fit a continuous 2x2 matrix T for each donor j
+        # Recompute base templates with the new chi
+        new_dx, new_dy = bundle.rotated_offsets(model.chi, chirality)
+        base_dx = new_dx - new_dx[:, center:center + 1]
+        base_dy = new_dy - new_dy[:, center:center + 1]
+
+        p_x = base_dx[j_idx, p_idx]
+        p_y = base_dy[j_idx, p_idx]
+
+        Sxx = np.bincount(j_idx, weights=p_x * p_x, minlength=N)
+        Syy = np.bincount(j_idx, weights=p_y * p_y, minlength=N)
+        Sxy = np.bincount(j_idx, weights=p_x * p_y, minlength=N)
+
+        Sxu = np.bincount(j_idx, weights=p_x * u_req, minlength=N)
+        Syu = np.bincount(j_idx, weights=p_y * u_req, minlength=N)
+        Sxv = np.bincount(j_idx, weights=p_x * v_req, minlength=N)
+        Syv = np.bincount(j_idx, weights=p_y * v_req, minlength=N)
+
+        det = Sxx * Syy - Sxy * Sxy
+        valid_det = (det > 1e-12).astype(bool)
+        safe_det = np.where(valid_det, det, 1.0)
+
+        T_11 = np.where(valid_det, (Syy * Sxu - Sxy * Syu) / safe_det, 1.0)
+        T_12 = np.where(valid_det, (Sxx * Syu - Sxy * Sxu) / safe_det, 0.0)
+        T_21 = np.where(valid_det, (Syy * Sxv - Sxy * Syv) / safe_det, 0.0)
+        T_22 = np.where(valid_det, (Sxx * Syv - Sxy * Sxv) / safe_det, 1.0)
+
+        # Smooth the 2x2 matrix components
+        if smooth_iters > 0:
+            for T_arr in (T_11, T_12, T_21, T_22):
+                T_arr[:] = smooth_field_partitioned(
+                    T_arr, neighbours, kind='scalar', groups=groups, mask=valid_det, n_iter=smooth_iters
+                )
+
+        T_11 = 1.0 + (T_11 - 1.0) * relax
+        T_12 = T_12 * relax
+        T_21 = T_21 * relax
+        T_22 = 1.0 + (T_22 - 1.0) * relax
+
+        # Prevent extreme distortions (folding / flattening) (+/- 30%)
+        T_11 = np.clip(T_11, 0.7, 1.3)
+        T_22 = np.clip(T_22, 0.7, 1.3)
+        T_12 = np.clip(T_12, -0.3, 0.3)
+        T_21 = np.clip(T_21, -0.3, 0.3)
+
+        # Apply the stretch
+        final_dx = T_11[:, None] * base_dx + T_12[:, None] * base_dy
+        final_dy = T_21[:, None] * base_dx + T_22[:, None] * base_dy
+
+        # Center should not have drifted
+        final_dx += new_dx[:, center:center + 1]
+        final_dy += new_dy[:, center:center + 1]
+
+    elif adjust_scale:
+        scale_ratios = act_rad / np.clip(tpl_rad, 1e-9, None)
+        sum_scale = np.bincount(j_idx, weights=scale_ratios * weights, minlength=N)
+        sum_w = np.bincount(j_idx, weights=weights, minlength=N)
+        sum_w = np.where(sum_w == 0, np.nanmedian(sum_w), sum_w)
+        omm_scale = np.where(sum_w > 0, sum_scale / sum_w, 1.0)
+
+        omm_scale[~measurable] = 1.0
+
         smoothed_scale = smooth_field_partitioned(
             values=omm_scale,
             neighbours=neighbours,
@@ -697,24 +753,20 @@ def refine_chi(
         )
 
         final_scale = 1.0 + (smoothed_scale - 1.0) * relax
-        final_scale = np.clip(final_scale, 0.8, 1.2)    # safety clamp (+/- 20%)
+        final_scale = np.clip(final_scale, 0.7, 1.3)  # safety clamp (+/- 30%)
 
+        final_dx, final_dy = bundle.rotated_offsets(model.chi, chirality, scale=final_scale)
     else:
-        final_scale = 1.0
+        final_dx, final_dy = bundle.rotated_offsets(model.chi, chirality)
 
-    # Apply
-    model.chi = wrap_angle(chi + smoothed_err).astype(np.float32)
-
-    new_dx, new_dy = bundle.rotated_offsets(model.chi, chirality, scale=final_scale)
-    model.rest_offsets = np.stack([new_dx.ravel(), new_dy.ravel()], axis=-1).astype(np.float32)
+    model.rest_offsets = np.stack([final_dx.ravel(), final_dy.ravel()], axis=-1).astype(np.float32)
 
     # Update microsaccade vectors to stay aligned with the new chi
     sacc_vecs = model.buffer['saccade_dxdy']
     new_sacc = rotate2d(sacc_vecs, smoothed_err)
-
     model.buffer['saccade_dxdy'] = new_sacc.astype(np.float32)
 
-    tip_local = np.stack([new_dx, new_dy, np.broadcast_to(-focal[:, None], (N, R))], axis=-1)
+    tip_local = np.stack([final_dx, final_dy, np.broadcast_to(-focal[:, None], (N, R))], axis=-1)
     tip_world = local_to_world(tip_local, model.right, model.up, model.directions)
     view_dirs = norm_l2(-tip_world)
 
