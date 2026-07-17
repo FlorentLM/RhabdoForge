@@ -156,6 +156,14 @@ class Model(SpatialQueries, BaseView):
         else:
             facet_apertures = self._estimate_apertures(ioa_spacing)
 
+        med_ap = np.median(facet_apertures)
+        if not (0.5 < med_ap < 500.0):
+            logger.warning(
+                f'Median lens aperture is {med_ap:.3g} µm, which is outside any plausible '
+                f'range for a compound eye. Eye units are micrometres, check the scale '
+                f'of the positions you passed (eye_radius / scaffold units).'
+            )
+
         self._buf['aperture_um'] = facet_apertures
 
         # ============ Focal length ============
@@ -249,10 +257,10 @@ class Model(SpatialQueries, BaseView):
     @classmethod
     def from_sphere(cls,
             n: int = 2000,
-            eye_radius: float = 0.005,
+            eye_radius: float = 200.0,
             method: str = 'icosphere',
             force_isotropic: bool = False,
-            separation: Optional[float] = 0.0025,
+            separation: Optional[float] = 100.0,
             **kwargs,
         ) -> 'Model':
         """
@@ -260,9 +268,9 @@ class Model(SpatialQueries, BaseView):
 
         Args:
             - n: int, Approximate number of ommatidia.
-            - eye_radius: float, Sphere radius in world units (default 0.005 m = 5 mm).
+            - eye_radius: float, Sphere radius in micrometers (default 200 µm).
             - method: {'icosphere', 'fibonacci'}, Spherical sampling method.
-            - separation: float, optional. Lateral gap between the two hemispheres in world units (default 0.0025 m = 2.5 mm).
+            - separation: float, optional. Lateral gap between the two hemispheres in micrometers (default 100 µm).
                 None or <= 0 disables the split and generates a full sphere.
                 >= 0 separates the sphere in two eyes and translates each half outward along x by separation/2.
             - **kwargs: Forwarded to __init__.

@@ -824,11 +824,13 @@ class EyeViewer:
         tip_radius = np.median(nb_res.distances) * 0.015
         for r_slot in range(self.R):
             if donor_omm_indices[r_slot] == -1:
-                continue
+                col = 'white'
+            else:
+                col = RHAB_COLOURS[r_slot]
 
             tip_sphere = pv.Sphere(radius=tip_radius, center=cartridge_tips[r_slot])
             self.actors_debugger.append(self.plotter.add_mesh(
-                tip_sphere, color=RHAB_COLOURS[r_slot], lighting=True
+                tip_sphere, color=col, lighting=True
             ))
 
         # Labels and target marker
@@ -1156,10 +1158,6 @@ class EyeViewer:
 if __name__ == "__main__":
     from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, honeybee_bundle
 
-    # model = Model.from_sphere(
-    #     n=1600, bundle=drosophila_bundle(), orientation=aligner, neural_superposition=True
-    # )
-
     # ----------------------------------------------------------------------
 
     droso_head_ptich = np.deg2rad(10.1)     # drosophila head pitch in flight
@@ -1176,12 +1174,22 @@ if __name__ == "__main__":
         equatorial_discontinuity=True,  # important for drosophila rhabdomere bundles alignment
     )
 
-    model = Model.from_file(
-        'assets/drosophila_scaffold.npz',
+
+    model = Model.from_sphere(
+        n=1600,
+        eye_radius=200.0,    # 200 µm
         bundle=drosophila_bundle(),
         orientation=aligner,
-        neural_superposition=True,    # superposition eyes
+        neural_superposition=True
     )
+
+
+    # model = Model.from_file(
+    #     'assets/drosophila_scaffold.npz',
+    #     bundle=drosophila_bundle(),
+    #     orientation=aligner,
+    #     neural_superposition=True,    # superposition eyes
+    # )
     # model.refine_superposition(smooth_iters=3, adjust_scale=True, adjust_anisotropy=True, rewire=True)
 
     # ----------------------------------------------------------------------
