@@ -273,6 +273,9 @@ class BaseView:
     is_binocular = ViewField('is_binocular', 'ommatidia',
         doc="Whether these ommatidia are part of the binocular area.")
 
+    neighbour_count = ViewField('neighbour_count', 'ommatidia',
+              doc="Per-ommatidium neighbour count.")
+
     @property
     def is_interior(self) -> np.ndarray:
         """Whether these ommatidia are at *not* at the boundary of the eye."""
@@ -516,7 +519,11 @@ class SpatialQueries:
         """
 
         if 'conflictfree_local_i' not in self._spatial_store:
-            self._spatial_store['conflictfree_local_i'] = np.flatnonzero(~self.has_conflicts & ~self.unwired_slots.any(axis=-1))
+            self._spatial_store['conflictfree_local_i'] = np.flatnonzero(
+                ~self.has_conflicts
+                & ~self.unwired_slots.any(axis=-1)
+                # & ~(self.neighbour_count < 6)     # TODO: Maybe?
+            )
 
         return self._spatial_store['conflictfree_local_i']
 

@@ -50,7 +50,7 @@ def combine_clouds(
 
 # Reject + merge kernel (shared)
 
-def _ghost_growth_kernel(
+def ghost_growth_kernel(
         existing: ArrayLike,
         candidates: ArrayLike,
         step_len: ArrayLike,
@@ -206,7 +206,7 @@ def ghosts_from_growth_2d(
     # Outward == candidate sits further outside the hull than its proposing site
     outward_ok = domain.signed_distance(cand) > d_site
 
-    return _ghost_growth_kernel(
+    return ghost_growth_kernel(
         existing=pts,
         candidates=cand,
         step_len=step_len,
@@ -272,7 +272,7 @@ def _one_sphere_ring(
     seed_sd = stereo_domain.signed_distance(q_seed)
     outward_ok = (cand_sd > seed_sd[:, None]).ravel()
 
-    return _ghost_growth_kernel(
+    return ghost_growth_kernel(
         existing=curr_pos,
         candidates=v_pos.reshape(-1, 3),
         step_len=step_len.ravel(),

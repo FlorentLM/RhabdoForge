@@ -255,9 +255,6 @@ if __name__ == "__main__":
     # Measure source
     profile = EyeMeasurements.from_points(
         points2d=pts2d,
-        density_smoothing=0.1,
-        axes_smoothing=0.25,
-        min_hex_order=0.2,
     )
 
     # Generate

@@ -13,7 +13,8 @@ from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
 from insectvision.geometry.fields import interpolate_spacing_field, interpolate_hexatic_field
-from insectvision.geometry.linalg import rotation_matrix2d
+from insectvision.geometry.ghosting import ghost_growth_kernel
+from insectvision.geometry.linalg import rotation_matrix2d, rotate2d
 from insectvision.geometry.polygons import resample_contour, Polygon2D
 from insectvision.geometry.neighbours import (
     delaunay_neighbours, merge_close_points, topological_spacing, identify_boundary_points, padded_neighbours
@@ -167,13 +168,34 @@ def _finalize_lattice(
         verbose=verbose
     )
 
-    tree_after_cull = cKDTree(pts)
+    d_hull = domain.signed_distance(pts)
+    L_pts = target_spacing_fn(pts).ravel()
+    near_mask = d_hull > -2.0 * L_pts
 
-    # Ring points are gap fillers: keep a seed only if no real point is already near
-    ring = resample_contour(domain.boundary, target_spacing_fn)
-    d_to_pts, _ = tree_after_cull.query(ring)
+    fill = np.zeros((0, 2))
+    if near_mask.any():
+        seeds = pts[near_mask]
+        L_seed = L_pts[near_mask]
 
-    fill = ring[d_to_pts > p.fill_factor * target_spacing_fn(ring).ravel()]
+        # Grow candidates using the lattice frame
+        b = len(bond_dirs)
+        cand_dirs = rotate2d(bond_dirs[None], theta_fn(seeds).ravel()[:, None])
+        cand = (seeds[:, None, :] + L_seed[:, None, None] * cand_dirs).reshape(-1, 2)
+
+        # Fill gaps inside the domain
+        # (allowing them to sit slightly outside up to 10% of spacing)
+        cand_sd = domain.signed_distance(cand)
+        inside_ok = cand_sd <= (0.1 * target_spacing_fn(cand).ravel())
+
+        fill = ghost_growth_kernel(
+            existing=pts,
+            candidates=cand,
+            step_len=np.repeat(L_seed, b),
+            outward_ok=inside_ok,
+            satisfied_factor=p.fill_factor,
+            merge_factor=p.merge_factor
+        )
+
     combined = np.vstack([pts, fill]) if len(fill) else pts
 
     if p.ghost_source == 'none':
@@ -277,11 +299,11 @@ class FittingParameters:
     retriangulate_every: int = 3
 
     # Ghosts points (for boundary handling, shared by stage 2 and final settle)
-    ghost_source: str = 'lattice'            # 'lattice' | 'hull' | 'edge' | 'none'
+    ghost_source: str = 'edge'            # 'lattice' | 'hull' | 'edge' | 'none'
     ghost_depth_factor: float = 1.5     # mirror points within this * local spacing (from the boundary)
 
     # Stage 3: Density correction
-    density_correct_iters: int = 3      # Poisson transport passes (0 = disabled)
+    density_correct_iters: int = 0      # Poisson transport passes (0 = disabled)
 
     # Stage 4: Boundary finalisation
     finalize: bool = True

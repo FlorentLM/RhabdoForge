@@ -973,7 +973,7 @@ class EyeViewer:
                     'saccade_dxdy': self.model.buffer['saccade_dxdy'].copy(),
                     'curr_direction': self.model.buffer['curr_direction'].copy(),
                 }
-                self.model.refine_superposition(smooth_iters=3, adjust_scale=True, adjust_anisotropy=True)
+                self.model.refine_superposition(smooth_iters=3, adjust_scale=True, adjust_anisotropy=True, rewire=True)
                 self._refined_state = {
                     'rest_offsets': self.model.buffer['rest_offset'].copy(),
                     'chi': self.model.chi.copy(),
@@ -1182,6 +1182,7 @@ if __name__ == "__main__":
         orientation=aligner,
         neural_superposition=True,    # superposition eyes
     )
+    # model.refine_superposition(smooth_iters=3, adjust_scale=True, adjust_anisotropy=True, rewire=True)
 
     # ----------------------------------------------------------------------
 

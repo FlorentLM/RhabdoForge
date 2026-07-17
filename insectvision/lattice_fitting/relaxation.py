@@ -169,15 +169,14 @@ def spring_relaxation(
         return (np.vstack([p, g]), g) if len(g) else (p, np.zeros((0, 2)))
 
     cloud, ghosts = build_cloud(pts)
-
     edges = delaunay_edges(cloud, max_length_factor=1.8)
-
     bond_dirs = np.asarray(bond_dirs, dtype=np.float64)
 
     for it in range(max_iter):
+
         if retriangulate_every and it > 0 and it % retriangulate_every == 0:
             cloud, ghosts = build_cloud(pts)
-            edges = delaunay_edges(cloud, max_length_factor=1.8)
+            edges = delaunay_edges(cloud, max_length_factor=1.45)
             if verbose:
                 print(f'  spring relaxation [it {it}]: retriangulating')
         else:
@@ -185,26 +184,37 @@ def spring_relaxation(
             cloud = np.vstack([pts, ghosts]) if use_ghosts else pts
 
         e0, e1 = edges[:, 0], edges[:, 1]
-
         mid = 0.5 * (cloud[e0] + cloud[e1])
         cur = cloud[e1] - cloud[e0]
         th = theta_fn(mid).ravel()
 
         # Into lattice frame
+        cur_mag = np.linalg.norm(cur, axis=1)
         loc = rotate2d(cur, -th)
-        u = loc / np.maximum(np.linalg.norm(loc, axis=1, keepdims=True), 1e-12)
+        u = loc / np.maximum(cur_mag[:, None], 1e-12)
 
         bond_dirs_unit = bond_dirs / np.maximum(np.linalg.norm(bond_dirs, axis=1, keepdims=True), 1e-12)
         best_idx = np.argmax(u @ bond_dirs_unit.T, axis=1)
 
         ideal = bond_dirs[best_idx]
-
         L = spacing_fn(mid).ravel()
 
         # Rest vector back in world frame
         rest = L[:, None] * rotate2d(ideal, th)
 
+        # Base Hookean spring
         fpe = (cur - rest) / np.maximum(np.linalg.norm(rest, axis=1, keepdims=True), 1e-12)
+
+        # Yielding logic
+        stretch = cur_mag / np.maximum(L, 1e-12)
+        yield_weight = np.clip((1.45 - stretch) / (1.45 - 1.15), 0.1, 1.0)
+
+        # Soft ghosts: if either node is a ghost, cut the force in half
+        is_ghost_edge = (e0 >= n_real) | (e1 >= n_real)
+        ghost_multiplier = np.where(is_ghost_edge, 0.5, 1.0)
+
+        fpe = fpe * yield_weight[:, None] * ghost_multiplier[:, None]
+
         fmag = np.linalg.norm(fpe, axis=1, keepdims=True)
         fpe = np.where(fmag > force_cap, fpe * force_cap / fmag, fpe)
 
