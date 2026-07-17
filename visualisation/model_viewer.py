@@ -1174,22 +1174,20 @@ if __name__ == "__main__":
         equatorial_discontinuity=True,  # important for drosophila rhabdomere bundles alignment
     )
 
-
-    model = Model.from_sphere(
-        n=1600,
-        eye_radius=200.0,    # 200 µm
-        bundle=drosophila_bundle(),
-        orientation=aligner,
-        neural_superposition=True
-    )
-
-
-    # model = Model.from_file(
-    #     'assets/drosophila_scaffold.npz',
+    # model = Model.from_sphere(
+    #     n=1600,
+    #     eye_radius=200.0,    # 200 µm
     #     bundle=drosophila_bundle(),
     #     orientation=aligner,
-    #     neural_superposition=True,    # superposition eyes
+    #     neural_superposition=True
     # )
+
+    model = Model.from_file(
+        'assets/drosophila_scaffold.npz',
+        bundle=drosophila_bundle(),
+        orientation=aligner,
+        neural_superposition=True,    # superposition eyes
+    )
     # model.refine_superposition(smooth_iters=3, adjust_scale=True, adjust_anisotropy=True, rewire=True)
 
     # ----------------------------------------------------------------------
