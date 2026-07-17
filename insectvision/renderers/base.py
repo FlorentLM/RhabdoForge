@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from insectvision.engine.agent import Agent, OrbitCamera
     from insectvision.engine.context import Context
     from insectvision.compound_eyes import Model, Eye
+    from insectvision.compound_eyes.views import BaseView
 
 
 WORKGROUPS_DYNAMICS = 64
@@ -1012,87 +1013,84 @@ class Renderer:
         return out
 
     def set_overlay(self,
-                    values: Optional[Union[Dict['EyeView', np.array], np.array]] = None,
-                    range: Optional[Tuple[float, float]] = None,
-                    colormap: 'OverlayColormap' = OverlayColormap.Thermal,
-                    compression: float = 0.5,
-                    autorange_perc: int = 98
-                    ) -> None:
+            values: Optional[Union[Dict['BaseView', np.ndarray], np.ndarray]] = None,
+            range: Optional[Tuple[float, float]] = None,
+            colormap: Union[int, 'OverlayColormap'] = OverlayColormap.Thermal,
+            compression: float = 1.0,
+            autorange_perc: int = 98
+        ) -> None:
         """
         Upload data for overlay visualisation.
 
         Args:
-            values: Either a flat array in global order (total_rhabdomeres,) or a dict mapping Eye -> per-eye array
-            range: (min, max) bounds for the colourmap. None = auto
-            colormap: Which colourmap to use (Colormap enum)
-            compression: Power exponent for dynamic range compression
-                         1.0 = linear, 0.5 = sqrt, lower = brings out detail
+            values: Data to display. Can be:
+                - None: Disable overlay and fallback to default (luminance).
+                - Array: Global data matching total ommatidia or rhabdomeres.
+                - Dict: Mapping of {View: Array}, where Array matches the view's
+                        ommatidia or rhabdomere count.
+            range: (min, max) bounds. If None, uses automatic scaling.
+            colormap: Colormap enum or integer.
+            compression: Power exponent for dynamic range compression (gamma).
+            autorange_perc: Percentile used for automatic range scaling.
         """
 
-        siz = self._model.size
+        model_size = self._model.size
 
-        if 'overlay' not in self.eye_buffers:
-            self.eye_buffers.allocate('overlay',
-                                      dtype=np.float32,
-                                      count=siz,
-                                      usage=GL_DYNAMIC_DRAW)
+        # Ensure overlay SSBO is allocated and sized for current model
+        if 'overlay' not in self.eye_buffers or self.eye_buffers['overlay'].count != model_size:
+            self.eye_buffers.allocate('overlay', dtype=np.float32, count=model_size, usage=GL_DYNAMIC_DRAW)
 
         if values is None:
-            # Clear and use default luminance
-            self._eye_uniforms.update(
-                overlay_fallback=True,
-                overlay_data_min=0.0,
-                overlay_data_max=1.0,
-                overlay_colormap=int(OverlayColormap.Thermal),
-                overlay_compression=1.0
-            )
+            self._eye_uniforms.update(overlay_fallback=True)
             return
 
+        # Put inputs into a flat per-rhab array
         if isinstance(values, dict):
-            merged = np.zeros(siz, dtype=np.float32)
+            flat_data = np.zeros(model_size, dtype=np.float32)
+            for view, data in values.items():
+                data = np.asanyarray(data)
 
-            for eye, data in values.items():
-                if len(data) == len(eye):
-                    data = np.repeat(data, self._model.R)
-                merged[eye.indices] = data
-            values = merged
+                # if per-ommatidium, expand to rhabdomeres
+                if data.size == view.N:
+                    data = np.repeat(data, view.R)
 
-        buf = np.ascontiguousarray(values, dtype=np.float32).ravel()
-        buf_size = len(buf)
+                if data.size != view.size:
+                    raise ValueError(f'Overlay mismatch for {view}: got {data.size} elements, '
+                                     f'expected {view.N} (ommatidia) or {view.size} (rhabdomeres).')
 
-        if buf_size != siz:
-            raise ValueError(f"scalar_data has {buf_size} elements, expected {siz}.")
+                flat_data[view.rhab_indices.ravel()] = data.ravel()
+            values = flat_data
 
-        elif self.eye_buffers['overlay'].count != siz:
-            self.eye_buffers['overlay'].resize(siz)
-
-        self.eye_buffers['overlay'].write(buf)
-
-        self._overlay_autorange_perc = autorange_perc
-
-        # Range
-        if range is not None:
-            self._overlay_range = float(range[0]), float(range[1])
         else:
-            # Auto-normalise: per-frame peak value
-            frame_peak = float(np.percentile(np.abs(buf), self._overlay_autorange_perc))
-            if self._overlay_current_peak is None:
+            values = np.asanyarray(values, dtype=np.float32).ravel()
+            # Handle model-wide expansion if per-ommatidium data is provided
+            if values.size == self._model.N:
+                values = np.repeat(values, self._model.R)
+
+            if values.size != model_size:
+                raise ValueError(f'Global overlay size {values.size} mismatch (expected {model_size}).')
+
+        self.eye_buffers['overlay'].write(values)
+
+        # Range scaling
+        self._overlay_autorange_perc = autorange_perc
+        if range is not None:
+            self._overlay_range = (float(range[0]), float(range[1]))
+        else:
+            # Auto-range based on percentile to reject outliers
+            frame_peak = float(np.percentile(np.abs(values), self._overlay_autorange_perc))
+
+            # Asymmetric EMA: adapt quickly to signal rises, slowly to drops
+            if getattr(self, '_overlay_current_peak', 0.0) <= 0.0:
                 self._overlay_current_peak = frame_peak
 
-            # Exponential Moving Average for colourmap scaling
-            if frame_peak > self._overlay_current_peak:
-                self._overlay_current_peak = 0.5 * self._overlay_current_peak + 0.5 * frame_peak
-            else:
-                self._overlay_current_peak = 0.98 * self._overlay_current_peak + 0.02 * frame_peak
+            alpha = 0.5 if frame_peak > self._overlay_current_peak else 0.02
+            self._overlay_current_peak = (1.0 - alpha) * self._overlay_current_peak + alpha * frame_peak
 
-            range_bound = max(self._overlay_current_peak, 1e-6)
+            bound = max(self._overlay_current_peak, 1e-6)
+            self._overlay_range = (-bound, bound) if colormap == OverlayColormap.Diverging else (0.0, bound)
 
-            if colormap == OverlayColormap.Diverging:
-                self._overlay_range = (-range_bound, range_bound)
-            else:
-                self._overlay_range = (0.0, range_bound)
-
-        self._overlay_colormap = colormap
+        self._overlay_colormap = to_enum(colormap, OverlayColormap)
         self._overlay_compression = compression
 
         self._eye_uniforms.update(
