@@ -132,6 +132,7 @@ def spring_relaxation(
     ghost_source = _ghost_source_str(ghost_source)
 
     pts = np.copy(points2d).astype(np.float64)
+    bond_dirs = np.asarray(bond_dirs, dtype=np.float64)
 
     n_real = len(pts)
     use_ghosts = (ghost_depth_factor > 0.0 and ghost_source != 'none'
@@ -170,13 +171,12 @@ def spring_relaxation(
 
     cloud, ghosts = build_cloud(pts)
     edges = delaunay_edges(cloud, max_length_factor=1.8)
-    bond_dirs = np.asarray(bond_dirs, dtype=np.float64)
 
     for it in range(max_iter):
 
         if retriangulate_every and it > 0 and it % retriangulate_every == 0:
             cloud, ghosts = build_cloud(pts)
-            edges = delaunay_edges(cloud, max_length_factor=1.45)
+            edges = delaunay_edges(cloud, max_length_factor=1.8)
             if verbose:
                 print(f'  spring relaxation [it {it}]: retriangulating')
         else:
@@ -207,7 +207,9 @@ def spring_relaxation(
 
         # Yielding logic
         stretch = cur_mag / np.maximum(L, 1e-12)
-        yield_weight = np.clip((1.45 - stretch) / (1.45 - 1.15), 0.1, 1.0)
+        th_low = 1.15   # below 15% elongation the bond behaves as a standard Hookean spring (weight = 1.0)
+        th_hi = 1.65    # beyond 65% elongation the bond is considered 'yielded' or broken
+        yield_weight = np.clip((th_hi - stretch) / (th_hi - th_low), 0.1, 1.0)
 
         # Soft ghosts: if either node is a ghost, cut the force in half
         is_ghost_edge = (e0 >= n_real) | (e1 >= n_real)

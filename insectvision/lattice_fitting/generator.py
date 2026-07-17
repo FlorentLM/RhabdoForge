@@ -242,7 +242,7 @@ class EyeMeasurements:
     def from_points(cls,
             points2d: ArrayLike,
             density_smoothing: float = 0.1,
-            axes_smoothing: float = 0.4,
+            axes_smoothing: float = 0.25,
             min_hex_order: float = 0.2,
             max_length_factor:float = 1.8,
             smooth_domain: bool = True
@@ -286,7 +286,7 @@ class FittingParameters:
 
     density_scale: float = 1.0          # > 1 packs more ommatidia
 
-    bypass_init: bool = True                 # If True, starts from the source data directly
+    bypass_init: bool = False                 # If True, starts from the source data directly
 
     # Stage 1: Density warp
     buffer_factor: float = 2.0          # grid kept at this * spacing outside the domain (pre-relaxation)
@@ -299,11 +299,11 @@ class FittingParameters:
     retriangulate_every: int = 3
 
     # Ghosts points (for boundary handling, shared by stage 2 and final settle)
-    ghost_source: str = 'edge'            # 'lattice' | 'hull' | 'edge' | 'none'
+    ghost_source: str = 'lattice'         # 'lattice' | 'hull' | 'edge' | 'none'
     ghost_depth_factor: float = 1.5     # mirror points within this * local spacing (from the boundary)
 
     # Stage 3: Density correction
-    density_correct_iters: int = 0      # Poisson transport passes (0 = disabled)
+    density_correct_iters: int = 3      # Poisson transport passes (0 = disabled)
 
     # Stage 4: Boundary finalisation
     finalize: bool = True

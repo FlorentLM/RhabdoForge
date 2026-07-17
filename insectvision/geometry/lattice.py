@@ -97,7 +97,8 @@ def base_bond_dirs(lattice_angles: float | Sequence[float], degrees: bool = Fals
         -b2,        # Bottom-left-ish
         b1 - b2     # Bottom-right-ish
     ])
-    return norm_l2(dirs)
+    # return norm_l2(dirs)
+    return dirs
 
 
 def local_bearings(
