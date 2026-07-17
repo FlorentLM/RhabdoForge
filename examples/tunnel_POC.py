@@ -9,9 +9,11 @@ from matplotlib.path import Path
 from matplotlib.transforms import Affine2D
 
 from insectvision.compound_eyes import Model
+from insectvision.compound_eyes.helpers.alignment import BundlesAligner
+from insectvision.compound_eyes.rhabdomeres import honeybee_bundle
 from insectvision.renderers import Renderer
 from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.types import WORLD_FORWARD, OverlayColormap
+from insectvision.types import WORLD_FORWARD, OverlayColormap, WORLD_BACKWARD
 from insectvision.engine.meshes import plane_geom
 from insectvision.engine.materials_utils import checkerboard_texture
 from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD, GradientFlowDetector
@@ -44,6 +46,7 @@ MODEL_CLASS = {MODEL_HRC: HassensteinReichardtEMD, MODEL_GRADIENT: GradientFlowD
 
 @dataclass
 class Configuration:
+
     # Tunnel geometry (metres)
     width: float = 0.2
     height: float = 0.2
@@ -68,14 +71,12 @@ class Configuration:
 
     # Eyes param
     tau_membrane: float = 0.012
-    # eye_model_path: str = 'assets/drosophila_scaffold.npz'
-    eye_model_path: str = 'assets/honeybee_scaffold_s10.npz'
 
     # EMD params
     emd_pooling: Optional[int] = None       # auto
 
     # Batch
-    n_trials: int = 1
+    n_trials: int = 30
     time_limit_s: float = 30.0          # per-trial time limit
     nb_samples: int = 256
     seed: Optional[int] = 0
@@ -280,7 +281,22 @@ def run_all_trials(cfg: Configuration) -> Results:
 
     context.time_step = cfg.time_step
 
-    model = Model.from_file(cfg.eye_model_path)
+    aligner = BundlesAligner(
+        equatorial_discontinuity=False,  # no equatorial discontinuity in the bee
+        ref_direction=WORLD_BACKWARD,   # optic flow in flight
+        combing_strength=1.0,
+        combing_angle_deg=45.0,
+        alignment_smoothing_iter=4,
+        saccade_smoothing_iter=5,
+    )
+
+    model = Model.from_file(
+        'assets/honeybee_scaffold_s10.npz',
+        bundle=honeybee_bundle(),
+        orientation=aligner,
+        neural_superposition=False,     # Apposition eyes
+    )
+
     model.scale(1e-6)
 
     model.tau_membrane = cfg.tau_membrane
@@ -572,13 +588,13 @@ def make_figure(results: Results, cfg: Configuration, s: Optional[PlotSettings] 
 
     fig = s.new_figure()
 
-    gs = GridSpec(3, 1, figure=fig, height_ratios=[0.50, 2.00, 0.90], hspace=0.40)
+    gs = GridSpec(3, 1, figure=fig, height_ratios=[1.00, 2.00, 0.90], hspace=0.40)
     gsB = gs[1].subgridspec(2, 2, hspace=0.14, wspace=0.10)
     gsCD = gs[2].subgridspec(1, 2, wspace=0.46)
 
     # A: task-summary placeholder
     axA = fig.add_subplot(gs[0])
-    placeholder(axA, s,'(schematic: tunnel geometry, etc)')
+    placeholder(axA, s,'(placeholder: tunnel schematic, insect view)')
 
     # B: 2 models x 2 wall conditions
     cells = {}
@@ -606,7 +622,7 @@ def make_figure(results: Results, cfg: Configuration, s: Optional[PlotSettings] 
     row_header(fig, s, cells[(0, 0)], MODEL_LABEL[MODEL_HRC], dx=0.098, colour=s.dark)
     row_header(fig, s, cells[(1, 0)], MODEL_LABEL[MODEL_GRADIENT], dx=0.098, colour=s.dark)
 
-    panel_letter(fig, s, 'A', axA)
+    panel_letter(fig, s, 'A', axA, dx=-0.076, dy=0.0)
     panel_letter(fig, s, 'B', cells[(0, 0)], dx=-0.076, dy=0.030)
     panel_letter(fig, s, 'C', axC, dx=-0.014)
     panel_letter(fig, s, 'D', axD, dx=-0.014)
