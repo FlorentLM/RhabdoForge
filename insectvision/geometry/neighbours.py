@@ -379,7 +379,7 @@ def k_lookat(
 def metric_spacing(
         tree: Optional[cKDTree] = None,
         query_points: Optional[np.ndarray] = None,
-        k: int = 6,
+        k: int = 12,
         reduce: Callable = np.mean,
 ) -> np.ndarray:
     """

@@ -176,61 +176,100 @@ def _enumerate_candidates(
             candidates[i_loc] = []
             continue
 
+        # Identify first ring neighbours for snapping (any chirality)
+        snap_mask = neighb.immediate[i_loc] & (neighb.indices[i_loc] != i_glob)
+        snap_indices = np.flatnonzero(snap_mask)
+
         # Dedup candidates that are essentially the same
         W_ROUND = 3
 
         ws_dedup = {(1.0, 0.0)}     # set can't contain complex numbers so stored as tuple of floats
 
-        if (mag_ok := np.abs(tpl_i) > 1e-8).any():
-
-            neighb_valid_idx = np.flatnonzero(valid_neighb)
-
+        if snap_indices.size > 0 and (mag_ok := np.abs(tpl_i) > 1e-8).any():
             for i_a in np.flatnonzero(mag_ok):
-                ws = neighb_i[neighb_valid_idx] / tpl_i[i_a]
-                ok = (np.abs(np.angle(ws)) <= solver_context.ang_gate) & (np.abs(np.abs(ws) - 1.0) <= solver_context.scale_dev)
+                # Snap to any immediate neighbour
+                ws = neighb_i[snap_indices] / tpl_i[i_a]
+
+                # Filter for physiological plausibility
+                ok = (np.abs(np.angle(ws)) <= solver_context.ang_gate) & \
+                     (np.abs(np.abs(ws) - 1.0) <= solver_context.scale_dev)
 
                 for w in ws[ok]:
                     # Rounding for dedup
                     ws_dedup.add((float(np.round(w.real, W_ROUND)), float(np.round(w.imag, W_ROUND))))
 
-        # Build every candidate
+        # Build every candidate for wiring (same chirality only)
         raw = []
+
+        valid_wiring_mask = (neighb.indices[i_loc] != i_glob) & neighb.same_chirality[i_loc]
 
         for wr, wi in sorted(ws_dedup):
             w = wr + 1j * wi    # Rebuild the complex number from the tuple key
 
-            d = np.where(valid_neighb[None, :], np.abs((w * tpl_i[periph])[:, None] - neighb_i[None, :]), np.inf)
+            # Distance matrix: Template (w) vs. same chirality neighbours
+            d = np.where(valid_wiring_mask[None, :],
+                         np.abs((w * tpl_i[periph])[:, None] - neighb_i[None, :]),
+                         np.inf)
+
+            # Hungarian matching
             r_idx, c_idx = linear_sum_assignment(d)
             md = d[r_idx, c_idx]
+
+            # A match is valid if it's within the assignment radius
             keep = (md < solver_context.assign_radius) & np.isfinite(md)
 
-            if int(keep.sum()) < solver_context.min_snap_matches:
-                continue
+            # If this transform (anchored to the lattice) yields enough 'legal' same-chirality connections: keep it
+            if int(keep.sum()) >= solver_context.min_snap_matches:
+                donors_g = neighb.indices[i_loc][c_idx[keep]].astype(int).tolist()
+                slots_g = periph[r_idx[keep]].astype(int).tolist()
 
-            donors_g = neighb.indices[i_loc][c_idx[keep]].astype(int).tolist()
-            slots_g = periph[r_idx[keep]].astype(int).tolist()
+                topo = tuple(sorted(zip(slots_g, donors_g)))
+                cost = solver_context.identity_bias * float(np.abs(w - 1.0)) ** 2
 
-            topo = tuple(sorted(zip(slots_g, donors_g)))
-            cost = solver_context.identity_bias * float(np.abs(w - 1.0)) ** 2
+                raw.append((cost, topo, WiringCandidate(
+                    cost, np.array(slots_g), np.array(donors_g), md[keep], w
+                )))
 
-            raw.append((cost, topo, WiringCandidate(
-                cost,
-                np.array(slots_g),
-                np.array(donors_g),
-                md[keep],
-                w
-            )))
+        # Dedup by donor set
+        # (collapses all transforms that result in the same wiring)
+        best_for_neighbors = {}
+        for cost, _, cand in raw:
+            neighbor_key = tuple(sorted(cand.donors.tolist()))
+            if neighbor_key not in best_for_neighbors or cost < best_for_neighbors[neighbor_key][0]:
+                best_for_neighbors[neighbor_key] = (cost, cand)
 
-        # Greedy dedup in cost order
-        raw.sort(key=lambda t: (t[0], t[1]))
+        # Sort by match count (descending) first
+        unique_candidates = sorted(
+            best_for_neighbors.values(),
+            key=lambda x: (-len(x[1].donors), x[0])
+        )
 
-        omm_cands, seen = [], set()
+        # Aggressive subset pruning
+        # Because it is sorted by match count, the "most complete" solutions
+        # are already in omm_cands, so kill any "partial" solution that are just subsets
+        omm_cands = []
+        for _, cand in unique_candidates:
+            new_set = set(cand.donors)
+            is_redundant = False
 
-        for cost, topo, cand in raw:
-            if topo in seen:
-                continue
-            seen.add(topo)
-            omm_cands.append(cand)
+            for existing in omm_cands:
+                existing_set = set(existing.donors)
+
+                if new_set.issubset(existing_set):
+                    is_redundant = True
+                    break
+
+                # Overlaps by more than 80 -> likely just a jittered
+                # version of the same snap. Keep only the best one.
+                intersection = len(new_set.intersection(existing_set))
+                union = len(new_set.union(existing_set))
+                if union > 0 and (intersection / union) > 0.8:
+                    is_redundant = True
+                    break
+
+            if not is_redundant:
+                omm_cands.append(cand)
+
             if len(omm_cands) >= solver_context.top_k:
                 break
 
@@ -494,7 +533,7 @@ def solve_zone(zone: 'OmmatidiumView', solver_context: 'SimpleNamespace') -> Tup
 
 def wire_neural_superposition(
         model: 'Model',
-        assign_radius: float = 0.3,
+        assign_radius: float = 0.2,
         angular_dev: float = 40.0,
         scale_dev: float = 0.75,
         min_snap_matches: int = 2,
