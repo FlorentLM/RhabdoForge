@@ -1,12 +1,14 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
+
+import matplotlib
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
 from matplotlib.markers import MarkerStyle
-from matplotlib.path import Path
-from matplotlib.transforms import Affine2D
+from scipy.stats import circmean
+from scipy.signal import savgol_filter
 
 from insectvision.compound_eyes import Model
 from insectvision.compound_eyes.helpers.alignment import BundlesAligner
@@ -19,13 +21,13 @@ from insectvision.engine.materials_utils import checkerboard_texture
 from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD, GradientFlowDetector
 
 from visualisation.plot_settings import (
-    PlotSettings, Z_RASTER, Z_TEXT, panel_letter, column_header, row_header, placeholder
+    PlotSettings, panel_letter, column_header, row_header, placeholder
 )
 
 # Configuration
 
-COL_YAW = '#c2a5cf'
-COL_STRAFE = '#a6dba0'
+COL_YAW = '#C37CCF'
+COL_STRAFE = '#5CDB9F'
 
 COL_LEFT = '#EA5E00'
 COL_RIGHT = '#0094D6'
@@ -67,7 +69,7 @@ class Configuration:
     strafe_damping: float = 3.0
     speed_modulation: float = 0.5       # slow forward speed when steering hard (0 = off, 1 = full)
     motor_noise_frac: float = 0.30      # motor noise sd as a fraction of full-scale correction
-    motor_noise: bool = False
+    motor_noise: bool = True
 
     # Eyes param
     tau_membrane: float = 0.012
@@ -325,9 +327,9 @@ def run_all_trials(cfg: Configuration) -> Results:
             for mode in (MODE_YAW, MODE_STRAFE):
                 runs: List[RunLog] = []
 
-                randomise_wall_textures(scene, cfg, wall_condition)
-
                 for t in range(cfg.n_trials):
+                    randomise_wall_textures(scene, cfg, wall_condition)
+
                     print(f'  {wall_condition:11s} / {MODEL_LABEL[model_name]:22s} / '
                           f'{MODE_LABEL[mode]:24s}  trial {t+1}/{cfg.n_trials}')
 
@@ -363,8 +365,6 @@ def _representative(runs: List[RunLog]) -> RunLog:
     return runs[int(np.argsort(key)[len(key) // 2])]
 
 
-NEEDLE = Path([(0.0, 0.0), (1.0, 0.0)])
-
 def _steady_offset(run: RunLog, cfg: Configuration, last_frac: float = 0.25) -> float:
     """Signed mean lateral position over the final `last_frac` of the tunnel."""
 
@@ -388,15 +388,60 @@ def _trajectory_panel(
         show_legend: bool = False
     ):
 
-    # Everything below Z_RASTER is flattened to pixels on PDF/EPS export
-    ax.set_rasterization_zorder(Z_RASTER)
+    half_width = cfg.width / 2
+    lim = half_width * 1.25
+
+    bbox = ax.get_window_extent().transformed(plt.gcf().dpi_scale_trans.inverted())
+    ax_width_inch, ax_height_inch = bbox.width, bbox.height
+
+    # Data units per inch
+    dx_per_inch = cfg.length / ax_width_inch
+    dy_per_inch = (lim * 2) / ax_height_inch
+
+    # Helper to draw unique random squares in the gutters
+    def _draw_gutter_squares(y_start, y_end, factor):
+        base_rows = 4
+        ny = max(1, int(base_rows // factor))
+
+        dy = abs(y_end - y_start) / ny
+        dx = dy * (dx_per_inch / dy_per_inch)
+
+        nx = int(np.ceil(cfg.length / dx))
+
+        seed_str = f'{wall_condition}{model_name}{y_start}{factor}'
+        seed = abs(hash(seed_str)) % (10 ** 8)
+        rng = np.random.default_rng(seed)
+
+        pattern = rng.choice([0, 1], size=(ny, nx))
+
+        # Coordinates (one extra for the edges of pcolormesh)
+        x_coords = np.arange(nx + 1) * dx
+        y_coords = np.linspace(y_start, y_end, ny + 1)
+
+        # vmin/vmax so '0' is light grey and '1' is dark grey
+        ax.pcolormesh(x_coords, y_coords, pattern,
+                      cmap='Greys', vmin=-1.0, vmax=2.0,
+                      shading='flat', edgecolors='none', zorder=0)
+
+    # Top gutter
+    _draw_gutter_squares(-lim, -half_width, 1.0)
+
+    # Bottom gutter
+    f = cfg.asym_factor if wall_condition == WALL_ASYMMETRIC else 1.0
+    _draw_gutter_squares(half_width, lim, f)
+
+    ax.axhspan(-half_width, half_width, color='white', zorder=1)
+    ax.axhspan(-half_width, half_width, color=s.grid, alpha=0.2, zorder=1)
+
+    ax.axhline(-half_width, color=s.frame, lw=1.0, zorder=5)
+    ax.axhline(half_width, color=s.frame, lw=1.0, zorder=5)
 
     for mode in (MODE_YAW, MODE_STRAFE):
         runs = results.get((wall_condition, mode, model_name), [])
         colour = MODE_COLOUR[mode]
 
         for r in runs:
-            ax.plot(r.dist, r.arr('x'), color=colour, lw=0.5, alpha=0.22, zorder=2)
+            ax.plot(r.dist, r.arr('x'), color=colour, lw=0.8, alpha=0.2, zorder=2)
 
         rep = _representative(runs)
 
@@ -410,6 +455,14 @@ def _trajectory_panel(
         idx = np.clip(np.searchsorted(d, samples), 0, d.size - 1)
 
         yaws = rep.arr('yaw')
+        avg_window = 2
+
+        bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+        width_inch, height_inch = bbox.width, bbox.height
+
+        dist_range = cfg.length
+        x_range = (cfg.width * 1.25) * 2
+        m = (dist_range / x_range) * (height_inch / width_inch)
 
         for i in idx:
             ax.plot(d[i], x[i],
@@ -418,21 +471,28 @@ def _trajectory_panel(
                     markerfacecolor=colour,
                     markeredgewidth=0.5,
                     markeredgecolor='white',
-                    zorder=Z_RASTER + 2)
+                    zorder=3)
+
+            lo = max(0, i-avg_window)
+            hi = min(i+avg_window, len(yaws))
+            yaw = circmean(np.deg2rad(yaws)[lo:hi])
+
+            visual_angle_rad = np.arctan(np.tan(yaw) * m)
+            visual_yaw_deg = np.rad2deg(visual_angle_rad)
+
+            t = matplotlib.markers.MarkerStyle(marker='_')
+            t._transform = t.get_transform().translate(0.5, 0.0).rotate_deg(visual_yaw_deg)
 
             ax.plot(d[i], x[i],
-                    marker=MarkerStyle(NEEDLE, transform=Affine2D().scale(0.5).rotate_deg(yaws[i])),
-                    markersize=5.0,
+                    marker=t,
+                    markersize=5,
                     color=colour,
-                    markeredgewidth=0.8,
-                    zorder=Z_RASTER + 3)
+                    zorder=4)
 
     half_width = cfg.width / 2
     lim = half_width * 1.25
 
     ax.axhline(0.0, color=s.frame, ls='--', lw=0.5, zorder=1)
-    ax.axhline(-half_width, color=s.dark, lw=1.0, zorder=1)
-    ax.axhline(half_width, color=s.dark, lw=1.0, zorder=1)
 
     ax.set_xlim(0, cfg.length)
     ax.set_ylim(-lim, lim)
@@ -445,7 +505,7 @@ def _trajectory_panel(
         ax.tick_params(labelbottom=False)
 
     if show_ylabel:
-        ax.set_ylabel('R  $\\leftarrow$  Position x (m)  $\\rightarrow$  L', fontsize=s.small)
+        ax.set_ylabel('R $\\leftarrow$ X position (m) $\\rightarrow$ L', fontsize=s.small)
     else:
         ax.tick_params(labelleft=False)
 
@@ -457,40 +517,49 @@ def _trajectory_panel(
         leg = ax.legend(handles=handles, fontsize=s.tiny, loc='lower right',
                         ncol=2, handlelength=1.1, handletextpad=0.4,
                         columnspacing=0.9, borderpad=0.25)
+
         leg.get_frame().set_edgecolor(s.frame)
         leg.get_frame().set_linewidth(0.3)
         leg.get_frame().set_facecolor('white')
         leg.get_frame().set_alpha(0.92)
-        leg.set_zorder(Z_TEXT)
+
+
+def _smooth(data, window=21, poly=3):
+    """Savitzky-Golay filter to smooth the signal."""
+    w = min(window, len(data) if len(data) % 2 != 0 else len(data) - 1)
+    if w < 5:
+        return data
+    return savgol_filter(data, w, poly)
 
 
 def _flow_panel(ax, results: Results, cfg: Configuration, s: PlotSettings):
     """Bilateral flow + balance error for one representative run."""
-
-    ax.set_rasterization_zorder(Z_RASTER)
 
     rep = _representative(results.get((WALL_SYMMETRIC, MODE_YAW, MODEL_HRC), []))
     dist = rep.dist
 
     l_raw = rep.arr('left_flow')
     r_raw = rep.arr('right_flow')
+    err_raw = rep.arr('error')
 
     # min/max across both eyes for this trial
     g_min = min(l_raw.min(), r_raw.min())
     g_max = max(l_raw.max(), r_raw.max())
+    l_norm = (l_raw - g_min) / (g_max - g_min + 1e-6)
+    r_norm = (r_raw - g_min) / (g_max - g_min + 1e-6)
 
-    left_flow_norm = (l_raw - g_min) / (g_max - g_min + 1e-6)
-    right_flow_norm = (r_raw - g_min) / (g_max - g_min + 1e-6)
+    # Spiky raw data
+    ax.plot(dist, l_norm, color=COL_LEFT, lw=0.2, alpha=0.2, zorder=2)
+    ax.plot(dist, r_norm, color=COL_RIGHT, lw=0.2, alpha=0.2, zorder=2)
 
-    ax.plot(dist, left_flow_norm, color=COL_LEFT, lw=s.curve_lw, alpha=0.85,
-            label='left eye', zorder=4)
-    ax.plot(dist, right_flow_norm, color=COL_RIGHT, lw=s.curve_lw, alpha=0.85,
-            label='right eye', zorder=4)
+    # Smoothed
+    window = 15
+    ax.plot(dist, _smooth(l_norm, window), color=COL_LEFT, lw=s.curve_lw, zorder=3)
+    ax.plot(dist, _smooth(r_norm, window), color=COL_RIGHT, lw=s.curve_lw, zorder=3)
 
     ax.axhline(0.0, color=s.frame, ls='--', lw=0.5, zorder=1)
     ax.set_xlim(0, cfg.length)
     ax.set_ylim(-0.05, 1.05)
-
     ax.set_xlabel('Distance down tunnel (m)', fontsize=s.small)
     ax.set_ylabel('Mean EMD response', fontsize=s.small)
     ax.tick_params(labelsize=s.base)
@@ -504,8 +573,9 @@ def _flow_panel(ax, results: Results, cfg: Configuration, s: PlotSettings):
                 fontsize=s.tiny, color=s.frame)
 
     axErr = ax.twinx()
-    axErr.plot(dist, rep.arr('error'), color=s.frame, lw=0.7, alpha=0.9,
-               zorder=3, label='balance error')
+    axErr.plot(dist, err_raw, color=s.frame, lw=0.2, alpha=0.2, zorder=1)
+    axErr.plot(dist, _smooth(err_raw, window), color=s.frame, lw=s.curve_lw, alpha=0.8, zorder=2)
+
     axErr.set_ylabel('Balance error', color=s.frame, fontsize=s.small)
     axErr.set_ylim(-1.05, 1.05)
     axErr.tick_params(axis='y', colors=s.frame, labelsize=s.base)
@@ -521,8 +591,6 @@ def _flow_panel(ax, results: Results, cfg: Configuration, s: PlotSettings):
     leg.get_frame().set_edgecolor(s.frame)
     leg.get_frame().set_linewidth(0.3)
 
-    leg.set_zorder(Z_TEXT)
-
 
 def _offset_panel(ax, results: Results, cfg: Configuration, s: PlotSettings):
     """
@@ -533,7 +601,10 @@ def _offset_panel(ax, results: Results, cfg: Configuration, s: PlotSettings):
              (WALL_SYMMETRIC, MODEL_GRADIENT), (WALL_ASYMMETRIC, MODEL_GRADIENT)]
     half_width = cfg.width / 2
 
-    ax.axhspan(-half_width, half_width, color=s.grid, zorder=0)
+    ax.axhspan(-half_width, half_width, color=s.grid, alpha=0.3, zorder=0)
+    ax.axhline(-half_width, color=s.frame, lw=1.0, zorder=5)
+    ax.axhline(half_width, color=s.frame, lw=1.0, zorder=5)
+
     ax.axhline(0.0, color=s.frame, ls='--', lw=0.5, zorder=1)
 
     for j, cell in enumerate(cells):
@@ -567,20 +638,16 @@ def _offset_panel(ax, results: Results, cfg: Configuration, s: PlotSettings):
     ax.invert_yaxis()
 
     ax.tick_params(labelsize=s.base)
-    ax.set_ylabel('R  $\\leftarrow$  x (m)  $\\rightarrow$  L', fontsize=s.small)
+    ax.set_ylabel('R $\\leftarrow$ X position (m) $\\rightarrow$ L', fontsize=s.small)
 
     ax.set_title('Steady-state offset (final 25% of tunnel)',
                  fontsize=s.title, loc='left', pad=3)
 
-    # Group the four cells into their two models along the bottom.
+    # Group the four cells into their two models along the bottom
     for xc, label in ((0.5, MODEL_LABEL[MODEL_HRC]), (2.5, MODEL_LABEL[MODEL_GRADIENT])):
-        ax.annotate(label, xy=(xc, -0.135), xycoords=('data', 'axes fraction'),
+        ax.annotate(label, xy=(xc, -0.27), xycoords=('data', 'axes fraction'),
                     ha='center', va='top', fontsize=s.tiny, color=s.dark,
                     annotation_clip=False)
-
-    ax.annotate('median', xy=(0.99, 0.03), xycoords='axes fraction',
-                ha='right', va='bottom', fontsize=s.tiny, color=s.dark)
-
 
 def make_figure(results: Results, cfg: Configuration, s: Optional[PlotSettings] = None) -> plt.Figure:
 
