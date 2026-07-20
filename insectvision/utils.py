@@ -1,3 +1,5 @@
+import os
+import platform
 import inspect
 import logging
 from typing import Tuple, Sequence, Optional
@@ -166,3 +168,28 @@ def infer_name(obj: object, depth: int = 2, fallback: str = '') -> str:
         logger.debug(f'Could not infer name: {e}')
 
     return fallback
+
+
+def detect_system() -> Tuple[str, bool]:
+    system = platform.system()
+    remote = False
+    if system == 'Windows':
+        try:
+            import ctypes
+            remote = ctypes.windll.user32.GetSystemMetrics(0x1000) != 0
+        except Exception:
+            remote = 'RDP' in os.environ.get('SESSIONNAME', '').upper()
+    else:
+        # Linux / Unix / macOS
+        ssh_vars = ['SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION']
+        if any(var in os.environ for var in ssh_vars):
+            remote = True
+
+        display = os.environ.get('DISPLAY', '')
+        if display and not display.startswith(':0'):
+            remote = True
+
+        if 'XRDP_SESSION' in os.environ or 'VNC_VIA_SSH' in os.environ:
+            remote = True
+
+    return system, remote

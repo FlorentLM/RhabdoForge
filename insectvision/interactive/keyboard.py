@@ -4,6 +4,10 @@ from typing import Optional, Tuple, Dict
 
 from insectvision.types import WORLD_UP, WORLD_DOWN, DisplayMode
 from insectvision.interactive.controls import Controls
+from insectvision.utils import detect_system
+
+
+_, RDP_COMPATIBILITY_MODE = detect_system()
 
 
 class KeyboardMouse(Controls):
@@ -58,7 +62,10 @@ class KeyboardMouse(Controls):
         glfw.set_mouse_button_callback(self.ctx.window, self._on_mouse_button)
 
         # Force sync glfw state with context property on boot
-        self.ctx.mouse_captured = self.ctx.mouse_captured
+        if RDP_COMPATIBILITY_MODE:
+            self.ctx.mouse_captured = False
+        else:
+            self.ctx.mouse_captured = self.ctx.mouse_captured
 
         self._last_mouse_pos = None
 
@@ -78,6 +85,11 @@ class KeyboardMouse(Controls):
             return
 
         action_id = self.action_map.get(key)
+
+        if action_id == 'mouse_lock_toggle' and RDP_COMPATIBILITY_MODE:
+            print('Mouse capture is disabled in RDP Compatibility Mode.')
+            return
+
         if action_id:
             self.ctx.actions.trigger(action_id)
 
@@ -87,19 +99,25 @@ class KeyboardMouse(Controls):
             callback()
 
     def _on_mouse_button(self, window, button, action, mods):
-        if action == glfw.PRESS and button == glfw.MOUSE_BUTTON_LEFT:
-            if not self.ctx.mouse_captured:
-                x, y = glfw.get_cursor_pos(window)
-                w, h = glfw.get_window_size(window)
-                if w > 0 and h > 0:
-                    ndc_x = (x / w) * 2.0 - 1.0
-                    ndc_y = 1.0 - (y / h) * 2.0
+        if action == glfw.PRESS and button == glfw.MOUSE_BUTTON_RIGHT:
+            w, h = glfw.get_window_size(window)
+            if w > 0 and h > 0:
 
-                    picked_lens = self.ctx.pick_ommatidium(ndc_x, ndc_y)
-                    if picked_lens is not None:
-                        if self.ctx.dashboard:
-                            is_shift = (mods & glfw.MOD_SHIFT) != 0
-                            self.ctx.dashboard.toggle_omm_selection(picked_lens, multi=is_shift)
+                if self.ctx.mouse_captured:
+                    # FPS mode (not RDP): pick whatever is in the centre of the screen
+                    x, y = w / 2.0, h / 2.0
+                else:
+                    # Cursor mode (RDP or TAB pressed): pick where the cursor is
+                    x, y = glfw.get_cursor_pos(window)
+
+                ndc_x = (x / w) * 2.0 - 1.0
+                ndc_y = 1.0 - (y / h) * 2.0
+
+                picked_lens = self.ctx.pick_ommatidium(ndc_x, ndc_y)
+                if picked_lens is not None:
+                    if self.ctx.dashboard:
+                        is_shift = (mods & glfw.MOD_SHIFT) != 0
+                        self.ctx.dashboard.toggle_omm_selection(picked_lens, multi=is_shift)
 
     def _on_scroll(self, window, xoffset, yoffset):
 
@@ -149,7 +167,9 @@ class KeyboardMouse(Controls):
         if glfw.get_key(window, glfw.KEY_E) == glfw.PRESS: roll_input -= 1.0
 
         # Mouse look
-        if not self.ctx.mouse_captured:
+
+        # If not captured and not in RDP mode, freeze the camera
+        if not self.ctx.mouse_captured and not RDP_COMPATIBILITY_MODE:
             self._last_mouse_pos = None
 
             if yaw_input != 0 or roll_input != 0:
@@ -160,6 +180,7 @@ class KeyboardMouse(Controls):
                 )
             return
 
+        # Otherwise (captured locally, or RDP mode), calc dx and dy
         current_mouse_pos = glfw.get_cursor_pos(window)
         if self._last_mouse_pos is None:
             self._last_mouse_pos = current_mouse_pos
@@ -184,7 +205,7 @@ class KeyboardMouse(Controls):
                 degrees=True
             )
 
-        # Standard control
+            # Standard camera control
         else:
             mouse_yaw = dx * self.mouse_sensitivity * self._mouse_x_dir
             mouse_pitch = dy * self.mouse_sensitivity * self._mouse_y_dir
