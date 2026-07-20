@@ -161,11 +161,11 @@ def panel_lattice(ax, fig, stages, s, vlim=None, ylabel=None):
 
     if m.source_points is not None:
         ax.scatter(m.source_points[:, 0], m.source_points[:, 1],
-                   c='k', s=PT_SOURCE, alpha=0.15, zorder=1, rasterized=True)
+                   c='k', s=PT_SOURCE, alpha=0.15, zorder=1)
     ax.add_collection(LineCollection(final[edges], color='0.6', lw=0.3, alpha=0.6,
-                                     zorder=2, rasterized=True))
+                                     zorder=2))
     sc = ax.scatter(final[:, 0], final[:, 1], c=spacing, cmap='viridis_r',
-                    s=PT_LATTICE, vmin=vmin, vmax=vmax, zorder=3, rasterized=True)
+                    s=PT_LATTICE, vmin=vmin, vmax=vmax, zorder=3)
     _boundary(ax, m.domain, s, alpha=0.5)
     _map_axes(ax, ylabel=ylabel, s=s)
 
@@ -195,13 +195,13 @@ def panel_density_residual(ax, fig, stages, s, vmax=0.15):
     resid = np.where(valid, (ach_grid - tgt_grid) / tgt_grid, np.nan)
 
     rc = ax.contourf(gx, gy, resid, levels=np.linspace(-vmax, vmax, 31),
-                     cmap='RdBu_r', extend='both', alpha=0.8, rasterized=True)
+                     cmap='RdBu_r', extend='both', alpha=0.8)
     ax.contour(gx, gy, resid, levels=[0], colors='k', linewidths=s.axis_lw, alpha=0.6)
     ax.scatter(final[inside, 0], final[inside, 1], c=rel_pts[inside], cmap='RdBu_r',
                vmin=-vmax, vmax=vmax, s=PT_RESID, edgecolors='k', linewidths=0.15,
-               zorder=3, rasterized=True)
+               zorder=3)
     ax.scatter(final[~inside, 0], final[~inside, 1], c='lightgrey', s=PT_RESID * 0.35,
-               alpha=0.5, rasterized=True)
+               alpha=0.5)
     _boundary(ax, domain, s)
     _map_axes(ax)
 
@@ -270,13 +270,13 @@ def panel_order_defects(ax, fig, stages, s):
     inside = domain.signed_distance(final) < -HIDE_MARGIN * gen_ms
 
     ax.scatter(final[~inside, 0], final[~inside, 1], c='lightgrey',
-               s=PT_PSI * 0.4, alpha=0.6, rasterized=True)
+               s=PT_PSI * 0.4, alpha=0.6)
     im = ax.scatter(final[inside, 0], final[inside, 1], c=psi[inside], cmap='RdYlGn',
-                    s=PT_PSI, vmin=0.2, vmax=1.0, edgecolors='none', rasterized=True)
+                    s=PT_PSI, vmin=0.2, vmax=1.0, edgecolors='none')
 
     defect = inside & (coord != 6)
     ax.scatter(final[defect, 0], final[defect, 1], facecolors='none', edgecolors='k',
-               s=PT_DEFECT, linewidths=0.5, zorder=4, rasterized=True)
+               s=PT_DEFECT, linewidths=0.5, zorder=4)
     _boundary(ax, domain, s, alpha=0.4)
     _map_axes(ax)
 
@@ -299,8 +299,7 @@ def panel_rows(ax, stages, s):
     gen_seed, gen_rows, _ = trace_lattice_rows(final, gen_nb, seed=src_seed, bearings=bearings)
 
     edges = delaunay_edges(final, max_length_factor=1.8)
-    ax.add_collection(LineCollection(final[edges], color='0.8', lw=0.3, alpha=0.5,
-                                     rasterized=True))
+    ax.add_collection(LineCollection(final[edges], color='0.8', lw=0.3, alpha=0.5))
 
     for col, gr, sr, brg, lab in zip(ROW_COLORS, gen_rows, src_rows, bearings, 'XYV'):
         major = principal_axes(gr)[0][:, 0]
@@ -350,7 +349,7 @@ def make_figure(stages, s=None):
 
     n_final = len(stages['final'])
     n_src = len(stages['measurements'].source_points)
-    fig.suptitle(f'Procedural ommatidial lattice\n'
+    fig.suptitle(f'Procedural ommatidial lattice '
                  f'(N={n_final} vs. source {n_src})',
                  fontsize=s.header + 2, y=0.965)
 
