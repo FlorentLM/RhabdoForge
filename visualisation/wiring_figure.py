@@ -199,33 +199,58 @@ def whitened_neighbours(model: Model, i_glob: int, W: np.ndarray, scale: float, 
 # Panels A-C: per-cartridge wiring diagnostics
 
 def _draw_empty_region(ax, pos, s: PlotSettings):
-
+    """
+    Identifies and hatches the 'empty' region (outside the eye) by finding
+    the largest angular gap between neighbouring facets.
+    """
     pos = np.asarray(pos)
-    if pos.shape[0] == 0:
+    if pos.shape[0] < 3:
         return
 
-    outward = -pos.mean(axis=0)
+    angles = np.arctan2(pos[:, 1], pos[:, 0])
+    angles = np.sort(angles)
 
-    n = np.linalg.norm(outward)
-    if n < 1e-6:
+    gaps = np.diff(angles)
+    wrap_gap = (2 * np.pi - angles[-1] + angles[0])
+
+    if wrap_gap > np.max(gaps):
+        angle_start = angles[-1]
+        angle_end = angles[0] + 2 * np.pi
+        max_gap = wrap_gap
+    else:
+        idx = np.argmax(gaps)
+        angle_start = angles[idx]
+        angle_end = angles[idx + 1]
+        max_gap = gaps[idx]
+
+    if max_gap < np.deg2rad(100):
         return
 
-    outward /= n
+    mid_angle = (angle_start + angle_end) / 2.0
+    outward = np.array([np.cos(mid_angle), np.sin(mid_angle)])
+
+    p0 = 0.60 * outward
     tangent = np.array([-outward[1], outward[0]])
-    p0 = 0.55 * outward       # boundary just past the home lens
-    big = 3.0 * LIM
-    corners = np.array([p0 + big * tangent, p0 - big * tangent,
-                        p0 - big * tangent + big * outward, p0 + big * tangent + big * outward])
 
-    prev = plt.rcParams.get('hatch.linewidth', 1.0)
+    big = 8.0 * LIM
+    corners = np.array([
+        p0 + big * tangent,
+        p0 - big * tangent,
+        p0 - big * tangent + big * outward,
+        p0 + big * tangent + big * outward
+    ])
+
+    prev_lw = plt.rcParams.get('hatch.linewidth', 1.0)
     plt.rcParams['hatch.linewidth'] = 0.4
+
     patch = Polygon(corners, closed=True, facecolor='none', edgecolor=s.frame,
                     lw=0.0, hatch='////', alpha=0.20, zorder=0.5)
-
     ax.add_patch(patch)
-    plt.rcParams['hatch.linewidth'] = prev
 
-    ax.text(*(LIM * 0.68 * outward), 'outside eye\n(no facets)', color=s.frame,
+    plt.rcParams['hatch.linewidth'] = prev_lw
+
+    text_pos = LIM * 0.75 * outward
+    ax.text(*text_pos, 'outside eye\n(no facets)', color=s.frame,
             fontsize=s.tiny, ha='center', va='center', alpha=0.9, zorder=Z_TEXT)
 
 
