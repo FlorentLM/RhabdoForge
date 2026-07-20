@@ -595,7 +595,41 @@ class PointsAsset(Asset):
             if len(self._radii) != n:
                 raise ValueError("Radii count must match point count.")
         else:
-            self.radii = np.full(n, 0.05, dtype=np.float32)
+            # radii estimation
+            if n > 1:
+                try:
+                    from scipy.spatial import cKDTree
+                    print(f"Info: Estimating radii for point cloud '{self.name}'...")
+
+                    tree = cKDTree(self._points)
+
+                    k = min(n, 6)
+                    distances, _ = tree.query(self._points, k=k)
+
+                    if k > 1:
+                        meidan_dist = np.median(distances[:, 1:], axis=1)
+
+                        # 0.5 = just touch, 0.6 = lil overlap to close gaps
+                        est_radii = (meidan_dist * 0.6).astype(np.float32)
+
+                        # Handle duplicate points
+                        valid_mask = est_radii > 1e-6
+                        if np.any(valid_mask):
+                            # Replace 0.0 with the median radius
+                            fallback_r = np.median(est_radii[valid_mask])
+                            est_radii[~valid_mask] = fallback_r
+                        else:
+                            est_radii = np.full(n, 0.05, dtype=np.float32)
+
+                        self.radii = est_radii
+                    else:
+                        self.radii = np.full(n, 0.05, dtype=np.float32)
+
+                except:
+                    print('Warning: radii estimation failed. Falling back to 0.05.')
+                    self.radii = np.full(n, 0.05, dtype=np.float32)
+            else:
+                self.radii = np.full(n, 0.05, dtype=np.float32)
 
 
 class Instance(TransformMixin):
