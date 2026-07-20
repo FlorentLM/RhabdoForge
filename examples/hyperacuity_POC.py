@@ -439,6 +439,7 @@ def _cell_stats(results, regime, cond):
         'dip_up': d_up,
         'dip_dn': d_dn,
         'dip': 0.5 * (d_up + d_dn),
+        'peak': float(max(up.max(), dn.max())),
         'kind_up': dip_u[3] if dip_u else 'fused',
         'kind_dn': dip_d[3] if dip_d else 'fused',
     }
@@ -624,8 +625,8 @@ def make_figure(results, s: PlotSettings) -> plt.Figure:
     for ax in axB.ravel():
         ax.set_xticks([-8, -4, 0, 4, 8])
 
-    # C: exemplar rhabdomere decomposition
-    gsCD = outer[2].subgridspec(1, 3, width_ratios=[1.35, 1.0, 1.0], wspace=0.50)
+    # C and D Grid
+    gsCD = outer[2].subgridspec(1, 2, width_ratios=[1.35, 1.2], wspace=0.35)
 
     ex_regime, ex_cond = EXEMPLAR
     axC = fig.add_subplot(gsCD[0])
@@ -636,30 +637,20 @@ def make_figure(results, s: PlotSettings) -> plt.Figure:
                    fontsize=s.small, labelpad=2)
     axC.set_title(f'{ex_cond} / {ex_regime}', fontsize=s.title, loc='left', pad=3)
 
-    # D: scalar summaries
-    axD1 = fig.add_subplot(gsCD[1])
-    _summary_bars(axD1, s, stats, cond_names, 'dip',
-                  '(i) Two-bar resolution', 'Dip depth',
-                  # dot_keys=(('dip_up', 'v'), ('dip_dn', '^')),
-                  dot_keys=None,
-                  threshold=DIP_MIN_DEPTH)
-    axD1.set_ylim(0, None)
-
-    axD2 = fig.add_subplot(gsCD[2])
-    _summary_bars(axD2, s, stats, cond_names, 'asym',
-                  '(ii) Direction dependence', 'UP/DOWN shape $\\Delta$')
-    axD2.set_ylim(0, None)
-    axD2.yaxis.set_major_locator(MaxNLocator(nbins=4))
+    # D: Direction dependence scalar summary
+    axD = fig.add_subplot(gsCD[1])
+    _summary_bars(axD, s, stats, cond_names, 'asym',
+                  'Direction dependence', 'UP/DOWN shape $\\Delta$')
+    axD.set_ylim(0, None)
+    axD.yaxis.set_major_locator(MaxNLocator(nbins=4))
 
     reg_handles = [
         Patch(facecolor='white', edgecolor=s.dark, lw=0.7, label=regimes[0].title()),
         Patch(facecolor=s.dark, edgecolor=s.dark, lw=0.7, label=regimes[1].title()),
-        # Line2D([0], [0], marker='v', ls='none', mfc=s.dark, mec='white', mew=0.3, ms=2.6, label='UP sweep'),
-        # Line2D([0], [0], marker='^', ls='none', mfc=s.dark, mec='white', mew=0.3, ms=2.6, label='DOWN sweep'),
     ]
-    leg = axD2.legend(handles=reg_handles, loc='upper left', fontsize=s.tiny,
-                      handlelength=1.0, handletextpad=0.4, borderpad=0.25,
-                      labelspacing=0.22)
+    leg = axD.legend(handles=reg_handles, loc='upper left', fontsize=s.tiny,
+                     handlelength=1.0, handletextpad=0.4, borderpad=0.25,
+                     labelspacing=0.22)
     leg.get_frame().set_edgecolor(s.frame)
     leg.get_frame().set_linewidth(0.3)
     leg.set_zorder(Z_TEXT)
@@ -689,7 +680,7 @@ def make_figure(results, s: PlotSettings) -> plt.Figure:
     panel_letter(fig, s, 'A', axA, dx=DX, dy=0.0)
     panel_letter(fig, s, 'B', axB[0, 0], dx=DX, dy=0.020)
     panel_letter(fig, s, 'C', axC, dx=DX, dy=0.010)
-    panel_letter(fig, s, 'D', axD1, dx=DX, dy=0.010)
+    panel_letter(fig, s, 'D', axD, dx=DX, dy=0.010)
 
     return fig
 
