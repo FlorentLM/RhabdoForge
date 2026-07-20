@@ -457,7 +457,7 @@ def _trajectory_panel(
         yaws = rep.arr('yaw')
         avg_window = 2
 
-        bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+        bbox = ax.get_window_extent().transformed(ax.figure.dpi_scale_trans.inverted())
         width_inch, height_inch = bbox.width, bbox.height
 
         dist_range = cfg.length
