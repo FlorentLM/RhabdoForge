@@ -1,7 +1,4 @@
 import OpenGL
-
-from insectvision.utils import pretty_size
-
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
@@ -17,6 +14,7 @@ from insectvision.types import AssetType
 from insectvision.engine.lights import Sun, Light, DirectionalLight, PointLight, AreaLight
 from insectvision.engine.movement import TransformMixin
 from insectvision.engine.materials_utils import load_exr_equirect, sh_irradiance, get_exr_sun
+from insectvision.utils import pretty_size
 
 if TYPE_CHECKING:
     from PIL.ImageFile import ImageFile
