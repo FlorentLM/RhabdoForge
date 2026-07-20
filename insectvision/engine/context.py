@@ -79,7 +79,8 @@ class Context:
         self.display_mode: Optional['DisplayMode'] = None
 
         # Overlays
-        self.hud: Optional['HUD'] = None
+        self._hud: Optional['HUD'] = None
+        self._hud_state = 2     # 0: off, 1: info only (no hints), 2: full info
         self.dashboard: Optional['Dashboard'] = None
         self.debug: Optional['DebugOverlay'] = DebugOverlay() if debug_overlay else None
 
@@ -119,6 +120,31 @@ class Context:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.free()
+
+    @property
+    def hud(self) -> Optional['HUD']:
+        return self._hud
+
+    @hud.setter
+    def hud(self, value: Union[bool, 'HUD']) -> None:
+        if isinstance(value, HUD):
+            if self._hud is not None and self._hud is not value:
+                self._hud.free()
+            self._hud = value
+            self._hud_state = 2 if getattr(value, 'show_controls', True) else 1
+
+        elif value is True:
+            if self._hud is None:
+                self._hud = HUD(self, font_size=18)
+            if self._hud_state == 0:
+                self._hud_state = 2
+            self._hud.show_controls = (self._hud_state == 2)
+
+        elif value is False or value is None:
+            if self._hud is not None:
+                self._hud.free()
+                self._hud = None
+            self._hud_state = 0
 
     @property
     def mouse_captured(self) -> bool:
@@ -324,8 +350,15 @@ class Context:
         )
 
     def toggle_hud(self) -> None:
-        if self.hud:
-            self.hud.show = not self.hud.show
+        # cycles state: 2 (full) -> 1 (info only) -> 0 (off) -> 2 (full)
+        self._hud_state = (self._hud_state + 2) % 3
+
+        if self._hud_state == 0:
+            self.hud = False
+        else:
+            self.hud = True
+            if self.hud:
+                self.hud.show_controls = (self._hud_state == 2)
 
     def toggle_overlay(self) -> None:
         self._renderer.overlay_enabled = not self._renderer.overlay_enabled
@@ -435,24 +468,23 @@ class Context:
         On first call, initialises and shows the window. Then reports whether the
         interactive loop should continue.
         """
-
         if not self._interactive_initialised:
 
             glfw.swap_interval(int(self._vsync))
             glfw.show_window(self.window)
 
             self.display_mode = DisplayMode.Compound
-            self.hud = HUD(self, font_size=18)
 
             if use_dashboard:
                 self.dashboard = Dashboard(self)
-                self.hud.show = False  # default HUD off when the dashboard is active
+                self.hud = False
+            else:
+                self.hud = True
 
             # Default to kb + mouse
             if self._controls is None:
                 from insectvision.interactive.keyboard import KeyboardMouse
                 self._controls = KeyboardMouse()
-
             self._controls.setup(self)
 
             # Start the wall-clock anchor right before the first frame

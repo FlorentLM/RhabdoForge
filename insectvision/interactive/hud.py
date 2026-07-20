@@ -232,8 +232,6 @@ class HUD:
         self.height = self.ctx.viewport_size[1]
         self.nb_px = self.width * self.height
 
-        self.show = True
-
         self.font_renderer = FontRenderer(font_size=font_size)
 
         self.projection_matrix = glm.ortho(0, self.width, 0, self.height, -1.0, 1.0)
@@ -246,7 +244,7 @@ class HUD:
         self._info_shadow_verts, self._info_fg_verts = None, None
         self._stats_shadow_verts, self._stats_fg_verts = None, None
 
-        self._update_controls_text()
+        self.show_controls = True
 
     def _build_text_buffers(self, text_lines, x_align='left', y_start=10):
         """Helper to generate Shadow and FG vertices for a block of text."""
@@ -274,13 +272,24 @@ class HUD:
 
     def _update_controls_text(self):
 
-        lines = [
-            'Movement:',
-            '    WASD: Move',
-            '    Mouse: Look / Pan',
-            '    Space / Ctrl: Up / Down',
-            '    L-Shift (hold): Strafe (3rd person)'
-        ]
+        is_gamepad = self.ctx.controls.__class__.__name__ == 'Gamepad'
+
+        if is_gamepad:
+            lines = [
+                'Movement:',
+                '    L-Stick: Move / Strafe',
+                '    R-Stick: Look / Pan',
+                '    A / X: Up / Down',
+                '    LT / RT: Zoom / Sun intensity'
+            ]
+        else:
+            lines = [
+                'Movement:',
+                '    WASD: Move',
+                '    Mouse: Look / Pan',
+                '    Space / Ctrl: Up / Down',
+                '    L-Shift (hold): Strafe (3rd person)'
+            ]
 
         categories = ['Rendering', 'Sampling', 'Environment', 'Dynamics', 'Agent', 'UI']
 
@@ -292,8 +301,9 @@ class HUD:
             lines.append(f'{cat}:')
 
             for a in actions:
-                if a.keyboard_hint:
-                    lines.append(f'    {a.keyboard_hint}: {a.name}')
+                hint = a.gamepad_hint if is_gamepad else a.keyboard_hint
+                if hint:
+                    lines.append(f'    {hint}: {a.name}')
 
         if self.ctx._key_bindings_desc:
             lines.append('Custom Bindings:')
@@ -313,6 +323,12 @@ class HUD:
         if current_time - self._last_update_time < self.update_interval:
             return
         self._last_update_time = current_time
+
+        if self.show_controls:
+            self._update_controls_text()
+        else:
+            self._controls_shadow_verts = None
+            self._controls_fg_verts = None
 
         pos = self.ctx.renderer.agent.position
 
@@ -380,9 +396,6 @@ class HUD:
         )
 
     def draw(self):
-
-        if not self.show:
-            return
 
         self._update_text_vertices()
 

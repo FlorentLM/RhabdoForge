@@ -160,7 +160,7 @@ class Gamepad(Controls):
 
         if glm.length(move_direction) > 0:
             speed = ctx.move_speed * self.move_sensitivity
-            agent.dt(wall_dt).translate(glm.normalize(move_direction) * speed)
+            agent.translate(glm.normalize(move_direction) * speed * wall_dt)
 
         # Zoom / Sun intensity
         scroll_delta = (rt - lt) * wall_dt * 10.0
@@ -183,16 +183,16 @@ class Gamepad(Controls):
                 new_azimuth = sun.azimuth - (rx * self._sun_orbit_speed * wall_dt)
                 new_elevation = sun.elevation - (ry * self._sun_orbit_speed * wall_dt)
                 new_elevation = max(1.0, min(89.0, new_elevation))
-                sun.from_angles(new_azimuth, new_elevation, sun.distance)
+
+                sun.from_angles(new_azimuth, new_elevation)
 
                 if abs(left_stick_yaw_delta) > 0:
                     agent.rotate(yaw=left_stick_yaw_delta, degrees=True)
 
             elif ctx.display_mode == DisplayMode.Third_person:
                 ctx.observer.pan(
-                    azimuth=-rx * self._look_x_dir * self.look_sensitivity * wall_dt,
-                    elevation=ry * self._look_y_dir * self.look_sensitivity * wall_dt,
-                    degrees=True
+                    -rx * self._look_x_dir * self.look_sensitivity * wall_dt,
+                    ry * self._look_y_dir * self.look_sensitivity * wall_dt
                 )
                 if abs(left_stick_yaw_delta) > 0:
                     agent.rotate(yaw=left_stick_yaw_delta, degrees=True)
