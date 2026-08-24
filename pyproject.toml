@@ -15,8 +15,8 @@ dependencies = [
     "trimesh[easy]",
     "pyvista",
     "pyglm",
-    "pytinybvh @ git+https://github.com/FlorentLM/pytinybvh.git#egg=pytinybvh",
+    "pytinybvh @ git+https://github.com/FlorentLM/pytinybvh.git",
     "dearpygui>=2.3.1",
-    "opencv-python>=4.13.0.92",
+    "opencv-python>=4.13.0.92,<5",
     "joblib>=1.5.3",
 ]
