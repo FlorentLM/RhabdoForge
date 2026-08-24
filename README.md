@@ -2,7 +2,13 @@
 
 `RhabdoForge` is a high-performance, biologically constrained rendering engine designed for the simulation of compound eye optics and the study of insect visual processing. 
 
+<p float="left">
+    <img src="overview.png" alt="Engine overview" width="750">
+</p>
+
 The framework enables researchers to model species-specific ommatidial arrays, rhabdomere bundle geometries, neural superposition wiring, etc. It integrates photomechanical dynamics (microsaccades and adaptation) into GPU-accelerated rendering pipelines, including ray-casting and path-tracing.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)  
 
 ## Some features
 
