@@ -1,0 +1,446 @@
+import OpenGL
+OpenGL.ERROR_CHECKING = False
+from OpenGL.GL import *
+
+from pathlib import Path
+import json
+import numpy as np
+from typing import Optional, Tuple
+from PIL import Image
+from pyglm import glm
+import glfw
+
+from rhabdoforge.engine.resources import ShaderProgram
+
+
+def generate_font_atlas(
+        font_name: Optional[str] = None,
+        font_size: int = 20,
+        output_dir: str | Path ='interactive/fonts',
+        color: Tuple[int, int, int] = (255, 255, 255, 255)
+    ):
+    """
+    Generates a fonts atlas texture and its corresponding metadata file.
+    """
+    from os import environ
+    environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
+    try:
+        import pygame
+    except ImportError:
+        raise ImportError("'pygame' package required for pygame texture generation")
+    import string
+    import json
+
+    pygame.init()
+
+    font_name = str(font_name) if font_name is not None else pygame.font.get_default_font()
+    base_name = font_name.split('.')[0] if '.' in font_name else font_name
+    unique_name = f"{base_name}_{font_size}"
+
+    print(f"Generating fonts atlas for '{font_name}' (size {font_size})...")
+
+    font = pygame.font.SysFont(font_name, font_size)
+
+    chars_to_render = string.printable
+    atlas_cols = 16
+    atlas_rows = (len(chars_to_render) + atlas_cols - 1) // atlas_cols
+    char_data = {}
+
+    max_w, max_h = 0, 0
+    for char in chars_to_render:
+        w, h = font.size(char)
+        if w > max_w: max_w = w
+        if h > max_h: max_h = h
+
+    cell_w, cell_h = max_w, max_h
+    atlas_width = atlas_cols * cell_w
+    atlas_height = atlas_rows * cell_h
+
+    atlas_surface = pygame.Surface((atlas_width, atlas_height), pygame.SRCALPHA)
+    atlas_surface.fill((0, 0, 0, 0))
+
+    for i, char in enumerate(chars_to_render):
+        char_surface = font.render(char, True, color)
+        metrics = font.metrics(char)[0]
+        advance = metrics[4]
+
+        col = i % atlas_cols
+        row = i // atlas_cols
+        x, y = col * cell_w, row * cell_h
+
+        atlas_surface.blit(char_surface, (x, y))
+
+        # Store character metadata
+        uv_x0 = x / atlas_width
+        uv_y0 = y / atlas_height
+        uv_x1 = (x + char_surface.get_width()) / atlas_width
+        uv_y1 = (y + char_surface.get_height()) / atlas_height
+
+        char_data[char] = {
+            'w': char_surface.get_width(),
+            'h': char_surface.get_height(),
+            'uv_rect': (uv_x0, uv_y0, uv_x1, uv_y1),
+            'advance': advance
+        }
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    image_path = output_dir / f'{unique_name}.png'
+    json_path = output_dir / f'{unique_name}.json'
+
+    pygame.image.save(atlas_surface, image_path)
+    with open(json_path, 'w') as f:
+        json.dump({
+            'font_name': font_name,
+            'font_size': font_size,
+            'atlas_image': f'{unique_name}.png',
+            'char_data': char_data
+        }, f, indent=4)
+
+    print(f"Saved fonts atlas for '{font_name}' (size {font_size}).")
+
+    pygame.quit()
+
+
+class FontRenderer:
+    """Renders text on the GPU using a font atlas."""
+
+    def __init__(self, font_name='freesansbold.ttf', font_size=22):
+        self.char_data = {}
+        self.text_program = ShaderProgram(vert_path='text.vert', frag_path='text.frag')
+
+        self.proj_loc = self.text_program.get_loc("projection")
+        self.color_loc = self.text_program.get_loc("textColor")
+        self.atlas_loc = self.text_program.get_loc("fontAtlas")
+
+        self._load_atlas_data(font_name, font_size)
+
+        # VAO and VBO for text quads
+        self.vao = glGenVertexArrays(1)
+        self.vbo = glGenBuffers(1)
+        glBindVertexArray(self.vao)
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo)
+
+        # Data is buffered on the fly so just set up attributes here
+        # Each vertex has x, y, u, v floats
+        glBufferData(GL_ARRAY_BUFFER, 0, None, GL_DYNAMIC_DRAW)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat), ctypes.c_void_p(0))
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glBindVertexArray(0)
+
+    def _load_atlas_data(self, font_name: str, font_size: int):
+        """
+        Loads atlas metadata from JSON and the texture from the associated PNG file.
+        """
+        atlas_dir = Path('rhabdoforge/interactive/fonts')
+
+        base_name = font_name.split('.')[0] if '.' in font_name else font_name
+        unique_name = f"{base_name}_{font_size}"
+        json_path = atlas_dir / f'{unique_name}.json'
+
+        # Generate if this specific size doesn't exist
+        if not json_path.exists():
+            generate_font_atlas(font_name=font_name, font_size=font_size, output_dir=atlas_dir)
+
+        with json_path.open(encoding="UTF-8") as f:
+            data = json.load(f)
+            self.char_data = data['char_data']
+            self.font_size = data['font_size']
+            image_filename = data['atlas_image']
+
+        # Load image texture
+        image_path = atlas_dir / image_filename
+        image = Image.open(image_path).convert("RGBA")
+
+        image_data = image.tobytes()
+        atlas_width, atlas_height = image.size
+
+        # Create OpenGL Texture
+        self.atlas_texture = glGenTextures(1)
+
+        glBindTexture(GL_TEXTURE_2D, self.atlas_texture)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, atlas_width, atlas_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image_data)
+        glBindTexture(GL_TEXTURE_2D, 0)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4)  # Reset to default
+
+    def text_width(self, text, scale=1.0):
+        """
+        Returns pixel width of a string based on the fonts atlas.
+        """
+        width = 0
+        for char in text:
+            if char in self.char_data:
+                width += self.char_data[char]['advance'] * scale
+        return width
+
+    def text_vertices(self, text, x, y, scale=1.0):
+        """
+        Generates vertex data for a string and returns it as a list.
+        """
+        vertices = []
+        cursor_x = x
+        for char in text:
+            if char in self.char_data:
+                data = self.char_data[char]
+                w, h = data['w'] * scale, data['h'] * scale
+                u0, v0, u1, v1 = data['uv_rect']
+
+                bl = (cursor_x, y, u0, v1)
+                br = (cursor_x + w, y, u1, v1)
+                tr = (cursor_x + w, y + h, u1, v0)
+                tl = (cursor_x, y + h, u0, v0)
+
+                vertices.extend(bl)
+                vertices.extend(br)
+                vertices.extend(tr)
+                vertices.extend(bl)
+                vertices.extend(tr)
+                vertices.extend(tl)
+
+                cursor_x += data['advance'] * scale
+        return vertices
+
+    def change_size(self, new_size, font_name='freesansbold.ttf'):
+        if self.atlas_texture:
+            glDeleteTextures(1, [self.atlas_texture])
+        self._load_atlas_data(font_name, new_size)
+
+    def free(self):
+        self.text_program.free()
+        glDeleteVertexArrays(1, [self.vao])
+        glDeleteBuffers(1, [self.vbo])
+        glDeleteTextures(1, [self.atlas_texture])
+
+
+class HUD:
+    """
+    Manages the rendering of all HUD elements.
+    """
+
+    def __init__(self, context, font_size=18):
+        self.ctx = context
+
+        self.width = self.ctx.viewport_size[0]
+        self.height = self.ctx.viewport_size[1]
+        self.nb_px = self.width * self.height
+
+        self.font_renderer = FontRenderer(font_size=font_size)
+
+        self.projection_matrix = glm.ortho(0, self.width, 0, self.height, -1.0, 1.0)
+
+        self.update_interval = 0.25  # update text every 250 ms
+        self._last_update_time = 0
+
+        self._controls_text_lines = []
+        self._controls_shadow_verts, self._controls_fg_verts = None, None
+        self._info_shadow_verts, self._info_fg_verts = None, None
+        self._stats_shadow_verts, self._stats_fg_verts = None, None
+
+        self.show_controls = True
+
+    def _build_text_buffers(self, text_lines, x_align='left', y_start=10):
+        """Helper to generate Shadow and FG vertices for a block of text."""
+
+        shadow_verts, fg_verts = [], []
+        line_height = self.font_renderer.font_size * 1.1
+        margin = 10
+
+        for i, text in enumerate(text_lines):
+            y_pos = y_start + (i * line_height)
+
+            if x_align == 'right':
+                text_width = self.font_renderer.text_width(text)
+                x_pos = self.width - text_width - margin
+            else:
+                x_pos = margin
+
+            shadow_verts.extend(self.font_renderer.text_vertices(text, x_pos + 1, y_pos - 1))
+            fg_verts.extend(self.font_renderer.text_vertices(text, x_pos, y_pos))
+
+        return (
+            np.array(shadow_verts, dtype=np.float32) if shadow_verts else None,
+            np.array(fg_verts, dtype=np.float32) if fg_verts else None
+        )
+
+    def _update_controls_text(self):
+
+        is_gamepad = self.ctx.controls.__class__.__name__ == 'Gamepad'
+
+        if is_gamepad:
+            lines = [
+                'Movement:',
+                '    L-Stick: Move / Strafe',
+                '    R-Stick: Look / Pan',
+                '    A / X: Up / Down',
+                '    LT / RT: Zoom / Sun intensity'
+            ]
+        else:
+            lines = [
+                'Movement:',
+                '    WASD: Move',
+                '    Mouse: Look / Pan',
+                '    Space / Ctrl: Up / Down',
+                '    L-Shift (hold): Strafe (3rd person)'
+            ]
+
+        categories = ['Rendering', 'Sampling', 'Environment', 'Dynamics', 'Agent', 'UI']
+
+        for cat in categories:
+            actions = self.ctx.actions.get_by_category(cat)
+            if not actions:
+                continue
+
+            lines.append(f'{cat}:')
+
+            for a in actions:
+                hint = a.gamepad_hint if is_gamepad else a.keyboard_hint
+                if hint:
+                    lines.append(f'    {hint}: {a.name}')
+
+        if self.ctx._key_bindings_desc:
+            lines.append('Custom Bindings:')
+            for key_code, (key_name, desc) in self.ctx._key_bindings_desc.items():
+                lines.append(f'    {key_name}: {desc}')
+
+        lines.append('  ESC: Quit')
+
+        self._controls_text_lines = reversed(lines)
+        self._controls_shadow_verts, self._controls_fg_verts = self._build_text_buffers(
+            self._controls_text_lines, x_align='left', y_start=10
+        )
+
+    def _update_text_vertices(self):
+
+        current_time = glfw.get_time()
+        if current_time - self._last_update_time < self.update_interval:
+            return
+        self._last_update_time = current_time
+
+        if self.show_controls:
+            self._update_controls_text()
+        else:
+            self._controls_shadow_verts = None
+            self._controls_fg_verts = None
+
+        pos = self.ctx.renderer.agent.position
+
+        rendering_mode = 'Path-tracing' if self.ctx.renderer.path_tracing else 'Ray-tracing'
+
+        # Enums to readable strings
+        view_mode_str = self.ctx.display_mode.name.replace('_', ' ')
+        proj_mode_str = self.ctx.renderer.projection_mode.name
+
+        # Stats
+
+        # Top info line: renderer / view / projection / position
+        info_text = (
+            f'Rendering mode: {rendering_mode} | '
+            f'View: {view_mode_str} | '
+            f'Proj: {proj_mode_str} | '
+            f'Pos: [{pos.x:5.2f}, {pos.y:5.2f}, {pos.z:5.2f}]'
+        )
+
+        # Timing line: hardware (wall) clock vs biological (sim) clock
+        if self.ctx.time_step is not None:
+            sim_hz = 1.0 / self.ctx.time_step
+            sim_str = f'Sim: {sim_hz:5.1f} Hz (fixed {self.ctx.time_step * 1000:.1f} ms)'
+        else:
+            sim_str = 'Sim: real-time (variable)'
+
+        timing_text = (
+            f'Wall: {self.ctx.fps:5.1f} FPS ({self.ctx.wall_dt * 1000.0:5.1f} ms) | '
+            f'{sim_str} | '
+            f'Total sim time: {self.ctx.total_time:7.3f} s'
+        )
+
+        line_height = self.font_renderer.font_size * 1.1
+
+        self._info_shadow_verts, self._info_fg_verts = self._build_text_buffers(
+            [info_text, timing_text], x_align='left', y_start=self.height - 2 * line_height
+        )
+
+        # Bottom-right scene stats
+        nb_omm = self.ctx.renderer.model.N
+        nb_rhab = self.ctx.renderer.model.size
+        samples_rhab = self.ctx.renderer.nb_samples
+        samples_px = self.ctx.renderer.pixel_samples
+
+        has_pixels = self.ctx.display_mode.name in ('Panoramic', 'Third_person')
+        samples_pp_str = f', {samples_px}/px' if has_pixels else ''
+        total_pp = f' (om) + {samples_px * self.nb_px:,} (px)' if has_pixels else ''
+
+        stats_lines = [
+            f'Ommatidia: {nb_omm:,}, Rhabdomeres: {nb_rhab:,}',
+            f'{samples_rhab} rays/rhab{samples_pp_str}',
+            f'Total: {nb_rhab * samples_rhab:,}{total_pp}'
+        ]
+
+        tot_tris = self.ctx.renderer.scene.total_triangles
+        if tot_tris > 0:
+            stats_lines.append(f'Triangles: {tot_tris:,}')
+
+        tot_points = self.ctx.renderer.scene.total_points
+        if tot_points > 0:
+            stats_lines.append(f'Points: {tot_points:,}')
+
+        self._stats_shadow_verts, self._stats_fg_verts = self._build_text_buffers(
+            stats_lines, x_align='right', y_start=10
+        )
+
+    def draw(self):
+
+        self._update_text_vertices()
+
+        all_shadow_verts = [v for v in (self._info_shadow_verts, self._controls_shadow_verts, self._stats_shadow_verts)
+                            if v is not None]
+        all_fg_verts = [v for v in (self._info_fg_verts, self._controls_fg_verts, self._stats_fg_verts) if
+                        v is not None]
+
+        if not all_shadow_verts and not all_fg_verts:
+            return
+
+        glDisable(GL_DEPTH_TEST)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDisable(GL_CULL_FACE)
+
+        self.font_renderer.text_program.use()
+
+        glUniformMatrix4fv(self.font_renderer.proj_loc, 1, False, glm.value_ptr(self.projection_matrix))
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, self.font_renderer.atlas_texture)
+        glUniform1i(self.font_renderer.atlas_loc, 0)
+        glBindVertexArray(self.font_renderer.vao)
+        glBindBuffer(GL_ARRAY_BUFFER, self.font_renderer.vbo)
+
+        if all_shadow_verts:
+            shadow_data = np.concatenate(all_shadow_verts).flatten()
+            glUniform4f(self.font_renderer.color_loc, 0.0, 0.0, 0.0, 0.7)
+            glBufferData(GL_ARRAY_BUFFER, shadow_data.nbytes, shadow_data, GL_DYNAMIC_DRAW)
+            glDrawArrays(GL_TRIANGLES, 0, len(shadow_data) // 4)
+
+        if all_fg_verts:
+            fg_data = np.concatenate(all_fg_verts).flatten()
+            glUniform4f(self.font_renderer.color_loc, 1.0, 1.0, 1.0, 1.0)
+            glBufferData(GL_ARRAY_BUFFER, fg_data.nbytes, fg_data, GL_DYNAMIC_DRAW)
+            glDrawArrays(GL_TRIANGLES, 0, len(fg_data) // 4)
+
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        glBindVertexArray(0)
+
+        self.font_renderer.text_program.stop()
+
+        glEnable(GL_CULL_FACE)
+        glEnable(GL_DEPTH_TEST)
+        glDisable(GL_BLEND)
+
+    def free(self):
+        self.font_renderer.free()

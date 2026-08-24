@@ -1,0 +1,652 @@
+import OpenGL
+OpenGL.ERROR_CHECKING = False
+from OpenGL.GL import *
+
+import numpy as np
+from pyglm import glm
+import glfw
+import time
+from typing import TYPE_CHECKING, Optional, Tuple, Callable, Dict, List, Union, Generator
+from collections import deque
+
+from rhabdoforge.engine.agent import OrbitCamera
+from rhabdoforge.utils import norm_l2
+from rhabdoforge.types import DisplayMode
+from rhabdoforge.geometry.spherical import cartesian_to_spherical
+from rhabdoforge.interactive.controls import Controls, ActionRegistry
+from rhabdoforge.interactive.hud import HUD
+from rhabdoforge.interactive.debug import DebugOverlay
+from rhabdoforge.interactive.dashboard import Dashboard
+
+if TYPE_CHECKING:
+    from rhabdoforge.renderers.base import Renderer
+
+
+_ACTIVE_CONTEXT = None
+
+def get_context():
+    return _ACTIVE_CONTEXT
+
+
+
+class Context:
+    """
+    Application host for interactive sessions.
+
+    Owns the window, GL context, input/controls, the simulation clocks, and the
+    on-screen overlays (HUD, dashboard, debug).
+    """
+
+    def __init__(self,
+                 window_size: Optional[Tuple[int, int]] = None,
+                 debug_overlay: bool = True,
+                 fps_limit: Optional[int] = None,
+                 vsync: bool = False,
+                 controls: Optional['Controls'] = None
+                 ):
+
+        global _ACTIVE_CONTEXT
+        if _ACTIVE_CONTEXT is not None:
+            print('Warning: Multiple Contexts created. The latest one is now active.')
+        _ACTIVE_CONTEXT = self
+
+        self._viewport_size: Tuple[int, int] = window_size if window_size is not None else (1280, 720)
+        self._fps_limit = fps_limit if fps_limit is not None else 0
+        self._interactive_initialised = False
+        self._vsync = vsync
+
+        if not glfw.init():
+            raise Exception("GLFW can't be initialized")
+
+        glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
+
+        self.window = glfw.create_window(self._viewport_size[0], self._viewport_size[1],
+                                         title="Interactive mode",
+                                         monitor=None,
+                                         share=None)
+        if not self.window:
+            glfw.terminate()
+            raise Exception("GLFW window can't be created")
+
+        glfw.make_context_current(self.window)
+        glfw.swap_interval(int(self._vsync))
+        glEnable(GL_DEPTH_TEST)
+        glEnable(GL_FRAMEBUFFER_SRGB)  # hardware sRGB-encode on the final present
+
+        # Things the Context renders (engine + orbit/observer for 3rd person)
+        self._renderer: Optional['Renderer'] = None
+        self.observer: Optional['OrbitCamera'] = None
+        self.display_mode: Optional['DisplayMode'] = None
+
+        # Overlays
+        self._hud: Optional['HUD'] = None
+        self._hud_state = 2     # 0: off, 1: info only (no hints), 2: full info
+        self.dashboard: Optional['Dashboard'] = None
+        self.debug: Optional['DebugOverlay'] = DebugOverlay() if debug_overlay else None
+
+        # Timing states
+        self._last_wall_time: float = glfw.get_time()
+        self._wall_dt: float = 0.0
+        self._total_wall_time: float = 0.0
+        self._dt: float = 1e-12  # effective delta for biology/physics
+        self._total_time: float = 0.0  # accumulated simulation time
+        self._frame_count: int = 0
+        self._frame_times = deque(maxlen=60)  # for FPS tracking
+
+        self.time_step: Optional[float] = None  # None = variable (wall-clock), Float = fixed time resolution
+
+        # Shared movement parameter
+        self.move_speed: float = 3.0
+        self._mouse_captured: bool = True
+
+        # Sun control mode
+        self.sun_control_mode: bool = False
+
+        # Key bindings: (glfw_key, glfw_action) -> [callbacks]
+        self._key_bindings: Dict[Tuple[int, int], List[Callable]] = {}
+        self._key_bindings_desc: Dict[int, str] = {}
+
+        self.actions = ActionRegistry(self)
+        self._controls: Optional[Controls] = controls
+
+    def __repr__(self) -> str:
+        mode = f"Fixed ({self.time_step * 1000:.1f}ms)" if self.time_step else "Variable (wall-clock)"
+        return (f"<Context | Mode: {mode} | "
+                f"Biol. sim time: {self.total_time:.3f}s | "
+                f"Hardware: {self.fps:.1f} FPS>")
+
+    def __enter__(self) -> 'Context':
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.free()
+
+    @property
+    def hud(self) -> Optional['HUD']:
+        return self._hud
+
+    @hud.setter
+    def hud(self, value: Union[bool, 'HUD']) -> None:
+        if isinstance(value, HUD):
+            if self._hud is not None and self._hud is not value:
+                self._hud.free()
+            self._hud = value
+            self._hud_state = 2 if getattr(value, 'show_controls', True) else 1
+
+        elif value is True:
+            if self._hud is None:
+                self._hud = HUD(self, font_size=18)
+            if self._hud_state == 0:
+                self._hud_state = 2
+            self._hud.show_controls = (self._hud_state == 2)
+
+        elif value is False or value is None:
+            if self._hud is not None:
+                self._hud.free()
+                self._hud = None
+            self._hud_state = 0
+
+    @property
+    def mouse_captured(self) -> bool:
+        return self._mouse_captured
+
+    @mouse_captured.setter
+    def mouse_captured(self, value: bool) -> None:
+        self._mouse_captured = value
+        if self.window:
+            mode = glfw.CURSOR_DISABLED if value else glfw.CURSOR_NORMAL
+            glfw.set_input_mode(self.window, glfw.CURSOR, mode)
+
+    def toggle_mouse_capture(self):
+        self.mouse_captured = not self.mouse_captured
+
+    @property
+    def controls(self) -> Optional[Controls]:
+        return self._controls
+
+    @controls.setter
+    def controls(self, new_controls: Optional[Controls]) -> None:
+        """Swap the active controller (safe to call at any time)."""
+        if self._controls is not None:
+            self._controls.free()
+
+        self._controls = new_controls
+        if self._controls is not None and self._interactive_initialised:
+            self._controls.setup(self)
+
+    # Timing
+
+    @property
+    def dt(self) -> float:
+        """The delta-time to use for all biological and agent logic."""
+        return self._dt
+
+    @property
+    def wall_dt(self) -> float:
+        """Actual time passed on hardware (real world)."""
+        return self._wall_dt
+
+    @property
+    def total_time(self) -> float:
+        """Total biological/simulated time elapsed."""
+        return self._total_time
+
+    @property
+    def wall_time(self) -> float:
+        """Total real-world time elapsed since the context started ticking."""
+        return self._total_wall_time
+
+    @property
+    def frame_count(self) -> int:
+        """Total number of ticks/frames processed."""
+        return self._frame_count
+
+    def reset_timers(self) -> None:
+        """Resets all simulation and hardware frame counters and clocks."""
+        now = glfw.get_time()
+        self._last_wall_time = now
+        self._total_wall_time = 0.0
+        self._total_time = 0.0
+        self._frame_count = 0
+        self._frame_times.clear()
+
+    def tick(self) -> float:
+        """
+        Advance both clocks by one step.
+        - Wall clock: real elapsed time since previous tick, hardware-dependent
+        - Sim clock: advances by 'time_step' if set, otherwise by the wall_dt
+        """
+
+        now = glfw.get_time()
+        self._wall_dt = now - self._last_wall_time
+        self._last_wall_time = now
+
+        # Accumulate real world time
+        self._total_wall_time += self._wall_dt
+        self._frame_count += 1
+
+        self._dt = self.time_step if self.time_step is not None else self._wall_dt
+
+        # Accumulate simulated time
+        self._total_time += self._dt
+        self._frame_times.append(now)
+
+        return self._wall_dt
+
+    @property
+    def fps(self) -> float:
+        """Average hardware frames per second."""
+        if len(self._frame_times) < 2:
+            return 0.0
+        return (len(self._frame_times) - 1) / (self._frame_times[-1] - self._frame_times[0])
+
+    # Custom key bindings
+
+    @staticmethod
+    def _resolve_key(key: Union[int, str]) -> int:
+
+        if isinstance(key, int):
+            return key
+
+        attr = f'KEY_{key.upper()}'
+        code = getattr(glfw, attr, None)
+
+        if code is None:
+            raise ValueError(
+                f"Unknown key '{key}' (tried glfw.{attr}).  "
+                f"Use a GLFW constant like glfw.KEY_M, or a string like 'm', "
+                f"'space', 'left_shift', 'f1', 'kp_add', etc."
+            )
+        return code
+
+    def bind_key(self, key: Union[int, str], callback: Callable, action: int = None, description: str = None) -> None:
+        """
+        Register a callback for a key event.
+
+        Args:
+            key: The key to bind (string or GLFW key constant)
+            callback: A (no-argument) callable invoked when the key event triggers
+            action: The key event type to bind (`glfw.PRESS` (default), `glfw.RELEASE`, or `glfw.REPEAT`)
+            description: Optional, The name to display in the help HUD
+
+        Example:
+            context.bind_key('m', lambda: print("M pressed"))
+            context.bind_key(glfw.KEY_SPACE, on_jump, action=glfw.RELEASE, description='Jump')
+        """
+        key_code = self._resolve_key(key)
+        key_str = key if isinstance(key, str) else None
+
+        if action is None:
+            action = glfw.PRESS
+
+        if description is None:
+            description = callback.__name__.replace('_', ' ').title()
+
+        display_name = key_str.upper() if key_str else f'Key {key_code}'
+        self._key_bindings_desc[key_code] = (display_name, description)
+
+        binding = (key, action)
+        if binding not in self._key_bindings:
+            self._key_bindings[binding] = []
+
+        if callback not in self._key_bindings[binding]:
+            self._key_bindings[binding].append(callback)
+
+    def unbind_key(self, key: Union[int, str], callback: Callable = None, action: int = None) -> None:
+        """
+        Remove one or all callbacks for a key event.
+
+        Args:
+            key: The key to unbind (string or GLFW key constant)
+            callback: The callable to remove, or None to fully unbind the action on that key
+            action: The key event type to unbind (`glfw.PRESS` (default), `glfw.RELEASE`, or `glfw.REPEAT`)
+        """
+        key_code = self._resolve_key(key)
+
+        if action is None:
+            action = glfw.PRESS
+
+        binding = (key_code, action)
+
+        if binding not in self._key_bindings:
+            return
+
+        if callback is None:
+            del self._key_bindings[binding]
+        else:
+            try:
+                self._key_bindings[binding].remove(callback)
+            except ValueError:
+                pass
+            if not self._key_bindings[binding]:
+                del self._key_bindings[binding]
+
+        # A key might be bound to multiple actions, only remove if unbound
+        key_still_bound = any(bound_key == key_code for (bound_key, _) in self._key_bindings.keys())
+
+        if not key_still_bound and key_code in self._key_bindings_desc:
+            del self._key_bindings_desc[key_code]
+
+    @property
+    def bound_keys(self) -> dict:
+        return dict(self._key_bindings)
+
+    # Actions
+
+    def cycle_display_mode(self) -> None:
+        next_mode = (self.display_mode.value + 1) % len(DisplayMode)
+        self.display_mode = DisplayMode(next_mode)
+
+    def toggle_tiled_mode(self) -> None:
+        self._renderer.tiled_mode = not self._renderer.tiled_mode
+
+    def toggle_projection_mode(self) -> None:
+        from rhabdoforge.types import OmmatidiaProjection
+
+        self._renderer.projection_mode = (
+            OmmatidiaProjection.Position
+            if self._renderer.projection_mode == OmmatidiaProjection.OpticalAxis
+            else OmmatidiaProjection.OpticalAxis
+        )
+
+    def toggle_hud(self) -> None:
+        # cycles state: 2 (full) -> 1 (info only) -> 0 (off) -> 2 (full)
+        self._hud_state = (self._hud_state + 2) % 3
+
+        if self._hud_state == 0:
+            self.hud = False
+        else:
+            self.hud = True
+            if self.hud:
+                self.hud.show_controls = (self._hud_state == 2)
+
+    def toggle_overlay(self) -> None:
+        self._renderer.overlay_enabled = not self._renderer.overlay_enabled
+
+    def toggle_sun_control(self) -> None:
+        self.sun_control_mode = not self.sun_control_mode
+        mode_name = "Sun" if self.sun_control_mode else "View"
+        print(f"Mouse control: {mode_name}")
+
+    def toggle_time_dithering(self) -> None:
+        self._renderer.time_dithering = not self._renderer.time_dithering
+
+    def dither_once(self) -> None:
+        self._renderer.dither()
+
+    def increase_samples(self) -> None:
+        self._renderer.nb_samples *= 2
+
+    def decrease_samples(self) -> None:
+        self._renderer.nb_samples = max(1, self._renderer.nb_samples // 2)
+
+    def increase_pixel_samples(self) -> None:
+        self._renderer.pixel_samples *= 2
+
+    def decrease_pixel_samples(self) -> None:
+        self._renderer.pixel_samples = max(1, self._renderer.pixel_samples // 2)
+
+    def toggle_debug(self) -> None:
+        if self.debug is not None:
+            self.debug.enabled = not self.debug.enabled
+
+    def toggle_microsaccades(self) -> None:
+        self._renderer.microsaccades_enabled = not self._renderer.microsaccades_enabled
+
+    def reset_position(self) -> None:
+        self._renderer.agent.position = (0.0, 0.0, 0.0)
+
+    def reset_rotation(self) -> None:
+        self._renderer.agent.set_rotation(0.0, 0.0, 0.0)
+
+    def pick_ommatidium(self, ndc_x: float, ndc_y: float) -> Optional[int]:
+        """Calculates closest ommatidium based on active display projection."""
+        if self._renderer is None or self._renderer.model is None:
+            return None
+        if self.display_mode not in (DisplayMode.Compound, DisplayMode.Third_person):
+            return None
+
+        model = self._renderer.model
+        p_local = model.positions
+
+        if self.display_mode == DisplayMode.Compound:
+            aspect_ratio = self.viewport_size[0] / self.viewport_size[1]
+            p_vec = norm_l2(p_local)
+            longi, lati = cartesian_to_spherical(p_vec)
+            x = (longi / np.pi) / aspect_ratio
+            y = lati / (np.pi / 2.0)
+
+            dist_sq = (x - ndc_x) ** 2 + (y - ndc_y) ** 2
+            best_idx = np.argmin(dist_sq)
+
+            if dist_sq[best_idx] < 0.05:
+                return int(best_idx)
+
+        elif self.display_mode == DisplayMode.Third_person:
+            eye_to_world = np.array(glm.inverse(self._renderer.agent.view))
+            p_local_h = np.column_stack((p_local, np.ones(model.N)))
+            p_world_h = p_local_h @ eye_to_world
+
+            view_mat = np.array(self.observer.view)
+            proj_mat = np.array(self.observer.projection)
+
+            p_view_h = p_world_h @ view_mat
+            p_clip_h = p_view_h @ proj_mat
+
+            w = p_clip_h[:, 3]
+            valid = w > 0.01
+
+            if not np.any(valid):
+                return None
+
+            ndc = p_clip_h[valid, :2] / w[valid, np.newaxis]
+            dist_sq = np.sum((ndc - [ndc_x, ndc_y]) ** 2, axis=1)
+
+            best_valid_idx = np.argmin(dist_sq)
+            if dist_sq[best_valid_idx] < 0.05:
+                return int(np.nonzero(valid)[0][best_valid_idx])
+
+        return None
+
+    # Interactive loop
+
+    def _update_observer(self) -> None:
+        """Internal helper to (re)build the observer that orbits the agent if needed."""
+        if self._renderer is None:
+            return
+
+        if self.observer is not None and self.observer.target is self._renderer.agent:
+            return
+
+        self.observer = OrbitCamera(
+            target=self._renderer.agent, distance=0.1, near=0.001,     # TODO: Needs to be sized by eye dimensions
+            ratio=self._viewport_size[0] / self._viewport_size[1],
+        )
+
+    def run_interactive(self, renderer: Optional['Renderer'] = None, use_dashboard=False) -> bool:
+        """
+        On first call, initialises and shows the window. Then reports whether the
+        interactive loop should continue.
+        """
+        if not self._interactive_initialised:
+
+            glfw.swap_interval(int(self._vsync))
+            glfw.show_window(self.window)
+
+            self.display_mode = DisplayMode.Compound
+
+            if use_dashboard:
+                self.dashboard = Dashboard(self)
+                self.hud = False
+            else:
+                self.hud = True
+
+            # Default to kb + mouse
+            if self._controls is None:
+                from rhabdoforge.interactive.keyboard import KeyboardMouse
+                self._controls = KeyboardMouse()
+            self._controls.setup(self)
+
+            # Start the wall-clock anchor right before the first frame
+            self._last_wall_time = glfw.get_time()
+            self._interactive_initialised = True
+
+        # Support swapping or setting renderer at runtime
+        if renderer is not None and renderer is not self._renderer:
+            self.renderer = renderer
+
+        if self._renderer is None:
+            raise RuntimeError('run_interactive() called, but no Renderer has been initialised.')
+
+        if glfw.window_should_close(self.window):
+            return False
+
+        self.tick()
+
+        # Update camera target if agent changed
+        self._update_observer()
+
+        return True
+
+    def run_headless(self, steps: Optional[int] = None, reset_timers: bool = False) -> Generator[float, None, None]:
+        """Generator for a headless loop (ticks the clock and returns dt)."""
+        if reset_timers:
+            self.reset_timers()
+
+        # Anchor wall clock right before the first tick
+        self._last_wall_time = glfw.get_time()
+
+        start_frame = self.frame_count
+        while steps is None or (self.frame_count - start_frame) < steps:
+            self.tick()
+            yield self.dt
+
+        # Anchor again so any post-loop CPU processing doesn't corrupt subsequent runs
+        self._last_wall_time = glfw.get_time()
+
+    def input(self) -> None:
+
+        if not self._interactive_initialised:
+            return
+
+        glfw.poll_events()
+
+        if glfw.get_key(self.window, glfw.KEY_ESCAPE) == glfw.PRESS:
+            glfw.set_window_should_close(self.window, True)
+            return
+
+        if self._controls is not None:
+            self._controls.poll(self)
+
+    def display(self) -> None:
+
+        if not self._interactive_initialised:
+            return
+
+        if self.display_mode == DisplayMode.Third_person:
+            self.observer.ratio = self._viewport_size[0] / self._viewport_size[1]
+            self.observer.update()
+            pov = self.observer
+        else:
+            pov = self._renderer.agent
+
+        self._renderer.draw(self.display_mode, pov)
+
+        # Overlays in display space (not tonemapped)
+        if self.debug is not None and self.display_mode != DisplayMode.Panoramic:
+            self.debug.draw(view=pov.view, proj=pov.projection)
+        if self.hud:
+            self.hud.draw()
+
+        glfw.swap_buffers(self.window)
+
+        if self.dashboard:
+            if not self.dashboard.render(self._renderer.latest_output):
+                self.dashboard.free()
+                self.dashboard = None
+            glfw.make_context_current(self.window)
+
+        # Update FPS throttling check
+        if self._fps_limit > 0:
+            now = glfw.get_time()
+            elapsed = now - self._last_wall_time  # last_wall_time is set in tick()
+            wait_time = (1.0 / self._fps_limit) - elapsed
+
+            if wait_time > 0:
+                time.sleep(wait_time)
+
+    def free(self) -> None:
+        global _ACTIVE_CONTEXT
+
+        if self._controls:
+            self._controls.free()
+        if self.debug:
+            self.debug.free()
+        if self.hud:
+            self.hud.free()
+        if self.dashboard:
+            self.dashboard.free()
+        if self._renderer:
+            self._renderer.free()
+
+        glfw.terminate()
+
+        if _ACTIVE_CONTEXT is self:
+            _ACTIVE_CONTEXT = None
+
+    def take_snapshot(self, filepath: Optional[str] = None, transparent: bool = True) -> None:
+        import time
+
+        if self._renderer:
+            if filepath is None:
+                filepath = f'snapshot_{int(time.time())}.png'
+
+            pov = self.observer if self.display_mode == DisplayMode.Third_person else self._renderer.agent
+            self._renderer.take_snapshot(filepath, self.display_mode, pov, transparent=transparent)
+
+    @property
+    def viewport_size(self) -> Tuple[int, int]:
+        return self._viewport_size
+
+    @viewport_size.setter
+    def viewport_size(self, value: Tuple[int, int]) -> None:
+        self._viewport_size = int(value[0]), int(value[1])
+        if self.window:
+            glfw.set_window_size(self.window, value[0], value[1])
+
+    window_size = viewport_size
+
+    @property
+    def fps_limit(self) -> int:
+        return self._fps_limit
+
+    @fps_limit.setter
+    def fps_limit(self, value: Optional[int] = None) -> None:
+        self._fps_limit = max(0, value) if value else 0
+
+    @property
+    def vsync(self) -> bool:
+        return self._vsync
+
+    @vsync.setter
+    def vsync(self, value: bool) -> None:
+        self._vsync = bool(value)
+
+    @property
+    def renderer(self) -> Optional['Renderer']:
+        return self._renderer
+
+    @renderer.setter
+    def renderer(self, new_renderer: 'Renderer') -> None:
+        if self._renderer is new_renderer:
+            return
+
+        self._renderer = new_renderer
+
+        if self._renderer is not None:
+            # Tell the renderer it's now in an interactive session
+            self._renderer.runs_interactive = True
+
+            # If the window is already up, may need to update the OrbitCamera
+            if self._interactive_initialised:
+                self._update_observer()

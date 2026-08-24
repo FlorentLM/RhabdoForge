@@ -1,0 +1,104 @@
+#version 430 core
+#include "commons.glsl"
+
+// One workgroup per rhabdomere
+layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, binding = BINDING_RHAB_STATIC)       readonly buffer  RhabStaticBlock  { RhabdomereStatic rhab_static[]; };
+layout(std430, binding = BINDING_COLORS)            writeonly buffer ColorOutput      { vec4 history_data[]; };
+layout(std430, binding = BINDING_EMA_STATE)         buffer           EmaHistory       { vec4 ema_state[]; };
+layout(std430, binding = BINDING_RHAB_DYNAMIC)      readonly buffer  RhabDynamicBlock { RhabdomereDynamic rhab_dynamic[]; };
+layout(std430, binding = BINDING_RAYS_INTERMEDIATE) readonly buffer  RayResults       { vec4 ray_results[]; };
+
+// Uniforms
+uniform int nb_samples;
+uniform int nb_rhabdomeres;
+uniform int rhab_per_omm;
+uniform bool fused_rhabdoms;
+uniform int frame_offset;
+uniform float dt;   // seconds since last frame
+uniform float photon_concentration_factor;
+
+shared vec4 s_data[256]; // Shared memory for the workgroup
+
+const float MAX_SAMPLE_RADIANCE = 100.0;
+
+void main() {
+    
+    uint rhab_idx = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+
+    // if fused rhabdoms, all R in the ommatidium look up the same RayResult buffer block
+    uint ray_group_idx = fused_rhabdoms ? (rhab_idx / rhab_per_omm) : rhab_idx;
+    uint start_idx = ray_group_idx * nb_samples;
+
+    if (tid < nb_samples) {
+        vec4 val = ray_results[start_idx + tid];
+        s_data[tid] = vec4(min(val.rgb, vec3(MAX_SAMPLE_RADIANCE)) * val.a, val.a);
+    } else {
+        s_data[tid] = vec4(0.0);
+    }
+    memoryBarrierShared();
+    barrier();
+
+    // Parallel reduction in shared memory
+    for (uint s = gl_WorkGroupSize.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            s_data[tid] += s_data[tid + s];
+        }
+        barrier();
+    }
+
+    // Thread 0 computes final result and writes to global memory
+    if (tid == 0) {
+        vec3 total_color = (s_data[0].w > 0.0) ? (s_data[0].rgb / s_data[0].w) : vec3(0.0);
+
+    // Spectral sensitivity
+    total_color *= rhab_static[rhab_idx].sensitivity;
+
+    // Photon concentration: a narrower optical RF (optical narrowing only) funnels
+    // a point source's light into the waveguide more tightly.
+    float s = rhab_dynamic[rhab_idx].optical_scale;
+    if (s < 1e-6) s = 1.0;                       // before the first dynamics pass
+
+    float physical_gain = clamp(1.0 / (s * s), 1.0, 3.0);
+    float concentration_gain = mix(1.0, physical_gain, photon_concentration_factor);    // mix between 1.0 (no boost) and physical gain
+
+    // this is the physical radiance hitting the phototransduction machinery
+    float concentrated_radiance = ((total_color.r + total_color.g + total_color.b) / 3.0) * concentration_gain;
+
+    vec4 ema_val = ema_state[rhab_idx];
+
+    // Neural membrane integration
+    float tau_membrane = rhab_static[rhab_idx].tau_membrane;
+    if (tau_membrane > 0.0001 && dt > 0.0) {
+        float alpha = exp(-dt / tau_membrane);
+
+        // Integrate the concentrated signal
+        vec3 target_rgb = total_color * concentration_gain;
+        if (dot(ema_val.rgb, ema_val.rgb) < 1e-8) {
+            ema_val.rgb = target_rgb;
+        } else {
+            ema_val.rgb = mix(target_rgb, ema_val.rgb, alpha);
+        }
+    } else {
+        ema_val.rgb = total_color * concentration_gain;
+    }
+
+    // Pass concentrated radiance to eyeDynamics so adaptation filters see the boost
+    ema_val.w = (ema_val.r + ema_val.g + ema_val.b) / 3.0;
+    ema_state[rhab_idx] = ema_val;
+
+    // Biochemical gain control
+    // -> curr_adaptation (calculated in eyeDynamics) represents the Naka-Rushton gain
+    float neural_gain = rhab_dynamic[rhab_idx].curr_adaptation;
+    if (neural_gain < 1e-6) neural_gain = 1.0;
+
+    uint out_idx = (frame_offset * nb_rhabdomeres) + rhab_idx;
+
+    // RGB channels: Integrated and scaled by gain
+    // Alpha channel: The adaptation/gain factor itself
+    history_data[out_idx] = vec4(ema_val.rgb * neural_gain, neural_gain);
+
+    }
+}
