@@ -8,8 +8,8 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
 
-from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
-from insectvision.LUTs import airy_sensitivity_lut
+from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle
+from rhabdoforge.LUTs import airy_sensitivity_lut
 
 from visualisation.plot_settings import (
     PlotSettings, Z_RASTER, Z_TEXT, panel_letter, column_header, row_header, despine, placeholder

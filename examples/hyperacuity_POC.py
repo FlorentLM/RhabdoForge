@@ -37,14 +37,14 @@ from matplotlib.patches import Patch
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 from scipy.signal import savgol_filter
 
-from insectvision.compound_eyes import Model
-from insectvision.compound_eyes.helpers.acceptance import SnyderAcceptance
-from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
-from insectvision.types import WORLD_FORWARD, RHAB_COLOURS
-from insectvision.compound_eyes.helpers.alignment import BundlesAligner
-from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.engine.meshes import plane_geom
-from insectvision.renderers import Renderer
+from rhabdoforge.compound_eyes import Model
+from rhabdoforge.compound_eyes.helpers.acceptance import SnyderAcceptance
+from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle
+from rhabdoforge.types import WORLD_FORWARD, RHAB_COLOURS
+from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
+from rhabdoforge.engine import Context, Agent, Scene, Asset
+from rhabdoforge.engine.meshes import plane_geom
+from rhabdoforge.renderers import Renderer
 
 from visualisation.plot_settings import (
     PlotSettings, Z_RASTER, Z_TEXT, panel_letter, column_header, row_header, despine, placeholder

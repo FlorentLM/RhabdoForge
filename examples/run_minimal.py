@@ -1,8 +1,8 @@
 from pathlib import Path
-from insectvision.engine import Context, Agent, Scene
-from insectvision.engine.movement import Curve, Trajectory, extract_obj_curves
-from insectvision.compound_eyes import Model
-from insectvision.renderers import Renderer
+from rhabdoforge.engine import Context, Agent, Scene
+from rhabdoforge.engine.movement import Curve, Trajectory, extract_obj_curves
+from rhabdoforge.compound_eyes import Model
+from rhabdoforge.renderers import Renderer
 
 
 if __name__ == "__main__":

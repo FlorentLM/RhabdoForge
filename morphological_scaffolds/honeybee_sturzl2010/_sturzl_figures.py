@@ -14,7 +14,7 @@ def _to_cartesian_sturzl(
     ) -> np.ndarray:
     """
     Spherical -> Cartesian in Stürzl et al.'s paper convention.
-    Note: this is NOT the same as insectvision.geometry.spherical's canonical frame (right=+X, up=+Y, forward=-Z)
+    Note: this is NOT the same as rhabdoforge.geometry.spherical's canonical frame (right=+X, up=+Y, forward=-Z)
     """
     azimuth = np.array(azimuth, dtype=np.float64)
     elevation = np.array(elevation, dtype=np.float64)

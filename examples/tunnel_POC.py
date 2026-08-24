@@ -10,15 +10,15 @@ from matplotlib.markers import MarkerStyle
 from scipy.stats import circmean
 from scipy.signal import savgol_filter
 
-from insectvision.compound_eyes import Model
-from insectvision.compound_eyes.helpers.alignment import BundlesAligner
-from insectvision.compound_eyes.rhabdomeres import honeybee_bundle
-from insectvision.renderers import Renderer
-from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.types import WORLD_FORWARD, OverlayColormap, WORLD_BACKWARD
-from insectvision.engine.meshes import plane_geom
-from insectvision.engine.materials_utils import checkerboard_texture
-from insectvision.neuromorphic.basic_models import HassensteinReichardtEMD, GradientFlowDetector
+from rhabdoforge.compound_eyes import Model
+from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
+from rhabdoforge.compound_eyes.rhabdomeres import honeybee_bundle
+from rhabdoforge.renderers import Renderer
+from rhabdoforge.engine import Context, Agent, Scene, Asset
+from rhabdoforge.types import WORLD_FORWARD, OverlayColormap, WORLD_BACKWARD
+from rhabdoforge.engine.meshes import plane_geom
+from rhabdoforge.engine.materials_utils import checkerboard_texture
+from rhabdoforge.neuromorphic.basic_models import HassensteinReichardtEMD, GradientFlowDetector
 
 from visualisation.plot_settings import (
     PlotSettings, panel_letter, column_header, row_header, placeholder

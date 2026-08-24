@@ -5,12 +5,12 @@ from matplotlib.collections import LineCollection
 from matplotlib.ticker import FuncFormatter
 from scipy.interpolate import griddata
 
-from insectvision.geometry.spherical import sphere_to_stereo
-from insectvision.geometry.linalg import principal_axes
-from insectvision.geometry.hexatic import compute_psi6, hexatic_order
-from insectvision.geometry.neighbours import delaunay_edges, delaunay_neighbours, metric_spacing
-from insectvision.geometry.lattice import trace_lattice_rows
-from insectvision.lattice_fitting.generator import LatticeGenerator, FittingParameters, EyeMeasurements
+from rhabdoforge.geometry.spherical import sphere_to_stereo
+from rhabdoforge.geometry.linalg import principal_axes
+from rhabdoforge.geometry.hexatic import compute_psi6, hexatic_order
+from rhabdoforge.geometry.neighbours import delaunay_edges, delaunay_neighbours, metric_spacing
+from rhabdoforge.geometry.lattice import trace_lattice_rows
+from rhabdoforge.lattice_fitting.generator import LatticeGenerator, FittingParameters, EyeMeasurements
 from morphological_scaffolds.drosophila.run import reconstruct_buchner_data
 
 from visualisation.plot_settings import PlotSettings, despine, Z_TEXT

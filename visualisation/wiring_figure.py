@@ -15,10 +15,10 @@ from matplotlib.patches import Arc, Circle, Polygon
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.gridspec import GridSpec
 
-from insectvision.compound_eyes import Model
-from insectvision.compound_eyes.helpers.alignment import BundlesAligner
-from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
-from insectvision.compound_eyes.helpers.neural_superposition import wire_neural_superposition
+from rhabdoforge.compound_eyes import Model
+from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
+from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle
+from rhabdoforge.compound_eyes.helpers.neural_superposition import wire_neural_superposition
 
 from visualisation.plot_settings import PlotSettings, Z_TEXT
 

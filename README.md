@@ -1,6 +1,6 @@
-# InsectVisionSimulator
+# RhabdoForge
 
-`InsectVisionSimulator` is a high-performance, biologically constrained rendering engine designed for the simulation of compound eye optics and the study of insect visual processing. 
+`RhabdoForge` is a high-performance, biologically constrained rendering engine designed for the simulation of compound eye optics and the study of insect visual processing. 
 
 The framework enables researchers to model species-specific ommatidial arrays, rhabdomere bundle geometries, neural superposition wiring, etc. It integrates photomechanical dynamics (microsaccades and adaptation) into GPU-accelerated rendering pipelines, including ray-casting and path-tracing.
 
@@ -35,8 +35,8 @@ then you can define the `GIT_LFS_SKIP_SMUDGE` environment variable (`$env:GIT_LF
 The following snippet demonstrates loading a specific species model and configuring its biological parameters.
 
 ```python
-from insectvision.compound_eyes import Model
-from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
+from rhabdoforge.compound_eyes import Model
+from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle
 
 # Load a Drosophila model with a custom rhabdomere bundle
 model = Model.from_file(
@@ -49,15 +49,15 @@ model.scale(1e-6)
 
 # Configure photomechanical gains
 model.ommatidia.ampl_lat_um = 1.5  # Lateral displacement in microns
-model.ommatidia.ampl_ax_um = 8.0   # Axial contraction
+model.ommatidia.ampl_ax_um = 8.0  # Axial contraction
 ```
 
 ### 2. Setting up a Scene
-`InsectVisionSimulator` uses a scene-instance architecture. Assets are baked into a BVH (Bounding Volume Hierarchy) for efficient GPU intersection.
+`RhabdoForge` uses a scene-instance architecture. Assets are baked into a BVH (Bounding Volume Hierarchy) for efficient GPU intersection.
 
 ```python
-from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.renderers import Renderer
+from rhabdoforge.engine import Context, Agent, Scene, Asset
+from rhabdoforge.renderers import Renderer
 
 # The context always has to be the first thing you create
 context = Context()
@@ -73,9 +73,9 @@ agent = Agent(position=(0.0, 0.0, 0.0))
 
 # Initialise the renderer
 renderer = Renderer(
-    model=model, 
-    scene=scene, 
-    agent=agent, 
+    model=model,
+    scene=scene,
+    agent=agent,
     nb_samples=128  # Monte-Carlo samples per rhabdomere
 )
 

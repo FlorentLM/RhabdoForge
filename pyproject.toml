@@ -1,7 +1,7 @@
 [project]
-name = "InsectVisionSimulator"
+name = "RhabdoForge"
 version = "0.9.5"
-description = "A fast insect vision simulator"
+description = "A modular, hardware-agnostic GPU rendering engine for closed-loop insect vision, sub-ommatidial active sensing, and neuromorphic modelling."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

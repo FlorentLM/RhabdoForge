@@ -5,8 +5,8 @@ from typing import Tuple
 import numpy as np
 from scipy.spatial import cKDTree as KDTree
 
-from insectvision.lattice_fitting.relaxation import mirror_bilateral
-from insectvision.lattice_fitting.plots import plot_eye_scaffold_3d
+from rhabdoforge.lattice_fitting.relaxation import mirror_bilateral
+from rhabdoforge.lattice_fitting.plots import plot_eye_scaffold_3d
 
 
 # Parameters from original Kemppainen code:

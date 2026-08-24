@@ -1,12 +1,12 @@
 import numpy as np
-from insectvision.engine import Context, Agent, Scene, Asset
-from insectvision.engine.meshes import CUBE_VERTICES, CUBE_INDICES
-from insectvision.compound_eyes import Model
-from insectvision.compound_eyes.rhabdomeres import drosophila_bundle
-from insectvision.renderers import Renderer
-from insectvision.interactive.debug import DebugBox, AxesGizmo
-from insectvision.renderers.helpers import VisualOutput
-from insectvision.types import RandomnessMode
+from rhabdoforge.engine import Context, Agent, Scene, Asset
+from rhabdoforge.engine.meshes import CUBE_VERTICES, CUBE_INDICES
+from rhabdoforge.compound_eyes import Model
+from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle
+from rhabdoforge.renderers import Renderer
+from rhabdoforge.interactive.debug import DebugBox, AxesGizmo
+from rhabdoforge.renderers.helpers import VisualOutput
+from rhabdoforge.types import RandomnessMode
 
 if __name__ == "__main__":
 
@@ -22,7 +22,7 @@ if __name__ == "__main__":
     context = Context()
 
     # # If you want to use a gamepad
-    # from insectvision.interactive import Gamepad
+    # from rhabdoforge.interactive import Gamepad
     # context.controls = Gamepad()
 
     scene = Scene(background_color=(0.15, 0.15, 0.3))

@@ -8,12 +8,12 @@ from numpy.typing import ArrayLike
 from PIL import Image
 from scipy.spatial import Delaunay
 
-from insectvision.types import WORLD_BACKWARD, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, RHAB_COLOURS
-from insectvision.utils import norm_l2
-from insectvision.geometry.linalg import tangent_frames
-from insectvision.geometry.spherical import sphere_to_stereo
-from insectvision.compound_eyes import Model
-from insectvision.compound_eyes.helpers.alignment import BundlesAligner
+from rhabdoforge.types import WORLD_BACKWARD, WORLD_UP, WORLD_RIGHT, WORLD_FORWARD, RHAB_COLOURS
+from rhabdoforge.utils import norm_l2
+from rhabdoforge.geometry.linalg import tangent_frames
+from rhabdoforge.geometry.spherical import sphere_to_stereo
+from rhabdoforge.compound_eyes import Model
+from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
 
 
 # TODO: Maybe move some of these colours to the constants / types file
@@ -1156,7 +1156,7 @@ class EyeViewer:
 ##
 
 if __name__ == "__main__":
-    from insectvision.compound_eyes.rhabdomeres import drosophila_bundle, honeybee_bundle
+    from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle, honeybee_bundle
 
     # ----------------------------------------------------------------------
 
