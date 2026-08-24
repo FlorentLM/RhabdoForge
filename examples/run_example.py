@@ -1,5 +1,5 @@
 import numpy as np
-from rhabdoforge.engine import Context, Agent, Scene, Asset
+from rhabdoforge.engine import get_context, Agent, Scene, Asset
 from rhabdoforge.engine.meshes import CUBE_VERTICES, CUBE_INDICES
 from rhabdoforge.compound_eyes import Model
 from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle
@@ -19,11 +19,11 @@ if __name__ == "__main__":
     # -----------------------------------------------
 
     # This always needs to be the first thing called
-    context = Context()
+    context = get_context()
 
     # # If you want to use a gamepad
     # from rhabdoforge.interactive import Gamepad
-    # context.controls = Gamepad()
+    # Gamepad()
 
     scene = Scene(background_color=(0.15, 0.15, 0.3))
 
@@ -48,8 +48,8 @@ if __name__ == "__main__":
 
 
     # Setup compound eyes model
-    # scaffold_file = 'assets/drosophila_scaffold.npz'
-    scaffold_file = 'assets/honeybee_scaffold_s10.npz'
+    scaffold_file = 'assets/drosophila_scaffold.npz'
+    # scaffold_file = 'assets/honeybee_scaffold_s10.npz'
     # scaffold_file = 'assets/drosophila_scaffold_k22.npz'
 
     model = Model.from_file(

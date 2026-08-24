@@ -691,6 +691,9 @@ class Instance(TransformMixin):
 class Sky:
     def __init__(self, texture_path: str | Path = 'assets/textures/sky.exr', max_height: int = 2048):
 
+        from rhabdoforge.engine.context import get_context
+        get_context()
+
         self._texture_path = Path(texture_path)
         data = load_exr_equirect(self._texture_path, max_height=max_height)
         self.sh_coeffs = sh_irradiance(data)

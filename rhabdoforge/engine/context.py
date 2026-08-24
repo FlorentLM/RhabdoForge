@@ -24,7 +24,11 @@ if TYPE_CHECKING:
 
 _ACTIVE_CONTEXT = None
 
-def get_context():
+def get_context() -> 'Context':
+    """Returns the active Context, creating one with defaults on first use."""
+    global _ACTIVE_CONTEXT
+    if _ACTIVE_CONTEXT is None:
+        Context()
     return _ACTIVE_CONTEXT
 
 
@@ -172,7 +176,7 @@ class Context:
 
         self._controls = new_controls
         if self._controls is not None and self._interactive_initialised:
-            self._controls.setup(self)
+            self._controls.setup()
 
     # Timing
 
@@ -485,7 +489,7 @@ class Context:
             if self._controls is None:
                 from rhabdoforge.interactive.keyboard import KeyboardMouse
                 self._controls = KeyboardMouse()
-            self._controls.setup(self)
+            self._controls.setup()
 
             # Start the wall-clock anchor right before the first frame
             self._last_wall_time = glfw.get_time()
@@ -536,7 +540,7 @@ class Context:
             return
 
         if self._controls is not None:
-            self._controls.poll(self)
+            self._controls.poll()
 
     def display(self) -> None:
 

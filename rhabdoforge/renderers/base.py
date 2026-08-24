@@ -89,7 +89,11 @@ class Renderer:
                  context: Optional['Context'] = None
                  ):
 
-        # Scene + baker first (VRAM estimation depends on it)
+        from rhabdoforge.engine.context import get_context
+        self._context = context or get_context()
+        self._context.renderer = self
+
+        # Scene + baker (VRAM estimation depends on it)
         self._scene: 'Scene' = scene
         self._resource_manager: 'GPUResourceManager' = resource_manager or GPUResourceManager()
         self._baker: 'SceneBaker' = SceneBaker(scene, self._resource_manager)
@@ -101,13 +105,6 @@ class Renderer:
         # Track view matrices for parciminious updates
         self._last_view_matrix = None
         self._last_persp_view_matrix = None
-
-        # Context reference
-        from rhabdoforge.engine.context import get_context
-        self._context = context or get_context()
-        if self._context is None:
-            raise RuntimeError('Renderer created before a Context was initialized. Call context = Context() first.')
-        self._context.renderer = self
 
         self._latest_output: Optional['VisualOutput'] = None    # only for dashboard, etc
 

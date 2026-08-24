@@ -29,7 +29,7 @@ class KeyboardMouse(Controls):
         self._mouse_y_dir: float = 1.0 if invert_mouse_y else -1.0
 
         self._last_mouse_pos: Optional[Tuple[float, float]] = None
-        self.ctx = None
+        self._ctx = None
 
         self._sun_orbit_speed = 0.2
 
@@ -54,30 +54,32 @@ class KeyboardMouse(Controls):
             glfw.KEY_INSERT: 'take_snapshot',
         }
 
-    def setup(self, ctx):
-        self.ctx = ctx
+    def setup(self):
 
-        glfw.set_key_callback(self.ctx.window, self._on_key)
-        glfw.set_scroll_callback(self.ctx.window, self._on_scroll)
-        glfw.set_mouse_button_callback(self.ctx.window, self._on_mouse_button)
+        from rhabdoforge.engine.context import get_context
+        self._ctx = get_context()
+
+        glfw.set_key_callback(self._ctx.window, self._on_key)
+        glfw.set_scroll_callback(self._ctx.window, self._on_scroll)
+        glfw.set_mouse_button_callback(self._ctx.window, self._on_mouse_button)
 
         # Force sync glfw state with context property on boot
         if RDP_COMPATIBILITY_MODE:
-            self.ctx.mouse_captured = False
+            self._ctx.mouse_captured = False
         else:
-            self.ctx.mouse_captured = self.ctx.mouse_captured
+            self._ctx.mouse_captured = self._ctx.mouse_captured
 
         self._last_mouse_pos = None
 
     def free(self):
 
-        if self.ctx is not None and self.ctx.window:
-            glfw.set_key_callback(self.ctx.window, None)
-            glfw.set_scroll_callback(self.ctx.window, None)
-            glfw.set_mouse_button_callback(self.ctx.window, None)
-            glfw.set_input_mode(self.ctx.window, glfw.CURSOR, glfw.CURSOR_NORMAL)
+        if self._ctx is not None and self._ctx.window:
+            glfw.set_key_callback(self._ctx.window, None)
+            glfw.set_scroll_callback(self._ctx.window, None)
+            glfw.set_mouse_button_callback(self._ctx.window, None)
+            glfw.set_input_mode(self._ctx.window, glfw.CURSOR, glfw.CURSOR_NORMAL)
 
-        self.ctx = None
+        self._ctx = None
 
     def _on_key(self, window, key, scancode, action, mods):
 
@@ -91,11 +93,11 @@ class KeyboardMouse(Controls):
             return
 
         if action_id:
-            self.ctx.actions.trigger(action_id)
+            self._ctx.actions.trigger(action_id)
 
         # Custom bindings
         binding = (key, action)
-        for callback in self.ctx._key_bindings.get(binding, ()):
+        for callback in self._ctx._key_bindings.get(binding, ()):
             callback()
 
     def _on_mouse_button(self, window, button, action, mods):
@@ -103,7 +105,7 @@ class KeyboardMouse(Controls):
             w, h = glfw.get_window_size(window)
             if w > 0 and h > 0:
 
-                if self.ctx.mouse_captured:
+                if self._ctx.mouse_captured:
                     # FPS mode (not RDP): pick whatever is in the centre of the screen
                     x, y = w / 2.0, h / 2.0
                 else:
@@ -113,32 +115,35 @@ class KeyboardMouse(Controls):
                 ndc_x = (x / w) * 2.0 - 1.0
                 ndc_y = 1.0 - (y / h) * 2.0
 
-                picked_lens = self.ctx.pick_ommatidium(ndc_x, ndc_y)
+                picked_lens = self._ctx.pick_ommatidium(ndc_x, ndc_y)
                 if picked_lens is not None:
-                    if self.ctx.dashboard:
+                    if self._ctx.dashboard:
                         is_shift = (mods & glfw.MOD_SHIFT) != 0
-                        self.ctx.dashboard.toggle_omm_selection(picked_lens, multi=is_shift)
+                        self._ctx.dashboard.toggle_omm_selection(picked_lens, multi=is_shift)
 
     def _on_scroll(self, window, xoffset, yoffset):
 
-        if self.ctx.sun_control_mode and self.ctx.scene and self.ctx.scene.sun:
-            sun = self.ctx.scene.sun
+        if self._ctx.sun_control_mode and self._ctx.scene and self._ctx.scene.sun:
+            sun = self._ctx.scene.sun
             intensity_factor = 1.1 ** yoffset
             sun.intensity = max(0.1, min(10.0, sun.intensity * intensity_factor))
 
         else:
             zoom_factor = 0.9 ** yoffset
-            self.ctx.observer.zoom(zoom_factor)
+            self._ctx.observer.zoom(zoom_factor)
 
-    def poll(self, ctx):
+    def poll(self):
         """
         Per-frame polling for continuous movement and mouse look.
         """
 
-        window = self.ctx.window
-        wall_dt = self.ctx.wall_dt
+        if self._ctx is None:
+            return
 
-        agent = self.ctx.renderer.agent
+        window = self._ctx.window
+        wall_dt = self._ctx.wall_dt
+
+        agent = self._ctx.renderer.agent
 
         # Continuous movement (WASD + vertical)
         move_direction = glm.vec3(0.0)
@@ -151,7 +156,7 @@ class KeyboardMouse(Controls):
         strafe_mode = glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS
         yaw_input = 0.0
 
-        if self.ctx.display_mode == DisplayMode.Third_person and not strafe_mode:
+        if self._ctx.display_mode == DisplayMode.Third_person and not strafe_mode:
             if glfw.get_key(window, glfw.KEY_A) == glfw.PRESS: yaw_input += 1.0
             if glfw.get_key(window, glfw.KEY_D) == glfw.PRESS: yaw_input -= 1.0
         else:
@@ -159,7 +164,7 @@ class KeyboardMouse(Controls):
             if glfw.get_key(window, glfw.KEY_D) == glfw.PRESS: move_direction += agent.right
 
         if glm.length(move_direction) > 0:
-            agent.translate(glm.normalize(move_direction) * self.ctx.move_speed * wall_dt)
+            agent.translate(glm.normalize(move_direction) * self._ctx.move_speed * wall_dt)
 
         # Roll
         roll_input = 0.0
@@ -169,7 +174,7 @@ class KeyboardMouse(Controls):
         # Mouse look
 
         # If not captured and not in RDP mode, freeze the camera
-        if not self.ctx.mouse_captured and not RDP_COMPATIBILITY_MODE:
+        if not self._ctx.mouse_captured and not RDP_COMPATIBILITY_MODE:
             self._last_mouse_pos = None
 
             if yaw_input != 0 or roll_input != 0:
@@ -190,8 +195,8 @@ class KeyboardMouse(Controls):
         self._last_mouse_pos = current_mouse_pos
 
         # Sun control
-        if self.ctx.sun_control_mode and self.ctx.scene and self.ctx.scene.sun:
-            sun = self.ctx.scene.sun
+        if self._ctx.sun_control_mode and self._ctx.scene and self._ctx.scene.sun:
+            sun = self._ctx.scene.sun
             new_azimuth = sun.azimuth + dx * self._sun_orbit_speed * -1
             new_elevation = sun.elevation - dy * self._sun_orbit_speed
             new_elevation = max(0.01, min(89.99, new_elevation))
@@ -210,8 +215,8 @@ class KeyboardMouse(Controls):
             mouse_yaw = dx * self.mouse_sensitivity * self._mouse_x_dir
             mouse_pitch = dy * self.mouse_sensitivity * self._mouse_y_dir
 
-            if self.ctx.display_mode == DisplayMode.Third_person:
-                self.ctx.observer.pan(mouse_yaw * 0.5, mouse_pitch * 0.5)
+            if self._ctx.display_mode == DisplayMode.Third_person:
+                self._ctx.observer.pan(mouse_yaw * 0.5, mouse_pitch * 0.5)
                 agent.rotate(
                     yaw=yaw_input * self.keyboard_turn_speed,
                     roll=roll_input * self.keyboard_turn_speed,

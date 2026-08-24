@@ -208,12 +208,12 @@ class Controls(ABC):
     """
 
     @abstractmethod
-    def setup(self, ctx: 'Context') -> None:
+    def setup(self) -> None:
         """Register GLFW callbacks, detect hardware, etc"""
         ...
 
     @abstractmethod
-    def poll(self, ctx: 'Context') -> None:
+    def poll(self) -> None:
         """Read inputs and do action."""
         ...
 
