@@ -3,7 +3,7 @@
 `RhabdoForge` is a high-performance, biologically constrained rendering engine designed for the simulation of compound eye optics and the study of insect visual processing. 
 
 <p float="left">
-    <img src="overview.png" alt="Engine overview" width="750">
+    <img src="images/overview.png" alt="Engine overview" width="750">
 </p>
 
 The framework enables researchers to model species-specific ommatidial arrays, rhabdomere bundle geometries, neural superposition wiring, etc. It integrates photomechanical dynamics (microsaccades and adaptation) into GPU-accelerated rendering pipelines, including ray-casting and path-tracing.
@@ -171,6 +171,27 @@ with Context() as context:
 ### 4. Advanced usage
 
 See included scripts in the `examples` folder for more examples and more functionality.
+
+_______
+
+## Screenshots
+
+#### Full model example (_Drosophila melanogaster_)
+
+Result of the procedural generator. Ommatidia lattice is shown as a transluscent sheet, rhabdomere tips are shown as dots.
+Yellow rhabdomeres correspond to R7/8 (central), others are coloured green or blue depending on the bundle's chirality.
+<p float="left">
+    <img src="images/07_big_panel.png" alt="Full model" width="800">
+</p>
+
+#### First person views in the Seville LiDAR dataset
+
+First-person view examples of a honeybee agent flying through the point cloud of the Seville dataset from [Habitat3D](https://insectvision.dlr.de/3d-reconstruction-tools/habitat3d), shown in two different projection modes.
+<p float="left">
+    <img src="images/snapshot.png" alt="still image of 1st person honeybee view" width="300">
+    <img src="images/snapshot2.png" alt="still image of 1st person honeybee view (alt. projection)" width="300">
+    <img src="images/capture-0.gif" alt="recording of 1st person honeybee flight" width="300">
+</p>
 
 _______
 

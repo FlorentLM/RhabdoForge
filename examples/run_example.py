@@ -42,14 +42,14 @@ if __name__ == "__main__":
 
 
     # Add multiple instances of the same asset
-    crate_instance_1 = scene.add_instance(asset=crate, transform=(-3.0, 0.0, 0.0))
-    crate_instance_2 = scene.add_instance(asset=crate, transform=(3.0, 0.0, 0.0))
-    crate_instance_3 = scene.add_instance(asset=crate, transform=(0.0, 0.0, 2.0), dynamic=True)  # this one can move
+    # crate_instance_1 = scene.add_instance(asset=crate, transform=(-3.0, 0.0, 0.0))
+    # crate_instance_2 = scene.add_instance(asset=crate, transform=(3.0, 0.0, 0.0))
+    # crate_instance_3 = scene.add_instance(asset=crate, transform=(0.0, 0.0, 2.0), dynamic=True)  # this one can move
 
 
     # Setup compound eyes model
-    scaffold_file = 'assets/drosophila_scaffold.npz'
-    # scaffold_file = 'assets/honeybee_scaffold_s10.npz'
+    # scaffold_file = 'assets/drosophila_scaffold.npz'
+    scaffold_file = 'assets/honeybee_scaffold_s10.npz'
     # scaffold_file = 'assets/drosophila_scaffold_k22.npz'
 
     model = Model.from_file(
@@ -79,9 +79,9 @@ if __name__ == "__main__":
     # Example: add debug objects (wireframes, grid etc)
     if SHOW_DEBUG_OBJECTS:
         context.debug.add(AxesGizmo(size=0.4))
-        context.debug.add(DebugBox(crate_instance_1))
-        context.debug.add(DebugBox(crate_instance_2))
-        context.debug.add(DebugBox(crate_instance_3))
+        # context.debug.add(DebugBox(crate_instance_1))
+        # context.debug.add(DebugBox(crate_instance_2))
+        # context.debug.add(DebugBox(crate_instance_3))
 
         # The BVH can also be displayed in debug
         for blas in renderer.blases:
@@ -122,7 +122,7 @@ if __name__ == "__main__":
             context.input()  # processes inputs from keyboard / gamepad etc (optional)
 
             # Rotate dynamic test crate at 45 deg/s
-            crate_instance_3.rotate_axis(45 * context.dt, 'up')
+            # crate_instance_3.rotate_axis(45 * context.dt, 'up')
 
             # Render one biological step
             output = renderer.step()
