@@ -171,3 +171,27 @@ with Context() as context:
 ### 4. Advanced usage
 
 See included scripts in the `examples` folder for more examples and more functionality.
+
+_______
+
+### Paper
+
+Pre-print available soon on bioRxiv.
+
+### Acknowledgements
+
+This work was funded by the UK Research & Innovation Engineering and Physical Sciences Research Council (grant numbers: EP/V008102/1 and EP/X019632/1).
+The funders had no role in study design, data collection and analysis, decision to publish, or preparation of the manuscript.
+UK Research & Innovation: https://www.ukri.org/.
+
+### License
+
+This project is licensed under the MIT License. See the LICENSE file for details.
+
+_______
+
+Powered by [PyTinyBVH](https://github.com/FlorentLM/PyTinyBVH)
+<a href="https://github.com/FlorentLM/pytinybvh">
+<img src="https://raw.githubusercontent.com/FlorentLM/pytinybvh/refs/heads/main/img/pytinybvh_logo.png" alt="Logo" width="32" height="32">
+</a>
+
