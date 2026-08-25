@@ -91,7 +91,6 @@ class Renderer:
 
         from rhabdoforge.engine.context import get_context
         self._context = context or get_context()
-        self._context.renderer = self
 
         # Scene + baker (VRAM estimation depends on it)
         self._scene: 'Scene' = scene
@@ -101,6 +100,8 @@ class Renderer:
         # Compound eyes model and agent
         self._model: 'Model' = model
         self.agent: 'Agent' = agent
+
+        self._context.renderer = self
 
         # Track view matrices for parciminious updates
         self._last_view_matrix = None
