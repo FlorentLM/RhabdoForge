@@ -195,9 +195,36 @@ First-person view examples of a honeybee agent flying through the point cloud of
 
 _______
 
-### Paper
+## About
 
-Pre-print available soon on bioRxiv.
+When using RhabdoForge or PyTinyBVH in academic projects, please cite:
+
+```bibtex
+@misc{lemoelRhabdoForge2026,
+  title = {{{RhabdoForge}}: A Modular, Biophysically-Grounded Rendering Framework for Insect Vision Neuroethology},
+  shorttitle = {{{RhabdoForge}}},
+  author = {Le Moël, Florent and Webb, Barbara},
+  year = 2026,
+  month = aug,
+  publisher = {bioRxiv},
+  doi = {10.1101/2026.08.25.747007},
+  urldate = {2026-08-25},
+  archiveprefix = {Neuroscience},
+  langid = {english},
+  pubstate = {prepublished},
+  keywords = {insect vision, compound eye, neuromorphic modelling, active sensing, closed-loop simulation, neuroethology, ray-tracing, path-tracing},
+}
+```
+```bibtex
+@software{lemoelPyTinyBVH2025,
+    title = {{PyTinyBVH}},
+    copyright = {MIT},
+    author = {Le Moël, Florent},
+    month = aug,
+    year = {2025},
+    keywords = {Python, bvh, raytracing},
+}
+```
 
 ### Acknowledgements
 
