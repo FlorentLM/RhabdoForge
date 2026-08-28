@@ -916,7 +916,7 @@ class Scene:
         data = trimesh.load(file_path)
 
         if data is None:
-            raise ValueError(f"Could not load model: {file_path}")
+            raise ValueError(f'Could not load model: {file_path}')
 
         new_instances = []
 
@@ -941,8 +941,7 @@ class Scene:
                 asset_name = f"{name_prefix}_{geom_name}"
 
                 if asset_name not in self.assets:
-                    asset = Asset(asset_name)
-                    asset.process_trimesh(geom_obj, radii=kwargs.get('radii'), extract_texture=True)
+                    asset = Asset.from_trimesh(asset_name, geom_obj, radii=kwargs.get('radii'), extract_texture=True)
                     self.assets[asset_name] = asset
 
                 inst = self.add_instance(self.assets[asset_name], transform=final_transform,
@@ -955,8 +954,7 @@ class Scene:
             asset_name = name_prefix
 
             if asset_name not in self.assets:
-                asset = Asset(asset_name)
-                asset.process_trimesh(data, radii=kwargs.get('radii'), extract_texture=True)
+                asset = Asset.from_trimesh(asset_name, data, radii=kwargs.get('radii'), extract_texture=True)
                 self.assets[asset_name] = asset
 
             inst = self.add_instance(self.assets[asset_name], transform=user_transform,
