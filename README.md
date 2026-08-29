@@ -207,7 +207,7 @@ When using RhabdoForge or PyTinyBVH in academic projects, please cite:
   year = 2026,
   month = aug,
   publisher = {bioRxiv},
-  doi = {10.1101/2026.08.25.747007},
+  doi = {10.64898/2026.08.25.747007},
   urldate = {2026-08-25},
   archiveprefix = {Neuroscience},
   langid = {english},
