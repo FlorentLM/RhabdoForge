@@ -193,53 +193,59 @@ First-person view examples of a honeybee agent flying through the point cloud of
     <img src="images/capture-0.gif" alt="recording of 1st person honeybee flight" width="300">
 </p>
 
-_______
-
 ## About
-
-When using RhabdoForge or PyTinyBVH in academic projects, please cite:
-
-```bibtex
-@misc{lemoelRhabdoForge2026,
-  title = {{{RhabdoForge}}: A Modular, Biophysically-Grounded Rendering Framework for Insect Vision Neuroethology},
-  shorttitle = {{{RhabdoForge}}},
-  author = {Le Moël, Florent and Webb, Barbara},
-  year = 2026,
-  month = aug,
-  publisher = {bioRxiv},
-  doi = {10.64898/2026.08.25.747007},
-  urldate = {2026-08-25},
-  archiveprefix = {Neuroscience},
-  langid = {english},
-  pubstate = {prepublished},
-  keywords = {insect vision, compound eye, neuromorphic modelling, active sensing, closed-loop simulation, neuroethology, ray-tracing, path-tracing},
-}
-```
-```bibtex
-@software{lemoelPyTinyBVH2025,
-    title = {{PyTinyBVH}},
-    copyright = {MIT},
-    author = {Le Moël, Florent},
-    month = aug,
-    year = {2025},
-    keywords = {Python, bvh, raytracing},
-}
-```
-
-### Acknowledgements
-
-This work was funded by the UK Research & Innovation Engineering and Physical Sciences Research Council (grant numbers: EP/V008102/1 and EP/X019632/1).
-The funders had no role in study design, data collection and analysis, decision to publish, or preparation of the manuscript.
-UK Research & Innovation: https://www.ukri.org/.
-
-### License
-
-This project is licensed under the MIT License. See the LICENSE file for details.
-
-_______
 
 Powered by [PyTinyBVH](https://github.com/FlorentLM/PyTinyBVH)
 <a href="https://github.com/FlorentLM/pytinybvh">
 <img src="https://raw.githubusercontent.com/FlorentLM/pytinybvh/refs/heads/main/img/pytinybvh_logo.png" alt="Logo" width="32" height="32">
 </a>
 
+
+The RhabdoForge paper is currently available as a pre-print on [bioR&#967;iv](https://www.biorxiv.org/content/10.64898/2026.08.25.747007v1):
+
+> **RhabdoForge: A Modular, Biophysically-Grounded Rendering Framework for Insect Vision Neuroethology**
+> 
+> <a href="https://orcid.org/0000-0003-4780-0083" aria-label="View ORCID record - 0000-0003-4780-0083"> <img src="images/ORCID-iD_icon_vector.svg" alt="ORCID iD" width="14" height="14"/></a> Florent Le Moël, Barbara Webb
+> 
+> **doi:** https://doi.org/10.64898/2026.08.25.747007 
+
+When using RhabdoForge or PyTinyBVH in academic projects, please cite:
+
+```bibtex
+@article{lemoelRhabdoForgeModularBiophysicallyGrounded2026,
+  title = {{{RhabdoForge}}: {{A Modular}}, {{Biophysically-Grounded Rendering Framework}} for {{Insect Vision Neuroethology}}},
+  shorttitle = {{{RhabdoForge}}},
+  author = {Le Mo{\"e}l, Florent and Webb, Barbara},
+  year = 2026,
+  month = aug,
+  publisher = {Neuroscience},
+  doi = {10.64898/2026.08.25.747007},
+  urldate = {2026-08-31},
+  abstract = {Insects solve complex behavioural tasks with remarkable efficiency, using minimal neural hardware tuned to the specific requirements of their ecological niches. To truly understand or replicate these behaviours, it is insufficient to model the brain in isolation: one must account for the dynamic, closed-loop interactions between the environment, the physical organisation of the sensory periphery, and internal biophysical dynamics. To address these issues for visually controlled behaviours, we present RhabdoForge, a modular, hardware-agnostic and high-performance rendering framework specifically designed for insect neuroethology and neuromorphic research. Designed for seamless integration into Python-based workflows, RhabdoForge implements both real-time ray-tracing and stochastic path-tracing using hardware-agnostic GPU pipelines. Crucially, the engine moves beyond the static "ommatidium-as-a-pixel" paradigm by introducing a fully parametrisable model where every layer of the compound eye (from the geometric shape and the topological lattice to the internal rhabdomere blueprint) is a discrete, swappable component. The engine is capable of simulating the high-frequency, sub-ommatidial rhabdomere photomechanical actuation, allowing for the investigation of a variety of active sensing phenomena within a real-time closed-loop environment. The framework also includes an automated morphological pipeline that allows transforming 2D anatomical data into faithful 3D sensory models. We validate the engine through two case studies: a closed-loop optic-flow centring response in a virtual tunnel, and the recovery of spatial hyperacuity via rhabdomere microsaccades. By providing a bridge between high-fidelity visual ecology and neuromorphic modelling, RhabdoForge enables researchers to explore how the interplay of sensory optics and neural processing can generate complex behaviour in both biological and artificial agents.},
+  archiveprefix = {Neuroscience},
+  copyright = {http://creativecommons.org/licenses/by/4.0/},
+  langid = {english},
+  file = {C:\Users\flolm\Zotero\storage\33RAZYR5\Le Moël and Webb - 2026 - RhabdoForge A Modular, Biophysically-Grounded Rendering Framework for Insect Vision Neuroethology.pdf}
+}
+```
+```bibtex
+@software{lemoelPyTinyBVH2025,
+  title = {{{PyTinyBVH}}},
+  author = {Le Mo{\"e}l, Florent},
+  year = 2025,
+  month = aug,
+  abstract = {Tiny Python bindings for the C/C++ library TinyBVH},
+  copyright = {MIT},
+  keywords = {bvh,Python,raytracing}
+}
+```
+
+## Acknowledgements
+
+This work was funded by the UK Research & Innovation Engineering and Physical Sciences Research Council (grant numbers: EP/V008102/1 and EP/X019632/1).
+The funders had no role in study design, data collection and analysis, decision to publish, or preparation of the manuscript.
+UK Research & Innovation: https://www.ukri.org/.
+
+## License
+
+This project is licensed under the MIT License. See the LICENSE file for details.
