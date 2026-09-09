@@ -286,7 +286,7 @@ def _assert_layout_aligned():
         if r != 0:
             raise AssertionError(
                 f"{_name} is {_dtype.itemsize} bytes, which is not a multiple of {STD430_BLOCK}. "
-                f"Add a {(STD430_BLOCK - r) % STD430_BLOCK} bytes of padding."
+                f"Add {(STD430_BLOCK - r) % STD430_BLOCK} bytes of padding."
             )
 
 _assert_layout_aligned()
