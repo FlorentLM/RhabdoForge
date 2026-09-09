@@ -11,6 +11,11 @@ const int RNG_SOBOL      = 5;
 const int MODE_GAUSSIAN  = 0;
 const int MODE_AIRY      = 1;
 
+// Sensitivity LUT geometry, must match LUT_RANGE / LUT_SIZE in python side:
+const int   LUT_SIZE  = 256;
+const float LUT_RANGE = 4.0;
+const float LUT_SCALE = float(LUT_SIZE - 1) / LUT_RANGE;
+
 const float PI = 3.141592653589793;
 const float HPI = 1.5707963267948966;
 const float TWOPI = 6.283185307179586;
@@ -254,17 +259,17 @@ float get_sensitivity(int mode, float dx, float dy,
     float radial_dist = sqrt(g_min*g_min + g_maj*g_maj);
 
     if (mode == MODE_AIRY) {
-        // Map 0.0 -> 4.0 FWHM to 0.0 -> 255.0 index
-        float float_idx = radial_dist * (255.0 / 4.0);
+        // Map 0.0 -> LUT_RANGE FWHM to 0.0 -> (LUT_SIZE - 1) index
+        float float_idx = radial_dist * LUT_SCALE;
 
         // Linear interpolation
         int i0 = int(floor(float_idx));
         int i1 = i0 + 1;
         float t = fract(float_idx);
 
-        // Clamp to stay within 256-element array
-        i0 = clamp(i0, 0, 255);
-        i1 = clamp(i1, 0, 255);
+        // Clamp to stay within the table
+        i0 = clamp(i0, 0, LUT_SIZE - 1);
+        i1 = clamp(i1, 0, LUT_SIZE - 1);
 
         return mix(airy_lut[i0], airy_lut[i1], t);
     }

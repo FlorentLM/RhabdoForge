@@ -1,9 +1,14 @@
 from typing import Callable
 
 import numpy as np
-from numpy._typing import ArrayLike
+from numpy.typing import ArrayLike
 from scipy.interpolate import Akima1DInterpolator
 from scipy.special import j1
+
+
+# Angular range for sensitivity LUTs, in units of the acceptance angle (FWHM)
+LUT_RANGE = 4.0
+LUT_SIZE = 256
 
 
 def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable':
@@ -23,13 +28,17 @@ def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable'
     return wrapper
 
 
-def airy_sensitivity_lut(size: int = 256, range: float = 6.0) -> np.ndarray:
+def airy_sensitivity_lut() -> np.ndarray:
     """
-    Map x from 0.0 (centre) to 4.0 (deep in the tails)
+    Map x from 0.0 (centre) to LUT_RANGE (deep in the tails)
     where x is normalised such that x=0.5 is the half max
+
+    Note: 'range' defaulted to 6.0 while the shader has always indexed this table as if it
+    spanned 0->4, stretching the profile by 1.5x and making its outer third unreachable.
+    Both now derive from LUT_RANGE.
     """
 
-    x_vals = np.linspace(0, range, size)
+    x_vals = np.linspace(0, LUT_RANGE, LUT_SIZE)
     lut_data = []
 
     for x_norm in x_vals:
@@ -44,24 +53,24 @@ def airy_sensitivity_lut(size: int = 256, range: float = 6.0) -> np.ndarray:
     return np.array(lut_data, dtype=np.float32)
 
 
-def lorentzian_sensitivity_lut(size: int = 256) -> np.ndarray:
+def lorentzian_sensitivity_lut() -> np.ndarray:
     """
     Lorentzian (Cauchy) profile.
     Heavy tails: stays brighter further from the centre compared to a Gaussian.
     """
-    x_vals = np.linspace(0, 4.0, size)
+    x_vals = np.linspace(0, LUT_RANGE, LUT_SIZE)
     # At x=0.5, val = 1 / (1 + (0.5/0.5)^2) = 0.5
     lut_data = 1.0 / (1.0 + (x_vals / 0.5) ** 2)
     return np.array(lut_data, dtype=np.float32)
 
 
-def leakage_sensitivity_lut(size: int = 256, pedestal_height: float = 0.05, pedestal_width: float = 3.0) -> np.ndarray:
+def leakage_sensitivity_lut(pedestal_height: float = 0.05, pedestal_width: float = 3.0) -> np.ndarray:
     """
     Sum-of-Gaussians.
     Simulates a narrow optical core with a wide 'pedestal' caused by
     light leakage between ommatidia (common in insect eye measurements).
     """
-    x_vals = np.linspace(0, 4.0, size)
+    x_vals = np.linspace(0, LUT_RANGE, LUT_SIZE)
     core = np.exp(-2.77258872224 * x_vals ** 2) # Core Gaussian (standard GAUSS_K)
     wide = np.exp(-2.77258872224 * (x_vals / pedestal_width) ** 2)   # wide Gaussian pedestal
     # re-normalised so peak is 1.0

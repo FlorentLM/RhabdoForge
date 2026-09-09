@@ -9,7 +9,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.lines import Line2D
 
 from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle
-from rhabdoforge.LUTs import airy_sensitivity_lut
+from rhabdoforge.LUTs import airy_sensitivity_lut, LUT_RANGE
 
 from visualisation.plot_settings import (
     PlotSettings, Z_RASTER, Z_TEXT, panel_letter, column_header, row_header, despine, placeholder
@@ -39,9 +39,7 @@ GAUSS_K = 2.77258872224    # GAUSS_CONSTANT_K = 4 * log(2)
 AIRY_SCALE = 3.232         # makes the Airy FWHM = 1.0
 SPREAD_MULT = 2.0          # proposal = spread_mult * acceptance
 
-AIRY_LUT_RES = 256
-AIRY_RANGE = 4.0
-AIRY_LUT = airy_sensitivity_lut(AIRY_LUT_RES, range=AIRY_RANGE)
+AIRY_LUT = airy_sensitivity_lut()
 
 # Line widths
 
@@ -57,7 +55,7 @@ def gaussian(radial_dist):
 
 
 def lookup_sensitivity_LUT(radial_dist):
-    lut_x = np.linspace(0.0, AIRY_RANGE, len(AIRY_LUT))
+    lut_x = np.linspace(0.0, LUT_RANGE, len(AIRY_LUT))
     return np.interp(np.asarray(radial_dist, dtype=float), lut_x, AIRY_LUT)
 
 
@@ -184,7 +182,7 @@ def uniform_efficiency(target_func):
     return A * A / (Z * B)
 
 
-def _reach(sigma, target_func, R=AIRY_RANGE):
+def _reach(sigma, target_func, R=LUT_RANGE):
     """
     Fraction of total area-weighted signal within the proposal's reach r_max.
     Weight r is the 2-D polar Jacobian (dA = 2*pi*r dr).
@@ -226,7 +224,7 @@ def airy_ring_stats():
     ray_reach = P(Gaussian-iCDF radius > first ring) = exp(-K z^2)
     """
     fz = 3.8317 / AIRY_SCALE                      # first zero of J1 -> first Airy dark ring
-    r = np.linspace(0.0, AIRY_RANGE, 20000)
+    r = np.linspace(0.0, LUT_RANGE, 20000)
     w = lookup_sensitivity_LUT(r) * r                               # 2D area element
     ring_mass = float(np.trapezoid(w[r > fz], r[r > fz]) / np.trapezoid(w, r))
     ray_reach = float(np.exp(-GAUSS_K * fz * fz))
