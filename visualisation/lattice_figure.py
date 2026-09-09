@@ -349,9 +349,9 @@ def make_figure(stages, s=None):
 
     n_final = len(stages['final'])
     n_src = len(stages['measurements'].source_points)
-    fig.suptitle(f'Procedural ommatidial lattice '
-                 f'(N={n_final} vs. source {n_src})',
-                 fontsize=s.header + 2, y=0.965)
+    # fig.suptitle(f'Procedural ommatidial lattice '
+    #              f'(N={n_final} vs. source {n_src})',
+    #              fontsize=s.header + 2, y=0.965)
 
     # Draw once so title / tick-label extents are available for letter placement
     fig.canvas.draw()
@@ -400,6 +400,6 @@ if __name__ == '__main__':
     settings = PlotSettings.nature_double(height_mm=125.0)
 
     fig = make_figure(gen.stages, settings)
-    settings.savefig(fig, 'lattice_fitting_figure')
+    settings.savefig(fig, 'lattice')
 
     plt.show()
