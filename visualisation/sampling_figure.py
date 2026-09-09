@@ -681,4 +681,4 @@ if __name__ == '__main__':
 
     fig = build_figure(settings)
 
-    settings.savefig(fig, 'sampling', formats=['svg', 'eps', 'png', 'pdf'])
+    settings.savefig(fig, 'sampling', formats=['pdf'])

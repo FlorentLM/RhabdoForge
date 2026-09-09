@@ -41,7 +41,7 @@ class PlotSettings:
     grid: str = '#EAECEE'
 
     formats: Sequence[str] = ('eps', 'pdf', 'png')
-    rasterize: bool = True
+    rasterize: bool = False
 
     @property
     def width_in(self) -> float:
