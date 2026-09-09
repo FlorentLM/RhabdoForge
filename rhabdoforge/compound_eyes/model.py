@@ -230,6 +230,15 @@ class Model(SpatialQueries, BaseView):
 
         self._buf['omm_id'] = self.omm_indices
 
+        # Rhabdomere type within the bundle
+        max_rhab_R = self._buf.max_value('rhab_R')
+        if self._R > max_rhab_R + 1:
+            logger.warning(
+                f"Bundle has {self._R} rhabdomeres but 'rhab_R' is {METADATA_BIT_LAYOUT['rhab_R'][1]} bits "
+                f"(max index {max_rhab_R}). Types above R{max_rhab_R + 1} will wrap around."
+            )
+        self._buf['rhab_R'] = np.broadcast_to(np.arange(self._R, dtype=np.uint32), (self._N, self._R))
+
         # First-ring neighbour count per ommatidium (Gabriel graph degree)
         neighbour_count = np.zeros(self._N, dtype=np.uint32)
         for eye in self._eyes:
