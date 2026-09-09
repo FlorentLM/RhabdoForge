@@ -10,10 +10,55 @@ returns the (N, R, 2) rest half-widths (minor, major) in radians.
     - MatchedAcceptance: derives p from the optics, then samples with it
 """
 from dataclasses import dataclass
-from typing import Protocol,runtime_checkable
+from typing import Optional, Protocol, runtime_checkable
 import numpy as np
 
 from rhabdoforge.utils import broadcast_to_shape
+
+
+# References:
+#   [1] Seitz 1968: "Der Strahlengang im Appositionsauge von Calliphora erythrocephala (Meig.)", 10.1007/BF00339350
+#   [2] Stavenga 1974: "Refractive index of fly rhabdomeres", 10.1007/BF00694471
+#   [3] Beersma et al. 1982: "Refractive index of the fly rhabdomere", 10.1364/JOSA.72.000583
+#   [4] Stavenga 2003a: "Angular and spectral sensitivity of fly photoreceptors. I. Integrated facet lens and rhabdomere optics", 10.1007/s00359-002-0370-2
+#   [5] Stavenga 2003b: "Angular and spectral sensitivity of fly photoreceptors. II. Dependence on facet lens F-number and rhabdomere type in Drosophila", 10.1007/s00359-003-0390-6
+#   [6] Kemppainen et al. 2022: "Binocular mirror–symmetric microsaccadic sampling enables Drosophila hyperacute 3D vision", 10.1073/pnas.2109717119
+
+# TODO: Add Snyder to refs here
+
+# Refractive indices of the rhabdomere interior and its surrounding medium:
+#   Blowfly/housefly measurements (surround: [ref 1]; interior: [ref 2-3]),
+#   considered in [ref 4] as roughly constant across flies.
+#   Also used for Drosophila in [ref 5, 6].
+#
+# !! Not verified for non-flies !!
+#
+# Also: A small change here can change the mode count by a whole number...
+N_SURROUND_FLY = 1.340
+N_RHABDOMERE_FLY = 1.363
+
+
+# Cut-off V-numbers of the LP modes (ordered by mode number p)
+# Values from [ref 4, Table 2]
+LP_MODE_CUTOFFS = np.array([
+    0.0,      # p=1   LP01
+    2.4050,   # p=2   LP11
+    3.8318,   # p=3   LP21
+    3.8473,   # p=4   LP02
+    5.1357,   # p=5   LP31
+    5.5201,   # p=6   LP12
+    6.3802,   # p=7   LP41
+    7.0156,   # p=8   LP22
+    7.0247,   # p=9   LP03
+    7.5883,   # p=10  LP51
+    8.4173,   # p=11  LP32
+    8.6538,   # p=12  LP13
+    8.7715,   # p=13  LP61
+    9.7611,   # p=14  LP42
+    9.9362,   # p=15  LP71
+    10.1735,  # p=16  LP23
+    10.1799,  # p=17  LP04
+])
 
 
 # Inputs an acceptance model may read
@@ -34,18 +79,50 @@ class LensOptics:
         return int(self.focal_um.shape[0])
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)  # eq=False because the fields are ndarrays
 class RhabdomereOptics:
     """
     Container for per-rhabdomere anatomy available to an acceptance model.
     All shape (R,).
+
+    The refractive indices default to blowfly values and are only consumed by waveguide
+    models (they set the numerical aperture, hence the V-number and mode count).
     """
     diameter_um: np.ndarray     # waveguide diameter (μm)
     wavelength_um: np.ndarray   # peak wavelength (μm)
+    n_rhabdomere: Optional[np.ndarray] = None   # rhabdomere interior refractive index
+    n_surround: Optional[np.ndarray] = None     # surrounding medium refractive index
+
+    def __post_init__(self):
+        for name, default in (('n_rhabdomere', N_RHABDOMERE_FLY), ('n_surround', N_SURROUND_FLY)):
+            value = getattr(self, name)
+            value = default if value is None else value
+            object.__setattr__(self, name, np.broadcast_to(
+                np.asarray(value, dtype=np.float32), self.diameter_um.shape
+            ))
 
     @property
     def nb_rhabdomeres(self) -> int:
         return int(self.diameter_um.shape[0])
+
+    @property
+    def numerical_aperture(self) -> np.ndarray:
+        """Numerical Aperture (NA), the resolving power of the lens."""
+        return np.sqrt(np.maximum(self.n_rhabdomere ** 2 - self.n_surround ** 2, 0.0))
+
+    @property
+    def v_number(self) -> np.ndarray:
+        """
+        Waveguide parameter V = (pi * D / lambda) * NA.
+        (sets how many Linearly Polarised (LP) modes propagate).
+        """
+        lam = np.clip(self.wavelength_um, 1e-6, None)
+        return (np.pi * self.diameter_um / lam) * self.numerical_aperture
+
+    @property
+    def nb_modes(self) -> np.ndarray:
+        """Number of Linearly Polarised (LP) modes at the rest V-number."""
+        return np.searchsorted(LP_MODE_CUTOFFS, self.v_number, side='right').astype(np.int32)
 
 
 # interface

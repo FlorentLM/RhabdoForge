@@ -1081,6 +1081,8 @@ class Model(SpatialQueries, BaseView):
         rhab_optics = RhabdomereOptics(
             diameter_um=np.atleast_1d(self._bundle.diameters_um).astype(np.float32),
             wavelength_um=np.atleast_1d(self._bundle.wavelengths_nm).astype(np.float32) * 1e-3,
+            n_rhabdomere=np.atleast_1d(self._bundle.n_rhabdomere).astype(np.float32),
+            n_surround=np.atleast_1d(self._bundle.n_surround).astype(np.float32),
         )
 
         acceptance_angles = acceptance_model(lens_optics, rhab_optics)

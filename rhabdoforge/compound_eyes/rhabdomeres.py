@@ -4,6 +4,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from rhabdoforge.utils import broadcast_1d
+from rhabdoforge.compound_eyes.helpers.acceptance import N_RHABDOMERE_FLY, N_SURROUND_FLY
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -19,9 +20,13 @@ class RhabdomereBundle:
         - offsets_um: (R, 2) array_like, Rhabdomere offsets in the focal plane (μm),
             relative to the optical axis. R is the bundle size.
         - diameters_um: float or (R,) array_like, Waveguide diameters (μm). Scalar broadcasts.
-        - focal_um: float (optional), Nodal->tip distance at the rhabdomere's dark-resting
-            position (μm). Lever arm converting focal-plane offsets into angular shifts, and
-            the distance at which the Snyder acceptance angle is evaluated. Required when R > 1.
+        - focal_um: float (optional), Lens focal length (μm), measured from the ommatidium position
+            (which the model treats as the lens' nodal point [TODO: CHANGE THAT]). Lever arm converting focal-plane
+            offsets into angular shifts, and the distance at which the Snyder acceptance angle is
+            evaluated. Required when R > 1.
+        - tip_distance_um: float (optional), Distance from the lens' rear surface to the rhabdomere
+            tip at rest (μm). The tip normally sits short of the focal plane, and contraction moves
+            it towards focus. Construction-time only. Defaults to focal_um.
         - sensitivity: scalar, (3,), (R,), or (R, 3) array_like, Spectral multipliers (UV, Green, Blue).
             UV (slot 0) is rendered in the red sub-pixel of the output.
                 scalar: applied uniformly to (R, 3)
@@ -29,6 +34,9 @@ class RhabdomereBundle:
                 (R,)  : per-receptor grayscale, tiled across channels
                 (R, 3): explicit per-receptor, per-channel values
         - wavelengths_nm: float or (R,) array_like, Per-receptor peak wavelengths (nm). Scalar broadcasts.
+        - n_rhabdomere, n_surround: float or (R,) array_like, Refractive indices of the rhabdomere
+            interior and the surrounding medium. Only used by waveguide acceptance models (they
+            set the numerical aperture and hence the LP mode count). Default to Stavenga's fly values.
         - tau_membrane: float, Membrane RC integration time (s).
         - tau_rise, tau_relax: float, Mechanical rise / relaxation time constants of the microsaccade (s).
         - tau_fast, tau_adapt: float, Fast and slow adaptation EMA times (s).
@@ -51,8 +59,11 @@ class RhabdomereBundle:
                  offsets_um: ArrayLike = ((0.0, 0.0),),
                  diameters_um: Union[float, ArrayLike] = 2.0,
                  focal_um: Optional[float] = 20.0,
+                 tip_distance_um: Optional[float] = None,
                  sensitivity: Union[float, ArrayLike] = 1.0,
                  wavelengths_nm: Union[float, ArrayLike] = 540.0,
+                 n_rhabdomere: Union[float, ArrayLike] = N_RHABDOMERE_FLY,
+                 n_surround: Union[float, ArrayLike] = N_SURROUND_FLY,
                  fused_rhabdoms: bool = False,
                  tau_membrane: float = 0.0,
                  tau_rise: float = 0.015,
@@ -70,6 +81,12 @@ class RhabdomereBundle:
 
         self.name = str(name)
         self.focal_um = float(focal_um) if focal_um is not None else None
+
+        # Resting tip position, should be short of the focal plane
+        if tip_distance_um is not None:
+            self.tip_distance_um = float(tip_distance_um)
+        else:
+            self.tip_distance_um = self.focal_um
         self.fused_rhabdoms = bool(fused_rhabdoms)
 
         self.tau_membrane = float(tau_membrane)
@@ -91,6 +108,8 @@ class RhabdomereBundle:
 
         self.diameters_um = broadcast_1d(diameters_um, R, 'diameters_um')
         self.wavelengths_nm = broadcast_1d(wavelengths_nm, R, 'wavelengths_nm')
+        self.n_rhabdomere = broadcast_1d(n_rhabdomere, R, 'n_rhabdomere')
+        self.n_surround = broadcast_1d(n_surround, R, 'n_surround')
         self.sensitivity = self._resolve_sensitivity(sensitivity, R)
 
         # Validation
@@ -513,8 +532,13 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
             [ 0.0045, -0.0113],   # R7/8 (central)
         ],
         diameters_um=[1.8, 1.6, 1.6, 1.6, 1.6, 1.8, 1.0],  # Kemppainen 2022: R1/R6 1.8, R2-R5 1.6, R7/8 1.0
+
+        # R1-6 are Rh1 (lambda_max ~480 nm), the merged R7/8 slot is UV-biased (Rh3/Rh4)
+        wavelengths_nm=[480.0, 480.0, 480.0, 480.0, 480.0, 480.0, 350.0],
+
         sensitivity=sensitivity,
-        focal_um=21.36,     # lens nodal point -> rhabdomere tip distance
+        focal_um=20.6,          # object focal length = posterior nodal distance (Stavenga 2003b, Appendix 1)
+        tip_distance_um=17.0,   # resting tip-to-lens distance, papers' frame (Kemppainen 2022, Table S6)
         tau_membrane=0.005,
         tau_rise=0.015,
         tau_relax=0.060,
