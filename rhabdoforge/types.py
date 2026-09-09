@@ -266,3 +266,27 @@ RHAB_COLOURS = [
     '#0000ff',  # R6
     '#aaa712',  # R7/8
 ]
+
+
+def _assert_layout_aligned():
+
+    STD430_BLOCK = 16
+
+    for _name, _dtype in (
+        ('RENDERABLE_DTYPE', RENDERABLE_DTYPE),
+        ('DIR_LIGHT_DTYPE', DIR_LIGHT_DTYPE),
+        ('POINT_LIGHT_DTYPE', POINT_LIGHT_DTYPE),
+        ('AREA_LIGHT_DTYPE', AREA_LIGHT_DTYPE),
+        ('OMM_DYNAMIC_DTYPE', OMM_DYNAMIC_DTYPE),
+        ('RHAB_STATIC_DTYPE', RHAB_STATIC_DTYPE),
+        ('RHAB_DYNAMIC_DTYPE', RHAB_DYNAMIC_DTYPE),
+    ):
+
+        r = _dtype.itemsize % STD430_BLOCK
+        if r != 0:
+            raise AssertionError(
+                f"{_name} is {_dtype.itemsize} bytes, which is not a multiple of {STD430_BLOCK}. "
+                f"Add a {(STD430_BLOCK - r) % STD430_BLOCK} bytes of padding."
+            )
+
+_assert_layout_aligned()
