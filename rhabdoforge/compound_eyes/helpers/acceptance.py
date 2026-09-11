@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Optional, Protocol, runtime_checkable
 import numpy as np
 
+from rhabdoforge.compound_eyes.helpers.waveguide import LP_modes
 from rhabdoforge.utils import broadcast_to_shape
 
 
@@ -38,27 +39,6 @@ N_SURROUND_FLY = 1.340
 N_RHABDOMERE_FLY = 1.363
 
 
-# Cut-off V-numbers of the LP modes (ordered by mode number p)
-# Values from [ref 4, Table 2]
-LP_MODE_CUTOFFS = np.array([
-    0.0,      # p=1   LP01
-    2.4050,   # p=2   LP11
-    3.8318,   # p=3   LP21
-    3.8473,   # p=4   LP02
-    5.1357,   # p=5   LP31
-    5.5201,   # p=6   LP12
-    6.3802,   # p=7   LP41
-    7.0156,   # p=8   LP22
-    7.0247,   # p=9   LP03
-    7.5883,   # p=10  LP51
-    8.4173,   # p=11  LP32
-    8.6538,   # p=12  LP13
-    8.7715,   # p=13  LP61
-    9.7611,   # p=14  LP42
-    9.9362,   # p=15  LP71
-    10.1735,  # p=16  LP23
-    10.1799,  # p=17  LP04
-])
 
 
 # Inputs an acceptance model may read
@@ -114,15 +94,15 @@ class RhabdomereOptics:
     def v_number(self) -> np.ndarray:
         """
         Waveguide parameter V = (pi * D / lambda) * NA.
-        (sets how many Linearly Polarised (LP) modes propagate).
+        (sets how many LP modes propagate)
         """
         lam = np.clip(self.wavelength_um, 1e-6, None)
         return (np.pi * self.diameter_um / lam) * self.numerical_aperture
 
     @property
     def nb_modes(self) -> np.ndarray:
-        """Number of Linearly Polarised (LP) modes at the rest V-number."""
-        return np.searchsorted(LP_MODE_CUTOFFS, self.v_number, side='right').astype(np.int32)
+        """Number of Linearly Polarised (LP) modes at the (rest) V-number."""
+        return np.searchsorted(LP_modes.sorted_cutoffs, self.v_number, side='right').astype(np.int32)
 
 
 # interface
