@@ -247,7 +247,7 @@ class Context:
     # Custom key bindings
 
     @staticmethod
-    def _resolve_key(key: Union[int, str]) -> int:
+    def _resolve_key(key: Union[int, str]) -> int | None:
 
         if isinstance(key, int):
             return key
@@ -289,7 +289,7 @@ class Context:
         display_name = key_str.upper() if key_str else f'Key {key_code}'
         self._key_bindings_desc[key_code] = (display_name, description)
 
-        binding = (key, action)
+        binding = (key_code, action)
         if binding not in self._key_bindings:
             self._key_bindings[binding] = []
 
