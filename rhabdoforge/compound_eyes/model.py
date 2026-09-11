@@ -10,7 +10,7 @@ from numpy.typing import ArrayLike
 from scipy.spatial import cKDTree
 
 from rhabdoforge.types import WORLD_FORWARD, METADATA_BIT_LAYOUT
-from rhabdoforge.utils import norm_l2, broadcast_to_shape, broadcast_1d
+from rhabdoforge.utils import norm_l2, broadcast_to_shape, broadcast_1d, resolve_path
 
 from rhabdoforge.engine.meshes import icosphere, fibonacci_sphere
 from rhabdoforge.geometry.ghosting import combine_clouds
@@ -362,7 +362,7 @@ class Model(SpatialQueries, BaseView):
         Any keyword argument forwarded explicitly via **kwargs overrides what's found in the file.
         """
 
-        path = Path(path)
+        path = resolve_path(path)
         with np.load(path, allow_pickle=False) as data:
             available = [s.lower() for s in data.files]
 

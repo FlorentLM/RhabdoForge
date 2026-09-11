@@ -2,12 +2,25 @@ import os
 import platform
 import inspect
 import logging
-from typing import Tuple, Sequence, Optional
+from pathlib import Path
+from typing import Tuple, Sequence, Optional, Union
 import numpy as np
 from numpy.typing import ArrayLike
 
 
 logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def resolve_path(path: Union[str, Path]) -> Path:
+
+    p = Path(path)
+    if p.is_absolute() or p.exists():
+        return p
+
+    from_root = PROJECT_ROOT / p
+    return from_root if from_root.exists() else p
 
 
 # Broadcasting helpers

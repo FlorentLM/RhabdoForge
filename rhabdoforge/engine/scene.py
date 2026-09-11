@@ -14,7 +14,7 @@ from rhabdoforge.types import AssetType
 from rhabdoforge.engine.lights import Sun, Light, DirectionalLight, PointLight, AreaLight
 from rhabdoforge.engine.movement import TransformMixin
 from rhabdoforge.engine.materials_utils import load_exr_equirect, sh_irradiance, get_exr_sun
-from rhabdoforge.utils import pretty_size
+from rhabdoforge.utils import pretty_size, resolve_path
 
 if TYPE_CHECKING:
     from PIL.ImageFile import ImageFile
@@ -277,7 +277,7 @@ class Asset:
             return
 
         if isinstance(source, (Path, str)):
-            self._texture_path = Path(source)
+            self._texture_path = resolve_path(source)
         elif isinstance(source, Image.Image):
             self._texture_image = source.convert('RGBA')
         elif isinstance(source, np.ndarray):
@@ -298,7 +298,7 @@ class Asset:
 
         if isinstance(texture, (str, Path)):
             try:
-                return Image.open(Path(texture)).convert('RGBA')
+                return Image.open(resolve_path(texture)).convert('RGBA')
             except Exception:
                 return None
 
@@ -353,7 +353,8 @@ class Asset:
         Creates an Asset by loading a 3D model from a file.
         """
 
-        model = trimesh.load(file_path)
+        resolved_path = resolve_path(file_path)
+        model = trimesh.load(resolved_path)
 
         if model is None:
             raise ValueError(f'Failed to load 3D model from {file_path}')
@@ -694,7 +695,7 @@ class Sky:
         from rhabdoforge.engine.context import get_context
         get_context()
 
-        self._texture_path = Path(texture_path)
+        self._texture_path = resolve_path(texture_path)
         data = load_exr_equirect(self._texture_path, max_height=max_height)
         self.sh_coeffs = sh_irradiance(data)
 
@@ -910,7 +911,7 @@ class Scene:
         Loads a file (obj, gltf, etc.) and creates Assets and Instances.
         """
 
-        file_path = Path(file_path)
+        file_path = resolve_path(file_path)
         name_prefix = file_path.stem
 
         data = trimesh.load(file_path)
