@@ -35,6 +35,7 @@ from rhabdoforge.compound_eyes.helpers.neural_superposition import (
 from rhabdoforge.compound_eyes.helpers.acceptance import (
     SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
 )
+from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance, pupil_response
 from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
 from rhabdoforge.compound_eyes.views import SpatialQueries, BaseView, OmmatidiumView, EyeView, RhabdomereView
 
@@ -225,6 +226,8 @@ class Model(SpatialQueries, BaseView):
 
         self._buf['rest_acc_angles'] = acceptance_angles
         self._buf['curr_acc_angles'] = acceptance_angles
+
+        self._compute_pupil_response()
 
         # ============ Fill other ommatidia neighbourhood related stuff ============
 
@@ -1091,6 +1094,41 @@ class Model(SpatialQueries, BaseView):
                 f'Acceptance model {type(acceptance_model).__name__} returned {acceptance_angles.shape}, expected {(self._N, self._R, 2)}')
 
         return acceptance_angles
+
+    def _compute_pupil_response(self) -> None:
+        """
+        Bake in the effect of closing the pupil to distance h (um) for each rhabdomere
+        (how much RF narrows and how much sensitivity decreases)
+
+        Only used for waveguide acceptance models. Left at 1.0 otherwise (no effect).
+        """
+        self._buf['closed_pupil_ratio'] = 1.0
+        self._buf['closed_pupil_transmit'] = 1.0
+
+        if not isinstance(self._acceptance_model, WaveguideAcceptance):
+            return
+
+        h = self._bundle.pupil_distance_um
+        f_number = float(np.median(self._buf['focal_um'] / np.clip(self._buf['aperture_um'], 1e-6, None)))
+
+        optics = RhabdomereOptics(
+            diameter_um=np.atleast_1d(self._bundle.diameters_um).astype(np.float32),
+            wavelength_um=np.atleast_1d(self._bundle.wavelengths_nm).astype(np.float32) * 1e-3,
+            n_rhabdomere=np.atleast_1d(self._bundle.n_rhabdomere).astype(np.float32),
+            n_surround=np.atleast_1d(self._bundle.n_surround).astype(np.float32),
+        )
+
+        ratio = np.ones(self._R, dtype=np.float32)
+        transmit = np.ones(self._R, dtype=np.float32)
+
+        for r in range(self._R):
+            ratio[r], transmit[r] = pupil_response(
+                float(optics.v_number[r]), f_number,
+                float(optics.diameter_um[r]), float(optics.wavelength_um[r]), h,
+            )
+
+        self._buf['closed_pupil_ratio'] = np.broadcast_to(ratio, (self._N, self._R))
+        self._buf['closed_pupil_transmit'] = np.broadcast_to(transmit, (self._N, self._R))
 
     # Public - Bundle alignment refinement (post-superposition)
 

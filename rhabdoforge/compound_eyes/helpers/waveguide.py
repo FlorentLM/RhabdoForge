@@ -248,9 +248,11 @@ class RhabdomereModes:
     u: np.ndarray
     w: np.ndarray
     eta: np.ndarray             # Fraction of the power inside the boundary (per mode)
-    d_half: float           # Angular half-width (dimensionless D=d/b units)
+    t_p: np.ndarray             # Pupil transmittance (per mode). 1.0 when dark-adapted
+    d_half: float               # Angular half-width (dimensionless D=d/b units)
     d_sweep: np.ndarray         # Offsets the sensitivity was sampled at (dimensionless D=d/b units)
     sensitivity: np.ndarray     # Summed angular sensitivity (normalised to the peak)
+    peak_power: float           # Peak pre-normalisation (for comparing across pupil states)
 
     @property
     def nb_modes(self) -> int:
@@ -261,13 +263,14 @@ def solve_modes(
         v_number: float,
         f_number: float,
         diameter_um: float,
-        wavelength_um: float
+        wavelength_um: float,
+        h_um: float = np.inf
     ) -> RhabdomereModes:
     """
     Enumerate the bound modes at 'v_number' and the angular sensitivity of their sum,
     against D = d/b (the beam's offset at the rhabdomere entrance, in rhabdomere radii)
 
-    Independent of any particular lens, only F-number matters
+    Independent of any particular lens, only F-number matters.
     """
 
     bound = LP_modes.up_to(v_number - _CUTOFF_EPS)  # all modes above cutoff
@@ -284,7 +287,7 @@ def solve_modes(
 
     d_sweep = np.linspace(0.0, _SWEEP_MAX_D, _SWEEP_NODES)
 
-    u_all, w_all, eta_all, p_all = [], [], [], []
+    u_all, w_all, eta_all, t_all, p_all = [], [], [], [], []
     sensitivity = np.zeros_like(d_sweep)
 
     for mode in bound:
@@ -296,6 +299,7 @@ def solve_modes(
             continue
 
         eta = power_in_boundary(u, w, v_number, l)
+        t_p = 1.0 if not np.isfinite(h_um) else pupil_transmittance(u, w, v_number, l, b, h_um)
 
         g = g_factor(x, u, w, v_number, l)
 
@@ -303,13 +307,20 @@ def solve_modes(
         c_p = 2.0 if l == 0 else 1.0
         norm = (w / v_number) * math.sqrt(2.0 / (c_p * abs(jv(l - 1, u) * jv(l + 1, u))))
 
+        # Weight each mode:
+        #     P_eff = P_exc * T_p(h) * eta_p (Stavenga 2004/III Eq. A19)
+        #   -> higher-order modes drop out first
         integral = (jv(l, np.outer(d_sweep, x)) * (g * x * wt)).sum(axis=1)  # (sweep, quad) -> (sweep,)
-        sensitivity += eta * (norm * integral) ** 2
+        sensitivity += t_p * eta * (norm * integral) ** 2
 
-        u_all.append(u), w_all.append(w), eta_all.append(eta), p_all.append(mode.p)
+        u_all.append(u), w_all.append(w), eta_all.append(eta), t_all.append(t_p), p_all.append(mode.p)
 
     if not p_all:
         raise ValueError(f'no bound modes converged at V={v_number:.4f}')
+
+    peak = float(sensitivity.max())
+    if peak <= 0.0:
+        raise ValueError(f'pupil absorbs all power at V={v_number:.4f}, h={h_um}')
 
     return RhabdomereModes(
         v_number=v_number,
@@ -317,9 +328,11 @@ def solve_modes(
         u=np.asarray(u_all),
         w=np.asarray(w_all),
         eta=np.asarray(eta_all),
+        t_p=np.asarray(t_all),
         d_half=half_width(d_sweep, sensitivity),
         d_sweep=d_sweep,
-        sensitivity=sensitivity / sensitivity.max(),
+        sensitivity=sensitivity / peak,
+        peak_power=peak,
     )
 
 
@@ -350,6 +363,21 @@ def to_angle(d_half, diameter_um, focal_um):
     at the rhabdomere entrance (Eq. 31, tip in the focal plane).
     """
     return 2.0 * np.arctan(d_half * 0.5 * diameter_um / np.asarray(focal_um))
+
+
+def pupil_response(v_number: float, f_number: float, diameter_um: float,
+                   wavelength_um: float, h_um: float) -> Tuple[float, float]:
+    """
+    Effect of closing the pupil to distance h (um) on one rhabdomere
+    (as two ratios against its dark-adapted state)
+
+        narrowing     = D rho(h) / D rho(inf)    <= 1, RF gets sharper
+        transmittance = peak(h) / peak(inf)      <= 1, sensitivity decreases
+    """
+    dark = solve_modes(v_number, f_number, diameter_um, wavelength_um)
+    lit = solve_modes(v_number, f_number, diameter_um, wavelength_um, h_um=h_um)
+
+    return lit.d_half / dark.d_half, lit.peak_power / dark.peak_power
 
 
 

@@ -24,6 +24,10 @@ class RhabdomereBundle:
             (which the model treats as the lens' nodal point [TODO: CHANGE THAT]). Lever arm converting focal-plane
             offsets into angular shifts, and the distance at which the Snyder acceptance angle is
             evaluated. Required when R > 1.
+        - pupil_distance_um: float, How close the pupil's screening-pigment granules sit to the
+            rhabdomere boundary when fully light-adapted (μm). Only used by waveguide models.
+            0.0 is the mathematical extreme (and probably unrealistic), ~0.2 reproduces the ~6x sensitivity
+            drop Stavenga 2004 reports for Musca.
         - tip_distance_um: float (optional), Distance from the lens' rear surface to the rhabdomere
             tip at rest (μm). The tip normally sits short of the focal plane, and contraction moves
             it towards focus. Construction-time only. Defaults to focal_um.
@@ -60,6 +64,7 @@ class RhabdomereBundle:
                  diameters_um: Union[float, ArrayLike] = 2.0,
                  focal_um: Optional[float] = 20.0,
                  tip_distance_um: Optional[float] = None,
+                 pupil_distance_um: float = 0.2,
                  sensitivity: Union[float, ArrayLike] = 1.0,
                  wavelengths_nm: Union[float, ArrayLike] = 540.0,
                  n_rhabdomere: Union[float, ArrayLike] = N_RHABDOMERE_FLY,
@@ -87,6 +92,8 @@ class RhabdomereBundle:
             self.tip_distance_um = float(tip_distance_um)
         else:
             self.tip_distance_um = self.focal_um
+
+        self.pupil_distance_um = float(pupil_distance_um)
         self.fused_rhabdoms = bool(fused_rhabdoms)
 
         self.tau_membrane = float(tau_membrane)

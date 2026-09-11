@@ -71,7 +71,8 @@ class RandomnessMode(IntEnum):
 
 class SamplingMode(IntEnum):
     Gaussian = 0    # Default approximation
-    Airy = 1        # Physical diffraction pattern
+    Airy = 1        # Physical diffraction pattern (needs hybrid sampling)
+    Waveguide = 2   # Per-rhabdomere LP mode sum (needs WaveguideAcceptance + hybrid sampling)
 
 
 class AssetType(Enum):
@@ -213,8 +214,13 @@ RHAB_STATIC_DTYPE = np.dtype([
     ('tau_membrane',    np.float32),        # 4 bytes: Rhabdomere membrane RC (s)
     ('cartridge_src',   np.uint32),         # 4 bytes: Rhabdomere index (global) of the neural-superposition source
     ('diameter_um',     np.float32),        # 4 bytes: Rhabdomere diameter (μm)
-    ('metadata',        np.uint32)          # 4 bytes: bit-packed, see _BIT_LAYOUT below
-])  # 48 bytes
+    ('metadata',        np.uint32),         # 4 bytes: bit-packed, see _BIT_LAYOUT below
+
+    # 16 bytes: baked pupil-mechanism response (waveguide acceptance models only)
+    ('closed_pupil_ratio',    np.float32),  # 4 bytes: Δρ (light-adapted) / Δρ (dark), <= 1 (narrower)
+    ('closed_pupil_transmit', np.float32),  # 4 bytes: peak sensitivity ratio, <= 1 (dimmer)
+    ('_pad',                  np.float32, 2)  # 8 bytes: padding (will be used for the axial/lateral terms)
+])  # 64 bytes
 
 
 RHAB_DYNAMIC_DTYPE = np.dtype([

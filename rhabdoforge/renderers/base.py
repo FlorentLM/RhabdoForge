@@ -14,7 +14,7 @@ from rhabdoforge.types import (
     EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingMode, to_enum, OMM_STATIC_DTYPE,
     OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, RHAB_DYNAMIC_DTYPE
 )
-from rhabdoforge.LUTs import airy_sensitivity_lut
+from rhabdoforge.LUTs import airy_sensitivity_lut, waveguide_sensitivity_lut
 from rhabdoforge.engine.meshes import CONE_VERTICES, SPHERE_VERTICES
 from rhabdoforge.engine.resources import (
     ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry, TextureRegistry, HDRRenderTarget,
@@ -278,6 +278,15 @@ class Renderer:
                                   dtype=np.dtype((np.float32, 4)),
                                   count=self._model.size,
                                   usage=GL_DYNAMIC_DRAW)
+
+        # Wave optics SSBO if needed
+        waveguide_lut = self._get_waveguide_lut()
+
+        self.eye_buffers.allocate('waveguide_lut',
+                                  dtype=np.float32,
+                                  count=waveguide_lut.size,
+                                  data=waveguide_lut,
+                                  usage=GL_STATIC_DRAW)
         self.eye_buffers.allocate('rays_intermediate',
                                   dtype=np.dtype((np.float32, 4)),
                                   count=rays_elements * self._samples_per_rhab,
@@ -329,7 +338,7 @@ class Renderer:
             nb_samples=self._samples_per_rhab,
             pixel_samples=self._samples_per_px,
             use_hybrid_sampling=self._use_hybrid_sampling,
-            sampling_mode=self._sampling_mode,  # 0 = Gaussian, 1 = Airy
+            sampling_mode=self._sampling_mode,  # 0 = Gaussian, 1 = Airy, 2 = Waveguide
             randomness_mode=self._randomness_mode,
             airy_lut=airy_sensitivity_lut(),
 
@@ -634,7 +643,7 @@ class Renderer:
 
         with self.dispatch_shader as shader:
 
-            with b.grouped_bind(), l.grouped_bind(), e.grouped_bind(['rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic']):
+            with b.grouped_bind(), l.grouped_bind(), e.grouped_bind(['rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic', 'waveguide_lut']):
 
                 with self._baker.scene_textures.bind_all():
 
@@ -1383,15 +1392,42 @@ class Renderer:
         self._use_hybrid_sampling = bool(value)
         self._eye_uniforms.update(use_hybrid_sampling=self._use_hybrid_sampling)
 
+    def _get_waveguide_lut(self) -> np.ndarray:
+        """
+        Per-rhabdomere-type angular sensitivity profiles for SamplingMode.Waveguide.
+
+        Falls back to Gaussians if the bundle has no focal length (no F-number, so no mode coupling to compute)
+        """
+        bundle = self._model.bundle
+
+        if bundle.focal_um is None:
+            return waveguide_sensitivity_lut([], [], 1.0)
+
+        apertures = np.asarray(self._model.buffer['aperture_um'], dtype=np.float64)
+        f_number = float(bundle.focal_um / max(np.median(apertures), 1e-6))
+
+        return waveguide_sensitivity_lut(
+            diameters_um=bundle.diameters_um,
+            wavelengths_um=np.asarray(bundle.wavelengths_nm, dtype=np.float64) * 1e-3,
+            f_number=f_number,
+            n_rhabdomere=bundle.n_rhabdomere,
+            n_surround=bundle.n_surround,
+        )
+
     @property
     def sampling_mode(self) -> 'SamplingMode':
-        """The sensitivity profile used for weighting: 'gaussian' or 'airy'."""
+        """The sensitivity profile used for weighting: 'gaussian', 'airy' or 'waveguide'."""
         return self._sampling_mode
 
     @sampling_mode.setter
     def sampling_mode(self, value: Union[int, str, 'SamplingMode']) -> None:
         self._sampling_mode = to_enum(value, SamplingMode)
         self._eye_uniforms.update(sampling_mode=int(self._sampling_mode))
+
+        if self._sampling_mode is SamplingMode.Waveguide and not self._use_hybrid_sampling:
+            self.hybrid_sampling = True
+            print('Sampling Mode: Waveguide. Enabling hybrid sampling.')
+
         print(f"Sampling Mode: {self._sampling_mode.name}")
 
     @property

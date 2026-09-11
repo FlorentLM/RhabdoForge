@@ -1,9 +1,10 @@
-from typing import Callable
-
+from typing import Callable, Optional
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.interpolate import Akima1DInterpolator
 from scipy.special import j1
+
+from rhabdoforge.types import METADATA_BIT_LAYOUT
 
 
 # Angular range for sensitivity LUTs, in units of the acceptance angle (FWHM)
@@ -76,3 +77,48 @@ def leakage_sensitivity_lut(pedestal_height: float = 0.05, pedestal_width: float
     # re-normalised so peak is 1.0
     combined = (core + pedestal_height * wide) / (1.0 + pedestal_height)
     return np.array(combined, dtype=np.float32)
+
+
+def waveguide_sensitivity_lut(
+        diameters_um: ArrayLike,
+        wavelengths_um: ArrayLike,
+        f_number: float,
+        n_rhabdomere: ArrayLike = None,
+        n_surround: ArrayLike = None,
+        slots: Optional[int] = None,
+    ) -> np.ndarray:
+    """
+    One angular sensitivity profile per rhabdomere (Stavenga's waveguide mode sum)
+    (flat-packed fixed-size blocks -> SSBO -> shader indexes by rhab_R)
+
+    Slots past the bundle's rhabdomere count fall back to a Gaussian.
+    """
+    from rhabdoforge.compound_eyes.helpers.acceptance import RhabdomereOptics
+    from rhabdoforge.compound_eyes.helpers.waveguide import solve_modes
+
+    optics = RhabdomereOptics(
+        diameter_um=np.atleast_1d(np.asarray(diameters_um, dtype=np.float32)),
+        wavelength_um=np.atleast_1d(np.asarray(wavelengths_um, dtype=np.float32)),
+        n_rhabdomere=None if n_rhabdomere is None else np.atleast_1d(np.asarray(n_rhabdomere, dtype=np.float32)),
+        n_surround=None if n_surround is None else np.atleast_1d(np.asarray(n_surround, dtype=np.float32)),
+    )
+
+    x_vals = np.linspace(0, LUT_RANGE, LUT_SIZE)
+    gaussian = np.exp(-2.77258872224 * x_vals ** 2)     # for unused slots
+
+    if slots is None:
+        slots = 1 << METADATA_BIT_LAYOUT['rhab_R'][1]
+
+    lut = np.tile(gaussian, slots).astype(np.float32)
+
+    for r in range(min(optics.nb_rhabdomeres, slots)):
+        modes = solve_modes(
+            float(optics.v_number[r]), f_number,
+            float(optics.diameter_um[r]), float(optics.wavelength_um[r]),
+        )
+
+        # d_sweep (D = d/b units) -> theta/Drho, where 0.5 is half max
+        profile_x = 0.5 * modes.d_sweep / modes.d_half
+        lut[r * LUT_SIZE:(r + 1) * LUT_SIZE] = np.interp(x_vals, profile_x, modes.sensitivity)
+
+    return lut

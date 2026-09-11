@@ -10,11 +10,13 @@ const int RNG_SOBOL      = 5;
 
 const int MODE_GAUSSIAN  = 0;
 const int MODE_AIRY      = 1;
+const int MODE_WAVEGUIDE = 2;
 
-// Sensitivity LUT geometry, must match LUT_RANGE / LUT_SIZE in python side:
+// Sensitivity LUT geometry, must match LUT_RANGE / LUT_SIZE in LUTs.py:
 const int   LUT_SIZE  = 256;
 const float LUT_RANGE = 4.0;
 const float LUT_SCALE = float(LUT_SIZE - 1) / LUT_RANGE;
+
 
 const float PI = 3.141592653589793;
 const float HPI = 1.5707963267948966;
@@ -69,7 +71,10 @@ struct RhabdomereStatic {
     uint  cartridge_src;
     float diameter_um;
     uint  metadata;
-}; // 48 bytes
+    float closed_pupil_ratio;      // D rho (light-adapted) / D rho (dark), <= 1 (narrower)
+    float closed_pupil_transmit;   // Peak sensitivity ratio, <= 1 (dimmer)
+    vec2  pad;
+}; // 64 bytes
 
 // Rhabdomere dynamic
 struct RhabdomereDynamic {
@@ -113,7 +118,15 @@ struct Point {
     float pad0, pad1;
 };
 
-uniform float airy_lut[256];
+uniform float airy_lut[LUT_SIZE];
+
+// One profile per rhabdomere type, flat-packed (see LUTs.waveguide_sensitivity_lut)
+// LUT_MODE_SLOTS * LUT_SIZE floats overruns GL_MAX_COMPUTE_UNIFORM_COMPONENTS so... in an SSBO
+#ifdef BINDING_WAVEGUIDE_LUT
+layout(std430, binding = BINDING_WAVEGUIDE_LUT) readonly buffer WaveguideLutBlock { float waveguide_lut[]; };
+#endif
+
+// TODO: Maybe do the same for Airy if we keep it
 
 // =====================================================================================================================
 
@@ -258,24 +271,25 @@ float get_sensitivity(int mode, float dx, float dy,
     float g_maj = dy / max(rd.curr_acc_angles.y, 1e-15);
     float radial_dist = sqrt(g_min*g_min + g_maj*g_maj);
 
-    if (mode == MODE_AIRY) {
-        // Map 0.0 -> LUT_RANGE FWHM to 0.0 -> (LUT_SIZE - 1) index
-        float float_idx = radial_dist * LUT_SCALE;
-
-        // Linear interpolation
-        int i0 = int(floor(float_idx));
-        int i1 = i0 + 1;
-        float t = fract(float_idx);
-
-        // Clamp to stay within the table
-        i0 = clamp(i0, 0, LUT_SIZE - 1);
-        i1 = clamp(i1, 0, LUT_SIZE - 1);
-
-        return mix(airy_lut[i0], airy_lut[i1], t);
-    }
-    else { // MODE_GAUSSIAN
+    if (mode == MODE_GAUSSIAN) {
         return exp(-GAUSS_CONSTANT_K * (radial_dist * radial_dist));
     }
+
+    // Both LUT modes map 0.0 -> LUT_RANGE FWHM to 0.0 -> (LUT_SIZE - 1),
+    // then lerp between neighbouring samples
+    float float_idx = radial_dist * LUT_SCALE;
+    int   i0 = clamp(int(floor(float_idx)), 0, LUT_SIZE - 1);
+    int   i1 = min(i0 + 1, LUT_SIZE - 1);
+    float t  = fract(float_idx);
+
+#ifdef BINDING_WAVEGUIDE_LUT
+    if (mode == MODE_WAVEGUIDE) {
+        int base = int(unpack_rhab_type(rs.metadata)) * LUT_SIZE;
+        return mix(waveguide_lut[base + i0], waveguide_lut[base + i1], t);
+    }
+#endif
+
+    return mix(airy_lut[i0], airy_lut[i1], t);   // MODE_AIRY
 }
 
 vec3 sampledir_importance(RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
