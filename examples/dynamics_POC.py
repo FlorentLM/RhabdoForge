@@ -1,18 +1,21 @@
 """
-Microsaccadic hyperacuity proof-of-concept.
+Photoreceptor dynamics proof-of-concept: pupil adaptation x microsaccadic actuation.
 
 Drosophila photomechanical microsaccades sweep ~vertically in visual space.
 So: thin horizontal bars, agent oscillates vertically, readout is a
 single forward-pointing cartridge.
 
-Four per-rhabdomere actuation conditions on the same cartridge:
-    none     - no microsaccade (static optical RF)
-    axial    - axial move only   -> RF narrowing, no lateral shift
-    lateral  - lateral move only -> RF shift + clipping, no axial narrowing
-    full     - both
+Two dynamics mechanisms, crossed on the same cartridge:
+    - pupil adaptation: three forced states (dark/halfway/light-adapted, via
+      Renderer.pupil_drive), narrowing and dimming the RF by absorbing higher-order
+      waveguide modes
+    - microsaccade actuation, four conditions:
+        none     - no microsaccade (static optical RF)
+        axial    - axial move only   -> RF narrowing, no lateral shift
+        lateral  - lateral move only -> RF shift + clipping, no axial narrowing
+        full     - both
 
-Crossed against three forced pupil adaptation states (dark/halfway/light-adapted, via
-Renderer.pupil_drive) and two bar separations (single control bar + the test separation).
+Run against two bar separations (single control bar + the test separation)
 
 Move/return durations differ, so bar-up and bar-down sweeps give different response
 profiles, panel D's UP/DOWN divergence shows that asymmetry.
@@ -741,6 +744,6 @@ if __name__ == '__main__':
                 print_actuation_diagnostics(res, f'{pupil_state}, {label}')
 
     fig = make_figure(results, settings)
-    settings.savefig(fig, 'hyperacuity', formats=['png', 'pdf', 'svg'])
+    settings.savefig(fig, 'dynamics', formats=['png', 'pdf', 'svg'])
 
     plt.show()
