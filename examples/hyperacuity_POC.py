@@ -8,24 +8,18 @@ single forward-pointing cartridge.
 Four per-rhabdomere actuation conditions on the same cartridge:
     none     - no microsaccade (static optical RF)
     axial    - axial move only   -> RF narrowing, no lateral shift
-    lateral  - lateral move only -> RF shift, no narrowing
+    lateral  - lateral move only -> RF shift + clipping, no axial narrowing
     full     - both
 
-The rise/relax asymmetry means the bar-up and bar-down profiles differ, and that direction-dependent signature is
-itself part of the hyperacuity code. In the figure, a symmetric butterfly
-means no direction dependence, and any visible asymmetry is the effect.
+Crossed against three forced pupil adaptation states (dark/halfway/light-adapted, via
+Renderer.pupil_drive) and two bar separations (single control bar + the test separation).
 
-Two narrowing regimes:
-    optical (r_xtra = 1.0): pure optical (Kemppainen 2022, ~2 um axial move).
-                            Narrowing ~0.4 deg, so 'axial'/'full' do NOT resolve
-                            the two bars below the optical Sparrow limit.
-    phenomenological (r_xtra ~ 0.535): exaggerated dynamic RF contraction standing in for
-                                       the pupil / transduction narrowing. 'axial'/'full'
-                                       then resolve bars that 'none'/'lateral' cannot.
+Move/return durations differ, so bar-up and bar-down sweeps give different response
+profiles, panel D's UP/DOWN divergence shows that asymmetry.
 
 Figure layout:
     A: Schematic placeholder (stimulus, sweep, cartridge)
-    B: Regime (rows) x condition (cols), mirrored UP/DOWN pooled R1-R6 profiles
+    B: Pupil state (rows) x condition (cols), mirrored UP/DOWN pooled R1-R6 profiles
     C: Per-rhabdomere decomposition for one exemplar condition
     D: Scalar summaries: dip depth and UP/DOWN shape divergence
 """
@@ -38,9 +32,9 @@ from matplotlib.ticker import FuncFormatter, MaxNLocator
 from scipy.signal import savgol_filter
 
 from rhabdoforge.compound_eyes import Model
-from rhabdoforge.compound_eyes.helpers.acceptance import SnyderAcceptance
+from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance
 from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle
-from rhabdoforge.types import WORLD_FORWARD, RHAB_COLOURS
+from rhabdoforge.types import WORLD_FORWARD, RHAB_COLOURS, SamplingMode
 from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
 from rhabdoforge.engine import Context, Agent, Scene, Asset
 from rhabdoforge.engine.meshes import plane_geom
@@ -53,30 +47,34 @@ from visualisation.plot_settings import (
 
 # Config
 
-SEP_TEST_DEG    = 4.0               # deg, centre-to-centre of the 2-bar stimulus
+SEP_TEST_DEG    = 4.0                   # deg, centre-to-centre of the 2-bar stimulus
 BAR_SEPARATIONS = [0.0, SEP_TEST_DEG]   # 0 = single-bar control
-BAR_WIDTH_DEG   = 1.0               # deg
-DISTANCE        = 2.0               # m (bar plane at z = -DISTANCE)
-BAR_LENGTH      = 10.0              # m
+BAR_WIDTH_DEG   = 1.0                   # deg
+DISTANCE        = 2.0                   # m (bar plane at z = -DISTANCE)
+BAR_LENGTH      = 10.0                  # m
 
 SWEEP_SPEED_DEG = 40.0              # deg/s (angular sweep speed at the centre of the field)
 SWEEP_AMPLITUDE = 1.0               # m (travel is +/- this)
 
-REGIMES = {'optical': 1.0, 'phenomenological': 0.535}
+# Forced steady_state_drive per pupil adaptation state
+PUPIL_STATES = {'dark-adapted': 0.0, 'halfway': 0.5, 'light-adapted': 1.0}
+
+CLIP_RATIO = 0.55    # not a measured value; calibrated against this model's own resolving margin
 
 AMP_LAT  = 2.0                      # um, lateral microsaccade amplitude at full drive
 AMP_AX   = 2.0                      # um, axial microsaccade amplitude at full drive
 
-TAU_MEMBRANE = 0.012    # (10-15 ms / 0.010–0.015 s)
-# TAU_MEMBRANE = 0.003    # super short just to denoise, and keep almost no blur
+TAU_MEMBRANE = 0.012    # s
+TAU_FAST     = 0.005    # s
+TAU_ADAPT    = 0.100    # s
 
-TAU_FAST     = 0.005    # (5 ms / 0.005 s)
-# TAU_ADAPT    = 0.050    # (50-100 ms / 0.050–0.100 s)
-TAU_ADAPT    = 0.100    # (50-100 ms / 0.050–0.100 s)
+# Microsaccade implemented as a reflex arc: a threshold crossing launches a fixed, committed
+# sequence (latency -> ballistic move -> interruptible return)
+MOVE_DURATION   = 0.100    # s, ballistic move duration (idle -> full amplitude)
+RETURN_DURATION = 0.500    # s, return duration (full amplitude -> idle)
+TRIGGER_DELAY   = 0.008    # s, onset latency between light detection and the move starting
 
-TAU_RISE     = 0.015    # (10-15 ms / 0.010–0.015 s)
-TAU_RELAX    = 0.060    # (60-100 ms / 0.060–0.100 s)
-# TAU_RELAX    = 0.150    # (60-100 ms / 0.060–0.100 s)
+NOISE_THRESHOLD = 0.02     # contrast deadzone below which a trigger doesn't fire
 
 VIEW_HALFWIDTH = 0.30   # m, x-axis half-range around the bars
 
@@ -97,7 +95,7 @@ RUN_DURATION   = COND_DURATION * len(CONDITIONS)           # per separation
 COND_COLOR = {'none': '#4477AA', 'axial': '#228833', 'lateral': '#EE7733', 'full': '#AA3377'}
 COND_LABEL = {'none': 'none', 'axial': 'axial', 'lateral': 'lateral', 'full': 'full'}
 
-EXEMPLAR = ('phenomenological', 'full')     # condition shown broken down per rhabdomere in panel C
+EXEMPLAR = ('dark-adapted', 'full')     # condition shown broken down per rhabdomere in panel C
 
 DIP_MIN_DEPTH = 0.02                # Below this the two bars count as fused (unresolved)
 DIP_CENTRE_ON_PROFILE = True        # Centre the dip search on the profile, not on agent-y = 0
@@ -116,11 +114,13 @@ def get_context() -> Context:
     return _CONTEXT
 
 
-def build_model(extra_narrowing):
-    """Build the Drosophila eyes model for a given phenomenological narrowing ratio."""
+def build_model():
+    """Build the Drosophila eyes model used for every run; pupil state is forced per-run at render time."""
 
     bundle = drosophila_bundle()
-    bundle.extra_narrowing_ratio = extra_narrowing
+    bundle.clip_ratio = CLIP_RATIO
+
+    bundle.ampl_ax_um = AMP_AX  # axial_scale_floor is baked from this at build time, so it must match the runtime axial amplitude
 
     droso_head_ptich = np.deg2rad(10.1)  # drosophila head pitch in flight
 
@@ -139,9 +139,9 @@ def build_model(extra_narrowing):
     model = Model.from_file(
         'assets/drosophila_scaffold.npz',
         bundle=bundle,
-        acceptance=SnyderAcceptance(),
+        acceptance=WaveguideAcceptance(),
         orientation=aligner,
-        neural_superposition=True,  # superposition eyes
+        neural_superposition=True,
     )
 
     model.refine_superposition(smooth_iters=5, relax=0.8, adjust_scale=True, adjust_anisotropy=True, rewire=True)
@@ -152,8 +152,8 @@ def build_model(extra_narrowing):
     model.tau_membrane = TAU_MEMBRANE
     model.tau_adapt_fast = TAU_FAST
     model.tau_adapt_slow = TAU_ADAPT
-    model.tau_rise = TAU_RISE
-    model.tau_relax = TAU_RELAX
+    model.move_duration = MOVE_DURATION
+    model.return_duration = RETURN_DURATION
 
     return model
 
@@ -192,6 +192,9 @@ def apply_condition(renderer, model, actuation, ampl_lat, ampl_ax):
     model.buffer.ommatidia_dynamic['curr_axial_disp'] = 0.0
     model.buffer.ommatidia_dynamic['curr_lum_slow'] = 0.0
     model.buffer.ommatidia_dynamic['curr_lum_fast'] = 0.0
+    model.buffer.ommatidia_dynamic['mech_phase'] = 0.0
+    model.buffer.ommatidia_dynamic['mech_t'] = 0.0
+    model.buffer.ommatidia_dynamic['mech_frac0'] = 0.0
 
     model.buffer.ommatidia_stale = True
 
@@ -206,8 +209,11 @@ def sweep_position(elapsed):
     return SWEEP_AMPLITUDE - ((t - SWEEP_DURATION) / SWEEP_DURATION) * 2 * SWEEP_AMPLITUDE, +1
 
 
-def simulate(model, sep_deg):
-    """Render the four actuation conditions for one bar separation, return per-timestep arrays."""
+def simulate(model, sep_deg, pupil_drive):
+    """
+    Render the four actuation conditions for one bar separation, at a forced pupil adaptation
+    state (steady_state_drive, in [0, 1]). Returns per-timestep arrays.
+    """
 
     context = get_context()
 
@@ -223,10 +229,16 @@ def simulate(model, sep_deg):
     renderer = Renderer(
         model=model, scene=scene, agent=agent,
         nb_samples=512, time_dithering=True, randomness_mode='Halton',
-        enable_microsaccades=True, enable_ambient=True, enable_direct=True, enable_shadows=False)
+        sampling_mode=SamplingMode.Waveguide,
+        enable_microsaccades=True,
+        enable_ambient=True, enable_direct=True, enable_shadows=False)
 
+    renderer.hybrid_sampling = True         # Needed for Waveguide sampling
     renderer.ambient_intensity = 1.5
-    renderer.photon_concentration = 0.0    # isolate RF geometry from the photon-concentration gain
+    renderer.photon_concentration = 0.0     # isolate RF geometry from the photon-concentration gain
+    renderer.pupil_drive = pupil_drive      # fixed light adaptation state
+    renderer.noise_threshold = NOISE_THRESHOLD
+    renderer.trigger_delay = TRIGGER_DELAY
 
     # Single forward-pointing cartridge (closest optical axis to straight ahead)
     cone = model.query_cone(WORLD_FORWARD, angle=10.0, degrees=True, avoid_conflicts=True)
@@ -238,7 +250,7 @@ def simulate(model, sep_deg):
     selected = int(cone.indices[int(np.argmin(az ** 2 + el ** 2))])
     renderer.selected_ommatidia = [selected]
 
-    rec = {'agent_y': [], 'cond': [], 'mdir': [], 'cart': []}
+    rec = {'agent_y': [], 'cond': [], 'mdir': [], 'cart': [], 'axial_disp': [], 'lateral_disp': []}
 
     t_start, phase = None, -1
     while context.run_interactive():
@@ -261,10 +273,15 @@ def simulate(model, sep_deg):
 
         out = renderer.step()
 
+        # Diagnostic: read this ommatidium's actuation state
+        dyn = renderer.eye_buffers['omm_dynamic'].read(start=selected, count=1)[0]
+
         rec['agent_y'].append(ay)
         rec['cond'].append(name)
         rec['mdir'].append(mdir)
         rec['cart'].append(out.per_cartridge[selected, :, :3].mean(axis=-1))
+        rec['axial_disp'].append(float(dyn['curr_axial_disp']))
+        rec['lateral_disp'].append(float(dyn['curr_lateral_disp']))
 
         context.display()
 
@@ -318,6 +335,19 @@ def trace(res, cond, direction, channel):
     m = (res['cond'] == cond) & (res['mdir'] == direction)
     sig = res['cart'][m][:, PERIPH].mean(axis=1) if channel == 'pool' else res['cart'][m][:, channel]
     return binned(res['agent_y'][m], sig)
+
+
+def print_actuation_diagnostics(res, label):
+    """Fraction of AMP_AX/AMP_LAT actually reached per condition, measured from the run."""
+
+    print(f'  [{label}] peak actuation reached (fraction of amplitude):')
+    for cond in [c[0] for c in CONDITIONS]:
+        m = res['cond'] == cond
+        if not m.any():
+            continue
+        ax_frac = np.max(res['axial_disp'][m]) / AMP_AX if AMP_AX > 0 else 0.0
+        lat_frac = np.max(res['lateral_disp'][m]) / AMP_LAT if AMP_LAT > 0 else 0.0
+        print(f'    {cond:8s}: axial {ax_frac:.2f}   lateral {lat_frac:.2f}')
 
 
 def profile_centre(grid, prof):
@@ -420,10 +450,10 @@ def updown_shape_divergence(grid, up, down):
 
 # Figure
 
-def _cell_stats(results, regime, cond):
-    """Everything panel D needs for one (regime, condition) cell."""
+def _cell_stats(results, pupil_state, cond):
+    """Everything panel D needs for one (pupil_state, condition) cell."""
 
-    res2 = results[(regime, SEP_TEST_DEG)]
+    res2 = results[(pupil_state, SEP_TEST_DEG)]
 
     gu, up = get_centered_data(*trace(res2, cond, +1, 'pool'))
     gd, dn = get_centered_data(*trace(res2, cond, -1, 'pool'))
@@ -459,14 +489,14 @@ def _mirror_axes(ax, s: PlotSettings, sep_deg):
     ax.set_axisbelow(True)
 
 
-def _profile_panel(ax, s: PlotSettings, results, regime, cond, sep_m, sep_deg, x_lim):
+def _profile_panel(ax, s: PlotSettings, results, pupil_state, cond, sep_m, sep_deg, x_lim):
     """Mirrored pooled R1-R6 profile (UP is up / DOWN is down)."""
 
     if s.rasterize:
         ax.set_rasterization_zorder(Z_RASTER)
 
-    res2 = results[(regime, SEP_TEST_DEG)]
-    res1 = results[(regime, 0.0)]
+    res2 = results[(pupil_state, SEP_TEST_DEG)]
+    res1 = results[(pupil_state, 0.0)]
     colour = COND_COLOR[cond]
 
     for direction, sign in ((+1, +1.0), (-1, -1.0)):
@@ -497,13 +527,13 @@ def _profile_panel(ax, s: PlotSettings, results, regime, cond, sep_m, sep_deg, x
     return ax
 
 
-def _rhabdomere_panel(ax, s: PlotSettings, results, regime, cond, sep_m, sep_deg, x_lim):
+def _rhabdomere_panel(ax, s: PlotSettings, results, pupil_state, cond, sep_m, sep_deg, x_lim):
     """Mirrored per-rhabdomere traces for the exemplar condition (panel C)."""
 
     if s.rasterize:
         ax.set_rasterization_zorder(Z_RASTER)
 
-    res2 = results[(regime, SEP_TEST_DEG)]
+    res2 = results[(pupil_state, SEP_TEST_DEG)]
 
     for direction, sign in ((+1, +1.0), (-1, -1.0)):
         # Calculate pooled center to align all cells to the same frame
@@ -541,24 +571,26 @@ def _rhabdomere_panel(ax, s: PlotSettings, results, regime, cond, sep_m, sep_deg
 def _summary_bars(ax, s: PlotSettings, stats, cond_names, key, title, ylabel,
                   dot_keys=None, threshold=None):
     """
-    Grouped bars: one group per condition, one bar per regime.
+    Grouped bars: one group per condition, one bar per pupil state (dark -> light adapted,
+    shown as increasing fill alpha, same edge colour per condition).
     """
-    regimes = list(REGIMES)
-    width = 0.34
-    offs = {regimes[0]: -width / 2, regimes[1]: +width / 2}
+    pupil_states = list(PUPIL_STATES)
+    n = len(pupil_states)
+    width = 0.68 / n
+    offs = {pst: (i - (n - 1) / 2) * width for i, pst in enumerate(pupil_states)}
 
     for j, cond in enumerate(cond_names):
-        for regime in regimes:
-            v = stats[(regime, cond)][key]
-            x = j + offs[regime]
-            solid = (regime == regimes[1])
+        for i, pst in enumerate(pupil_states):
+            v = stats[(pst, cond)][key]
+            x = j + offs[pst]
+            alpha = 0.15 + 0.85 * (i / max(n - 1, 1))     # dark-adapted -> near-white, light -> full colour
             ax.bar(x, v, width=width * 0.92,
-                   facecolor=COND_COLOR[cond] if solid else 'white',
+                   facecolor=COND_COLOR[cond], alpha=alpha,
                    edgecolor=COND_COLOR[cond], linewidth=0.7, zorder=3)
 
             if dot_keys:
                 for dk, mk in dot_keys:
-                    ax.plot(x, stats[(regime, cond)][dk], marker=mk, ms=2.6,
+                    ax.plot(x, stats[(pst, cond)][dk], marker=mk, ms=2.6,
                             mfc=s.dark, mec='white', mew=0.3, ls='none', zorder=5)
 
     if threshold is not None:
@@ -588,10 +620,10 @@ def make_figure(results, s: PlotSettings) -> plt.Figure:
     sep_deg = SEP_TEST_DEG
     sep_m = 2.0 * DISTANCE * np.tan(np.radians(sep_deg) / 2.0)
     cond_names = [c[0] for c in CONDITIONS]
-    regimes = list(REGIMES)
+    pupil_states = list(PUPIL_STATES)
 
-    stats = {(rg, c): _cell_stats(results, rg, c)
-             for rg in regimes for c in cond_names}
+    stats = {(pst, c): _cell_stats(results, pst, c)
+             for pst in pupil_states for c in cond_names}
     x_limit = _get_signal_x_limit(results, cond_names)
 
     fig = s.new_figure()
@@ -601,14 +633,15 @@ def make_figure(results, s: PlotSettings) -> plt.Figure:
     axA = fig.add_subplot(outer[0])
     placeholder(axA, s, '(placeholder)')
 
-    # B: Regime x condition, mirrored UP/DOWN
-    gsB = outer[1].subgridspec(2, len(cond_names), wspace=0.12, hspace=0.26)
-    axB = np.empty((2, len(cond_names)), dtype=object)
+    # B: Pupil state x condition, mirrored UP/DOWN
+    n_states = len(pupil_states)
+    gsB = outer[1].subgridspec(n_states, len(cond_names), wspace=0.12, hspace=0.26)
+    axB = np.empty((n_states, len(cond_names)), dtype=object)
 
-    for i, regime in enumerate(regimes):
+    for i, pupil_state in enumerate(pupil_states):
         for j, cond in enumerate(cond_names):
             ax = fig.add_subplot(gsB[i, j])
-            _profile_panel(ax, s, results, regime, cond, sep_m, sep_deg, x_limit)
+            _profile_panel(ax, s, results, pupil_state, cond, sep_m, sep_deg, x_limit)
             axB[i, j] = ax
 
         ymax = max(abs(v) for ax in axB[i] for v in ax.get_ylim())
@@ -628,14 +661,14 @@ def make_figure(results, s: PlotSettings) -> plt.Figure:
     # C and D Grid
     gsCD = outer[2].subgridspec(1, 2, width_ratios=[1.35, 1.2], wspace=0.35)
 
-    ex_regime, ex_cond = EXEMPLAR
+    ex_state, ex_cond = EXEMPLAR
     axC = fig.add_subplot(gsCD[0])
-    _rhabdomere_panel(axC, s, results, ex_regime, ex_cond, sep_m, sep_deg, x_limit)
+    _rhabdomere_panel(axC, s, results, ex_state, ex_cond, sep_m, sep_deg, x_limit)
     axC.set_xticks([-8, -4, 0, 4, 8])
     axC.set_xlabel('Visual angle (deg)', fontsize=s.base, labelpad=1)
     axC.set_ylabel('DOWN  $\\leftarrow$  signal (a.u.)  $\\rightarrow$  UP',
                    fontsize=s.small, labelpad=2)
-    axC.set_title(f'{ex_cond} / {ex_regime}', fontsize=s.title, loc='left', pad=3)
+    axC.set_title(f'{ex_cond} / {ex_state}', fontsize=s.title, loc='left', pad=3)
 
     # D: Direction dependence scalar summary
     axD = fig.add_subplot(gsCD[1])
@@ -644,11 +677,13 @@ def make_figure(results, s: PlotSettings) -> plt.Figure:
     axD.set_ylim(0, None)
     axD.yaxis.set_major_locator(MaxNLocator(nbins=4))
 
-    reg_handles = [
-        Patch(facecolor='white', edgecolor=s.dark, lw=0.7, label=regimes[0].title()),
-        Patch(facecolor=s.dark, edgecolor=s.dark, lw=0.7, label=regimes[1].title()),
+    n_states = len(pupil_states)
+    state_handles = [
+        Patch(facecolor=s.dark, edgecolor=s.dark,
+              alpha=0.15 + 0.85 * (i / max(n_states - 1, 1)), lw=0.7, label=pst.title())
+        for i, pst in enumerate(pupil_states)
     ]
-    leg = axD.legend(handles=reg_handles, loc='upper left', fontsize=s.tiny,
+    leg = axD.legend(handles=state_handles, loc='upper left', fontsize=s.tiny,
                      handlelength=1.0, handletextpad=0.4, borderpad=0.25,
                      labelspacing=0.22)
     leg.get_frame().set_edgecolor(s.frame)
@@ -662,9 +697,9 @@ def make_figure(results, s: PlotSettings) -> plt.Figure:
         column_header(fig, s, axB[0, j], COND_LABEL[cond], dy=0.006,
                       color=COND_COLOR[cond], fontweight='bold')
 
-    for i, regime in enumerate(regimes):
+    for i, pupil_state in enumerate(pupil_states):
         row_header(fig, s, axB[i, 0],
-                   f'{regime.title()}\n(r = {REGIMES[regime]:g})',
+                   f'{pupil_state.title()}\n(drive={PUPIL_STATES[pupil_state]:g})',
                    dx=0.062, colour=s.dark)
 
     pl, pr = axB[-1, 0].get_position(), axB[-1, -1].get_position()
@@ -691,16 +726,19 @@ if __name__ == '__main__':
 
     settings = PlotSettings.nature_double(height_mm=185.0).apply()
 
-    results = {}
-    for regime, r in REGIMES.items():
-        print(f'\nRegime: {regime} (extra narrowing r = {r})')
+    model = build_model()
 
-        model = build_model(r)
+    results = {}
+    for pupil_state, drive in PUPIL_STATES.items():
+        print(f'\nPupil state: {pupil_state} (forced steady_state_drive = {drive})')
 
         for sep in BAR_SEPARATIONS:
             label = 'one bar' if sep == 0 else f'{sep:.1f} deg'
             print(f'  simulating {label}...')
-            results[(regime, sep)] = simulate(model, sep)
+            res = simulate(model, sep, pupil_drive=drive)
+            results[(pupil_state, sep)] = res
+            if sep == SEP_TEST_DEG:
+                print_actuation_diagnostics(res, f'{pupil_state}, {label}')
 
     fig = make_figure(results, settings)
     settings.savefig(fig, 'hyperacuity', formats=['png', 'pdf', 'svg'])
