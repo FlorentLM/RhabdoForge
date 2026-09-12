@@ -280,6 +280,7 @@ class Renderer:
                                   dtype=np.dtype((np.float32, 4)),
                                   count=self._model.size,
                                   usage=GL_DYNAMIC_DRAW)
+        self.eye_buffers['ema_state'].reset()
 
         # Wave optics SSBO if needed
         waveguide_lut = self._get_waveguide_lut()
