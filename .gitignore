@@ -1,5 +1,9 @@
 **/pytinybvhPreamble.glsl
 
+.idea
+assets/*.ply
+uv.lock
+datasets/
 
 ### venv template
 # Virtualenv
