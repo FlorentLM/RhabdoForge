@@ -56,6 +56,10 @@ void main() {
     // Spectral sensitivity
     total_color *= rhab_static[rhab_idx].sensitivity;
 
+    // The pupil narrows the RF by absorbing the boundary wave, so it costs sensitivity
+    float pupil_transmit = rhab_dynamic[rhab_idx].pupil_transmit;
+    total_color *= (pupil_transmit < 1e-6) ? 1.0 : pupil_transmit;    // 0 before the first dynamics pass
+
     // Photon concentration: a narrower optical RF (optical narrowing only) funnels
     // a point source's light into the waveguide more tightly.
     float s = rhab_dynamic[rhab_idx].optical_scale;

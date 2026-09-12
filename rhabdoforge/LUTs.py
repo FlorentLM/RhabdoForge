@@ -85,6 +85,8 @@ def waveguide_sensitivity_lut(
         f_number: float,
         n_rhabdomere: ArrayLike = None,
         n_surround: ArrayLike = None,
+        defocus_um: float = 0.0,
+        focal_um: Optional[float] = None,
         slots: Optional[int] = None,
     ) -> np.ndarray:
     """
@@ -113,8 +115,12 @@ def waveguide_sensitivity_lut(
 
     for r in range(min(optics.nb_rhabdomeres, slots)):
         modes = solve_modes(
-            float(optics.v_number[r]), f_number,
-            float(optics.diameter_um[r]), float(optics.wavelength_um[r]),
+            v_number=float(optics.v_number[r]),
+            f_number=f_number,
+            diameter_um=float(optics.diameter_um[r]),
+            wavelength_um=float(optics.wavelength_um[r]),
+            defocus_um=defocus_um,
+            focal_um=focal_um,
         )
 
         # d_sweep (D = d/b units) -> theta/Drho, where 0.5 is half max

@@ -172,10 +172,10 @@ class Dashboard:
                         callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'tau_adapt_fast', a)
                     )
                     dpg.add_slider_float(
-                        label='Tau Relaxation (s)',
-                        default_value=float(model.ommatidia.tau_relax[0]),
+                        label='Return duration (s)',
+                        default_value=float(model.ommatidia.return_duration[0]),
                         min_value=0.01, max_value=0.5,
-                        callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'tau_relax', a)
+                        callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'return_duration', a)
                     )
 
                     dpg.add_separator()

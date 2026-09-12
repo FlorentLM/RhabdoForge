@@ -189,6 +189,7 @@ class Renderer:
         self._tiled_mode = True
         self._lum_ref = 1.0             # target operating-point luminance (scene-dependant)
         self._noise_threshold = 0.05
+        self._trigger_delay = 0.008     # reflex arc onset latency (s), Juusola 2017 Appendix 8
         self._selected_omm_indices = np.full(10, -1, dtype=np.int32)
 
         # Overlay parameters
@@ -360,6 +361,7 @@ class Renderer:
             photon_concentration_factor=0.0,  # TODO: document this better
             lum_ref=self._lum_ref,
             extra_narrowing_ratio=float(self._model.bundle.extra_narrowing_ratio),
+            trigger_delay=self._trigger_delay,
         )
 
     def _free_model_resources(self) -> None:
@@ -1412,6 +1414,8 @@ class Renderer:
             f_number=f_number,
             n_rhabdomere=bundle.n_rhabdomere,
             n_surround=bundle.n_surround,
+            defocus_um=bundle.tip_defocus_um,
+            focal_um=bundle.focal_um,
         )
 
     @property
@@ -1474,6 +1478,21 @@ class Renderer:
     def noise_threshold(self, value: float) -> None:
         self._noise_threshold = float(value)
         self._eye_uniforms.update(noise_threshold=self._noise_threshold)
+
+    @property
+    def trigger_delay(self) -> float:
+        """
+        Onset latency of the photomechanical reflex arc (s)
+
+         ~0.008 s in Drosophila R1-R6 (Juusola 2017 Appendix 8, matching electrophysiological
+         response delay and AFM-measured mechanical onset, Hardie & Franze 2012)
+        """
+        return self._trigger_delay
+
+    @trigger_delay.setter
+    def trigger_delay(self, value: float) -> None:
+        self._trigger_delay = float(value)
+        self._eye_uniforms.update(trigger_delay=self._trigger_delay)
 
     @property
     def time_dithering(self) -> bool:

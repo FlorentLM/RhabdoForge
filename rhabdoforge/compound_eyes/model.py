@@ -35,7 +35,7 @@ from rhabdoforge.compound_eyes.helpers.neural_superposition import (
 from rhabdoforge.compound_eyes.helpers.acceptance import (
     SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
 )
-from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance, pupil_response
+from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance, pupil_response, solve_modes
 from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
 from rhabdoforge.compound_eyes.views import SpatialQueries, BaseView, OmmatidiumView, EyeView, RhabdomereView
 
@@ -106,8 +106,8 @@ class Model(SpatialQueries, BaseView):
 
         # ============ Fill bundle-originating stuff ============
 
-        self._buf['tau_rise'] = self._bundle.tau_rise
-        self._buf['tau_relax'] = self._bundle.tau_relax
+        self._buf['move_duration'] = self._bundle.move_duration
+        self._buf['return_duration'] = self._bundle.return_duration
         self._buf['tau_adapt_fast'] = self._bundle.tau_fast
         self._buf['tau_adapt_slow'] = self._bundle.tau_adapt
         self._buf['ampl_lateral'] = self._bundle.ampl_lat_um
@@ -228,6 +228,7 @@ class Model(SpatialQueries, BaseView):
         self._buf['curr_acc_angles'] = acceptance_angles
 
         self._compute_pupil_response()
+        self._compute_axial_response()
 
         # ============ Fill other ommatidia neighbourhood related stuff ============
 
@@ -1070,7 +1071,16 @@ class Model(SpatialQueries, BaseView):
 
         return eye_instances
 
-    # Private - Acceptance angles helper
+    # Private - Acceptance angles helpers
+
+    def _rhab_optics(self) -> RhabdomereOptics:
+        return RhabdomereOptics(
+            diameter_um=np.atleast_1d(self._bundle.diameters_um).astype(np.float32),
+            wavelength_um=np.atleast_1d(self._bundle.wavelengths_nm).astype(np.float32) * 1e-3,
+            n_rhabdomere=np.atleast_1d(self._bundle.n_rhabdomere).astype(np.float32),
+            n_surround=np.atleast_1d(self._bundle.n_surround).astype(np.float32),
+            defocus_um=self._bundle.tip_defocus_um,
+        )
 
     def _compute_acceptance(self, acceptance_model: 'AcceptanceModel') -> np.ndarray:
 
@@ -1081,14 +1091,7 @@ class Model(SpatialQueries, BaseView):
             ioa_major=self._buf['ioa_angles'][:, 1]
         )
 
-        rhab_optics = RhabdomereOptics(
-            diameter_um=np.atleast_1d(self._bundle.diameters_um).astype(np.float32),
-            wavelength_um=np.atleast_1d(self._bundle.wavelengths_nm).astype(np.float32) * 1e-3,
-            n_rhabdomere=np.atleast_1d(self._bundle.n_rhabdomere).astype(np.float32),
-            n_surround=np.atleast_1d(self._bundle.n_surround).astype(np.float32),
-        )
-
-        acceptance_angles = acceptance_model(lens_optics, rhab_optics)
+        acceptance_angles = acceptance_model(lens_optics, self._rhab_optics())
         if acceptance_angles.shape != (self._N, self._R, 2):
             raise ValueError(
                 f'Acceptance model {type(acceptance_model).__name__} returned {acceptance_angles.shape}, expected {(self._N, self._R, 2)}')
@@ -1111,12 +1114,8 @@ class Model(SpatialQueries, BaseView):
         h = self._bundle.pupil_distance_um
         f_number = float(np.median(self._buf['focal_um'] / np.clip(self._buf['aperture_um'], 1e-6, None)))
 
-        optics = RhabdomereOptics(
-            diameter_um=np.atleast_1d(self._bundle.diameters_um).astype(np.float32),
-            wavelength_um=np.atleast_1d(self._bundle.wavelengths_nm).astype(np.float32) * 1e-3,
-            n_rhabdomere=np.atleast_1d(self._bundle.n_rhabdomere).astype(np.float32),
-            n_surround=np.atleast_1d(self._bundle.n_surround).astype(np.float32),
-        )
+        optics = self._rhab_optics()
+        focal_um = float(np.median(self._buf['focal_um']))
 
         ratio = np.ones(self._R, dtype=np.float32)
         transmit = np.ones(self._R, dtype=np.float32)
@@ -1125,10 +1124,59 @@ class Model(SpatialQueries, BaseView):
             ratio[r], transmit[r] = pupil_response(
                 float(optics.v_number[r]), f_number,
                 float(optics.diameter_um[r]), float(optics.wavelength_um[r]), h,
+                defocus_um=optics.defocus_um, focal_um=focal_um,
             )
 
         self._buf['closed_pupil_ratio'] = np.broadcast_to(ratio, (self._N, self._R))
         self._buf['closed_pupil_transmit'] = np.broadcast_to(transmit, (self._N, self._R))
+
+    def _compute_axial_response(self) -> None:
+        """
+        Bake in the effect of the axial microsaccade (how much the RF narrows at full drive),
+        and the lateral offset at which the clipping term saturates.
+
+        The axial move slides the rhabdomere tip along the optical axis. Waveguide models read
+        that as a change of defocus, the others models fall back to the Snyder (geometric) blur.
+        """
+        self._buf['axial_scale_floor'] = 1.0
+
+        # R7/R8 sit almost on the optical axis: they don't move far enough laterally to clip
+        clip_enabled = np.ones(self._R, dtype=np.float32)
+        clip_enabled[self._bundle.center_index] = 0.0
+        self._buf['lateral_clip_enabled'] = np.broadcast_to(clip_enabled, (self._N, self._R))
+
+        ampl = self._bundle.ampl_ax_um
+        if ampl == 0.0 or self._bundle.focal_um is None:
+            return
+
+        if isinstance(self._acceptance_model, WaveguideAcceptance):
+            optics = self._rhab_optics()
+            focal_um = float(np.median(self._buf['focal_um']))
+            f_number = float(np.median(self._buf['focal_um'] / np.clip(self._buf['aperture_um'], 1e-6, None)))
+
+            floor = np.ones(self._R, dtype=np.float32)
+            for r in range(self._R):
+                args = (float(optics.v_number[r]), f_number,
+                        float(optics.diameter_um[r]), float(optics.wavelength_um[r]))
+                rest = solve_modes(*args, defocus_um=optics.defocus_um, focal_um=focal_um)
+                moved = solve_modes(*args, defocus_um=optics.defocus_um + ampl, focal_um=focal_um)
+                floor[r] = moved.d_half / rest.d_half
+
+            self._buf['axial_scale_floor'] = np.broadcast_to(floor, (self._N, self._R))
+            return
+
+        # Snyder fallback: only the geometric blur recedes with the tip
+        d_rest = np.clip(self._buf['focal_um'], 1e-6, None)[:, None]
+        aperture = np.clip(self._buf['aperture_um'], 1e-6, None)[:, None]
+
+        d_rhab = np.atleast_1d(self._bundle.diameters_um).astype(np.float64)[None, :]
+        lam = np.atleast_1d(self._bundle.wavelengths_nm).astype(np.float64)[None, :] * 1e-3
+
+        rho_diff = lam / aperture
+        rest = np.hypot(np.arctan(d_rhab / d_rest), rho_diff)
+        moved = np.hypot(np.arctan(d_rhab / (d_rest + ampl)), rho_diff)
+
+        self._buf['axial_scale_floor'] = (moved / np.maximum(rest, 1e-12)).astype(np.float32)
 
     # Public - Bundle alignment refinement (post-superposition)
 

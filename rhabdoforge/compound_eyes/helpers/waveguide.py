@@ -10,7 +10,7 @@ Stavenga, "Angular and spectral sensitivity of fly photoreceptors. III. Dependen
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Tuple, List, Iterator
+from typing import TYPE_CHECKING, Dict, Tuple, List, Iterator, Optional
 import numpy as np
 from scipy.optimize import brentq
 from scipy.special import jv, kv, jn_zeros
@@ -264,26 +264,47 @@ def solve_modes(
         f_number: float,
         diameter_um: float,
         wavelength_um: float,
-        h_um: float = np.inf
+        h_um: float = np.inf,
+        defocus_um: float = 0.0,
+        focal_um: Optional[float] = None,
+        n_image: float = 1.34,
     ) -> RhabdomereModes:
     """
     Enumerate the bound modes at 'v_number' and the angular sensitivity of their sum,
     against D = d/b (the beam's offset at the rhabdomere entrance, in rhabdomere radii)
 
-    Independent of any particular lens, only F-number matters.
+    Note: 'defocus_um' is the tip's signed distance from the image focal plane (negative = lens
+    side), and needs 'focal_um' (the object focal length).
+
+    At 0.0, the tip is in the focal plane, Eq. 34's phase term vanishes, and the result depends on
+    the lens only through its F-number.
     """
 
     bound = LP_modes.up_to(v_number - _CUTOFF_EPS)  # all modes above cutoff
     if not bound:
         raise ValueError(f'no bound modes at V={v_number:.4f}')
 
-    # Excitation-integral limit: X_max = pi*b*D_l/(lambda*f) = pi*b/(lambda*F) (Eqs. 4, 32).
+    if defocus_um != 0.0 and focal_um is None:
+        raise ValueError('focal_um is required when defocus_um is non-zero')
+
     b = 0.5 * diameter_um
-    x_max = np.pi * b / (wavelength_um * f_number)
+
+    # delta is the low-Fresnel-number correction to K' (Eqs. 7e, 34)
+    delta = 1.0 if defocus_um == 0.0 else 1.0 + defocus_um / (n_image * focal_um)
+
+    # X_max = K'*rho_0 = pi*b*D_l/(lambda*f*delta) = pi*b/(lambda*F*delta) (Eqs. 4, 32)
+    x_max = np.pi * b / (wavelength_um * f_number * delta)
 
     # Shift precomputed nodes to [0, x_max]
     x = 0.5 * x_max * (_GL_X + 1.0)
     wt = 0.5 * x_max * _GL_WT
+
+    # Eq. 34's exp(i*Z*X^2 / 2K'), with Z = z/b and K' = 2*pi*n'*b / (lambda*delta)
+    if defocus_um == 0.0:
+        phase = 1.0
+    else:
+        phase = np.exp(1j * defocus_um * wavelength_um * delta * x ** 2
+                       / (4.0 * np.pi * n_image * b ** 2))
 
     d_sweep = np.linspace(0.0, _SWEEP_MAX_D, _SWEEP_NODES)
 
@@ -310,8 +331,8 @@ def solve_modes(
         # Weight each mode:
         #     P_eff = P_exc * T_p(h) * eta_p (Stavenga 2004/III Eq. A19)
         #   -> higher-order modes drop out first
-        integral = (jv(l, np.outer(d_sweep, x)) * (g * x * wt)).sum(axis=1)  # (sweep, quad) -> (sweep,)
-        sensitivity += t_p * eta * (norm * integral) ** 2
+        integral = (jv(l, np.outer(d_sweep, x)) * (g * x * wt * phase)).sum(axis=1)  # (sweep, quad) -> (sweep,)
+        sensitivity += t_p * eta * norm ** 2 * np.abs(integral) ** 2
 
         u_all.append(u), w_all.append(w), eta_all.append(eta), t_all.append(t_p), p_all.append(mode.p)
 
@@ -365,8 +386,15 @@ def to_angle(d_half, diameter_um, focal_um):
     return 2.0 * np.arctan(d_half * 0.5 * diameter_um / np.asarray(focal_um))
 
 
-def pupil_response(v_number: float, f_number: float, diameter_um: float,
-                   wavelength_um: float, h_um: float) -> Tuple[float, float]:
+def pupil_response(
+        v_number: float,
+        f_number: float,
+        diameter_um: float,
+        wavelength_um: float,
+        h_um: float,
+        defocus_um: float = 0.0,
+        focal_um: Optional[float] = None
+    ) -> Tuple[float, float]:
     """
     Effect of closing the pupil to distance h (um) on one rhabdomere
     (as two ratios against its dark-adapted state)

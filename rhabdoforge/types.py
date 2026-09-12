@@ -181,8 +181,8 @@ OMM_STATIC_DTYPE = np.dtype([
     ('saccade_dxdy',  np.float32, 2), ('ampl_lateral', np.float32), ('ampl_axial', np.float32),
 
     # 16 bytes: Temporal values (all in seconds, the compute shaders integrate with dt in s)
-    ('tau_rise',        np.float32),        # mechanical rise time (s)
-    ('tau_relax',       np.float32),        # mechanical relaxation time (s)
+    ('move_duration',   np.float32),        # ballistic move duration, idle->full amplitude (s)
+    ('return_duration', np.float32),        # return duration, full amplitude->idle (s)
     ('tau_adapt_fast',  np.float32),        # fast adaptation EMA (s)
     ('tau_adapt_slow',  np.float32),        # slow adaptation EMA (s)
 
@@ -197,7 +197,13 @@ OMM_DYNAMIC_DTYPE = np.dtype([
     ('curr_lum_slow',       np.float32),    # 4 bytes: slow luminance baseline (EMA)
     ('curr_lateral_disp',   np.float32),    # 4 bytes: current lateral displacement (μm)
     ('curr_axial_disp',     np.float32),    # 4 bytes: current axial contraction (μm)
-])  # 16 bytes
+
+    # Photomechanical reflex arc (threshold-crossing trigger -> fixed onset delay -> ballistic move -> interruptible return)
+    ('mech_phase',          np.float32),    # 4 bytes: 0=idle, 1=latency, 2=moving, 3=returning
+    ('mech_t',              np.float32),    # 4 bytes: elapsed time in current phase (s)
+    ('mech_frac0',          np.float32),    # 4 bytes: ballistic fraction at the start of the current phase
+    ('_pad',                np.float32),    # 4 bytes: pad to 32 bytes
+])  # 32 bytes
 
 
 # Per-rhabdomere data
@@ -216,10 +222,11 @@ RHAB_STATIC_DTYPE = np.dtype([
     ('diameter_um',     np.float32),        # 4 bytes: Rhabdomere diameter (μm)
     ('metadata',        np.uint32),         # 4 bytes: bit-packed, see _BIT_LAYOUT below
 
-    # 16 bytes: baked pupil-mechanism response (waveguide acceptance models only)
+    # 16 bytes: baked microsaccade response (waveguide acceptance models only)
     ('closed_pupil_ratio',    np.float32),  # 4 bytes: Δρ (light-adapted) / Δρ (dark), <= 1 (narrower)
     ('closed_pupil_transmit', np.float32),  # 4 bytes: peak sensitivity ratio, <= 1 (dimmer)
-    ('_pad',                  np.float32, 2)  # 8 bytes: padding (will be used for the axial/lateral terms)
+    ('axial_scale_floor',     np.float32),  # 4 bytes: Δρ (full axial move) / Δρ (rest), <= 1 (narrower)
+    ('lateral_clip_enabled',  np.float32),  # 4 bytes: 1.0 if this rhabdomere type clips laterally (R1-6), 0.0 if not (R7/8)
 ])  # 64 bytes
 
 
@@ -228,7 +235,7 @@ RHAB_DYNAMIC_DTYPE = np.dtype([
     ('curr_adaptation', np.float32),        #  4 bytes: current adaptation state
     ('curr_acc_angles', np.float32, 2),     #  8 bytes: current (actuated) acceptance angles (rad)
     ('optical_scale',   np.float32),        #  4 bytes: optical RF-narrowing factor Δρ_eff/Δρ_rest, read for photon concentration
-    ('_pad',            np.float32),        #  4 bytes: pad to 32 bytes
+    ('pupil_transmit',  np.float32),        #  4 bytes: current pupil transmittance (<= 1, read as a radiance multiplier)
 ])  # 32 bytes
 
 # TODO: Move most metadata to per-ommatidium ?? Only rhab_R, chirality and is_wired are per-rhabdomere

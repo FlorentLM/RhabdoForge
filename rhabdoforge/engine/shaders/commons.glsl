@@ -45,8 +45,8 @@ struct OmmatidiumStatic {
     vec2 saccade_dxdy;
     float ampl_lateral;
     float ampl_axial;
-    float tau_rise;
-    float tau_relax;
+    float move_duration;
+    float return_duration;
     float tau_fast;
     float tau_adapt;
     vec2  ioa_angles;
@@ -59,7 +59,11 @@ struct OmmatidiumDynamic {
     float curr_lum_slow;
     float curr_lateral_disp;
     float curr_axial_disp;
-}; // 16 bytes
+    float mech_phase;      // 0=idle, 1=latency, 2=moving, 3=returning
+    float mech_t;          // elapsed time in current phase (s)
+    float mech_frac0;      // ballistic fraction at the start of the current phase
+    float _pad;
+}; // 32 bytes
 
 // Rhabdomere static (read only)
 struct RhabdomereStatic {
@@ -73,7 +77,8 @@ struct RhabdomereStatic {
     uint  metadata;
     float closed_pupil_ratio;      // D rho (light-adapted) / D rho (dark), <= 1 (narrower)
     float closed_pupil_transmit;   // Peak sensitivity ratio, <= 1 (dimmer)
-    vec2  pad;
+    float axial_scale_floor;       // D rho (full axial move) / D rho (rest), <= 1 (narrower)
+    float lateral_clip_enabled;    // 1.0 if this rhabdomere type clips against the lens/aperture (R1-6), 0.0 if not (R7/8)
 }; // 64 bytes
 
 // Rhabdomere dynamic
@@ -82,7 +87,7 @@ struct RhabdomereDynamic {
     float curr_adaptation;
     vec2  curr_acc_angles;
     float optical_scale;
-    float pad;
+    float pupil_transmit;
 }; // 32 bytes
 
 

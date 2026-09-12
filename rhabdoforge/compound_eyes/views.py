@@ -358,11 +358,11 @@ class BaseView:
 
     # retina_field = ViewField('retina_dxdy', 'ommatidia')      # TODO: disabled for now
 
-    tau_rise = ViewField('tau_rise', 'ommatidia',
-        doc="Rhabdomeres mechanical contraction rise time (same for all rhabdomeres in a given ommatidium)")
+    move_duration = ViewField('move_duration', 'ommatidia',
+        doc="Rhabdomeres ballistic move duration, idle->full amplitude (same for all rhabdomeres in a given ommatidium)")
 
-    tau_relax = ViewField('tau_relax', 'ommatidia',
-        doc="Rhabdomeres mechanical relaxation time (same for all rhabdomeres in a given ommatidium)")
+    return_duration = ViewField('return_duration', 'ommatidia',
+        doc="Rhabdomeres return duration, full amplitude->idle (same for all rhabdomeres in a given ommatidium)")
 
     tau_adapt_fast = ViewField('tau_adapt_fast', 'ommatidia',
         doc="Rhabdomeres fast adaptation EMA  (same for all rhabdomeres in a given ommatidium)")

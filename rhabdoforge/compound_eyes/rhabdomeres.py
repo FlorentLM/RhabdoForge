@@ -31,6 +31,9 @@ class RhabdomereBundle:
         - tip_distance_um: float (optional), Distance from the lens' rear surface to the rhabdomere
             tip at rest (μm). The tip normally sits short of the focal plane, and contraction moves
             it towards focus. Construction-time only. Defaults to focal_um.
+        - focal_plane_um: float (optional), Distance from the lens' rear surface to the image focal
+            plane (μm), same frame as tip_distance_um. The difference between the two is the tip's
+            defocus, which broadens Δρ. Defaults to tip_distance_um (i.e. tip in focus).
         - sensitivity: scalar, (3,), (R,), or (R, 3) array_like, Spectral multipliers (UV, Green, Blue).
             UV (slot 0) is rendered in the red sub-pixel of the output.
                 scalar: applied uniformly to (R, 3)
@@ -42,7 +45,8 @@ class RhabdomereBundle:
             interior and the surrounding medium. Only used by waveguide acceptance models (they
             set the numerical aperture and hence the LP mode count). Default to Stavenga's fly values.
         - tau_membrane: float, Membrane RC integration time (s).
-        - tau_rise, tau_relax: float, Mechanical rise / relaxation time constants of the microsaccade (s).
+        - move_duration, return_duration: float, Fixed durations of the microsaccade's ballistic
+            move-out and interruptible return phases (s)
         - tau_fast, tau_adapt: float, Fast and slow adaptation EMA times (s).
         - ampl_lat_um, ampl_ax_um: float, Max lateral / axial tip displacement at full microsaccade drive (μm).
         - extra_narrowing_ratio: float, Extra, non-optical RF narrowing at full saccade (1.0 = pure optics).
@@ -64,6 +68,7 @@ class RhabdomereBundle:
                  diameters_um: Union[float, ArrayLike] = 2.0,
                  focal_um: Optional[float] = 20.0,
                  tip_distance_um: Optional[float] = None,
+                 focal_plane_um: Optional[float] = None,
                  pupil_distance_um: float = 0.2,
                  sensitivity: Union[float, ArrayLike] = 1.0,
                  wavelengths_nm: Union[float, ArrayLike] = 540.0,
@@ -71,8 +76,8 @@ class RhabdomereBundle:
                  n_surround: Union[float, ArrayLike] = N_SURROUND_FLY,
                  fused_rhabdoms: bool = False,
                  tau_membrane: float = 0.0,
-                 tau_rise: float = 0.015,
-                 tau_relax: float = 0.060,
+                 move_duration: float = 0.100,
+                 return_duration: float = 0.500,
                  tau_fast: float = 0.005,
                  tau_adapt: float = 0.050,
                  ampl_lat_um: float = 2.0,
@@ -93,12 +98,18 @@ class RhabdomereBundle:
         else:
             self.tip_distance_um = self.focal_um
 
+        # Image focal plane. Unset = tip is in focus
+        self.focal_plane_um = float(focal_plane_um) if focal_plane_um is not None else self.tip_distance_um
+
         self.pupil_distance_um = float(pupil_distance_um)
         self.fused_rhabdoms = bool(fused_rhabdoms)
 
+        # Signed tip defocus (negative = lens side of focus), for waveguide models
+        self.tip_defocus_um = self.tip_distance_um - self.focal_plane_um
+
         self.tau_membrane = float(tau_membrane)
-        self.tau_rise = float(tau_rise)
-        self.tau_relax = float(tau_relax)
+        self.move_duration = float(move_duration)
+        self.return_duration = float(return_duration)
         self.tau_fast = float(tau_fast)
         self.tau_adapt = float(tau_adapt)
         self.ampl_lat_um = float(ampl_lat_um)
@@ -538,21 +549,24 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
             [ 1.6567,  0.9762],   # R6
             [ 0.0045, -0.0113],   # R7/8 (central)
         ],
-        diameters_um=[1.8, 1.6, 1.6, 1.6, 1.6, 1.8, 1.0],  # Kemppainen 2022: R1/R6 1.8, R2-R5 1.6, R7/8 1.0
+
+        # Geometric means of minor and major axes obtained from redigitising Juusola et al. 2017' Appendix 5 Fig. 1
+        diameters_um=np.array([1.97776759, 1.66796322, 1.63865270, 1.66139302, 1.73640129, 1.92751097, 1.29170464]),
 
         # R1-6 are Rh1 (lambda_max ~480 nm), the merged R7/8 slot is UV-biased (Rh3/Rh4)
         wavelengths_nm=[480.0, 480.0, 480.0, 480.0, 480.0, 480.0, 350.0],
 
         sensitivity=sensitivity,
-        focal_um=20.6,          # object focal length = posterior nodal distance (Stavenga 2003b, Appendix 1)
-        tip_distance_um=17.0,   # resting tip-to-lens distance, papers' frame (Kemppainen 2022, Table S6)
+        focal_um=20.6,              # Object focal length = posterior nodal distance (Stavenga 2003b, Appendix 1)
+        tip_distance_um=17.0,       # Resting tip-to-lens distance (Kemppainen 2022, Table S6)
+        focal_plane_um=21.33,       # same frame (Kemppainen 2022: 'dzc=17, f at dz=21.33')
         tau_membrane=0.005,
-        tau_rise=0.015,
-        tau_relax=0.060,
+        move_duration=0.100,        # Ballistic move duration (Juusola 2017 Appendix 8: "100 ms")
+        return_duration=0.500,      # Return duration (Appendix 8: "500 ms")
         tau_fast=0.005,
         tau_adapt=0.100,
-        ampl_lat_um=2.0,    # upper-range microsaccade, ~6° RF shift
-        ampl_ax_um=2.0,     # axial move 17->19 μm (Kemppainen 2022, Table S6)
+        ampl_lat_um=1.25,           # Average microsaccade move (Kemppainen 2022 suppl)
+        ampl_ax_um=2.0,             # Axial move 17->19 μm (Kemppainen 2022, Table S6)
         center_index=6,
         major_axis=(2, 5),          # R3-R6 line
         alignment_offset=81.0,      # major axis sits ~81° (mod 180) off the flow reference

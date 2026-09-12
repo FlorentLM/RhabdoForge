@@ -72,6 +72,7 @@ class RhabdomereOptics:
     wavelength_um: np.ndarray   # peak wavelength (μm)
     n_rhabdomere: Optional[np.ndarray] = None   # rhabdomere interior refractive index
     n_surround: Optional[np.ndarray] = None     # surrounding medium refractive index
+    defocus_um: float = 0.0                     # rhabdomere tip's (signed) distance from the image focal plane
 
     def __post_init__(self):
         for name, default in (('n_rhabdomere', N_RHABDOMERE_FLY), ('n_surround', N_SURROUND_FLY)):
