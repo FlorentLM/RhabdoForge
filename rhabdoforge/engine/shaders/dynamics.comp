@@ -16,8 +16,10 @@ uniform bool  enable_actuation;   // toggle for photomechanical saccades
 uniform float lum_ref;            // operating-point luminance for biochemical gain
 uniform float retina_drive_um[8]; // retina muscle pull strength (one per eye ID (0-7))
 uniform float noise_threshold;
-uniform float extra_narrowing_ratio; // Extra, non-optical RF narrowing at full saccade (i.e. ~ voltage-level hyperacuity)
-                                    // 1.0 = pure optics
+uniform float clip_ratio;          // Non-optical RF clipping at full lateral saccade (1.0 = pure optics)
+uniform bool  force_pupil_drive;   // Override steady_state_drive with pupil_drive
+uniform float pupil_drive;
+uniform float trigger_delay;       // onset latency between light detection and movement start (s)
 
 void main() {
     uint omm_idx = gl_GlobalInvocationID.x;
@@ -55,26 +57,47 @@ void main() {
     float clean_contrast = max(0.0, contrast - (noise_threshold * 1.0));
 //    float clean_contrast = contrast;                                          // DEBUG
 
-//    // Apply gain curve
-    float sensitivity = 0.2;
+    // Steady-state light level (phototropic state), independent of the reflex below
+    float steady_state_drive = force_pupil_drive ? pupil_drive
+        : (od.curr_lum_slow / (od.curr_lum_slow + lum_ref));
 
-    // A mix of temporal change (saccade) and steady-state light level (phototropic state)
-    float steady_state_drive = od.curr_lum_slow / (od.curr_lum_slow + lum_ref);
-    float transient_drive    = max(0.0, tanh(clean_contrast / sensitivity));
+    // Photomechanical microsaccade
+    //   A crossing of clean_contrast launches the sequence:
+    //   idle -> latency (fixed onset delay, committed) -> moving (fixed-duration ballistic
+    //   move to full amplitude, also committed) -> returning (interruptible by a new trigger)
+    bool  triggered  = enable_actuation && (clean_contrast > 0.0);
+    float mech_phase = od.mech_phase;
+    float mech_t      = od.mech_t + dt;
+    float mech_frac0 = od.mech_frac0;
+    float mech_frac;
 
-    // Total drive is a combination
-    float bright_drive = clamp(steady_state_drive * 0.2 + transient_drive * 0.8, 0.0, 1.0);
+    if (mech_phase < 0.5) {                                // idle
+        mech_frac = 0.0;
+        if (triggered) { mech_phase = 1.0; mech_t = 0.0; mech_frac0 = 0.0; }
 
-    float target_lat = enable_actuation ? (bright_drive * os.ampl_lateral) : 0.0;
-    float target_ax  = enable_actuation ? (bright_drive * os.ampl_axial)  : 0.0;
+    } else if (mech_phase < 1.5) {                          // latency: committed, frozen
+        mech_frac = mech_frac0;
+        if (mech_t >= trigger_delay) { mech_phase = 2.0; mech_t = 0.0; }
 
-    // Safety mechanical floor: mix between biological speed and render-noise stability
-    float safety_floor = mix(0.001, 0.010, clamp(noise_threshold * 5.0, 0.0, 1.0));
-    float rate_lat = (target_lat > od.curr_lateral_disp) ? max(os.tau_rise, safety_floor) : max(os.tau_relax, safety_floor);
-    float rate_ax  = (target_ax  > od.curr_axial_disp)   ? max(os.tau_rise, safety_floor) : max(os.tau_relax, safety_floor);
+    } else if (mech_phase < 2.5) {                          // moving: committed ballistic ramp to 1.0
+        mech_frac = mix(mech_frac0, 1.0, clamp(mech_t / max(os.move_duration, 1e-6), 0.0, 1.0));
+        if (mech_t >= os.move_duration) { mech_phase = 3.0; mech_t = 0.0; mech_frac0 = 1.0; }
 
-    od.curr_lateral_disp = mix(target_lat, od.curr_lateral_disp, exp(-dt / rate_lat));
-    od.curr_axial_disp   = mix(target_ax,  od.curr_axial_disp,   exp(-dt / rate_ax));
+    } else {                                                // returning: interruptible ramp to 0.0
+        mech_frac = mix(mech_frac0, 0.0, clamp(mech_t / max(os.return_duration, 1e-6), 0.0, 1.0));
+        if (triggered) {
+            mech_phase = 1.0; mech_t = 0.0; mech_frac0 = mech_frac;   // re-trigger from here
+        } else if (mech_t >= os.return_duration) {
+            mech_phase = 0.0; mech_t = 0.0; mech_frac0 = 0.0; mech_frac = 0.0;
+        }
+    }
+
+    od.mech_phase = mech_phase;
+    od.mech_t = mech_t;
+    od.mech_frac0 = mech_frac0;
+
+    od.curr_lateral_disp = mech_frac * os.ampl_lateral;
+    od.curr_axial_disp   = mech_frac * os.ampl_axial;
 
     omm_dynamic[omm_idx] = od;
 
@@ -89,15 +112,17 @@ void main() {
     uint eye_id = unpack_eye_id(rhab_static[start_idx].metadata);
     float muscle_tug = retina_drive_um[eye_id];
 
-    // RF narrowing has two independent sources:
-    //   - Optical (derived, per rhabdomere below): the axial move recedes the tip to d_eff,
-    //      shrinking the geometric blur arctan(d_rhab/d_eff). Computed from the same Snyder
-    //      terms that baked rest_acc_angles. It scales with the axial amplitude (ampl_axial -> curr_axial_disp -> d_eff).
-    //   - Phenomenological (extra_narrowing_ratio): extra non-optical narrowing.
-    //      Ramps with the saccade, independent of the optics.
-    float disp_frac   = clamp(od.curr_axial_disp / max(os.ampl_axial, 1e-6), 0.0, 1.0);
-    float er = (extra_narrowing_ratio <= 0.0) ? 1.0 : extra_narrowing_ratio;  // unset uniform -> pure optics
-    float pheno_scale = mix(1.0, er, disp_frac);
+    // RF width has three independent sources:
+    //   - Axial: the move slides the tip along the optical axis, changing its defocus.
+    //      Saturates at the baked axial_scale_floor.
+    //   - Pupil: the screening pigment absorbs the boundary wave of the higher-order modes.
+    //      Driven by the steady light level, per rhabdomere.
+    //   - Clipping (clip_ratio): RF vignetting against the lens's Airy footprint and/or
+    //      the cone/pigment-cell aperture. Both driven by the lateral move, both geometric
+    //      blocking rather than a modal or absorptive effect like the two above.
+    float lat_frac = clamp(od.curr_lateral_disp / max(os.ampl_lateral, 1e-6), 0.0, 1.0);
+    float axial_frac = clamp(od.curr_axial_disp / max(os.ampl_axial, 1e-6), 0.0, 1.0);
+    float er = (clip_ratio <= 0.0) ? 1.0 : clip_ratio;  // unset uniform -> pure optics
 
     for (int r = 0; r < rhab_per_omm; r++) {
 
@@ -112,17 +137,16 @@ void main() {
         vec3 tip = (total_xy.x * os.right) + (total_xy.y * os.up) + (-d_eff * os.forward);
         rhab_dynamic[rhab_idx].curr_direction = normalize(-tip);
 
-        // Optical narrowing from the axial move (diffraction term is unchanged by the
-        // saccade, only the geometric blur recedes with d_eff)
-        float rho_diff  = rs.wavelength_um / max(os.aperture_um, 1e-3);
-        float geom_rest = atan(rs.diameter_um / max(d_rest, 1e-3));
-        float geom_eff  = atan(rs.diameter_um / max(d_eff,  1e-3));
-        float opt_rest  = sqrt(geom_rest*geom_rest + rho_diff*rho_diff);
-        float opt_eff   = sqrt(geom_eff*geom_eff   + rho_diff*rho_diff);
-        float optical_scale = opt_eff / max(opt_rest, 1e-9);   // Droso: ~ x0.92 at a 2 um move with 21 um lever arm
+        float optical_scale = mix(1.0, rs.axial_scale_floor, axial_frac);
+        float pupil_scale   = mix(1.0, rs.closed_pupil_ratio, steady_state_drive);
+        float clip_scale    = mix(1.0, er, lat_frac * rs.lateral_clip_enabled);
 
-        rhab_dynamic[rhab_idx].curr_acc_angles      = rs.rest_acc_angles * (optical_scale * pheno_scale);
-        rhab_dynamic[rhab_idx].optical_scale = optical_scale;  // for photon concentration
+        rhab_dynamic[rhab_idx].curr_acc_angles = rs.rest_acc_angles * (optical_scale * pupil_scale * clip_scale);
+
+        // Photon concentration reads the optical narrowing only: the pupil narrows by absorbing
+        // light (opposite sign), and clipping is not optical at all
+        rhab_dynamic[rhab_idx].optical_scale = optical_scale;
+        rhab_dynamic[rhab_idx].pupil_transmit = mix(1.0, rs.closed_pupil_transmit, steady_state_drive);
 
         // This is purely the biochemical/neural gain (the optical concentration is done in reduction.comp)
         rhab_dynamic[rhab_idx].curr_adaptation = lum_gain;

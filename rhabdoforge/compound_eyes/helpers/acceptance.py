@@ -134,8 +134,7 @@ class SnyderAcceptance:
 
     Evaluated at the resting focal length, 'rho' is the dark-resting optical Δρ
     (the widest optical state).
-    Microsaccades narrow it toward rho * bundle.extra_narrowing_ratio at full
-    drive.
+    Microsaccades clip it toward rho * bundle.clip_ratio at full drive.
 
     Isotropic: minor == major, per-axis RF anisotropy comes from the lattice.
 

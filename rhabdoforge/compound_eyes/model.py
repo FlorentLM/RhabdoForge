@@ -35,7 +35,7 @@ from rhabdoforge.compound_eyes.helpers.neural_superposition import (
 from rhabdoforge.compound_eyes.helpers.acceptance import (
     SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
 )
-from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance, pupil_response, solve_modes
+from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance, solve_modes
 from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
 from rhabdoforge.compound_eyes.views import SpatialQueries, BaseView, OmmatidiumView, EyeView, RhabdomereView
 
@@ -1121,11 +1121,29 @@ class Model(SpatialQueries, BaseView):
         transmit = np.ones(self._R, dtype=np.float32)
 
         for r in range(self._R):
-            ratio[r], transmit[r] = pupil_response(
-                float(optics.v_number[r]), f_number,
-                float(optics.diameter_um[r]), float(optics.wavelength_um[r]), h,
-                defocus_um=optics.defocus_um, focal_um=focal_um,
+
+            dark = solve_modes(
+                v_number=float(optics.v_number[r]),
+                f_number=f_number,
+                diameter_um=float(optics.diameter_um[r]),
+                wavelength_um=float(optics.wavelength_um[r]),
+                h_um=np.inf,
+                defocus_um=optics.defocus_um,
+                focal_um=focal_um
             )
+
+            lit = solve_modes(
+                v_number=float(optics.v_number[r]),
+                f_number=f_number,
+                diameter_um=float(optics.diameter_um[r]),
+                wavelength_um=float(optics.wavelength_um[r]),
+                h_um=h,
+                defocus_um=optics.defocus_um,
+                focal_um=focal_um
+            )
+
+            ratio[r] = lit.d_half / dark.d_half
+            transmit[r] = lit.peak_power / dark.peak_power
 
         self._buf['closed_pupil_ratio'] = np.broadcast_to(ratio, (self._N, self._R))
         self._buf['closed_pupil_transmit'] = np.broadcast_to(transmit, (self._N, self._R))

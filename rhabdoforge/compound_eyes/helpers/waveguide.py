@@ -5,12 +5,10 @@ Equation numbers refer to:
 
 Stavenga, "Angular and spectral sensitivity of fly photoreceptors. I. Integrated facet lens and rhabdomere optics" (2003), 10.1007/s00359-002-0370-2
 Stavenga, "Angular and spectral sensitivity of fly photoreceptors. III. Dependence on the pupil mechanism in the blowfly Calliphora" (2004), 10.1007/s00359-003-0477-0
-
 """
-
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Tuple, List, Iterator, Optional
+from typing import TYPE_CHECKING, Tuple, List, Iterator, Optional
 import numpy as np
 from scipy.optimize import brentq
 from scipy.special import jv, kv, jn_zeros
@@ -19,14 +17,18 @@ if TYPE_CHECKING:
     from rhabdoforge.compound_eyes.helpers.acceptance import LensOptics, RhabdomereOptics
 
 
+
 # Quadrature resolution for the excitation integral and the angular sweep
-_QUAD_NODES = 256
-_SWEEP_NODES = 96
-_SWEEP_MAX_D = 6.0      # Angular sweep limit (in units of d/b)
-_CUTOFF_EPS = 1e-4      # V-number margin below which a mode is treated as unbound
+QUAD_NODES = 256
+SWEEP_NODES = 96
+SWEEP_MAX_D = 6.0      # Angular sweep limit (in units of d/b)
+CUTOFF_EPS = 1e-4      # V-number margin below which a mode is treated as unbound
+
+# Nodes per axis for the (F-number, focal length) interpolation in WaveguideAcceptance
+INTERP_NODES = 6
 
 # Precomputed Gaussian quadrature nodes and weights on [-1, 1]
-_GL_X, _GL_WT = np.polynomial.legendre.leggauss(_QUAD_NODES)
+_GL_X, _GL_WT = np.polynomial.legendre.leggauss(QUAD_NODES)
 
 
 
@@ -131,7 +133,7 @@ def solve_uw(v_number: float, l: int, m: int) -> Tuple[float, float]:
 
     cutoff, hi = LP_modes.bracket(l, m)
 
-    if v_number - cutoff < _CUTOFF_EPS:
+    if v_number - cutoff < CUTOFF_EPS:
         # excited power -> 0 at cut-off (Eq. 34's W/V factor), so skipping
         raise ValueError(f'LP({l},{m}) is at or below cut-off at V={v_number:.6f}')
 
@@ -280,7 +282,7 @@ def solve_modes(
     the lens only through its F-number.
     """
 
-    bound = LP_modes.up_to(v_number - _CUTOFF_EPS)  # all modes above cutoff
+    bound = LP_modes.up_to(v_number - CUTOFF_EPS)  # all modes above cutoff
     if not bound:
         raise ValueError(f'no bound modes at V={v_number:.4f}')
 
@@ -306,7 +308,7 @@ def solve_modes(
         phase = np.exp(1j * defocus_um * wavelength_um * delta * x ** 2
                        / (4.0 * np.pi * n_image * b ** 2))
 
-    d_sweep = np.linspace(0.0, _SWEEP_MAX_D, _SWEEP_NODES)
+    d_sweep = np.linspace(0.0, SWEEP_MAX_D, SWEEP_NODES)
 
     u_all, w_all, eta_all, t_all, p_all = [], [], [], [], []
     sensitivity = np.zeros_like(d_sweep)
@@ -378,6 +380,8 @@ def half_width(d_sweep: np.ndarray, sensitivity: np.ndarray) -> float:
     return float(d_sweep[i - 1] + t * (d_sweep[i] - d_sweep[i - 1]))
 
 
+# TODO: Move these three in utils probably
+
 def to_angle(d_half, diameter_um, focal_um):
     """
     Convert a half-width in D = d/b units to an acceptance angle (rad, FWHM): d = f*tan(theta)
@@ -386,26 +390,37 @@ def to_angle(d_half, diameter_um, focal_um):
     return 2.0 * np.arctan(d_half * 0.5 * diameter_um / np.asarray(focal_um))
 
 
-def pupil_response(
-        v_number: float,
-        f_number: float,
-        diameter_um: float,
-        wavelength_um: float,
-        h_um: float,
-        defocus_um: float = 0.0,
-        focal_um: Optional[float] = None
-    ) -> Tuple[float, float]:
+def _interp_grid(values: np.ndarray, nodes: int = INTERP_NODES) -> np.ndarray:
     """
-    Effect of closing the pupil to distance h (um) on one rhabdomere
-    (as two ratios against its dark-adapted state)
-
-        narrowing     = D rho(h) / D rho(inf)    <= 1, RF gets sharper
-        transmittance = peak(h) / peak(inf)      <= 1, sensitivity decreases
+    Interpolation nodes over 'values'.
+    An axis whose values are all equal collapses to a single node,
+    so a quantity that doesn't vary across the eye costs one solve.
     """
-    dark = solve_modes(v_number, f_number, diameter_um, wavelength_um)
-    lit = solve_modes(v_number, f_number, diameter_um, wavelength_um, h_um=h_um)
+    lo, hi = float(np.min(values)), float(np.max(values))
+    if hi - lo <= 1e-9 * max(abs(lo), abs(hi), 1.0):
+        return np.array([0.5 * (lo + hi)])
+    return np.linspace(lo, hi, nodes)
 
-    return lit.d_half / dark.d_half, lit.peak_power / dark.peak_power
+
+def _bilinear(x_grid: np.ndarray, y_grid: np.ndarray, table: np.ndarray,
+              x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """
+    Interpolate 'table', shape (len(x_grid), len(y_grid)), at the points (x, y).
+    Either grid may be a single node. Queries outside the grid are clamped to the edge.
+    """
+    if y_grid.size == 1:
+        rows = np.repeat(table[:, :1], x.size, axis=1)
+    else:
+        rows = np.stack([np.interp(y, y_grid, table[i]) for i in range(x_grid.size)])
+
+    if x_grid.size == 1:
+        return rows[0]
+
+    i = np.clip(np.searchsorted(x_grid, x) - 1, 0, x_grid.size - 2)
+    t = np.clip((x - x_grid[i]) / (x_grid[i + 1] - x_grid[i]), 0.0, 1.0)
+    cols = np.arange(x.size)
+
+    return rows[i, cols] * (1.0 - t) + rows[i + 1, cols] * t
 
 
 
@@ -433,11 +448,11 @@ class WaveguideAcceptance:
         v_number = np.asarray(rhab_optics.v_number, dtype=np.float64)
         wavelengths = np.asarray(rhab_optics.wavelength_um, dtype=np.float64)
 
-        f_keys = np.round(f_number, 6)
+        defocus = float(rhab_optics.defocus_um)
 
-        # Cached by parameters to reuse the integral overlap computation when ommatidia are identical
-        _cache: Dict[Tuple[int, int, int, int], float] = {}
-        _key_round = 1e6
+        # Solving per lens is way too slow, so solve on a grid spanning the values the eye has and interpolate
+        fn_grid = _interp_grid(f_number)
+        f_grid = _interp_grid(f)
 
         rho = np.empty((f.size, d_rhab.size), dtype=np.float32)
 
@@ -446,20 +461,14 @@ class WaveguideAcceptance:
             d_val = float(d_rhab[r])
             w_val = float(wavelengths[r])
 
-            for f_val in np.unique(f_keys):
+            table = np.array([
+                [solve_modes(v_val, float(fn), d_val, w_val,
+                             defocus_um=defocus, focal_um=float(fl)).d_half
+                 for fl in f_grid]
+                for fn in fn_grid
+            ])
 
-                _cache_key = (
-                    int(round(v_val * _key_round)),
-                    int(round(float(f_val) * _key_round)),
-                    int(round(d_val * _key_round)),
-                    int(round(w_val * _key_round))
-                )
-
-                if _cache_key not in _cache:
-                    _cache[_cache_key] = solve_modes(v_val, f_val, d_val, w_val).d_half
-
-                sel = f_keys == f_val
-
-                rho[sel, r] = to_angle(_cache[_cache_key], d_val, f[sel])
+            d_half = _bilinear(fn_grid, f_grid, table, f_number, f)
+            rho[:, r] = to_angle(d_half, d_val, f)
 
         return np.repeat(rho[..., None], 2, axis=-1)

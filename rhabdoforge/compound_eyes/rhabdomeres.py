@@ -49,7 +49,7 @@ class RhabdomereBundle:
             move-out and interruptible return phases (s)
         - tau_fast, tau_adapt: float, Fast and slow adaptation EMA times (s).
         - ampl_lat_um, ampl_ax_um: float, Max lateral / axial tip displacement at full microsaccade drive (μm).
-        - extra_narrowing_ratio: float, Extra, non-optical RF narrowing at full saccade (1.0 = pure optics).
+        - clip_ratio: float, Non-optical RF clipping at full lateral saccade (1.0 = pure optics).
         - center_index: int, Index of the central rhabdomere (e.g. R7/8 in Drosophila is index 6).
         - major_axis: float or (int, int), optional. Defines the bundle's major structural axis.
             If (int, int): indices of the two rhabdomeres whose line is the major axis.
@@ -82,7 +82,7 @@ class RhabdomereBundle:
                  tau_adapt: float = 0.050,
                  ampl_lat_um: float = 2.0,
                  ampl_ax_um: float = 2.0,
-                 extra_narrowing_ratio: float = 1.0,
+                 clip_ratio: float = 1.0,
                  center_index: int = 0,
                  major_axis: Union[float, Tuple[int, int], None] = None,
                  alignment_offset: float = 0.0,
@@ -115,7 +115,7 @@ class RhabdomereBundle:
         self.ampl_lat_um = float(ampl_lat_um)
         self.ampl_ax_um = float(ampl_ax_um)
 
-        self._extra_narrowing_ratio = float(min(max(0.0, extra_narrowing_ratio), 1.0))
+        self._clip_ratio = float(min(max(0.0, clip_ratio), 1.0))
 
         self.offsets_um = np.atleast_2d(np.asarray(offsets_um, dtype=np.float32)).reshape(-1, 2)
         R = self.offsets_um.shape[0]
@@ -306,15 +306,15 @@ class RhabdomereBundle:
     def saccade_axis_deg(self) -> float:
         return float(np.rad2deg(self.saccade_axis_rad))
 
-    # Phenomenological extra narrowing
+    # RF clipping
 
     @property
-    def extra_narrowing_ratio(self) -> float:
-        return self._extra_narrowing_ratio
+    def clip_ratio(self) -> float:
+        return self._clip_ratio
 
-    @extra_narrowing_ratio.setter
-    def extra_narrowing_ratio(self, val: float):
-        self._extra_narrowing_ratio = float(min(max(0.0, val), 1.0))
+    @clip_ratio.setter
+    def clip_ratio(self, val: float):
+        self._clip_ratio = float(min(max(0.0, val), 1.0))
 
     # Spectral accessors
 

@@ -169,6 +169,7 @@ class Renderer:
 
         self._microsaccades_enabled: bool = None
         self.microsaccades_enabled = enable_microsaccades
+        self._override_pupil_drive: Optional[float] = None
 
         self.false_colours: bool = False            # TODO: expose these (and generate UV-encoded assets for demo)
         self.uv_encoded_textures: bool = False
@@ -360,7 +361,9 @@ class Renderer:
             enable_actuation=self._microsaccades_enabled,
             photon_concentration_factor=0.0,  # TODO: document this better
             lum_ref=self._lum_ref,
-            extra_narrowing_ratio=float(self._model.bundle.extra_narrowing_ratio),
+            clip_ratio=float(self._model.bundle.clip_ratio),
+            force_pupil_drive=self._override_pupil_drive is not None,
+            pupil_drive=0.0,
             trigger_delay=self._trigger_delay,
         )
 
@@ -411,7 +414,7 @@ class Renderer:
             rhab_per_omm=self._model.R,
             bundle_centre_idx=self._model.bundle.center_index,
             fused_rhabdoms=int(self._model.bundle.fused_rhabdoms),
-            extra_narrowing_ratio=float(self._model.bundle.extra_narrowing_ratio),
+            clip_ratio=float(self._model.bundle.clip_ratio),
             **self._update_visualisation_scales()
         )
 
@@ -1584,6 +1587,25 @@ class Renderer:
             value = False
         self._microsaccades_enabled = value
         self._eye_uniforms.update(enable_actuation=self._microsaccades_enabled)
+
+    @property
+    def pupil_drive(self) -> Optional[float]:
+        """
+        Overrides the steady-state drive with a fixed value in [0, 1].
+        None disables the override.
+        """
+        return self._override_pupil_drive
+
+    @pupil_drive.setter
+    def pupil_drive(self, value: Optional[float]) -> None:
+        self._override_pupil_drive = None if value is None else float(value)
+
+        is_overriden = self._override_pupil_drive is not None
+
+        self._eye_uniforms.update(
+            force_pupil_drive=is_overriden,
+            pupil_drive=self._override_pupil_drive if is_overriden else 0.0,
+        )
 
     def dither(self) -> None:
         """Dither once (reshuffle the dither counter)"""

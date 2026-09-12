@@ -2,11 +2,13 @@ import numpy as np
 from rhabdoforge.engine import get_context, Agent, Scene, Asset
 from rhabdoforge.engine.meshes import CUBE_VERTICES, CUBE_INDICES
 from rhabdoforge.compound_eyes import Model
-from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle
+from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle, honeybee_bundle
+from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance
 from rhabdoforge.renderers import Renderer
 from rhabdoforge.interactive.debug import DebugBox, AxesGizmo
 from rhabdoforge.renderers.helpers import VisualOutput
-from rhabdoforge.types import RandomnessMode
+from rhabdoforge.types import RandomnessMode, SamplingMode
+
 
 if __name__ == "__main__":
 
@@ -14,7 +16,8 @@ if __name__ == "__main__":
     HEADLESS = False
     BATCH_SIZE = 1000
     SHOW_DEBUG_OBJECTS = False
-    USE_NEURAL_SUPERPOSITION = True
+
+    USE_DROSO_MODEL = True
 
     # -----------------------------------------------
 
@@ -48,19 +51,32 @@ if __name__ == "__main__":
 
 
     # Setup compound eyes model
-    # scaffold_file = 'assets/drosophila_scaffold.npz'
-    scaffold_file = 'assets/honeybee_scaffold_s10.npz'
-    # scaffold_file = 'assets/drosophila_scaffold_k22.npz'
+    if USE_DROSO_MODEL:
 
-    model = Model.from_file(
-        scaffold_file,
-        # bundle=drosophila_bundle() if USE_NEURAL_SUPERPOSITION else None,
-        # neural_superposition=USE_NEURAL_SUPERPOSITION
-    )
+        scaffold_file = 'assets/drosophila_scaffold.npz'
+
+        model = Model.from_file(
+            scaffold_file,
+            bundle=drosophila_bundle(),
+            acceptance=WaveguideAcceptance(),
+            neural_superposition=True,
+        )
+
+    else:
+
+        scaffold_file = 'assets/honeybee_scaffold_s10.npz'
+
+        model = Model.from_file(
+            scaffold_file,
+            bundle=honeybee_bundle(),
+            acceptance=WaveguideAcceptance(),
+            neural_superposition=False,
+        )
+
     model.scale(1e-6)
 
-    # Example: setting time adaptation (generates motion blur)
-    model.tau_membrane = 0.012   # 12 ms is good for Drosophila
+    # Example: overriding time adaptation (generates motion blur)
+    # model.tau_membrane = 0.012
 
     # Setup the agent
     agent = Agent(position=(0.0, 0.0, 4.0))
@@ -71,10 +87,12 @@ if __name__ == "__main__":
         nb_samples=SAMPLES_PER_RHABDOMERE,
         time_dithering=True,
         randomness_mode=RandomnessMode.Halton,
-        enable_microsaccades=True,
+        sampling_mode=SamplingMode.Waveguide if USE_DROSO_MODEL else SamplingMode.Gaussian,
+        enable_microsaccades=True if USE_DROSO_MODEL else False,
         enable_direct=True, enable_shadows=True, enable_ambient=True
     )
 
+    renderer.hybrid_sampling = True if USE_DROSO_MODEL else False
 
     # Example: add debug objects (wireframes, grid etc)
     if SHOW_DEBUG_OBJECTS:
@@ -117,7 +135,7 @@ if __name__ == "__main__":
 
     if not HEADLESS:
         # Interactive mode
-        while context.run_interactive(use_dashboard=False):
+        while context.run_interactive(use_dashboard=True):
 
             context.input()  # processes inputs from keyboard / gamepad etc (optional)
 
