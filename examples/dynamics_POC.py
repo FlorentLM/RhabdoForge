@@ -369,9 +369,7 @@ def get_centered_data(grid, prof):
 
 
 def find_dip(grid, prof, view=0.30, min_peak=0.1, deriv_win=9):
-    """
-    Dip detection using zero-crossings and inflection points.
-    """
+
     m = np.abs(grid) <= view
     g, p = np.asarray(grid)[m], np.asarray(prof)[m]
     if p.size < 11 or p.max() <= 0:
@@ -380,41 +378,42 @@ def find_dip(grid, prof, view=0.30, min_peak=0.1, deriv_win=9):
     win = max(7, deriv_win | 1)
     win = min(win, p.size - (p.size + 1) % 2)
 
-    # d1 = slope (first derivative), d2 = curvature (second derivative)
     d1 = savgol_filter(p, win, 2, deriv=1, delta=float(g[1] - g[0]))
-    d2 = savgol_filter(p, win, 2, deriv=2, delta=float(g[1] - g[0]))
 
-    dmax = np.abs(d1).max()
     base = float(np.percentile(p, 5))
     floor = base + min_peak * (p.max() - base)
+    dx = g[1] - g[0]
 
-    # Dip detection
-    # A dip is a local minimum: slope (d1) crosses from negative to positive
-    for i in range(2, len(d1) - 2):
+
+    edge = win // 2 + 1
+    dips, shoulders = [], []
+    for i in range(edge, len(d1) - edge):
         if d1[i - 1] < 0 and d1[i] >= 0:
-            idx = i
-            # Measure prominence to ensure it's a real dip between two peaks
-            p_left = p[:idx].max()
-            p_right = p[idx:].max()
-            if p_left > floor and p_right > floor:
-                depth = (min(p_left, p_right) - p[idx]) / (p.max() - base + 1e-6)
-                if depth > 0.005:  # Real but potentially shallow
-                    return (float(g[idx]), float(p[idx]), float(depth), 'dip')
+            p_left = p[:i].max()
+            p_right = p[i:].max()
+            depth = (min(p_left, p_right) - p[i]) / (p.max() - base + 1e-6)
+            if depth <= 1e-9:
+                continue
+            (dips if (p_left > floor and p_right > floor) else shoulders).append((depth, i))
 
-    # Shoulder detection
-    for i in range(2, len(d2) - 2):
-        # We look for where curvature changes sign
-        if d2[i - 1] * d2[i] < 0:
-            idx = i
-            # slope significantly slowed down?
-            if abs(d1[idx]) < 0.25 * dmax and p[idx] > floor:
-                # Check it's actually a shoulder (slope doesn't flip sign nearby)
-                return (float(g[idx]), float(p[idx]), 0.05, 'shoulder')
+
+    for candidates, kind in ((dips, 'dip'), (shoulders, 'shoulder')):
+        if not candidates:
+            continue
+        depth, i = max(candidates, key=lambda c: c[0])
+
+        y0, y1, y2 = p[i - 1], p[i], p[i + 1]
+        denom = y0 - 2.0 * y1 + y2
+        frac = float(np.clip(0.5 * (y0 - y2) / denom, -1.0, 1.0)) if abs(denom) > 1e-12 else 0.0
+        g_dip = g[i] + frac * dx
+        p_dip = y1 - 0.25 * (y0 - y2) * frac
+        return (float(g_dip), float(p_dip), float(depth), kind)
 
     return None
 
 
 def _get_signal_x_limit(results, cond_names):
+
     max_ext_deg = 1.0
     for res in results.values():
         for cond in cond_names:
@@ -422,7 +421,8 @@ def _get_signal_x_limit(results, cond_names):
                 g, p = trace(res, cond, mdir, 'pool')
                 if p.max() <= 0: continue
                 gc, pc = get_centered_data(g, p)
-                active = np.where(pc > 0.01 * pc.max())[0]
+                in_view = np.abs(gc) <= VIEW_HALFWIDTH
+                active = np.where(in_view & (pc > 0.01 * pc.max()))[0]
                 if len(active) > 0:
                     ext = np.abs(to_deg(gc[active])).max()
                     max_ext_deg = max(max_ext_deg, ext)
@@ -519,11 +519,13 @@ def _profile_panel(ax, s: PlotSettings, results, pupil_state, cond, sep_m, sep_d
                 solid_capstyle='round', zorder=6)
 
         dip = find_dip(grid, pooled)
-        if dip is not None and dip[2] >= DIP_MIN_DEPTH:
-            xd, yd, _, kind = dip
-            ax.plot(to_deg(xd), sign * yd,
-                    marker=('v' if sign > 0 else '^') if kind == 'dip' else 's',
-                    color=colour, ms=3.0, mec='white', mew=0.4, zorder=7)
+        if dip is not None:
+            xd, yd, depth, kind = dip
+
+            if kind == 'shoulder' or depth >= DIP_MIN_DEPTH:
+                ax.plot(to_deg(xd), sign * yd,
+                        marker=('v' if sign > 0 else '^') if kind == 'dip' else 's',
+                        color=colour, ms=3.0, mec='white', mew=0.4, zorder=7)
 
     _mirror_axes(ax, s, sep_deg)
     ax.set_xlim(-x_lim, x_lim)
