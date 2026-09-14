@@ -368,7 +368,18 @@ def get_centered_data(grid, prof):
     return grid - c, prof
 
 
-def find_dip(grid, prof, view=0.30, min_peak=0.1, deriv_win=9):
+def _curvature_peak(d2, i, sign):
+
+    L = i
+    while L > 0 and np.sign(d2[L - 1]) == sign:
+        L -= 1
+    if L == i:
+        return i
+    seg = d2[L:i]
+    return L + (int(np.argmax(seg)) if sign > 0 else int(np.argmin(seg)))
+
+
+def find_dip(grid, prof, view=0.30, min_peak=0.1, deriv_win=9, shoulder_prominence=0.10, shoulder_noise_floor=0.03):
 
     m = np.abs(grid) <= view
     g, p = np.asarray(grid)[m], np.asarray(prof)[m]
@@ -377,36 +388,57 @@ def find_dip(grid, prof, view=0.30, min_peak=0.1, deriv_win=9):
 
     win = max(7, deriv_win | 1)
     win = min(win, p.size - (p.size + 1) % 2)
-
-    d1 = savgol_filter(p, win, 2, deriv=1, delta=float(g[1] - g[0]))
-
-    base = float(np.percentile(p, 5))
-    floor = base + min_peak * (p.max() - base)
     dx = g[1] - g[0]
 
+    d1 = savgol_filter(p, win, 2, deriv=1, delta=dx)
+    d2 = savgol_filter(p, win, 3, deriv=2, delta=dx)
+
+    base = float(np.percentile(p, 5))
+    scale = p.max() - base + 1e-9
+    floor = base + min_peak * scale
+    d1_scale = np.ptp(d1) + 1e-9
 
     edge = win // 2 + 1
     dips, shoulders = [], []
     for i in range(edge, len(d1) - edge):
-        if d1[i - 1] < 0 and d1[i] >= 0:
-            p_left = p[:i].max()
-            p_right = p[i:].max()
-            depth = (min(p_left, p_right) - p[i]) / (p.max() - base + 1e-6)
-            if depth <= 1e-9:
-                continue
-            (dips if (p_left > floor and p_right > floor) else shoulders).append((depth, i))
 
+        if d1[i - 1] < 0 <= d1[i]:
+            p_left, p_right = p[:i].max(), p[i:].max()
+            depth = (min(p_left, p_right) - p[i]) / scale
+            if depth > 1e-9:
+                (dips if (p_left > floor and p_right > floor) else shoulders).append((depth, i))
+            continue
+
+        if d1[i] > 0 and d1[i - 1] >= d1[i] and d1[i + 1] > d1[i]:      # rising flank stalls
+            bound = min(d1[:i].max(), d1[i:].max())
+            raw = bound - d1[i]
+            curve_sign = -1.0
+        elif d1[i] < 0 and d1[i - 1] <= d1[i] and d1[i + 1] < d1[i]:    # falling flank stalls
+            bound = max(d1[:i].min(), d1[i:].min())
+            raw = d1[i] - bound
+            curve_sign = 1.0
+        else:
+            continue
+
+        if raw < shoulder_noise_floor * d1_scale:
+            continue
+        rel = raw / (abs(bound) + 1e-9)
+        if rel > shoulder_prominence:
+            shoulders.append((rel, _curvature_peak(d2, i, curve_sign)))
 
     for candidates, kind in ((dips, 'dip'), (shoulders, 'shoulder')):
         if not candidates:
             continue
         depth, i = max(candidates, key=lambda c: c[0])
 
-        y0, y1, y2 = p[i - 1], p[i], p[i + 1]
-        denom = y0 - 2.0 * y1 + y2
-        frac = float(np.clip(0.5 * (y0 - y2) / denom, -1.0, 1.0)) if abs(denom) > 1e-12 else 0.0
-        g_dip = g[i] + frac * dx
-        p_dip = y1 - 0.25 * (y0 - y2) * frac
+        if kind == 'dip':
+            y0, y1, y2 = p[i - 1], p[i], p[i + 1]
+            denom = y0 - 2.0 * y1 + y2
+            frac = float(np.clip(0.5 * (y0 - y2) / denom, -1.0, 1.0)) if abs(denom) > 1e-12 else 0.0
+            g_dip, p_dip = g[i] + frac * dx, y1 - 0.25 * (y0 - y2) * frac
+        else:
+            g_dip, p_dip = g[i], p[i]
+
         return (float(g_dip), float(p_dip), float(depth), kind)
 
     return None
@@ -704,7 +736,7 @@ def make_figure(results, s: PlotSettings) -> plt.Figure:
 
     for i, pupil_state in enumerate(pupil_states):
         row_header(fig, s, axB[i, 0],
-                   f'{pupil_state.title()}\n(drive={PUPIL_STATES[pupil_state]:g})',
+                   f'{pupil_state.title()}',
                    dx=0.062, colour=s.dark)
 
     pl, pr = axB[-1, 0].get_position(), axB[-1, -1].get_position()
