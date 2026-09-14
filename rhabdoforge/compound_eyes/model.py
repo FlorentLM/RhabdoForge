@@ -269,6 +269,8 @@ class Model(SpatialQueries, BaseView):
             self._superposition_wired = False
             self._conflicts_cache = get_noconflict_masks(self._N, self._R)
 
+        print('Done building compound eye model.')
+
     @classmethod
     def from_sphere(cls,
             n: int = 2000,

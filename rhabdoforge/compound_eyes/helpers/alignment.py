@@ -246,14 +246,15 @@ class BundlesAligner:
         diag = self._diagnostics(model, result)
 
         if verbose:
+            print('Rhabdomeres orientation diagnostics:')
             if 'align_mean' in diag:
-                print(f"[ align ] offset from flow: mean={diag['align_mean']:5.1f}deg, "
+                print(f"  [ align ] offset from flow: mean={diag['align_mean']:5.1f}deg, "
                       f"std={diag['align_std']:4.1f}deg, target={diag['align_target']:.1f}deg, "
                       f"within+-{diag['tol_deg']:g}deg: {100 * diag['align_frac']:.0f}%, "
                       f"resulting mean error {diag['align_error_pct']:.1f}%")
 
             if 'saccade_mean' in diag:
-                print(f"[saccade] offset from main: mean={diag['saccade_mean']:5.1f}deg, "
+                print(f"  [saccade] offset from main: mean={diag['saccade_mean']:5.1f}deg, "
                       f"std={diag['saccade_std']:4.1f}deg, target={diag['saccade_target']:.1f}deg, "
                       f"within+-{diag['tol_deg']:g}deg: {100 * diag['saccade_frac']:.0f}%, "
                       f"resulting mean error {diag['saccade_error_pct']:.1f}%")
