@@ -8,6 +8,7 @@ Stavenga, "Angular and spectral sensitivity of fly photoreceptors. III. Dependen
 """
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING, Tuple, List, Iterator, Optional
 import numpy as np
 from scipy.optimize import brentq
@@ -26,6 +27,7 @@ CUTOFF_EPS = 1e-4      # V-number margin below which a mode is treated as unboun
 
 # Nodes per axis for the (F-number, focal length) interpolation in WaveguideAcceptance
 INTERP_NODES = 6
+GRID_RTOL = 1e-6        # For float32 noise
 
 # Precomputed Gaussian quadrature nodes and weights on [-1, 1]
 _GL_X, _GL_WT = np.polynomial.legendre.leggauss(QUAD_NODES)
@@ -397,7 +399,7 @@ def _interp_grid(values: np.ndarray, nodes: int = INTERP_NODES) -> np.ndarray:
     so a quantity that doesn't vary across the eye costs one solve.
     """
     lo, hi = float(np.min(values)), float(np.max(values))
-    if hi - lo <= 1e-9 * max(abs(lo), abs(hi), 1.0):
+    if hi - lo <= GRID_RTOL * max(abs(lo), abs(hi), 1.0):
         return np.array([0.5 * (lo + hi)])
     return np.linspace(lo, hi, nodes)
 
@@ -421,6 +423,39 @@ def _bilinear(x_grid: np.ndarray, y_grid: np.ndarray, table: np.ndarray,
     cols = np.arange(x.size)
 
     return rows[i, cols] * (1.0 - t) + rows[i + 1, cols] * t
+
+
+@lru_cache(maxsize=8192)
+def _solve_scalar(attr: str, v_number: float, f_number: float, diameter_um: float,
+                  wavelength_um: float, h_um: float, defocus_um: float, focal_um: float) -> float:
+    """
+    One scalar attribute of a mode solve (baking passes share the rest state so it's lru-cached).
+    """
+    modes = solve_modes(v_number, f_number, diameter_um, wavelength_um,
+                        h_um=h_um, defocus_um=defocus_um, focal_um=focal_um)
+    return float(getattr(modes, attr))
+
+
+def solve_per_lens(attr: str, f_number: np.ndarray, focal_um: np.ndarray, *,
+                   v_number: float, diameter_um: float, wavelength_um: float,
+                   h_um: float = np.inf, defocus_um: float = 0.0) -> np.ndarray:
+    """
+    Per-lens value of a scalar 'RhabdomereModes' attribute (for one rhabdomere type).
+
+    Solving per lens is way too slow, so solve on a grid spanning the (F-number, focal length)
+    values the eye has and interpolate.
+    """
+    fn_grid = _interp_grid(f_number)
+    f_grid = _interp_grid(focal_um)
+
+    table = np.array([
+        [_solve_scalar(attr, v_number, float(fn), diameter_um, wavelength_um,
+                       h_um, defocus_um, float(fl))
+         for fl in f_grid]
+        for fn in fn_grid
+    ])
+
+    return _bilinear(fn_grid, f_grid, table, f_number, focal_um)
 
 
 
@@ -450,25 +485,17 @@ class WaveguideAcceptance:
 
         defocus = float(rhab_optics.defocus_um)
 
-        # Solving per lens is way too slow, so solve on a grid spanning the values the eye has and interpolate
-        fn_grid = _interp_grid(f_number)
-        f_grid = _interp_grid(f)
-
         rho = np.empty((f.size, d_rhab.size), dtype=np.float32)
 
         for r in range(d_rhab.size):
-            v_val = float(v_number[r])
             d_val = float(d_rhab[r])
-            w_val = float(wavelengths[r])
 
-            table = np.array([
-                [solve_modes(v_val, float(fn), d_val, w_val,
-                             defocus_um=defocus, focal_um=float(fl)).d_half
-                 for fl in f_grid]
-                for fn in fn_grid
-            ])
+            d_half = solve_per_lens('d_half', f_number, f,
+                                    v_number=float(v_number[r]),
+                                    diameter_um=d_val,
+                                    wavelength_um=float(wavelengths[r]),
+                                    defocus_um=defocus)
 
-            d_half = _bilinear(fn_grid, f_grid, table, f_number, f)
             rho[:, r] = to_angle(d_half, d_val, f)
 
         return np.repeat(rho[..., None], 2, axis=-1)

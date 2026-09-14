@@ -35,7 +35,7 @@ from rhabdoforge.compound_eyes.helpers.neural_superposition import (
 from rhabdoforge.compound_eyes.helpers.acceptance import (
     SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
 )
-from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance, solve_modes
+from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance, solve_modes, solve_per_lens
 from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
 from rhabdoforge.compound_eyes.views import SpatialQueries, BaseView, OmmatidiumView, EyeView, RhabdomereView
 
@@ -70,6 +70,8 @@ class Model(SpatialQueries, BaseView):
             neural_superposition: bool = False,
             lens_packing: float = 0.9,
         ):
+
+        print('Building compound eye model...')
 
         self._spatial = {}
 
@@ -1169,18 +1171,37 @@ class Model(SpatialQueries, BaseView):
 
         if isinstance(self._acceptance_model, WaveguideAcceptance):
             optics = self._rhab_optics()
-            focal_um = float(np.median(self._buf['focal_um']))
-            f_number = float(np.median(self._buf['focal_um'] / np.clip(self._buf['aperture_um'], 1e-6, None)))
 
-            floor = np.ones(self._R, dtype=np.float32)
+
+            focal_um = np.clip(self._buf['focal_um'].astype(np.float64), 1e-6, None)
+            f_number = focal_um / np.clip(self._buf['aperture_um'].astype(np.float64), 1e-6, None)
+
+            floor = np.ones((self._N, self._R), dtype=np.float32)
             for r in range(self._R):
-                args = (float(optics.v_number[r]), f_number,
-                        float(optics.diameter_um[r]), float(optics.wavelength_um[r]))
-                rest = solve_modes(*args, defocus_um=optics.defocus_um, focal_um=focal_um)
-                moved = solve_modes(*args, defocus_um=optics.defocus_um + ampl, focal_um=focal_um)
-                floor[r] = moved.d_half / rest.d_half
 
-            self._buf['axial_scale_floor'] = np.broadcast_to(floor, (self._N, self._R))
+                rest = solve_per_lens(
+                    attr='d_half',
+                    f_number=f_number,
+                    focal_um=focal_um,
+                    defocus_um=optics.defocus_um,
+                    v_number=float(optics.v_number[r]),
+                    diameter_um=float(optics.diameter_um[r]),
+                    wavelength_um=float(optics.wavelength_um[r])
+                )
+
+                moved = solve_per_lens(
+                    attr='d_half',
+                    f_number=f_number,
+                    focal_um=focal_um,
+                    defocus_um=optics.defocus_um + ampl,
+                    v_number=float(optics.v_number[r]),
+                    diameter_um=float(optics.diameter_um[r]),
+                    wavelength_um=float(optics.wavelength_um[r])
+                )
+
+                floor[:, r] = moved / np.maximum(rest, 1e-12)
+
+            self._buf['axial_scale_floor'] = floor
             return
 
         # Snyder fallback: only the geometric blur recedes with the tip
