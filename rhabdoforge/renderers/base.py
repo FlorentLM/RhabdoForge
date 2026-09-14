@@ -170,6 +170,7 @@ class Renderer:
         self._microsaccades_enabled: bool = None
         self.microsaccades_enabled = enable_microsaccades
         self._override_pupil_drive: Optional[float] = None
+        self._override_saccade_drive: Optional[float] = None
 
         self.false_colours: bool = False            # TODO: expose these (and generate UV-encoded assets for demo)
         self.uv_encoded_textures: bool = False
@@ -365,6 +366,8 @@ class Renderer:
             clip_ratio=float(self._model.bundle.clip_ratio),
             force_pupil_drive=self._override_pupil_drive is not None,
             pupil_drive=0.0,
+            force_saccade_drive=self._override_saccade_drive is not None,
+            saccade_drive=0.0,
             trigger_delay=self._trigger_delay,
         )
 
@@ -1484,6 +1487,21 @@ class Renderer:
         self._eye_uniforms.update(noise_threshold=self._noise_threshold)
 
     @property
+    def clip_ratio(self) -> float:
+        """
+        Non-optical RF clipping at full lateral microsaccade (1.0 = pure optics).
+
+        Stands in for vignetting against the lens's Airy footprint and the cone/pigment-cell
+        aperture.
+        """
+        return float(self._model.bundle.clip_ratio)
+
+    @clip_ratio.setter
+    def clip_ratio(self, value: float) -> None:
+        self._model.bundle.clip_ratio = float(value)
+        self._eye_uniforms.update(clip_ratio=float(self._model.bundle.clip_ratio))
+
+    @property
     def trigger_delay(self) -> float:
         """
         Onset latency of the photomechanical reflex arc (s)
@@ -1606,6 +1624,25 @@ class Renderer:
         self._eye_uniforms.update(
             force_pupil_drive=is_overriden,
             pupil_drive=self._override_pupil_drive if is_overriden else 0.0,
+        )
+
+    @property
+    def saccade_drive(self) -> Optional[float]:
+        """
+        Overrides the photomechanical reflex arc with a fixed excursion in [0, 1].
+        None disables the override.
+        """
+        return self._override_saccade_drive
+
+    @saccade_drive.setter
+    def saccade_drive(self, value: Optional[float]) -> None:
+        self._override_saccade_drive = None if value is None else float(value)
+
+        is_overriden = self._override_saccade_drive is not None
+
+        self._eye_uniforms.update(
+            force_saccade_drive=is_overriden,
+            saccade_drive=self._override_saccade_drive if is_overriden else 0.0,
         )
 
     def dither(self) -> None:

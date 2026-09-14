@@ -19,6 +19,8 @@ uniform float noise_threshold;
 uniform float clip_ratio;          // Non-optical RF clipping at full lateral saccade (1.0 = pure optics)
 uniform bool  force_pupil_drive;   // Override steady_state_drive with pupil_drive
 uniform float pupil_drive;
+uniform bool  force_saccade_drive;  // Override the reflex arc with saccade_drive
+uniform float saccade_drive;
 uniform float trigger_delay;       // onset latency between light detection and movement start (s)
 
 void main() {
@@ -90,6 +92,14 @@ void main() {
         } else if (mech_t >= os.return_duration) {
             mech_phase = 0.0; mech_t = 0.0; mech_frac0 = 0.0; mech_frac = 0.0;
         }
+    }
+
+    // Override: hold a fixed excursion
+    if (force_saccade_drive) {
+        mech_phase = 0.0;
+        mech_t     = 0.0;
+        mech_frac0 = 0.0;
+        mech_frac  = clamp(saccade_drive, 0.0, 1.0);
     }
 
     od.mech_phase = mech_phase;
