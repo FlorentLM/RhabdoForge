@@ -222,6 +222,9 @@ class ShaderProgram:
         self.locations = {}
         self.types = {}
 
+        self.uniform_versions = {}   # name -> value version this program last uploaded
+        self.dispatchers = {}        # name -> (value signature, fast setter)
+
         self.use()
         self._cache_uniforms()
         self.stop()
@@ -675,8 +678,6 @@ class UniformRegistry:
     def __init__(self, **kwargs):
         self._uniforms = {}
         self._uniform_versions = {}  # name -> int (global version of the value)
-        self._shader_versions = {}   # shader_id -> {name: int} (what version the shader last saw)
-        self._dispatchers = {}       # (shader_id, name) -> fast lambda callable
         self.update(**kwargs)
 
     def __setitem__(self, name: str, value):
@@ -687,6 +688,15 @@ class UniformRegistry:
 
     def __repr__(self):
         return f'<UniformRegistry({len(self._uniforms)} uniforms)>'
+
+    @staticmethod
+    def _signature(value):
+        """What a cached dispatcher is valid for: Change here = rebuild"""
+        if isinstance(value, np.ndarray):
+            return (np.ndarray, value.shape, value.dtype)
+        if isinstance(value, (tuple, list)):
+            return (type(value), len(value))
+        return (type(value),)
 
     def _values_differ(self, old_val, new_val):
         if type(old_val) != type(new_val):
@@ -702,15 +712,8 @@ class UniformRegistry:
         for name, value in kwargs.items():
             old_val = self._uniforms.get(name, None)
 
-            if name in self._uniforms:
-                if not self._values_differ(old_val, value):
-                    continue  # value hasn't changed, do nothing
-
-                # If the underlying type or numpy shape changes, invalidate our cached dispatcher
-                if type(old_val) != type(value) or (isinstance(value, np.ndarray) and old_val.shape != value.shape):
-                    keys_to_del = [k for k in self._dispatchers if k[1] == name]
-                    for k in keys_to_del:
-                        del self._dispatchers[k]
+            if name in self._uniforms and not self._values_differ(old_val, value):
+                continue  # value hasn't changed, do nothing
 
             self._uniforms[name] = value
             self._uniform_versions[name] = self._uniform_versions.get(name, 0) + 1
@@ -756,44 +759,46 @@ class UniformRegistry:
             shape = value.shape
             dtype_kind = value.dtype.kind
 
-            value_flat = np.ascontiguousarray(value).flatten()
+
+            def as_f32(v):
+                return np.ascontiguousarray(v, dtype=np.float32).ravel()
+
+            def as_i32(v):
+                return np.ascontiguousarray(v, dtype=np.int32).ravel()
 
             # Matrices (single (3,3)/(4,4) or arrays of matrices (N, 3, 3)/(N, 4, 4))
             if ndim >= 2 and shape[-2:] == (3, 3):
-                return lambda v: glUniformMatrix3fv(loc, size // 9, GL_TRUE, value_flat)
+                return lambda v: glUniformMatrix3fv(loc, size // 9, GL_TRUE, as_f32(v))
 
             elif ndim >= 2 and shape[-2:] == (4, 4):
-                return lambda v: glUniformMatrix4fv(loc, size // 16, GL_TRUE, value_flat)
+                return lambda v: glUniformMatrix4fv(loc, size // 16, GL_TRUE, as_f32(v))
 
             # Scalars (1D or ND arrays of single values tied to specific GL types)
             elif uniform_type in (GL_INT, GL_UNSIGNED_INT, GL_FLOAT, GL_BOOL):
                 if dtype_kind in ('i', 'u', 'b'):
-                    return lambda v: glUniform1iv(loc, size, value_flat)
+                    return lambda v: glUniform1iv(loc, size, as_i32(v))
                 else:
-                    return lambda v: glUniform1fv(loc, size, value_flat)
+                    return lambda v: glUniform1fv(loc, size, as_f32(v))
 
             # Vectors (single vectors (2,) or arrays of vectors (N, 2), (N, 3), (N, 4))
             else:
                 vec_size = shape[-1] if ndim > 0 else 1
 
                 if vec_size == 2:
-                    return lambda v: glUniform2fv(loc, size // 2, value_flat)
+                    return lambda v: glUniform2fv(loc, size // 2, as_f32(v))
                 elif vec_size == 3:
-                    return lambda v: glUniform3fv(loc, size // 3, value_flat)
+                    return lambda v: glUniform3fv(loc, size // 3, as_f32(v))
                 elif vec_size == 4:
-                    return lambda v: glUniform4fv(loc, size // 4, value_flat)
+                    return lambda v: glUniform4fv(loc, size // 4, as_f32(v))
 
         raise TypeError(
             f"UniformRegistry doesn't know how to dispatch type: {type(value)} with shape {getattr(value, 'shape', 'N/A')} for uniform")
 
     def apply(self, shader: 'ShaderProgram'):
         """Applies all dirty uniforms to the given shader."""
-        shader_id = shader.program_id
 
-        if shader_id not in self._shader_versions:
-            self._shader_versions[shader_id] = {}
-
-        shader_vers = self._shader_versions[shader_id]
+        shader_vers = shader.uniform_versions
+        dispatchers = shader.dispatchers
 
         for name, value in self._uniforms.items():
             cur_ver = self._uniform_versions[name]
@@ -802,18 +807,20 @@ class UniformRegistry:
             if shader_vers.get(name, -1) == cur_ver:
                 continue
 
-            cache_key = (shader_id, name)
-            if cache_key not in self._dispatchers:
+            signature = self._signature(value)
+            entry = dispatchers.get(name)
+
+            if entry is None or entry[0] != signature:
                 loc = shader.get_loc(name)
                 if loc == -1:
                     # Shader optimised this out. Mark up-to-date so it's ignored next time
                     shader_vers[name] = cur_ver
                     continue
 
-                uniform_type = shader.types.get(name)
-                self._dispatchers[cache_key] = self._build_dispatcher(loc, uniform_type, value)
+                entry = (signature, self._build_dispatcher(loc, shader.types.get(name), value))
+                dispatchers[name] = entry
 
-            self._dispatchers[cache_key](value)
+            entry[1](value)
             shader_vers[name] = cur_ver
 
 
