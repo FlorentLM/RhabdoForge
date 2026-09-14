@@ -34,12 +34,13 @@ class Dashboard:
         self._initialised = False
 
         self._main_thread_queue = []
+        self._active_tab = None
 
         self.ui_tags = {}  # dpg item tags for syncing
 
     def _setup_dpg(self):
         dpg.create_context()
-        dpg.create_viewport(title='InsectVision Dashboard', width=650, height=950, vsync=self.ctx.vsync)
+        dpg.create_viewport(title='InsectVision Dashboard', width=650, height=1260, vsync=self.ctx.vsync)
         dpg.setup_dearpygui()
 
         model = self.ctx.renderer.model
@@ -47,7 +48,7 @@ class Dashboard:
 
         self.rec_data_buffers = [collections.deque(maxlen=self.plot_history_len) for _ in range(model.R)]
 
-        with dpg.window(label='Inspector', width=650, height=950, no_close=True, no_move=True, tag='main_window'):
+        with dpg.window(label='Inspector', width=650, height=1260, no_close=True, no_move=True, tag='main_window'):
 
             # Info panel
 
@@ -80,7 +81,7 @@ class Dashboard:
 
             # Tabs
 
-            with dpg.tab_bar(tag='main_tabs'):
+            with dpg.tab_bar(tag='main_tabs', callback=self._on_tab_changed):
 
                 # Tab 1: Plots
                 with dpg.tab(label='Plots', tag='tab_plots'):
@@ -122,6 +123,14 @@ class Dashboard:
                         dpg.add_plot_axis(dpg.mvYAxis, label='um', tag='y_axis_2')
                         dpg.set_axis_limits('y_axis_2', -2.0, 5.0)
 
+                    # Gap between the two traces = granule lag
+                    with dpg.plot(label="Pupil state", height=240, width=-1, tag='pupil_plot'):
+                        dpg.add_plot_legend()
+                        self.bg_layer_3 = dpg.add_draw_node(tag='plot_bg_layer_3')
+                        dpg.add_plot_axis(dpg.mvXAxis, label='Frame', tag='x_axis_3')
+                        dpg.add_plot_axis(dpg.mvYAxis, label='drive (0 = dark, 1 = closed)', tag='y_axis_3')
+                        dpg.set_axis_limits('y_axis_3', -0.02, 1.05)
+
                     self.series_pool = []
                     for i in range(self.max_selected):
                         pool_item = {}
@@ -133,6 +142,9 @@ class Dashboard:
 
                         pool_item['lat'] = dpg.add_line_series([], [], label=f'Lat L{i}', parent='y_axis_2')
                         pool_item['ax'] = dpg.add_line_series([], [], label=f'Ax L{i}', parent='y_axis_2')
+
+                        pool_item['pupil'] = dpg.add_line_series([], [], label=f'Pupil L{i}', parent='y_axis_3')
+                        pool_item['pupil_tgt'] = dpg.add_line_series([], [], label=f'Target L{i}', parent='y_axis_3')
 
                         pool_item['rhabdomeres'] = []
                         for r_idx in range(model.R):
@@ -187,6 +199,13 @@ class Dashboard:
                         callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'move_duration', a)
                     )
                     dpg.add_slider_float(
+                        label='Tau return (s)',
+                        default_value=float(model.ommatidia.tau_return[0]),
+                        min_value=0.01, max_value=0.6,
+                        callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia,
+                                                      'tau_return', a)
+                    )
+                    dpg.add_slider_float(
                         label='Return duration (s)',
                         default_value=float(model.ommatidia.return_duration[0]),
                         min_value=0.01, max_value=1.0,
@@ -215,7 +234,14 @@ class Dashboard:
                         callback=lambda s, a: setattr(self.ctx.renderer, 'saccade_drive', a)
                     )
 
-                    # Scales with lateral displacement, so it is inert at zero excursion
+                    dpg.add_slider_float(
+                        label='Aperture follow',
+                        default_value=self.ctx.renderer.aperture_follow,
+                        min_value=0.0, max_value=1.0,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'aperture_follow', a)
+                    )
+
+                    # Inert at zero excursion
                     dpg.add_slider_float(
                         label='Clip ratio (lateral)',
                         default_value=self.ctx.renderer.clip_ratio,
@@ -226,8 +252,14 @@ class Dashboard:
                     dpg.add_separator()
                     dpg.add_text('Pupil', color=[100, 200, 255])
 
+                    dpg.add_slider_float(
+                        label='Tau pupil (s)',
+                        default_value=float(model.ommatidia.tau_pupil[0]),
+                        min_value=0.1, max_value=15.0,
+                        callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'tau_pupil', a)
+                    )
+
                     # Override pupil adaptation
-                    # TODO: proper slow pupil dynamics !!!!
                     self.ui_tags['pupil_override'] = dpg.add_checkbox(
                         label='Force pupil state',
                         default_value=self.ctx.renderer.pupil_drive is not None,
@@ -454,6 +486,8 @@ class Dashboard:
                     'b': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
                     'lat': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
                     'ax': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
+                    'pupil': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
+                    'pupil_tgt': collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len),
                     'rhabdomeres': [collections.deque([np.nan] * pad_len, maxlen=self.plot_history_len) for _ in
                                   range(model.R)]
                 }
@@ -642,6 +676,9 @@ class Dashboard:
 
         dynamic_states = self.ctx.renderer.eye_buffers['omm_dynamic'].read()
 
+        lum_ref = float(self.ctx.renderer.reference_luminance)
+        forced_pupil = self.ctx.renderer.pupil_drive
+
         for i, pool in enumerate(self.series_pool):
 
             # Check if an ommatidium is selected for this slot
@@ -667,6 +704,11 @@ class Dashboard:
                 hist['instant'].append(avg_pixel[3])
                 hist['lat'].append(float(dynamic_states[om_id]['curr_lateral_disp']))
                 hist['ax'].append(float(dynamic_states[om_id]['curr_axial_disp']))
+
+                lum_slow = float(dynamic_states[om_id]['curr_lum_slow'])
+                hist['pupil_tgt'].append(lum_slow / max(lum_slow + lum_ref, 1e-9))
+                hist['pupil'].append(forced_pupil if forced_pupil is not None
+                                     else float(dynamic_states[om_id]['curr_pupil_drive']))
 
                 for r_idx in range(model.R):
                     hist['rhabdomeres'][r_idx].append(np.mean(group[r_idx, :3]))
@@ -724,11 +766,17 @@ class Dashboard:
         dpg.configure_item(pool['ax'], label=f'Ax L{lid}', show=True)
         dpg.set_value(pool['ax'], [x, list(hist['ax'])])
 
+        dpg.configure_item(pool['pupil'], label=f'Pupil L{lid}', show=True)
+        dpg.set_value(pool['pupil'], [x, list(hist['pupil'])])
+
+        dpg.configure_item(pool['pupil_tgt'], label=f'Target L{lid}', show=True)
+        dpg.set_value(pool['pupil_tgt'], [x, list(hist['pupil_tgt'])])
+
     def _update_plot_backgrounds(self):
 
         window_start = self.frame_data[0] if self.frame_data else 0
 
-        for layer, y_max in [(self.bg_layer_1, 1.1), (self.bg_layer_2, 5.0)]:
+        for layer, y_max in [(self.bg_layer_1, 1.1), (self.bg_layer_2, 5.0), (self.bg_layer_3, 1.05)]:
             dpg.delete_item(layer, children_only=True)
 
             for start_frame, end_frame, mode_name in self.history_intervals:
@@ -749,12 +797,17 @@ class Dashboard:
             x_min, x_max = self.frame_data[0], self.frame_data[-1]
             dpg.set_axis_limits('x_axis_1', x_min, x_max)
             dpg.set_axis_limits('x_axis_2', x_min, x_max)
+            dpg.set_axis_limits('x_axis_3', x_min, x_max)
+
+    def _on_tab_changed(self, sender, app_data):
+        self._active_tab = app_data
 
     # Main render
     def render(self, visual_output: Optional['VisualOutput'] = None):
 
         if not self._initialised:
             self._setup_dpg()
+            self._active_tab = 'tab_plots'
             # Initial sync of selection from renderer to dashboard
             initial = self.ctx.renderer.selected_ommatidia
             if initial:
@@ -788,8 +841,8 @@ class Dashboard:
         # Push updated selection to renderer
         self.ctx.renderer.selected_ommatidia = shader_selection
 
-        # Update plots (if tab is visible)
-        if visual_output is not None and dpg.is_item_visible('tab_plots'):
+        # Update plots
+        if visual_output is not None and self._active_tab == 'tab_plots':
             self._update_plot_data(visual_output, model, mode)
 
         dpg.render_dearpygui_frame()
