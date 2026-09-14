@@ -189,7 +189,12 @@ OMM_STATIC_DTYPE = np.dtype([
     # 16 bytes: The two remaining 8 bytes things
     ('ioa_angles',      np.float32, 2),     # (minor, major) interommatidial angles (rad)
     ('retina_dxdy',     np.float32, 2),     # retinal shift local dy and dx
-])  # 112 bytes
+
+    # 16 bytes: Slow photomechanical timescales
+    ('tau_pupil',       np.float32),        # pupil engagement EMA (s)
+    ('tau_return',      np.float32),        # microsaccade return time constant (s)
+    ('_pad',            np.float32, 2),
+])  # 128 bytes
 
 
 OMM_DYNAMIC_DTYPE = np.dtype([
@@ -202,7 +207,8 @@ OMM_DYNAMIC_DTYPE = np.dtype([
     ('mech_phase',          np.float32),    # 4 bytes: 0=idle, 1=latency, 2=moving, 3=returning
     ('mech_t',              np.float32),    # 4 bytes: elapsed time in current phase (s)
     ('mech_frac0',          np.float32),    # 4 bytes: ballistic fraction at the start of the current phase
-    ('_pad',                np.float32),    # 4 bytes: pad to 32 bytes
+
+    ('curr_pupil_drive',    np.float32),    # 4 bytes: pupil engagement, 0 = dark, 1 = light
 ])  # 32 bytes
 
 

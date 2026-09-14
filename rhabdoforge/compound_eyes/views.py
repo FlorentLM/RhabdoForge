@@ -365,10 +365,16 @@ class BaseView:
         doc="Rhabdomeres return duration, full amplitude->idle (same for all rhabdomeres in a given ommatidium)")
 
     tau_adapt_fast = ViewField('tau_adapt_fast', 'ommatidia',
-        doc="Rhabdomeres fast adaptation EMA  (same for all rhabdomeres in a given ommatidium)")
+        doc="Rhabdomeres fast adaptation EMA (same for all rhabdomeres in a given ommatidium)")
 
     tau_adapt_slow = ViewField('tau_adapt_slow', 'ommatidia',
-        doc="Rhabdomeres slow adaptation EMA  (same for all rhabdomeres in a given ommatidium)")
+        doc="Rhabdomeres slow adaptation EMA (same for all rhabdomeres in a given ommatidium)")
+
+    tau_pupil = ViewField('tau_pupil', 'ommatidia',
+        doc="Pupil granule migration EMA (s).")
+
+    tau_return = ViewField('tau_return', 'ommatidia',
+        doc="Microsaccade return time constant (s). The return decays exponentially with this.")
 
     lateral_amplitude = ViewField('ampl_lateral', 'ommatidia')
     axial_amplitude = ViewField('ampl_axial', 'ommatidia')

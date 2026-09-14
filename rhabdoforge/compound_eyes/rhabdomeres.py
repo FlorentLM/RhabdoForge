@@ -45,11 +45,17 @@ class RhabdomereBundle:
             interior and the surrounding medium. Only used by waveguide acceptance models (they
             set the numerical aperture and hence the LP mode count). Default to Stavenga's fly values.
         - tau_membrane: float, Membrane RC integration time (s).
+        - tau_return: float, Time constant of the microsaccade's exponential return (s).
         - move_duration, return_duration: float, Fixed durations of the microsaccade's ballistic
             move-out and interruptible return phases (s)
         - tau_fast, tau_adapt: float, Fast and slow adaptation EMA times (s).
+        - tau_pupil: float, Pupil granule migration EMA time (s), decoupled from tau_adapt.
         - ampl_lat_um, ampl_ax_um: float, Max lateral / axial tip displacement at full microsaccade drive (μm).
-        - clip_ratio: float, Non-optical RF clipping at full lateral saccade (1.0 = pure optics).
+        - clip_ratio: float, Non-optical RF clipping at full rhabdomere-aperture offset
+            (1.0 = pure optics).
+        - aperture_follow: float, Swing effect: fraction of the rhabdomere's lateral movement
+            followed by the cone/pigment aperture. Only their relative offset vignettes, so
+            1.0 never clips and 0.0 clips as if the aperture were fixed.
         - center_index: int, Index of the central rhabdomere (e.g. R7/8 in Drosophila is index 6).
         - major_axis: float or (int, int), optional. Defines the bundle's major structural axis.
             If (int, int): indices of the two rhabdomeres whose line is the major axis.
@@ -77,12 +83,15 @@ class RhabdomereBundle:
                  fused_rhabdoms: bool = False,
                  tau_membrane: float = 0.0,
                  move_duration: float = 0.100,
-                 return_duration: float = 0.500,
+                 return_duration: float = 0.950,
                  tau_fast: float = 0.005,
                  tau_adapt: float = 0.050,
+                 tau_pupil: float = 2.0,
+                 tau_return: float = 0.190,
                  ampl_lat_um: float = 2.0,
                  ampl_ax_um: float = 2.0,
                  clip_ratio: float = 1.0,
+                 aperture_follow: float = 0.5,
                  center_index: int = 0,
                  major_axis: Union[float, Tuple[int, int], None] = None,
                  alignment_offset: float = 0.0,
@@ -112,10 +121,13 @@ class RhabdomereBundle:
         self.return_duration = float(return_duration)
         self.tau_fast = float(tau_fast)
         self.tau_adapt = float(tau_adapt)
+        self.tau_pupil = float(tau_pupil)
+        self.tau_return = float(tau_return)
         self.ampl_lat_um = float(ampl_lat_um)
         self.ampl_ax_um = float(ampl_ax_um)
 
         self._clip_ratio = float(min(max(0.0, clip_ratio), 1.0))
+        self.aperture_follow = float(min(max(0.0, aperture_follow), 1.0))
 
         self.offsets_um = np.atleast_2d(np.asarray(offsets_um, dtype=np.float32)).reshape(-1, 2)
         R = self.offsets_um.shape[0]
@@ -562,9 +574,11 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
         focal_plane_um=21.33,       # same frame (Kemppainen 2022: 'dzc=17, f at dz=21.33')
         tau_membrane=0.005,
         move_duration=0.100,        # Ballistic move duration (Juusola 2017 Appendix 8: "100 ms")
-        return_duration=0.500,      # Return duration (Appendix 8: "500 ms")
+        tau_return=0.190,           # Measured mean recovery time constant (Juusola 2017)
+        return_duration=0.950,      # Settling cut-off, ~5*tau_return
         tau_fast=0.005,
         tau_adapt=0.100,
+        tau_pupil=2.0,             # Pupil optical time constant (Stavenga 2004)
         ampl_lat_um=1.25,           # Average microsaccade move (Kemppainen 2022 suppl)
         ampl_ax_um=2.0,             # Axial move 17->19 μm (Kemppainen 2022, Table S6)
         center_index=6,

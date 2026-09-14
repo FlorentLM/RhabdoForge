@@ -112,6 +112,8 @@ class Model(SpatialQueries, BaseView):
         self._buf['return_duration'] = self._bundle.return_duration
         self._buf['tau_adapt_fast'] = self._bundle.tau_fast
         self._buf['tau_adapt_slow'] = self._bundle.tau_adapt
+        self._buf['tau_pupil'] = self._bundle.tau_pupil
+        self._buf['tau_return'] = self._bundle.tau_return
         self._buf['ampl_lateral'] = self._bundle.ampl_lat_um
         self._buf['ampl_axial'] = self._bundle.ampl_ax_um
         self._buf['sensitivity'] = self._bundle.sensitivity

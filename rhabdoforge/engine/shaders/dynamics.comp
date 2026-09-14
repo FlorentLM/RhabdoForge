@@ -22,6 +22,7 @@ uniform float pupil_drive;
 uniform bool  force_saccade_drive;  // Override the reflex arc with saccade_drive
 uniform float saccade_drive;
 uniform float trigger_delay;       // onset latency between light detection and movement start (s)
+uniform float aperture_follow;     // Swing effect: how much of the lateral move the aperture follows
 
 void main() {
     uint omm_idx = gl_GlobalInvocationID.x;
@@ -43,7 +44,9 @@ void main() {
     float alpha_fast  = exp(-dt / max(os.tau_fast, 0.001));
     float alpha_adapt = exp(-dt / max(os.tau_adapt, 0.001));
 
-    if (od.curr_lum_slow < 1e-6) {
+    bool first_frame = (od.curr_lum_slow < 1e-6);
+
+    if (first_frame) {
         od.curr_lum_slow = max(lum, 0.001); // avoid div by 0 later
         od.curr_lum_fast    = lum;
     } else {
@@ -59,14 +62,19 @@ void main() {
     float clean_contrast = max(0.0, contrast - (noise_threshold * 1.0));
 //    float clean_contrast = contrast;                                          // DEBUG
 
-    // Steady-state light level (phototropic state), independent of the reflex below
-    float steady_state_drive = force_pupil_drive ? pupil_drive
-        : (od.curr_lum_slow / (od.curr_lum_slow + lum_ref));
 
-    // Photomechanical microsaccade
-    //   A crossing of clean_contrast launches the sequence:
+    // Pigment granule migration
+    float pupil_target = od.curr_lum_slow / (od.curr_lum_slow + lum_ref);
+    float alpha_pupil  = exp(-dt / max(os.tau_pupil, 0.001));
+
+    od.curr_pupil_drive = first_frame ? pupil_target
+        : mix(pupil_target, od.curr_pupil_drive, alpha_pupil);
+
+    float steady_state_drive = force_pupil_drive ? pupil_drive : od.curr_pupil_drive;
+
+    // A crossing of clean_contrast launches the sequence:
     //   idle -> latency (fixed onset delay, committed) -> moving (fixed-duration ballistic
-    //   move to full amplitude, also committed) -> returning (interruptible by a new trigger)
+    //   move, also committed) -> returning (interruptible by a new trigger)
     bool  triggered  = enable_actuation && (clean_contrast > 0.0);
     float mech_phase = od.mech_phase;
     float mech_t      = od.mech_t + dt;
@@ -85,8 +93,8 @@ void main() {
         mech_frac = mix(mech_frac0, 1.0, clamp(mech_t / max(os.move_duration, 1e-6), 0.0, 1.0));
         if (mech_t >= os.move_duration) { mech_phase = 3.0; mech_t = 0.0; mech_frac0 = 1.0; }
 
-    } else {                                                // returning: interruptible ramp to 0.0
-        mech_frac = mix(mech_frac0, 0.0, clamp(mech_t / max(os.return_duration, 1e-6), 0.0, 1.0));
+    } else {                                                // returning: interruptible decay to rest
+        mech_frac = mech_frac0 * exp(-mech_t / max(os.tau_return, 1e-6));
         if (triggered) {
             mech_phase = 1.0; mech_t = 0.0; mech_frac0 = mech_frac;   // re-trigger from here
         } else if (mech_t >= os.return_duration) {
@@ -130,7 +138,9 @@ void main() {
     //   - Clipping (clip_ratio): RF vignetting against the lens's Airy footprint and/or
     //      the cone/pigment-cell aperture. Both driven by the lateral move, both geometric
     //      blocking rather than a modal or absorptive effect like the two above.
-    float lat_frac = clamp(od.curr_lateral_disp / max(os.ampl_lateral, 1e-6), 0.0, 1.0);
+    // Swing effect: the aperture is dragged along by the rhabdomere, so only their relative offset vignettes
+    float rel_lat  = od.curr_lateral_disp * (1.0 - clamp(aperture_follow, 0.0, 1.0));
+    float lat_frac = clamp(rel_lat / max(os.ampl_lateral, 1e-6), 0.0, 1.0);
     float axial_frac = clamp(od.curr_axial_disp / max(os.ampl_axial, 1e-6), 0.0, 1.0);
     float er = (clip_ratio <= 0.0) ? 1.0 : clip_ratio;  // unset uniform -> pure optics
 

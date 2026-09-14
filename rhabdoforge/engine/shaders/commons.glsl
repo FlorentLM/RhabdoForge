@@ -51,7 +51,11 @@ struct OmmatidiumStatic {
     float tau_adapt;
     vec2  ioa_angles;
     vec2  retina_dxdy;
-}; // 112 bytes
+    float tau_pupil;
+    float tau_return;
+    float _pad0;
+    float _pad1;
+}; // 128 bytes
 
 // Ommatidium dynamic
 struct OmmatidiumDynamic {
@@ -62,7 +66,7 @@ struct OmmatidiumDynamic {
     float mech_phase;      // 0=idle, 1=latency, 2=moving, 3=returning
     float mech_t;          // elapsed time in current phase (s)
     float mech_frac0;      // ballistic fraction at the start of the current phase
-    float _pad;
+    float curr_pupil_drive; // pupil engagement, 0 = dark, 1 = closed
 }; // 32 bytes
 
 // Rhabdomere static (read only)

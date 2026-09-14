@@ -369,6 +369,7 @@ class Renderer:
             force_saccade_drive=self._override_saccade_drive is not None,
             saccade_drive=0.0,
             trigger_delay=self._trigger_delay,
+            aperture_follow=float(self._model.bundle.aperture_follow),
         )
 
     def _free_model_resources(self) -> None:
@@ -419,6 +420,7 @@ class Renderer:
             bundle_centre_idx=self._model.bundle.center_index,
             fused_rhabdoms=int(self._model.bundle.fused_rhabdoms),
             clip_ratio=float(self._model.bundle.clip_ratio),
+            aperture_follow=float(self._model.bundle.aperture_follow),
             **self._update_visualisation_scales()
         )
 
@@ -1488,12 +1490,7 @@ class Renderer:
 
     @property
     def clip_ratio(self) -> float:
-        """
-        Non-optical RF clipping at full lateral microsaccade (1.0 = pure optics).
-
-        Stands in for vignetting against the lens's Airy footprint and the cone/pigment-cell
-        aperture.
-        """
+        """RF clipping at full rhabdomere-aperture offset (1.0 = pure optics)."""
         return float(self._model.bundle.clip_ratio)
 
     @clip_ratio.setter
@@ -1502,13 +1499,18 @@ class Renderer:
         self._eye_uniforms.update(clip_ratio=float(self._model.bundle.clip_ratio))
 
     @property
-    def trigger_delay(self) -> float:
-        """
-        Onset latency of the photomechanical reflex arc (s)
+    def aperture_follow(self) -> float:
+        """Swing effect: how much of the lateral move the cone/pigment aperture follows."""
+        return float(self._model.bundle.aperture_follow)
 
-         ~0.008 s in Drosophila R1-R6 (Juusola 2017 Appendix 8, matching electrophysiological
-         response delay and AFM-measured mechanical onset, Hardie & Franze 2012)
-        """
+    @aperture_follow.setter
+    def aperture_follow(self, value: float) -> None:
+        self._model.bundle.aperture_follow = float(min(max(0.0, value), 1.0))
+        self._eye_uniforms.update(aperture_follow=float(self._model.bundle.aperture_follow))
+
+    @property
+    def trigger_delay(self) -> float:
+        """Onset latency of the photomechanical arc (s)."""
         return self._trigger_delay
 
     @trigger_delay.setter
