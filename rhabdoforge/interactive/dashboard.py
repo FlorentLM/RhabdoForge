@@ -171,11 +171,74 @@ class Dashboard:
                         min_value=0.001, max_value=0.1,
                         callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'tau_adapt_fast', a)
                     )
+
+                    dpg.add_text('Saccade arc', color=[100, 200, 255])
+
+                    dpg.add_slider_float(
+                        label='Trigger delay (s)',
+                        default_value=self.ctx.renderer.trigger_delay,
+                        min_value=0.0, max_value=0.05, format='%.4f',
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'trigger_delay', a)
+                    )
+                    dpg.add_slider_float(
+                        label='Move duration (s)',
+                        default_value=float(model.ommatidia.move_duration[0]),
+                        min_value=0.01, max_value=0.5,
+                        callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'move_duration', a)
+                    )
                     dpg.add_slider_float(
                         label='Return duration (s)',
                         default_value=float(model.ommatidia.return_duration[0]),
-                        min_value=0.01, max_value=0.5,
+                        min_value=0.01, max_value=1.0,
                         callback=lambda s, a: setattr(self.ctx.renderer.model.ommatidia, 'return_duration', a)
+                    )
+
+                    # The samples slider recomputes this, so the widget re-syncs in _update_nb_samples
+                    self.ui_tags['noise_threshold'] = dpg.add_slider_float(
+                        label='Trigger threshold',
+                        default_value=self.ctx.renderer.noise_threshold,
+                        min_value=0.0, max_value=1.0, format='%.4f',
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'noise_threshold', a)
+                    )
+
+                    # Override saccades
+                    self.ui_tags['saccade_override'] = dpg.add_checkbox(
+                        label='Hold saccade',
+                        default_value=self.ctx.renderer.saccade_drive is not None,
+                        callback=self._toggle_saccade_override
+                    )
+                    self.ui_tags['saccade_drive'] = dpg.add_slider_float(
+                        label='Excursion (0 = rest, 1 = full)',
+                        default_value=self.ctx.renderer.saccade_drive or 0.0,
+                        min_value=0.0, max_value=1.0,
+                        enabled=self.ctx.renderer.saccade_drive is not None,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'saccade_drive', a)
+                    )
+
+                    # Scales with lateral displacement, so it is inert at zero excursion
+                    dpg.add_slider_float(
+                        label='Clip ratio (lateral)',
+                        default_value=self.ctx.renderer.clip_ratio,
+                        min_value=0.0, max_value=1.0,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'clip_ratio', a)
+                    )
+
+                    dpg.add_separator()
+                    dpg.add_text('Pupil', color=[100, 200, 255])
+
+                    # Override pupil adaptation
+                    # TODO: proper slow pupil dynamics !!!!
+                    self.ui_tags['pupil_override'] = dpg.add_checkbox(
+                        label='Force pupil state',
+                        default_value=self.ctx.renderer.pupil_drive is not None,
+                        callback=self._toggle_pupil_override
+                    )
+                    self.ui_tags['pupil_drive'] = dpg.add_slider_float(
+                        label='Pupil drive (0 = dark, 1 = light)',
+                        default_value=self.ctx.renderer.pupil_drive or 0.0,
+                        min_value=0.0001, max_value=1.0,
+                        enabled=self.ctx.renderer.pupil_drive is not None,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'pupil_drive', a)
                     )
 
                     dpg.add_separator()
@@ -457,7 +520,21 @@ class Dashboard:
         self.ctx.display_mode = DisplayMode[app_data]
 
     def _update_nb_samples(self, sender, app_data):
-        self._main_thread_queue.append(lambda: setattr(self.ctx.renderer, 'nb_samples', app_data))
+        def apply():
+            self.ctx.renderer.nb_samples = app_data
+            dpg.set_value(self.ui_tags['noise_threshold'], self.ctx.renderer.noise_threshold)
+
+        self._main_thread_queue.append(apply)
+
+    def _toggle_saccade_override(self, sender, app_data):
+        drive = dpg.get_value(self.ui_tags['saccade_drive']) if app_data else None
+        self.ctx.renderer.saccade_drive = drive
+        dpg.configure_item(self.ui_tags['saccade_drive'], enabled=bool(app_data))
+
+    def _toggle_pupil_override(self, sender, app_data):
+        drive = dpg.get_value(self.ui_tags['pupil_drive']) if app_data else None
+        self.ctx.renderer.pupil_drive = drive
+        dpg.configure_item(self.ui_tags['pupil_drive'], enabled=bool(app_data))
 
     def _update_sun(self, sender, app_data):
         scene = self.ctx.renderer.scene
