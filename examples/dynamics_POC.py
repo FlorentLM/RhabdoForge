@@ -62,24 +62,23 @@ SWEEP_AMPLITUDE = 1.0               # m (travel is +/- this)
 # Forced steady_state_drive per pupil adaptation state
 PUPIL_STATES = {'dark-adapted': 0.0, 'halfway': 0.5, 'light-adapted': 1.0}
 
-CLIP_RATIO = 0.55    # not a measured value; calibrated against this model's own resolving margin
+CLIP_RATIO = 0.55
 
-AMP_LAT  = 2.0                      # um, lateral microsaccade amplitude at full drive
-AMP_AX   = 2.0                      # um, axial microsaccade amplitude at full drive
+bundle = drosophila_bundle()
 
-TAU_MEMBRANE = 0.012    # s
-TAU_FAST     = 0.005    # s
-TAU_ADAPT    = 0.100    # s
+# All values from the drosophila bundle
+AMP_LAT      = bundle.ampl_lat_um
+AMP_AX       = bundle.ampl_ax_um
+TAU_MEMBRANE = bundle.tau_membrane
+TAU_FAST     = bundle.tau_fast
+TAU_ADAPT    = bundle.tau_adapt
 
 # Microsaccade implemented as a reflex arc: a threshold crossing launches a fixed, committed
 # sequence (latency -> ballistic move -> interruptible return)
-MOVE_DURATION   = 0.100    # s, ballistic move duration (idle -> full amplitude)
-RETURN_DURATION = 0.500    # s, return duration (full amplitude -> idle)
-TRIGGER_DELAY   = 0.008    # s, onset latency between light detection and the move starting
 
-NOISE_THRESHOLD = 0.02     # contrast deadzone below which a trigger doesn't fire
+NOISE_THRESHOLD = 0.02      # contrast deadzone below which a trigger doesn't fire
 
-VIEW_HALFWIDTH = 0.30   # m, x-axis half-range around the bars
+VIEW_HALFWIDTH = 0.30       # m, x-axis half-range around the bars
 
 SWEEP_SPEED    = DISTANCE * np.radians(SWEEP_SPEED_DEG)     # m/s
 SWEEP_DURATION = (2 * SWEEP_AMPLITUDE) / SWEEP_SPEED        # one-way sweep (s)
@@ -155,8 +154,6 @@ def build_model():
     model.tau_membrane = TAU_MEMBRANE
     model.tau_adapt_fast = TAU_FAST
     model.tau_adapt_slow = TAU_ADAPT
-    model.move_duration = MOVE_DURATION
-    model.return_duration = RETURN_DURATION
 
     return model
 
@@ -241,7 +238,6 @@ def simulate(model, sep_deg, pupil_drive):
     renderer.photon_concentration = 0.0     # isolate RF geometry from the photon-concentration gain
     renderer.pupil_drive = pupil_drive      # fixed light adaptation state
     renderer.noise_threshold = NOISE_THRESHOLD
-    renderer.trigger_delay = TRIGGER_DELAY
 
     # Single forward-pointing cartridge (closest optical axis to straight ahead)
     cone = model.query_cone(WORLD_FORWARD, angle=10.0, degrees=True, avoid_conflicts=True)
@@ -253,7 +249,9 @@ def simulate(model, sep_deg, pupil_drive):
     selected = int(cone.indices[int(np.argmin(az ** 2 + el ** 2))])
     renderer.selected_ommatidia = [selected]
 
-    rec = {'agent_y': [], 'cond': [], 'mdir': [], 'cart': [], 'axial_disp': [], 'lateral_disp': []}
+    rec = {'agent_y': [], 'cond': [], 'mdir': [], 'cart': [], 'axial_disp': [], 'lateral_disp': [], 'drho_deg': []}
+
+    rest_acc = np.rad2deg(model.buffer['rest_acc_angles'][selected, :, 0])
 
     t_start, phase = None, -1
     while context.run_interactive():
@@ -286,6 +284,9 @@ def simulate(model, sep_deg, pupil_drive):
         rec['axial_disp'].append(float(dyn['curr_axial_disp']))
         rec['lateral_disp'].append(float(dyn['curr_lateral_disp']))
 
+        rhab = renderer.eye_buffers['rhab_dynamic'].read(start=selected * R, count=R)
+        rec['drho_deg'].append(np.rad2deg(rhab['curr_acc_angles'][PERIPH, 0]))
+
         context.display()
 
         if elapsed >= RUN_DURATION:
@@ -299,7 +300,9 @@ def simulate(model, sep_deg, pupil_drive):
             except Exception:
                 pass
 
-    return {k: np.array(v) for k, v in rec.items()}
+    out_rec = {k: np.array(v) for k, v in rec.items()}
+    out_rec['rest_drho_deg'] = rest_acc
+    return out_rec
 
 
 # Analysis
@@ -351,6 +354,48 @@ def print_actuation_diagnostics(res, label):
         ax_frac = np.max(res['axial_disp'][m]) / AMP_AX if AMP_AX > 0 else 0.0
         lat_frac = np.max(res['lateral_disp'][m]) / AMP_LAT if AMP_LAT > 0 else 0.0
         print(f'    {cond:8s}: axial {ax_frac:.2f}   lateral {lat_frac:.2f}')
+
+    print_drho_diagn(res, label)
+
+
+def print_drho_diagn(res, label):
+    """Acceptance angle reached per condition per receptor."""
+    rest = res.get('rest_drho_deg')
+    if 'drho_deg' not in res or res['drho_deg'].size == 0:
+        return
+
+    DIP_THRESH = 0.95 * SEP_TEST_DEG
+
+    print(f'  [{label}] acceptance angle reached, R1-R6 (deg):')
+    if rest is not None:
+        print(f'    {"rest":8s}: {rest[PERIPH].min():.2f} - {rest[PERIPH].max():.2f}')
+
+    for cond in [c[0] for c in CONDITIONS]:
+
+        m = res['cond'] == cond
+        if not m.any():
+            continue
+
+        d = res['drho_deg'][m]
+        lo, hi = d.min(axis=0), d.max(axis=0)   # per receptor
+
+        if rest is not None:
+            rr = lo / rest[PERIPH]
+            ratio_txt = f'x{rr.min():.2f}-{rr.max():.2f} of rest'
+        else:
+            ratio_txt = ''
+
+        n45, n37 = int((lo <= 4.5).sum()), int((lo <= 3.7).sum())
+        sharp = d.min(axis=1)      # sharpest receptor
+
+        pct = 100.0 * float(np.mean(sharp <= DIP_THRESH))
+
+        print(f'    {cond:8s}: narrowest {lo.min():.2f} - {lo.max():.2f}   '
+              f'widest {hi.max():.2f}   ({ratio_txt})   '
+              f'{n45}/6 <=4.5, {n37}/6 <=3.7')
+
+        print(f'    {"":8s}  mean {d.mean():.2f}   median {np.median(d):.2f}   '
+              f'{pct:.0f}% of frames <= {DIP_THRESH} (dip threshold)')
 
 
 def profile_centre(grid, prof):
