@@ -5,11 +5,10 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
-from scipy.spatial import cKDTree
 
 from rhabdoforge.geometry.hexatic import compute_psi6, hexatic_order
-from rhabdoforge.geometry.spherical import sphere_to_stereo, chord_to_angle
-from rhabdoforge.geometry.neighbours import delaunay_edges, delaunay_neighbours, topological_spacing, metric_spacing
+from rhabdoforge.geometry.spherical import sphere_to_stereo
+from rhabdoforge.geometry.neighbours import delaunay_edges, delaunay_neighbours, topological_spacing
 from rhabdoforge.lattice_fitting.generator import EyeMeasurements
 
 
@@ -241,44 +240,24 @@ def plot_eye_scaffold_3d(
     plt.show()
 
 
-# Angular density (3D)
+# Scalar fields (3D)
 
-def plot_density_3d(
+def plot_scalar_field_3d(
         positions: np.ndarray,
-        directions: np.ndarray,
-        title: Optional[str] = 'Ommatidia density',
-        k: int = 6,
+        values: np.ndarray,
+        title: Optional[str] = None,
+        label: str = 'Value',
+        cmap: str = 'viridis_r',
     ):
-    """
-    Colour ommatidia by local inter-ommatidial angle (mean angular spacing to the
-    k nearest neighbours in direction space).
-    """
-
-    # TODO: this plot is rubbish, edges are wrong, should use the robust estimators
-
-    positions = np.asarray(positions, dtype=float)
-    directions = np.asarray(directions, dtype=float)
-
-    # Mean chord to k nearest neighbours on the direction sphere -> great-circle angle
-    chord = metric_spacing(cKDTree(directions), k=k)
-    ioa_deg = np.rad2deg(chord_to_angle(chord))
-
+    """Eye scaffold in 3D, coloured by a precomputed per-ommatidium scalar field."""
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
-
-    sc = ax.scatter(positions[:, 0], positions[:, 1], positions[:, 2],
-                    c=ioa_deg, cmap='plasma_r', s=20, alpha=0.8)
-
-    cbar = fig.colorbar(sc, ax=ax, shrink=0.5, aspect=10)
-    cbar.set_label('Inter-ommatidial angle (degrees)')
+    sc = ax.scatter(positions[:, 0], positions[:, 1], positions[:, 2], c=values, cmap=cmap, s=20)
+    fig.colorbar(sc, ax=ax, shrink=0.6, pad=0.1, label=label)
 
     if title:
         ax.set_title(title)
 
     set_3d_equal(ax, positions)
-    draw_gizmo(ax, length=0.5 * np.ptp(positions, axis=0).max())
-
-    ax.legend(loc='upper right', fontsize=8)
-
     plt.tight_layout()
     plt.show()

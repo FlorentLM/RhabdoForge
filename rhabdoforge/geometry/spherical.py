@@ -1,4 +1,5 @@
-from typing import TYPE_CHECKING, Tuple, Optional, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Tuple, Optional, Sequence, Protocol
 import numpy as np
 from numpy.typing import ArrayLike
 
@@ -180,6 +181,58 @@ def normals_to_ellipsoid(directions: ArrayLike, rx: float, ry: float, rz: float)
     z = (rz ** 2 * nz) / K
 
     return np.column_stack([x, y, z])
+
+
+##
+
+class CurvatureModel(Protocol):
+    """Local eye radius (µm) as a function of viewing direction."""
+    def __call__(self, directions: ArrayLike) -> np.ndarray: ...
+
+
+@dataclass
+class UniformSphere:
+    """Constant radius, no directional dependence."""
+    radius_um: float
+
+    def __call__(self, directions: ArrayLike) -> np.ndarray:
+        directions = np.asarray(directions, dtype=np.float64)
+        return np.full(len(directions), self.radius_um)
+
+
+@dataclass
+class EllipsoidCurvature:
+    """Radial distance (µm) to an anisotropic ellipsoid surface along each direction."""
+    rx: float
+    ry: float
+    rz: float
+
+    def __call__(self, directions: ArrayLike) -> np.ndarray:
+        d = np.asarray(directions, dtype=np.float64)
+        denom = (d[:, 0] / self.rx) ** 2 + (d[:, 1] / self.ry) ** 2 + (d[:, 2] / self.rz) ** 2
+        return 1.0 / np.sqrt(denom)
+
+
+@dataclass
+class LinearGradient:
+    """Wraps a curvature model with a linear radius gradient along one axis."""
+    base: 'CurvatureModel'
+    axis: ArrayLike
+    slope: float
+
+    def __call__(self, directions: ArrayLike) -> np.ndarray:
+        directions = np.asarray(directions, dtype=np.float64)
+        axis = norm_l2(np.asarray(self.axis, dtype=np.float64))
+        proj = directions @ axis
+        return self.base(directions) * (1.0 + self.slope * proj)
+
+# TODO: 2D gradient
+
+def position_from_curvature(directions: ArrayLike, curvature: 'CurvatureModel') -> np.ndarray:
+    """Places each direction at its local eye radius (µm) from a CurvatureModel."""
+    directions = np.asarray(directions, dtype=np.float64)
+    radii = curvature(directions)
+    return directions * radii[:, None]
 
 
 def radius_of_curvature(

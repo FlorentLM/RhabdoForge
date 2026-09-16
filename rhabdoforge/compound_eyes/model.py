@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union, Tuple, List
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.spatial import cKDTree
 
 from rhabdoforge.types import WORLD_FORWARD, METADATA_BIT_LAYOUT
 from rhabdoforge.utils import norm_l2, broadcast_to_shape, broadcast_1d, resolve_path
@@ -25,7 +24,6 @@ from rhabdoforge.geometry.fields import smooth_phasors, smooth_field_partitioned
 from rhabdoforge.geometry.spherical import (
     angle_to_chord, sphere_to_stereo, angular_separation, mean_extreme_separations
 )
-from rhabdoforge.geometry.polygons import triangle_areas, pack_edge_keys
 
 from rhabdoforge.compound_eyes.buffers import Buffer
 from rhabdoforge.compound_eyes.rhabdomeres import RhabdomereBundle
@@ -729,8 +727,6 @@ class Model(SpatialQueries, BaseView):
                 real_dirs=directions, ghost_dirs=g_dirs
             )
 
-            combined_pos_tree = cKDTree(combined_pos)       # TODO: this should be cached per eye
-
             # Exact topological first ring on the sphere
             neighb_ragged = delaunay_neighbours(combined_dirs, max_length_factor=1.8)
 
@@ -760,7 +756,10 @@ class Model(SpatialQueries, BaseView):
                 smooth_phasors(values=np.exp(6j * e_tilt), neighbours=adj, weights=e_order, n_iter=2)
             )
 
-            s_ghost = metric_spacing(tree=combined_pos_tree, query_points=positions, k=6, reduce=np.median)
+            # Closed-ring spacing from the same topological neighbours as the IOA/hexatic fields above
+            nb_dist = np.linalg.norm(neighb_pos - positions[:, None, :], axis=-1)
+            with np.errstate(all='ignore'):
+                s_ghost = np.nanmedian(np.where(valid_neighbours, nb_dist, np.nan), axis=1)
             s_graph = topological_spacing(points=positions, neighbours=adj, reduce=np.median)
 
             c = self._trust[indices]  # 1 = trust provisional, 0 = take refined
@@ -867,7 +866,7 @@ class Model(SpatialQueries, BaseView):
             fallback_aperture: float = 20.0
         ) -> np.ndarray:
         """
-        Estimate per-lens aperture (diameter, μm) using the β-skeleton area dual.
+        Estimate per-lens aperture (diameter, μm) from 3D first-ring spacing.
         """
 
         # Base fallback from median spacing
@@ -883,51 +882,18 @@ class Model(SpatialQueries, BaseView):
 
             indices = eye.indices
             graph = eye._get_first_ring_graph()
-
-            # Only keep triangles whose 3 edges exist in the β-skeleton
-            simplices = graph['simplices']
-            big = graph['big']
-            keys = graph['pair_keys']
-
-            # Map local simplex indices to global indices
-            global_tri = eye.omm_indices[simplices]
-
-            # Key the 3 edges of every triangle
-            k1 = pack_edge_keys(global_tri[:, 0], global_tri[:, 1], big)
-            k2 = pack_edge_keys(global_tri[:, 1], global_tri[:, 2], big)
-            k3 = pack_edge_keys(global_tri[:, 2], global_tri[:, 0], big)
-
-            pair_keys_arr = np.array(list(keys), dtype=np.int64)
-            mask_v = np.isin(k1, pair_keys_arr) & np.isin(k2, pair_keys_arr) & np.isin(k3, pair_keys_arr)
-            valid_simplices = simplices[mask_v]
-
-            if len(valid_simplices) == 0:
-                continue
-
             pts3d = self._buf['position', indices]
 
-            # 3D area of each triangle
-            tri_areas = triangle_areas(
-                pts3d[valid_simplices[:, 0]],
-                pts3d[valid_simplices[:, 1]],
-                pts3d[valid_simplices[:, 2]]
-            )
+            spacing = topological_spacing(pts3d, graph['adjacency'], reduce=np.median)
 
-            # Accumulate 1/3 of the triangle's area to each of its 3 vertices
-            point_areas = np.zeros(n)
-            np.add.at(point_areas, valid_simplices[:, 0], tri_areas / 3.0)
-            np.add.at(point_areas, valid_simplices[:, 1], tri_areas / 3.0)
-            np.add.at(point_areas, valid_simplices[:, 2], tri_areas / 3.0)
-
-            # Convert area back to hex flat-to-flat diameter
-            mask_has_area = point_areas > 0
-            calc_diameters = self._lens_packing * np.sqrt(2.0 * point_areas[mask_has_area] / np.sqrt(3.0))
+            mask_has_spacing = np.isfinite(spacing) & (spacing > 0)
+            calc_diameters = self._lens_packing * spacing[mask_has_spacing]
 
             # Apply only to interior points (boundary points just keep their ioa_spacing estimate)
-            update_mask = mask_has_area & eye.is_interior
+            update_mask = mask_has_spacing & eye.is_interior
 
             # Map local 'update_mask' back to global 'indices'
-            diameters[indices[update_mask]] = calc_diameters[update_mask[mask_has_area]]
+            diameters[indices[update_mask]] = calc_diameters[update_mask[mask_has_spacing]]
 
         # Denoise
         return self._smooth_aperture_field(diameters, k=6, n_iter=2, method='median', metric='angular')

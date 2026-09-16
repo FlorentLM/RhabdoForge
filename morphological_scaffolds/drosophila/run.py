@@ -12,11 +12,14 @@ import numpy as np
 import xml.etree.ElementTree as ET
 from svg.path import parse_path, Line, Close
 
-from rhabdoforge.geometry.spherical import sphere_to_stereo, stereo_to_sphere, normals_to_ellipsoid
+from rhabdoforge.geometry.spherical import (
+    sphere_to_stereo, stereo_to_sphere, EllipsoidCurvature, LinearGradient, position_from_curvature
+)
+from rhabdoforge.compound_eyes.model import Model
 from rhabdoforge.lattice_fitting.relaxation import mirror_bilateral
 from rhabdoforge.lattice_fitting.generator import FittingParameters, LatticeGenerator, EyeMeasurements
-from rhabdoforge.lattice_fitting.plots import plot_lattice, set_3d_equal, draw_gizmo
-from rhabdoforge.lattice_fitting.plots import plot_eye_scaffold_3d, plot_lattice_3d, plot_density_3d
+from rhabdoforge.lattice_fitting.plots import plot_lattice, plot_scalar_field_3d, set_3d_equal, draw_gizmo
+from rhabdoforge.lattice_fitting.plots import plot_eye_scaffold_3d, plot_lattice_3d
 
 
 # TODO: a GUI that replaces the svg + svg parsing
@@ -236,17 +239,20 @@ if __name__ == "__main__":
     SHOW_PLOTS = True
 
     # Head dimensions from Posnien et al. 2012 (10.1371/journal.pone.0037346)
-    HW = 830.0     # head width (µm)
-    FW = 390.0     # frons width (µm)
-    EL = 460.0     # eye length, vertical (µm)
-    ED = 370.0     # eye depth, anterior-posterior (µm)  (inferred from Drosophila simulans)
+    HW = 830.0 * PHYS_SCALE   # head width (µm)
+    FW = 390.0 * PHYS_SCALE   # frons width (µm)
+    EL = 460.0 * PHYS_SCALE   # eye length, vertical (µm)
+    ED = 370.0 * PHYS_SCALE   # eye depth, anterior-posterior (µm)  (inferred from Drosophila simulans)
+
+    # Shape from the head ellipsoid above, scale fitted so median facet spacing
+    # matches Gonzalez-Bellido et al. (2011): 16.85 µm
+    EYE_SCALE = 0.8512
+
+    # Buffry et al. 2024: anterior-ventral larger, dorsal-posterior smaller
+    GRADIENT_AXIS = (0.0, -1.0, -1.0)
+    GRADIENT_SLOPE = 0.08   # I dont have a real number for this :(
 
     svg_file = 'morphological_scaffolds/drosophila/data/buchner1971_redigitised.svg'
-
-    HW *= PHYS_SCALE
-    FW *= PHYS_SCALE
-    EL *= PHYS_SCALE
-    ED *= PHYS_SCALE
 
     L_dirs = reconstruct_buchner_data(svg_file, show_plots=SHOW_PLOTS)
 
@@ -267,15 +273,10 @@ if __name__ == "__main__":
     # Back to sphere
     lattice_dirs = stereo_to_sphere(lattice2d, forward, right, up)
 
-    # Map directions to head ellipsoid (in µm)
-    target_width = (HW - FW) / 2.0
-    ry = EL / 2.0
-    rz = ED / 2.0
-    best_rx = target_width
-    print(f'Ellipsoid fit: Rx = {best_rx:.2f} µm')
-
-    # Note: this yields larger facet diameters in flatter regions
-    L_positions = normals_to_ellipsoid(lattice_dirs, best_rx, ry, rz)
+    # Place each direction at its local eye radius (µm)
+    rx, ry, rz = (HW - FW) / 2.0 * EYE_SCALE, EL / 2.0 * EYE_SCALE, ED / 2.0 * EYE_SCALE
+    curvature = LinearGradient(base=EllipsoidCurvature(rx, ry, rz), axis=GRADIENT_AXIS, slope=GRADIENT_SLOPE)
+    L_positions = position_from_curvature(lattice_dirs, curvature)
 
     # Align medial edge, then mirror across X=0 to build the right eye
     shift_x = -FW / 2.0 - np.max(L_positions[:, 0])
@@ -306,5 +307,16 @@ if __name__ == "__main__":
             title='Drosophila eyes\n(fitted to Büchner, 1971)',
             sphere_projection=True
         )
-        plot_density_3d(positions_both, directions_both)
+
+        # DEBUG # TODO: remove
+        diag = Model(positions=positions_both, directions=directions_both, eye_indices=eye_ids_both)
+        aperture_um = diag._buf['aperture_um']
+        ioa_deg = np.rad2deg(diag._buf['ioa_angles', np.arange(len(positions_both))].mean(axis=1))
+
+        plot_scalar_field_3d(positions_both, aperture_um,
+            title='Drosophila facet size', label='Facet spacing (µm)')
+
+        plot_scalar_field_3d(positions_both, ioa_deg,
+            title='Drosophila interommatidial angle', label='IOA (degrees)', cmap='plasma_r')
+
         plot_lattice_3d(lattice_dirs, wireframe=True, color_by='psi6', title='Hexatic order')
