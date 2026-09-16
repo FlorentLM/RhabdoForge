@@ -144,6 +144,7 @@ class Asset:
 
         self._texture_path: Optional['Path'] = None  # source path for lazy loading
         self._texture_image: Optional['Image'] = None  # cached image
+        self._texture_src_id: Optional[int] = None  # identity of the shared source image for GPU dedup
         self.is_srgb = True
 
         self._material_rev: int = 0
@@ -237,6 +238,16 @@ class Asset:
         """Returns True if this asset has a texture (path or image)."""
         return self._texture_image is not None or self._texture_path is not None
 
+    @property
+    def texture_key(self) -> Optional[Union[str, int]]:
+        """
+        Stable identity for GPU texture dedup: assets sharing the same key share one
+        texture-array layer.
+        """
+        if self._texture_path is not None:
+            return str(self._texture_path)
+        return self._texture_src_id
+
     def set_material(self,
             base_color: Optional[ArrayLike] = None,
             specular: Optional[ArrayLike] = None,
@@ -271,6 +282,7 @@ class Asset:
         # Clear existing
         self._texture_path = None
         self._texture_image = None
+        self._texture_src_id = None
         self.touch_texture()
 
         if source is None:
@@ -280,6 +292,7 @@ class Asset:
             self._texture_path = resolve_path(source)
         elif isinstance(source, Image.Image):
             self._texture_image = source.convert('RGBA')
+            self._texture_src_id = id(source)
         elif isinstance(source, np.ndarray):
             try:
                 self._texture_image = Image.fromarray(source).convert('RGBA')
@@ -498,6 +511,9 @@ class MeshAsset(Asset):
         mat = getattr(tm.visual, 'material', None)
         if mat is not None:
 
+            if not hasattr(mat, 'image') and hasattr(mat, 'to_simple'):
+                mat = mat.to_simple()
+
             if getattr(mat, 'main_color', None) is not None:
                 self.material.base_color = (mat.main_color / 255.0).astype(np.float32)
 
@@ -512,6 +528,7 @@ class MeshAsset(Asset):
 
             if extract_texture and not self.has_texture and getattr(mat, 'image', None) is not None:
                 self._texture_image = mat.image.convert("RGBA")
+                self._texture_src_id = id(mat.image)
 
 
 class PointsAsset(Asset):
@@ -931,17 +948,18 @@ class Scene:
                 user_transform = glm.translate(glm.mat4(1.0), glm.vec3(transform_np))
 
         if isinstance(data, trimesh.Scene):
-            # Multi-geometry file
+            # Multi-geometry file: one Instance per node, Assets deduped/shared by geometry name
 
-            for geom_name, geom_obj in data.geometry.items():
+            for node_name in data.graph.nodes_geometry:
 
-                transform_in_file, _ = data.graph.get(geom_name)
+                transform_in_file, geom_name = data.graph.get(node_name)
                 node_transform = glm.mat4(transform_in_file)
                 final_transform = user_transform * node_transform
 
                 asset_name = f"{name_prefix}_{geom_name}"
 
                 if asset_name not in self.assets:
+                    geom_obj = data.geometry[geom_name]
                     asset = Asset.from_trimesh(asset_name, geom_obj, radii=kwargs.get('radii'), extract_texture=True)
                     self.assets[asset_name] = asset
 
