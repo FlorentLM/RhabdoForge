@@ -1,6 +1,10 @@
 **/pytinybvhPreamble.glsl
 
 .idea
+
+references/
+stuff/
+
 assets/*.ply
 uv.lock
 datasets/
