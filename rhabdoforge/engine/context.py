@@ -205,6 +205,15 @@ class Context:
         """Total number of ticks/frames processed."""
         return self._frame_count
 
+    @property
+    def dt_cap(self) -> float:
+        """
+        Ceiling on dt in variable (wall-clock) mode, to avoid implausible dynamics when framerate stalls.
+        """
+        if self._renderer is not None:
+            return float(self._renderer.model.bundle.tau_adapt)
+        return 0.1
+
     def reset_timers(self) -> None:
         """Resets all simulation and hardware frame counters and clocks."""
         now = glfw.get_time()
@@ -218,7 +227,7 @@ class Context:
         """
         Advance both clocks by one step.
         - Wall clock: real elapsed time since previous tick, hardware-dependent
-        - Sim clock: advances by 'time_step' if set, otherwise by the wall_dt
+        - Sim clock: advances by 'time_step' if set, otherwise by wall_dt (up to dt_cap)
         """
 
         now = glfw.get_time()
@@ -229,7 +238,10 @@ class Context:
         self._total_wall_time += self._wall_dt
         self._frame_count += 1
 
-        self._dt = self.time_step if self.time_step is not None else self._wall_dt
+        if self.time_step is not None:
+            self._dt = self.time_step
+        else:
+            self._dt = min(self._wall_dt, self.dt_cap)
 
         # Accumulate simulated time
         self._total_time += self._dt
