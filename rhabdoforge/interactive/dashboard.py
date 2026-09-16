@@ -36,6 +36,9 @@ class Dashboard:
         self._main_thread_queue = []
         self._active_tab = None
 
+        self._dyn_cache = None
+        self._dyn_every = 4
+
         self.ui_tags = {}  # dpg item tags for syncing
 
     def _setup_dpg(self):
@@ -674,7 +677,9 @@ class Dashboard:
         self.frame_data.append(self.current_frame)
         x = list(self.frame_data)
 
-        dynamic_states = self.ctx.renderer.eye_buffers['omm_dynamic'].read()
+        if self._dyn_cache is None or self.current_frame % self._dyn_every == 0:
+            self._dyn_cache = self.ctx.renderer.eye_buffers['omm_dynamic'].read()
+        dynamic_states = self._dyn_cache
 
         lum_ref = float(self.ctx.renderer.reference_luminance)
         forced_pupil = self.ctx.renderer.pupil_drive
