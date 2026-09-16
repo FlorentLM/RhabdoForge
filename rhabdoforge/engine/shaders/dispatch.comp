@@ -6,7 +6,12 @@
 #include "traceSimple.glsl"
 #endif
 
-layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#ifndef SAMPLE_GROUP_SIZE
+#define SAMPLE_GROUP_SIZE 256
+#endif
+
+layout (local_size_x = SAMPLE_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 
 layout(std430, binding = BINDING_RHAB_STATIC) readonly buffer RhabStaticBlock { RhabdomereStatic    rhab_static[];  };
 layout(std430, binding = BINDING_RHAB_DYNAMIC) readonly buffer RhabDynamicBlock { RhabdomereDynamic rhab_dynamic[]; };
@@ -16,8 +21,6 @@ layout(std430, binding = BINDING_RAYS_INTERMEDIATE) writeonly buffer RayResultBu
 // Uniforms
 uniform uint dither_counter;
 uniform mat4 cam_to_world;
-uniform int nb_ommatidia;
-uniform int nb_rhabdomeres;
 uniform int rhab_per_omm;
 uniform int nb_samples;
 uniform bool fused_rhabdoms;
@@ -25,56 +28,71 @@ uniform int randomness_mode;
 uniform bool use_hybrid_sampling;
 uniform int  sampling_mode;
 
+// Per-ray-group data: loaded once by local thread 0, shared across the whole workgroup
+// (because every sample of a rhabdomere reads the same rows and tangent frame)
+shared RhabdomereStatic  sh_rs;
+shared RhabdomereDynamic sh_rd;
+shared OmmatidiumStatic  sh_os;
+shared vec3 sh_T, sh_B, sh_F, sh_P;
+shared uint sh_rhab_idx;
+
 void main() {
-    uint global_id = gl_GlobalInvocationID.x;
+    uint ray_group_idx = gl_WorkGroupID.x;
+    uint sample_idx = gl_LocalInvocationID.x;
 
-    uint num_ray_groups = fused_rhabdoms ? uint(nb_ommatidia) : uint(nb_rhabdomeres);
-    if (global_id >= (nb_samples * num_ray_groups)) return;    // stop if out of bounds
+    if (sample_idx == 0u) {
+        uint rhab_idx = fused_rhabdoms ? (ray_group_idx * uint(rhab_per_omm)) : ray_group_idx;
+        sh_rhab_idx = rhab_idx;
 
-    uint ray_group_idx = global_id / nb_samples;
-    uint sample_idx = global_id % nb_samples;
+        RhabdomereStatic rs = rhab_static[rhab_idx];
+        RhabdomereDynamic rd = rhab_dynamic[rhab_idx];
+        OmmatidiumStatic os = omm_static[unpack_omm_id(rs.metadata)];
 
-    // If fused rhabdoms, only trace one set of rays per ommatidium
-    uint rhab_idx = fused_rhabdoms ? (ray_group_idx * rhab_per_omm) : ray_group_idx;
+        sh_rs = rs;
+        sh_rd = rd;
+        sh_os = os;
 
-    RhabdomereStatic rs = rhab_static[rhab_idx];
-    RhabdomereDynamic rd = rhab_dynamic[rhab_idx];
+        // Reconstruct tangent frame (in world space)
+        mat3 eye_rot = mat3(cam_to_world);
+        vec3 F = normalize(eye_rot * rd.curr_direction);
+        vec3 right_w = eye_rot * os.right;
+        vec3 T = normalize(right_w - F * dot(right_w, F));
+        vec3 B = normalize(cross(F, T));
 
-    // Ommatidium data for this rhabdomere
-    uint omm_idx = unpack_omm_id(rs.metadata);
-    OmmatidiumStatic os = omm_static[omm_idx];
+        sh_T = T;
+        sh_B = B;
+        sh_F = F;
+        sh_P = (cam_to_world * vec4(os.position, 1.0)).xyz;
+    }
+
+    memoryBarrierShared();
+    barrier();
+
+    if (sample_idx >= uint(nb_samples)) return;    // padding lanes above nb_samples
+
+    uint rhab_idx = sh_rhab_idx;
 
     uint base_seed = rhab_idx * 1973u + dither_counter * 26699u;
     uint rng_state = pcg_hash(base_seed + sample_idx * 749u);
-
-    // Generate ray direction
-    mat3 eye_rot = mat3(cam_to_world);
-
-    // Reconstruct tangent frame (in world space)
-    vec3 F = normalize(eye_rot * rd.curr_direction);
-    vec3 right_w = eye_rot * os.right;
-    vec3 T = normalize(right_w - F * dot(right_w, F));
-    vec3 B = normalize(cross(F, T));
-
-    vec3 P = (cam_to_world * vec4(os.position, 1.0)).xyz;
 
     Sampler s = get_samples(randomness_mode, sample_idx, uint(nb_samples), rhab_idx, uint(dither_counter));
 
     float ray_weight;
     vec3 direction;
     if (use_hybrid_sampling) {
-        direction = sampledir_hybrid(sampling_mode, rs, rd, os, T, B, F, s.u1, s.u2, ray_weight);
+        direction = sampledir_hybrid(sampling_mode, sh_rs, sh_rd, sh_os, sh_T, sh_B, sh_F, s.u1, s.u2, ray_weight);
     } else {
-        direction = sampledir_importance(rs, rd, os, T, B, F, s.u1, s.u2, ray_weight);
+        direction = sampledir_importance(sh_rs, sh_rd, sh_os, sh_T, sh_B, sh_F, s.u1, s.u2, ray_weight);
     }
 
     Ray ray;
-    ray.origin = P;
+    ray.origin = sh_P;
     ray.t = 1.0/0.0;
     ray.inv_direction = 1.0 / direction;
 
     vec3 final_color = trace(ray, rng_state);
 
     // Alpha channel stores ray weight for reduction.comp
+    uint global_id = ray_group_idx * uint(nb_samples) + sample_idx;
     ray_results[global_id] = vec4(final_color, ray_weight);
 }

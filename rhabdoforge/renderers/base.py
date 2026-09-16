@@ -33,7 +33,6 @@ if TYPE_CHECKING:
 
 
 WORKGROUPS_DYNAMICS = 64
-WORKGROUPS_RHAB = 64
 
 
 def query_available_VRAM() -> int:
@@ -438,8 +437,13 @@ class Renderer:
     def _invalidate_shaders(self) -> None:
         """Invalidates all shaders that need be when defines change."""
 
+        self._current_defines = self._collect_defines()
+
         self.dispatch_shader.free()
-        self.dispatch_shader = ShaderProgram(comp_path='shaders/dispatch.comp', defines=self._collect_defines())
+        self.dispatch_shader = ShaderProgram(comp_path='shaders/dispatch.comp', defines=self._current_defines)
+
+        self.reduction_shader.free()
+        self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp', defines=self._current_defines)
 
         for s in self._projection_shaders.values():
             s.free()
@@ -503,11 +507,8 @@ class Renderer:
 
     def _get_projection_shader(self, proj_name: str) -> 'ShaderProgram':
 
-        new_defines = self._collect_defines()
-
-        if new_defines != self._current_defines:
+        if self._collect_defines() != self._current_defines:
             self._invalidate_shaders()
-            self._current_defines = new_defines
 
         if proj_name not in self._projection_shaders:
             if proj_name == 'panoramic':
@@ -557,7 +558,18 @@ class Renderer:
         if self._max_bounces > 0:
             defines['PATH_TRACING'] = 1
 
+        defines['SAMPLE_GROUP_SIZE'] = self._sample_group_size()
+
         return defines
+
+    def _sample_group_size(self) -> int:
+        """
+        Compile-time workgroup size for dispatch.comp/reduction.comp: smallest power of two
+        >= nb_samples, so a rhabdomere's whole sample set fills exactly 1 workgroup.
+        """
+        n = max(1, self._samples_per_rhab)
+        size = 1 << (n - 1).bit_length()
+        return max(32, min(size, 1024))
 
     def _update_visualisation_scales(self) -> Dict[str, float]:
         """
@@ -668,8 +680,7 @@ class Renderer:
                     self._lights_uniforms.apply(shader)
 
                     rays_elements = self._model.N if self._model.bundle.fused_rhabdoms else self._model.size
-                    work_groups = (rays_elements * self._samples_per_rhab + WORKGROUPS_RHAB - 1) // WORKGROUPS_RHAB
-                    glDispatchCompute(work_groups, 1, 1)
+                    glDispatchCompute(rays_elements, 1, 1)  # 1 workgroup per rhabdomere's sample set
 
                     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
@@ -1323,6 +1334,9 @@ class Renderer:
         mc_noise = 0.65 / np.sqrt(max(1, self._samples_per_rhab))
         self._noise_threshold = max(0.05, mc_noise)
         self._eye_uniforms.update(nb_samples=self._samples_per_rhab, noise_threshold=self._noise_threshold)
+
+        if self._collect_defines() != self._current_defines:
+            self._invalidate_shaders()
 
     @property
     def pixel_samples(self) -> int:
