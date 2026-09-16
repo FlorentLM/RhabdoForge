@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/FlorentLM/RhbdoForge"
+Repository = "https://github.com/FlorentLM/RhabdoForge"
 
 [tool.hatch.build.targets.wheel]
 packages = ["rhabdoforge"]
