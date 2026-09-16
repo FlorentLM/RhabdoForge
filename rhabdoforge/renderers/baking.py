@@ -119,14 +119,24 @@ class SceneBaker:
         """Gathers images from assets and creates the GL_TEXTURE_2D_ARRAY."""
 
         texture_images = []
+        layer_by_key = {}  # texture_key -> layer index
 
         # Identify which assets need a slot in the array
         for asset in mesh_assets:
-            if asset.has_texture and asset.texture_image is not None:
-                self._asset_tex_map[asset.id] = len(texture_images)
-                texture_images.append(asset.texture_image)
-            else:
+            if not (asset.has_texture and asset.texture_image is not None):
                 self._asset_tex_map[asset.id] = None
+                continue
+
+            key = asset.texture_key
+            if key is not None and key in layer_by_key:
+                self._asset_tex_map[asset.id] = layer_by_key[key]
+                continue
+
+            layer = len(texture_images)
+            texture_images.append(asset.texture_image)
+            self._asset_tex_map[asset.id] = layer
+            if key is not None:
+                layer_by_key[key] = layer
 
         if not texture_images:
             return
