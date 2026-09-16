@@ -12,11 +12,13 @@ import glfw
 
 from rhabdoforge.engine.resources import ShaderProgram
 
+FONTS_ROOT = Path(__file__).resolve().parent / 'fonts'
+
 
 def generate_font_atlas(
         font_name: Optional[str] = None,
         font_size: int = 20,
-        output_dir: str | Path ='interactive/fonts',
+        output_dir: str | Path = FONTS_ROOT,
         color: Tuple[int, int, int] = (255, 255, 255, 255)
     ):
     """
@@ -134,7 +136,7 @@ class FontRenderer:
         """
         Loads atlas metadata from JSON and the texture from the associated PNG file.
         """
-        atlas_dir = Path('rhabdoforge/interactive/fonts')
+        atlas_dir = FONTS_ROOT
 
         base_name = font_name.split('.')[0] if '.' in font_name else font_name
         unique_name = f"{base_name}_{font_size}"

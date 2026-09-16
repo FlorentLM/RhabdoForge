@@ -23,7 +23,7 @@ The framework enables researchers to model species-specific ommatidial arrays, r
 This project utilizes `uv` for Python dependency management. To set up the environment and install the required dependencies:
 
 ```bash
-# Install dependencies
+# Install
 uv sync
 
 # Activate the environment
@@ -31,6 +31,8 @@ source .venv/bin/activate  # on Windows: .venv\Scripts\activate
 ```
 
 *Note: A GPU supporting OpenGL 4.3+ is required for the Compute Shader-based rendering pipelines, so no macOS support, sorry*
+
+**About `pytinybvh`:** this dependency is [pinned to a known-good commit](https://github.com/FlorentLM/pytinybvh) of my BVH bindings repo, built from source (via `nanobind`/`scikit-build-core`) against the vendored [`tinybvh`](https://github.com/jbikker/tinybvh) C++ library, so `uv sync` needs a C++ compiler and CMake on your `PATH` (MSVC Build Tools on Windows, `gcc`/`clang` + `cmake` on Linux). `uv` fetches the `tinybvh` submodule automatically.
 
 **Troubleshoot:** If the `pytinybvh` dependency fails to install on your machine with this error: `error: external filter 'git-lfs filter-process' failed`
 then you can define the `GIT_LFS_SKIP_SMUDGE` environment variable (`$env:GIT_LFS_SKIP_SMUDGE=1` on Windows, or `export GIT_LFS_SKIP_SMUDGE=1` on Linux), and then run `uv sync` again.

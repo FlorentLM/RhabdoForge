@@ -1,7 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "RhabdoForge"
 version = "0.9.5"
-description = "A modular, hardware-agnostic GPU rendering engine for closed-loop insect vision, sub-ommatidial active sensing, and neuromorphic modelling."
+description = "Modular, hardware-agnostic GPU rendering engine for closed-loop insect vision, sub-ommatidial active sensing, and neuromorphic modelling."
+authors = [
+    {name = "Florent Le Moël", email = "25004801+FlorentLM@users.noreply.github.com"},
+]
+license = "MIT"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,9 +23,18 @@ dependencies = [
     "trimesh[easy]",
     "pyvista",
     "pyglm",
-    "pytinybvh @ git+https://github.com/FlorentLM/pytinybvh.git",
+    "pytinybvh @ git+https://github.com/FlorentLM/pytinybvh.git@5fcbe09f4a896605a1359babecc490bd27286ed7",
     "dearpygui>=2.3.1",
     "opencv-python>=4.13.0.92,<5",
     "joblib>=1.5.3",
     "polars>=1.44.2",
 ]
+
+[project.urls]
+Repository = "https://github.com/FlorentLM/RhbdoForge"
+
+[tool.hatch.build.targets.wheel]
+packages = ["rhabdoforge"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

@@ -6,7 +6,6 @@ references/
 stuff/
 
 assets/*.ply
-uv.lock
 datasets/
 
 ### venv template

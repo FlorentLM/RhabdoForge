@@ -10,7 +10,7 @@ import numpy as np
 from pyglm import glm
 
 
-SHADERS_ROOT = 'rhabdoforge/engine/shaders'
+SHADERS_ROOT = Path(__file__).resolve().parent / 'shaders'
 
 
 def write_pytinybvh_preamble(preamble: str):
@@ -18,7 +18,7 @@ def write_pytinybvh_preamble(preamble: str):
     Writes PyTinyBVH #defines to a shader include that GLSL can #include.
     """
 
-    shaders_root = Path(SHADERS_ROOT)
+    shaders_root = SHADERS_ROOT
     file_name = 'pytinybvhPreamble.glsl'
 
     try:
@@ -40,7 +40,7 @@ class ShaderCompiler:
 
     def __init__(self, defines: Optional[Union[Set[str], Dict[str, Any]]] = None):
 
-        self._shaders_root = Path(SHADERS_ROOT)
+        self._shaders_root = SHADERS_ROOT
 
         self.defines = defines or {}
         self._include_stack = set()
