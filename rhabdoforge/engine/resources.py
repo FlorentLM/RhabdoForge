@@ -625,31 +625,30 @@ class TextureRegistry:
         self._textures[name] = tex
         return tex
 
-    def allocate_array(self, name: str, texture_ids: Sequence[int]) -> TextureObject:
-        if not texture_ids:
-            raise ValueError("No texture IDs provided for array.")
+    def create_array(self, name: str, width: int, height: int, layer_count: int) -> TextureObject:
+        """Allocates empty GL_TEXTURE_2D_ARRAY, layers are filled in later with write_texture_layer()."""
 
-        glBindTexture(GL_TEXTURE_2D, texture_ids[0])
-        tex_w = glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH)
-        tex_h = glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT)
-        glBindTexture(GL_TEXTURE_2D, 0)
+        max_layers = glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS)
+        if layer_count > max_layers:
+            raise ValueError(f"Texture array '{name}' needs {layer_count} layers, "
+                              f"but this GPU only supports {max_layers}.")
 
-        layer_count = len(texture_ids)
         tex_array_id = glGenTextures(1)
+        levels = int(np.floor(np.log2(max(width, height)))) + 1
 
         glBindTexture(GL_TEXTURE_2D_ARRAY, tex_array_id)
-        glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_SRGB8_ALPHA8, tex_w, tex_h, layer_count)
+        glTexStorage3D(GL_TEXTURE_2D_ARRAY, levels, GL_SRGB8_ALPHA8, width, height, layer_count)
 
-        for i, tex_id in enumerate(texture_ids):
-            glCopyImageSubData(
-                tex_id, GL_TEXTURE_2D, 0, 0, 0, 0,
-                tex_array_id, GL_TEXTURE_2D_ARRAY, 0, 0, 0, i,
-                tex_w, tex_h, 1
-            )
+        err = glGetError()
+        if err != GL_NO_ERROR:
+            glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
+            glDeleteTextures(1, [tex_array_id])
+            raise MemoryError(f"Failed to allocate {width}x{height}x{layer_count} texture array "
+                               f"'{name}' (GL error {err}); likely out of VRAM.")
 
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT)
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT)
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
@@ -657,6 +656,20 @@ class TextureRegistry:
         tex = TextureObject(name, tex_array_id, GL_TEXTURE_2D_ARRAY, unit)
         self._textures[name] = tex
         return tex
+
+    @staticmethod
+    def generate_mipmaps(tex: TextureObject) -> None:
+        glBindTexture(tex.target, tex.handle)
+        glGenerateMipmap(tex.target)
+        glBindTexture(tex.target, 0)
+
+    @staticmethod
+    def write_texture_layer(array_tex: TextureObject, src_tex_id: int, width: int, height: int, layer: int) -> None:
+        glCopyImageSubData(
+            src_tex_id, GL_TEXTURE_2D, 0, 0, 0, 0,
+            array_tex.handle, GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer,
+            width, height, 1
+        )
 
     def register_existing(self, name: str, handle: int, target: int) -> TextureObject:
         unit = self._rm.next_texture() if self._rm else 0

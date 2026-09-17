@@ -29,7 +29,8 @@ const float THE_TINIEST_FLOAT = 2.3283064365386963e-10;  // 2^-32
 struct Material {
     uint texture_idx;       // 0xFFFFFFFF means no texture (use base_color)
     uint base_color;        // RGBA8 packed into uint32
-    uint pad0, pad1;
+    float alpha_cutoff;     // <=0 means opaque (no alpha test)
+    uint pad0;
 };
 
 // Ommatidium static  (read only)

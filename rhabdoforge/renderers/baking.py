@@ -16,6 +16,9 @@ if TYPE_CHECKING:
     from rhabdoforge.engine.scene import Scene
 
 
+TEX_ARRAY_CAP = 2048  # max side length for a (shared) material texture-array layer
+
+
 class SceneBaker:
     """
     Manages BVH structures and GPU buffers for a Scene.
@@ -112,6 +115,7 @@ class SceneBaker:
         row[0] = tex_idx if tex_idx is not None else 0xFFFFFFFF
 
         row[1] = self.pack_rgba8(asset.material.base_color)
+        row[2] = np.float32(asset.material.alpha_cutoff).view(np.uint32)
 
         return row
 
@@ -141,31 +145,31 @@ class SceneBaker:
         if not texture_images:
             return
 
-        # Determine dimensions (based on first texture)
-        # TODO: This is kinda crap
-        self.tex_w, self.tex_h = texture_images[0].size
-        tex_ids = []
+        # Shared layer size: largest texture seen (capped)
+        largest = max(max(img.size) for img in texture_images)
 
-        # Create temporary textures for each
-        for img in texture_images:
+        self.tex_w = self.tex_h = min(largest, TEX_ARRAY_CAP)
+
+        layer_count = len(texture_images)
+        array_tex = self.scene_textures.create_array('materials', self.tex_w, self.tex_h, layer_count)
+
+        # Upload 1 texture at a time, copy it into its layer, free it immediately
+        for i, img in enumerate(texture_images):
             if img.size != (self.tex_w, self.tex_h):
                 img = img.resize((self.tex_w, self.tex_h), Image.Resampling.LANCZOS)
 
-            # Upload to a temporary handle to allow the TextureRegistry to 'array' them
             temp_tex = self.scene_textures.allocate_2d(
                 'temp', self.tex_w, self.tex_h,
-                image_data=img.convert('RGBA').tobytes(),
+                image_data=img.transpose(Image.Transpose.FLIP_TOP_BOTTOM).convert('RGBA').tobytes(),
                 repeat=True, dtype=int
             )
-            tex_ids.append(temp_tex.handle)
+            self.scene_textures.write_texture_layer(array_tex, temp_tex.handle, self.tex_w, self.tex_h, i)
+            temp_tex.free()
 
-        # Collapse into final array
-        self.scene_textures.allocate_array('materials', tex_ids)
-
-        # Cleanup temporary handles
-        glDeleteTextures(len(tex_ids), tex_ids)
         if 'temp' in self.scene_textures._textures:
             del self.scene_textures._textures['temp']
+
+        self.scene_textures.generate_mipmaps(array_tex)
 
     def _pack_materials(self):
         """Initial material data packing for all mesh assets into GPU buffers."""

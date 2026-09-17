@@ -226,6 +226,22 @@ float intersect_aabb(in Ray r, vec3 aabb_min, vec3 aabb_max) {
     return (tmax >= max(tmin, 0.0)) ? tmin : 1.0/0.0;
 }
 
+// Alpha-cutout test for MASK/BLEND materials. No true blending support (yet?) so both use a hard cutoff
+// true if the ray should pass through the triangle (= no hit)
+bool alpha_discard(uint material_id, uint base_vtx, uint i0, uint i1, uint i2, vec3 bary) {
+    Material mat = materials[material_id];
+    if (mat.alpha_cutoff <= 0.0) return false;
+
+    float a;
+    if (mat.texture_idx == 0xFFFFFFFFu) {
+        a = unpack_color(mat.base_color).a;
+    } else {
+        vec2 uv = getUV(base_vtx + i0) * bary.x + getUV(base_vtx + i1) * bary.y + getUV(base_vtx + i2) * bary.z;
+        a = texture(scene_textures, vec3(uv, mat.texture_idx)).a;
+    }
+    return a < mat.alpha_cutoff;
+}
+
 // ================================= Forward declarations ==========================================
 
 void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, InstanceInfo inst);
@@ -353,7 +369,14 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
                     vec3 v1 = getPos(base_vtx + i1);
                     vec3 v2 = getPos(base_vtx + i2);
 
+                    float prev_t = r_obj.t;
                     HitInfo tri_hit = intersect_triangle(r_obj, dir_obj, v0, v1, v2);
+
+                    if (tri_hit.found && alpha_discard(inst.material_id, base_vtx, i0, i1, i2, tri_hit.barycentric_coords)) {
+                        r_obj.t = prev_t;  // ray keeps going past this (transparent) texel
+                        continue;
+                    }
+
                     if (tri_hit.found) {
                         blas_hit.found = true;
                         blas_hit.is_point_hit = false;

@@ -2,7 +2,8 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 
-from typing import TYPE_CHECKING, Dict, List, Optional, Union, Sequence, Set
+from typing import TYPE_CHECKING, Dict, List, Optional, Union, Sequence, Set, Tuple
+from collections import Counter
 from numpy.typing import ArrayLike
 from pathlib import Path
 import numpy as np
@@ -118,6 +119,35 @@ def trimesh_from_arrays(
         print(f"Error creating model from arrays: {e}")
         return None
 
+
+def _merge_static_geoms(data: 'trimesh.Scene', entries: List[Tuple[str, np.ndarray]]) -> trimesh.Trimesh:
+    """
+    Bake each node's transform into its vertices and concatenate geometries that share a
+    material into a single Trimesh, to allow the BVH to do its job.
+    """
+
+    verts, faces, uv = [], [], []
+    material = None
+    offset = 0
+
+    for geom_name, node_transform in entries:
+        g = data.geometry[geom_name]
+
+        v = np.c_[g.vertices, np.ones(len(g.vertices))] @ node_transform.T
+        verts.append(v[:, :3])
+        faces.append(np.asarray(g.faces) + offset)
+        offset += len(g.vertices)
+
+        g_uv = getattr(g.visual, 'uv', None)
+        uv.append(g_uv if g_uv is not None else np.zeros((len(g.vertices), 2)))
+
+        if material is None:
+            material = g.visual.material
+
+    merged = trimesh.Trimesh(vertices=np.concatenate(verts), faces=np.concatenate(faces), process=False)
+    merged.visual = trimesh.visual.TextureVisuals(uv=np.concatenate(uv), material=material)
+    return merged
+
 ##
 
 class MaterialData:
@@ -128,6 +158,7 @@ class MaterialData:
         self.base_color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
         self.specular = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)  # w = shininess
         self.emission = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        self.alpha_cutoff = 0.0  # <= 0 means opaque, > 0 means discard texels below this
 
 
 class Asset:
@@ -330,7 +361,8 @@ class Asset:
             name: str,
             tm: trimesh.Trimesh | trimesh.PointCloud | trimesh.Geometry,
             radii: Optional[ArrayLike] = None,
-            extract_texture: bool = True
+            extract_texture: bool = True,
+            texture_cache: Optional[Dict[int, 'Image']] = None
         ) -> 'Asset':
 
         if tm.is_empty:
@@ -338,7 +370,7 @@ class Asset:
 
         if isinstance(tm, trimesh.Trimesh) and tm.faces is not None and len(tm.faces) > 0:
             a = MeshAsset(name)
-            a._setup(tm, extract_texture)
+            a._setup(tm, extract_texture, texture_cache)
 
             if radii is not None:
                 print(f"Asset '{name}': Parameter 'radii' has no effect on mesh assets. Ignored.")
@@ -493,7 +525,7 @@ class MeshAsset(Asset):
         uv = self._uv if self._uv is not None else np.zeros((len(v), 2), dtype=np.float32)
         return np.concatenate((v, uv), axis=1)
 
-    def _setup(self, tm: trimesh.Trimesh, extract_texture: bool):
+    def _setup(self, tm: trimesh.Trimesh, extract_texture: bool, texture_cache: Optional[Dict[int, 'Image']] = None):
 
         verts3 = tm.vertices.astype(np.float32)
         self.vertices = verts3
@@ -511,6 +543,10 @@ class MeshAsset(Asset):
         mat = getattr(tm.visual, 'material', None)
         if mat is not None:
 
+            alpha_mode = getattr(mat, 'alphaMode', None)
+            if alpha_mode in ('MASK', 'BLEND'):
+                self.material.alpha_cutoff = float(getattr(mat, 'alphaCutoff', None) or 0.5)    # No alpha blending (yet?) -> hard cutoff
+
             if not hasattr(mat, 'image') and hasattr(mat, 'to_simple'):
                 mat = mat.to_simple()
 
@@ -527,8 +563,16 @@ class MeshAsset(Asset):
                 self.material.specular = np.array([spec[0], spec[1], spec[2], shine], dtype=np.float32)
 
             if extract_texture and not self.has_texture and getattr(mat, 'image', None) is not None:
-                self._texture_image = mat.image.convert("RGBA")
-                self._texture_src_id = id(mat.image)
+                img_id = id(mat.image)  # dedupe key shared by all assets using this material
+
+                cached = texture_cache.get(img_id) if texture_cache is not None else None
+                if cached is None:
+                    cached = mat.image.convert("RGBA")
+                    if texture_cache is not None:
+                        texture_cache[img_id] = cached
+
+                self._texture_image = cached
+                self._texture_src_id = img_id
 
 
 class PointsAsset(Asset):
@@ -948,23 +992,54 @@ class Scene:
                 user_transform = glm.translate(glm.mat4(1.0), glm.vec3(transform_np))
 
         if isinstance(data, trimesh.Scene):
-            # Multi-geometry file: one Instance per node, Assets deduped/shared by geometry name
+            # Multi-geometry file: one Instance per node, Assets deduped/shared by geometry name.
+            # Nodes that have geometry used nowhere else and that won't move get batched *by material*
+
+            texture_cache: Dict[int, 'Image'] = {}  # avoids re-decoding the same material image per asset
+
+            inst_kwargs = {k: v for k, v in kwargs.items() if k != 'radii'}
+            can_batch = not kwargs.get('dynamic', False)
+
+            geom_names = [data.graph.get(n)[1] for n in data.graph.nodes_geometry]
+            usage = Counter(geom_names)
+
+            batches: Dict[int, List[Tuple[str, np.ndarray]]] = {}
 
             for node_name in data.graph.nodes_geometry:
 
                 transform_in_file, geom_name = data.graph.get(node_name)
+                geom_obj = data.geometry[geom_name]
+
+                mat = getattr(geom_obj.visual, 'material', None)
+                is_mesh = isinstance(geom_obj, trimesh.Trimesh) and geom_obj.faces is not None
+
+                if can_batch and usage[geom_name] == 1 and is_mesh and mat is not None:
+                    batches.setdefault(id(mat), []).append((geom_name, transform_in_file))
+                    continue
+
                 node_transform = glm.mat4(transform_in_file)
                 final_transform = user_transform * node_transform
 
                 asset_name = f"{name_prefix}_{geom_name}"
 
                 if asset_name not in self.assets:
-                    geom_obj = data.geometry[geom_name]
-                    asset = Asset.from_trimesh(asset_name, geom_obj, radii=kwargs.get('radii'), extract_texture=True)
+                    asset = Asset.from_trimesh(asset_name, geom_obj, radii=kwargs.get('radii'), extract_texture=True,
+                                               texture_cache=texture_cache)
                     self.assets[asset_name] = asset
 
-                inst = self.add_instance(self.assets[asset_name], transform=final_transform,
-                                         **{k: v for k, v in kwargs.items() if k != 'radii'})
+                inst = self.add_instance(self.assets[asset_name], transform=final_transform, **inst_kwargs)
+                new_instances.append(inst)
+
+            for i, entries in enumerate(batches.values()):
+                asset_name = f'{name_prefix}_batch_{i}'
+
+                if asset_name not in self.assets:
+                    merged = _merge_static_geoms(data, entries)
+                    asset = Asset.from_trimesh(asset_name, merged, extract_texture=True, texture_cache=texture_cache)
+                    self.assets[asset_name] = asset
+
+                inst = self.add_instance(self.assets[asset_name], transform=user_transform, **inst_kwargs)
+
                 new_instances.append(inst)
 
         elif isinstance(data, (trimesh.Trimesh, trimesh.PointCloud)):
