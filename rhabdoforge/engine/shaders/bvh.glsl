@@ -42,6 +42,10 @@ struct InstanceInfo {
 layout(binding = 0) uniform sampler2D sky_texture;
 layout(binding = 1) uniform sampler2DArray scene_textures;
 
+// ========================================== Consts ================================================
+
+const uint MAX_ALPHA_DISCARDS = 32u;  // cap on transparent hits per traversal
+
 // ====================================== Scene uniforms ============================================
 
 uniform uint nb_tlas_nodes;
@@ -320,6 +324,7 @@ void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
 
 void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, InstanceInfo inst) {
     blas_hit.found = false;
+    uint discards_left = MAX_ALPHA_DISCARDS;
 
     uint stack[64];
     uint stack_ptr = 0;
@@ -372,7 +377,9 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
                     float prev_t = r_obj.t;
                     HitInfo tri_hit = intersect_triangle(r_obj, dir_obj, v0, v1, v2);
 
-                    if (tri_hit.found && alpha_discard(inst.material_id, base_vtx, i0, i1, i2, tri_hit.barycentric_coords)) {
+                    if (tri_hit.found && discards_left > 0u &&
+                        alpha_discard(inst.material_id, base_vtx, i0, i1, i2, tri_hit.barycentric_coords)) {
+                        discards_left--;
                         r_obj.t = prev_t;  // ray keeps going past this (transparent) texel
                         continue;
                     }
