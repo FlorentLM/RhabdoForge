@@ -248,7 +248,7 @@ bool alpha_discard(uint material_id, uint base_vtx, uint i0, uint i1, uint i2, v
 
 // ================================= Forward declarations ==========================================
 
-void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, InstanceInfo inst);
+void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, InstanceInfo inst, bool any_hit);
 
 // ================================= Traversal functions ===========================================
 
@@ -286,7 +286,7 @@ void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
                 r_obj.t = 1.0/0.0;
 
                 HitInfo blas_hit;
-                traverse_blas(r_obj, dir_obj, blas_hit, inst);
+                traverse_blas(r_obj, dir_obj, blas_hit, inst, false); // Closest-hit
 
                 if (blas_hit.found) {
                     vec3 hit_point_obj = r_obj.origin + dir_obj * blas_hit.t;
@@ -322,7 +322,7 @@ void traverse_tlas(inout Ray r_world, vec3 dir_world, out HitInfo closest_hit) {
     }
 }
 
-void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, InstanceInfo inst) {
+void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, InstanceInfo inst, bool any_hit) {
     blas_hit.found = false;
     uint discards_left = MAX_ALPHA_DISCARDS;
 
@@ -391,6 +391,8 @@ void traverse_blas(inout Ray r_obj, vec3 dir_obj, out HitInfo blas_hit, Instance
                         blas_hit.barycentric_coords = tri_hit.barycentric_coords;
                         blas_hit.t = tri_hit.t;
                         r_obj.t = tri_hit.t;
+
+                        if (any_hit) return;
                     }
                 }
             }
@@ -455,7 +457,7 @@ bool is_occluded(Ray r_world) {
                 r_obj.t = 1e10;
 
                 HitInfo blas_hit;
-                traverse_blas(r_obj, dir_obj, blas_hit, inst);
+                traverse_blas(r_obj, dir_obj, blas_hit, inst, true); // any hit
                 if (blas_hit.found) return true;
             }
         } else {
