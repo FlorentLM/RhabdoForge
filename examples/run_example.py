@@ -73,7 +73,7 @@ if __name__ == "__main__":
             neural_superposition=False,
         )
 
-    model.scale(1e-6)
+    model.scale(1e-6)   # model constructs in micrometers
 
     # Example: overriding time adaptation (generates motion blur)
     # model.tau_membrane = 0.012
@@ -89,7 +89,8 @@ if __name__ == "__main__":
         randomness_mode=RandomnessMode.Halton,
         sampling_mode=SamplingMode.Waveguide if USE_DROSO_MODEL else SamplingMode.Gaussian,
         enable_microsaccades=True if USE_DROSO_MODEL else False,
-        enable_direct=True, enable_shadows=True, enable_ambient=True
+        enable_direct=True, enable_shadows=True, enable_ambient=True,
+        track_history=HEADLESS,   # history tracking is disk-backed (avoids blowing up RAM on long headless runs)
     )
 
     renderer.hybrid_sampling = True if USE_DROSO_MODEL else False
@@ -135,7 +136,7 @@ if __name__ == "__main__":
 
     if not HEADLESS:
         # Interactive mode
-        while context.run_interactive(use_dashboard=True):
+        while context.run_interactive(use_dashboard=False):
 
             context.input()  # processes inputs from keyboard / gamepad etc (optional)
 
@@ -151,19 +152,14 @@ if __name__ == "__main__":
         # Headless and batched mode
         print(f"Running headless simulation for {BATCH_SIZE} steps...")
 
-        all_data = []
-
         for dt in context.run_headless(BATCH_SIZE):
 
             # Move the agent forward at 0.5 m/s and yaw at 25 deg/s
             agent.translate(agent.forward * 0.5 * dt).rotate(yaw=25.0 * dt, degrees=True)
 
-            # Render one biological step
-            output = renderer.step()
+            # Render one biological step (renderer's track_history=True means data is written on disk in a temp file)
+            renderer.step()
 
-            # If the return value is not None, it's a valid chunk of data (either a single frame or a full batch)
-            if output is not None:
-                all_data.append(output)
 
         # Grab the final partial batch (harmless in sync mode, it will just return None)
         final_chunk = renderer.flush()

@@ -1,10 +1,105 @@
 from typing import Tuple, Sequence, Optional, Union, Any
+import os
+import tempfile
+from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 from matplotlib.axes import Axes
 
 from rhabdoforge.compound_eyes import Model
 from rhabdoforge.geometry.circular import wrap_angle
+
+
+class HistoryRecorder:
+    """
+    Disk-backed, append-only store for a stream of fixed-shape frames.
+    """
+
+    def __init__(self,
+             frame_shape: Tuple[int, ...],
+             dtype: npt.DTypeLike = np.float32,
+             path: Optional[Union[str, Path]] = None,
+             init_capacity: int = 256
+         ):
+
+        self._frame_shape = tuple(frame_shape)
+        self._dtype = np.dtype(dtype)
+        self._frame_nbytes = int(np.prod(self._frame_shape)) * self._dtype.itemsize
+
+        self._owns_file = path is None
+        if path is None:
+            fd, path = tempfile.mkstemp(suffix='.rfhist')
+            os.close(fd)
+
+        self._path = Path(path)
+
+        self._count = 0
+        self._capacity = 0
+        self._mmap: Optional[np.memmap] = None
+        self._grow(max(1, init_capacity))
+
+    def _grow(self, min_capacity: int) -> None:
+        new_capacity = max(min_capacity, self._capacity * 2)
+
+        if self._mmap is not None:
+            self._mmap.flush()
+            del self._mmap
+            self._mmap = None
+
+        with open(self._path, 'r+b' if self._path.exists() else 'w+b') as f:
+            f.truncate(new_capacity * self._frame_nbytes)
+
+        self._mmap = np.memmap(
+            self._path,
+           dtype=self._dtype,
+           mode='r+',
+           shape=(new_capacity, *self._frame_shape)
+       )
+
+        self._capacity = new_capacity
+
+    def extend(self, chunk: np.ndarray) -> None:
+        """Appends one frame (shape =frame_shape) or a batch of frames (shape = (T, *frame_shape))."""
+
+        chunk = np.asarray(chunk, dtype=self._dtype)
+        if chunk.shape == self._frame_shape:
+            chunk = chunk[np.newaxis, ...]
+        elif chunk.ndim != len(self._frame_shape) + 1 or chunk.shape[1:] != self._frame_shape:
+            raise ValueError(f'Chunk shape {chunk.shape} incompatible with frame shape {self._frame_shape}')
+
+        n = chunk.shape[0]
+        if self._count + n > self._capacity:
+            self._grow(self._count + n)
+
+        self._mmap[self._count:self._count + n] = chunk
+        self._count += n
+
+    @property
+    def array(self) -> np.ndarray:
+        """Read-only memmaped view over the recorded frames, shape (len(self), *frame_shape)."""
+        return self._mmap[:self._count]
+
+    def __len__(self) -> int:
+        return self._count
+
+    def clear(self) -> None:
+        """Reset frame count (backing file/capacity is kept for reuse)."""
+        self._count = 0
+
+    def close(self) -> None:
+        """Releases the memmap, delete the temp backing file (custom paths are not deleted)."""
+        if self._mmap is not None:
+            self._mmap.flush()
+            del self._mmap
+            self._mmap = None
+        if self._owns_file and self._path.exists():
+            try:
+                self._path.unlink()
+            except OSError:
+                pass
+
+    def __del__(self):
+        self.close()
 
 
 class SignalView:
@@ -177,6 +272,25 @@ class VisualOutput(SignalView):
     def copy(self) -> 'VisualOutput':
         """Returns a deep copy of the visual output, preserving the model."""
         return VisualOutput(self._data.copy(), self._model, self._coords, self._is_time_series)
+
+    def _memmap_base(self) -> Optional[np.memmap]:
+        arr = self._data
+        while arr is not None:
+            if isinstance(arr, np.memmap):
+                return arr
+            arr = getattr(arr, 'base', None)
+        return None
+
+    @property
+    def is_memmap(self) -> bool:
+        """True if the data is backed by a memory-mapped file."""
+        return self._memmap_base() is not None
+
+    @property
+    def file_path(self) -> Optional[Path]:
+        """Backing file path if memmap-backed, else None."""
+        base = self._memmap_base()
+        return Path(base.filename) if base is not None and base.filename else None
 
     @classmethod
     def from_history(cls, history: Sequence['VisualOutput'] | Sequence[np.ndarray],

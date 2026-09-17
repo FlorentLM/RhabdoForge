@@ -22,7 +22,7 @@ from rhabdoforge.engine.resources import (
 )
 from rhabdoforge.engine.materials_utils import constant_sh
 from rhabdoforge.renderers.baking import SceneBaker, TEX_TIERS
-from rhabdoforge.renderers.helpers import VisualOutput
+from rhabdoforge.renderers.helpers import VisualOutput, HistoryRecorder
 
 if TYPE_CHECKING:
     from rhabdoforge.engine.scene import Scene
@@ -79,6 +79,7 @@ class Renderer:
                  panoramic_resolution: Optional[Tuple[int, int]] = (1024, 512),
                  batch_size: int = 1,
                  track_history: bool = False,
+                 history_path: Optional[Union[str, Path]] = None,
                  max_bounces: int = 0,
                  enable_microsaccades: bool = False,
                  enable_direct: bool = True,
@@ -142,7 +143,8 @@ class Renderer:
             batch_size, nb_samples, prioritize_batch=True
         )
         self._track_history: bool = track_history
-        self._history: List['VisualOutput'] = []
+        self._history_path = Path(history_path) if history_path is not None else None
+        self._history: Optional['HistoryRecorder'] = None
 
         # Initialise the registries
         self._eye_uniforms = UniformRegistry()
@@ -909,6 +911,16 @@ class Renderer:
         self._frame_index = 0
         return VisualOutput(data=data_np, model=self._model)
 
+    def _record_history(self, out: 'VisualOutput') -> None:
+        """Appends a frame or batch chunk to the disk-backed history recorder (created lazily)."""
+        if self._history is None:
+            self._history = HistoryRecorder(
+                frame_shape=out.data.shape[-2:],
+                dtype=out.data.dtype,
+                path=self._history_path
+            )
+        self._history.extend(out.data)
+
     def sync_cpu(self, force_all=False) -> None:
         """
         CPU data sync (contiguous block synchronisation).
@@ -1046,7 +1058,7 @@ class Renderer:
 
         # Collection if history is enabled
         if self._track_history and out is not None:
-            self._history.append(out)
+            self._record_history(out)
 
         return out
 
@@ -1189,27 +1201,36 @@ class Renderer:
     @property
     def history(self) -> Optional['VisualOutput']:
         """
-        Returns the full concatenated history of all rendered frames.
+        Returns the full history of rendered frames as a single memmap-backed VisualOutput
+        (frames are never held in RAM).
         """
         # Drain GPU pipe of any leftover frames
         remainder = self.flush()
         if remainder is not None:
-            self._history.append(remainder)
+            self._record_history(remainder)
 
-        # Combine and return
-        if not self._history:
+        if self._history is None or len(self._history) == 0:
             return None
 
-        full_dataset = VisualOutput.from_history(self._history)
-
-        # self.clear_history()  # TODO: decide whether this should be done or not
-
-        return full_dataset
+        return VisualOutput(self._history.array, self._model, coords='rhabdomeres', is_time_series=True)
 
     def clear_history(self) -> None:
-        """Reset the internal history buffer."""
-        self._history = []
+        """Discards recorded history and frees the backing file."""
+        if self._history is not None:
+            self._history.close()
+            self._history = None
         self._frame_index = 0
+
+    @property
+    def history_path(self) -> Optional[Path]:
+        """Backing file for history recording (None = OS temp file, removed on clear_history)."""
+        return self._history_path
+
+    @history_path.setter
+    def history_path(self, path: Optional[Union[str, Path]]) -> None:
+        if self._history is not None:
+            raise RuntimeError('History is already being recorded. Call clear_history() before changing history_path.')
+        self._history_path = Path(path) if path is not None else None
 
     # Public properties and methods
 
@@ -1305,7 +1326,7 @@ class Renderer:
         if self._frame_index > 0:
             leftover = self.flush()
             if self._track_history and leftover:
-                self._history.append(leftover)
+                self._record_history(leftover)
 
         # Recalculate safe limits (VRAM check)
         safe_batch, _ = self._safe_samples_lim(new_batch, self._samples_per_rhab)
@@ -1737,6 +1758,9 @@ class Renderer:
         """
         Free all GPU resources owned by the renderer.
         """
+
+        # Recorded history (releases the memmap and deletes the backing file)
+        self.clear_history()
 
         # Eyes stuff: shaders, SSBOs/PBOs, fences, eye-mesh VAOs/shaders
         self._free_model_resources()
