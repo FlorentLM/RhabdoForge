@@ -687,12 +687,12 @@ class Renderer:
     def _reduction(self) -> None:
 
         with self.reduction_shader as shader:
-
-            with self.eye_buffers.grouped_bind(['rays_intermediate', 'rhab_static', 'colors', 'ema_state', 'rhab_dynamic']):
-
+            with self.eye_buffers.grouped_bind(
+                    ['rays_intermediate', 'rhab_static', 'colors', 'ema_state', 'rhab_dynamic']):
                 self._eye_uniforms.apply(shader)
 
-                glDispatchCompute(self._model.size, 1, 1)
+                rays_elements = self._model.N if self._model.bundle.fused_rhabdoms else self._model.size
+                glDispatchCompute(rays_elements, 1, 1)
 
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT)
 
