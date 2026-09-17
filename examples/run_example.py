@@ -161,13 +161,9 @@ if __name__ == "__main__":
             renderer.step()
 
 
-        # Grab the final partial batch (harmless in sync mode, it will just return None)
-        final_chunk = renderer.flush()
-        if final_chunk is not None:
-            all_data.append(final_chunk)
-
-        full_dataset = VisualOutput.from_history(all_data)
-        print(f"Final concatenated dataset shape: {full_dataset.shape}")
+        # Drains any leftover partial batch and returns the full timeseries as a memmap-backed VisualOutput instance
+        full_dataset = renderer.history
+        print(f"Final dataset shape: {full_dataset.shape}")
 
     print(f'Ran for {context.frame_count} frames in {context.wall_time:.2f}s (avg. {context.frame_count / context.wall_time:.2f} fps).')
 
