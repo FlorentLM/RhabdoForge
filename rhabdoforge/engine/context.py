@@ -99,8 +99,7 @@ class Context:
 
         self.time_step: Optional[float] = None  # None = variable (wall-clock), Float = fixed time resolution
 
-        # Shared movement parameter
-        self.move_speed: float = 3.0
+        self.move_speed: float = 1.0
         self._mouse_captured: bool = True
 
         # Sun control mode
