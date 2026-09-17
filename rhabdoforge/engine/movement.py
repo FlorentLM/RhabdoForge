@@ -10,6 +10,27 @@ from rhabdoforge.geometry.linalg import tangent_frames
 
 # TODO: Better type-annotate this file
 
+def resolve_axis(axis: Union[str, glm.vec3, ArrayLike]) -> glm.vec3:
+    """
+    Resolves a named axis ('x'/'up'/'forward'/...) or a vector to a unit world-space axis.
+    """
+
+    if isinstance(axis, str):
+        axis_map = {
+            'x': WORLD_RIGHT, 'y': WORLD_UP, 'z': WORLD_FORWARD,
+            'right': WORLD_RIGHT, 'left': -WORLD_RIGHT,
+            'up': WORLD_UP, 'down': -WORLD_UP,
+            'forward': WORLD_FORWARD, 'backward': -WORLD_FORWARD,
+        }
+
+        resolved = axis_map.get(axis.lower())
+        if resolved is None:
+            raise ValueError(f"Unknown axis: '{axis}'.")
+
+        return glm.vec3(resolved)
+
+    return glm.normalize(glm.vec3(axis))
+
 
 class TransformMixin:
     """
@@ -173,20 +194,7 @@ class TransformMixin:
 
     def rotate_axis(self, angle: float, axis: Union[str, glm.vec3, ArrayLike], degrees: bool = True):
         """Rotate around a world-space axis passing through the object's position."""
-        axis_map = {
-            'x': WORLD_RIGHT, 'y': WORLD_UP, 'z': WORLD_FORWARD,
-            'right': WORLD_RIGHT, 'left': -WORLD_RIGHT,
-            'up': WORLD_UP, 'down': -WORLD_UP,
-            'forward': WORLD_FORWARD, 'backward': -WORLD_FORWARD,
-        }
-
-        if isinstance(axis, str):
-            rotation_axis = axis_map.get(axis.lower())
-            if rotation_axis is None:
-                raise ValueError(f"Unknown axis: '{axis}'.")
-        else:
-            rotation_axis = glm.normalize(glm.vec3(axis))
-
+        rotation_axis = resolve_axis(axis)
         a = glm.radians(angle) if degrees else angle
 
         pos = self.position

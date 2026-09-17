@@ -4,6 +4,7 @@ from OpenGL.GL import *
 
 from typing import TYPE_CHECKING, Dict, List, Optional, Union, Sequence, Set, Tuple
 from collections import Counter
+import itertools
 from numpy.typing import ArrayLike
 from pathlib import Path
 import numpy as np
@@ -11,9 +12,9 @@ from PIL import Image
 import trimesh
 from pyglm import glm
 
-from rhabdoforge.types import AssetType
+from rhabdoforge.types import AssetType, WORLD_UP, WORLD_BACKWARD, WORLD_RIGHT
 from rhabdoforge.engine.lights import Sun, Light, DirectionalLight, PointLight, AreaLight
-from rhabdoforge.engine.movement import TransformMixin
+from rhabdoforge.engine.movement import TransformMixin, resolve_axis
 from rhabdoforge.engine.materials_utils import load_exr_equirect, sh_irradiance, get_exr_sun
 from rhabdoforge.utils import pretty_size, resolve_path
 
@@ -148,6 +149,35 @@ def _merge_static_geoms(data: 'trimesh.Scene', entries: List[Tuple[str, np.ndarr
     merged.visual = trimesh.visual.TextureVisuals(uv=np.concatenate(uv), material=material)
     return merged
 
+
+def _up_axis_rotation(up_axis: str) -> glm.mat4:
+
+    has_sign = up_axis[:1] in ('+', '-')
+    key = (up_axis[1:] if has_sign else up_axis).lower()
+    src_up = {'x': WORLD_RIGHT, 'y': WORLD_UP, 'z': WORLD_BACKWARD}.get(key)
+
+    if src_up is None:
+        raise ValueError(f"Unsupported up_axis: '{up_axis}'. Expected one of x, -x, y, -y, z, -z.")
+
+    if up_axis.startswith('-'):
+        src_up = -src_up
+
+    d = glm.dot(src_up, WORLD_UP)
+    if d > 0.9999999:
+        return glm.mat4(1.0)  # Already Y-up
+
+    if d < -0.9999999:
+        # 180 flip: any axis perpendicular to src_up works
+        perp = glm.cross(src_up, glm.vec3(1.0, 0.0, 0.0))
+        if glm.length(perp) < 1e-6:
+            perp = glm.cross(src_up, glm.vec3(0.0, 0.0, 1.0))
+        return glm.mat4_cast(glm.angleAxis(glm.radians(180.0), glm.normalize(perp)))
+
+    axis = glm.normalize(glm.cross(src_up, WORLD_UP))
+    angle = glm.acos(glm.clamp(d, -1.0, 1.0))
+
+    return glm.mat4_cast(glm.angleAxis(angle, axis))
+
 ##
 
 class MaterialData:
@@ -219,6 +249,11 @@ class Asset:
     @property
     def nb_points(self) -> int:
         return 0
+
+    @property
+    def bounds(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Min/max XYZ in local/object space."""
+        return None
 
     def _geom_summary(self) -> str:
         return 'empty'
@@ -514,6 +549,13 @@ class MeshAsset(Asset):
     def nb_triangles(self) -> int:
         return 0 if self._indices is None else len(self._indices)
 
+    @property
+    def bounds(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        if self._vertices4 is None or len(self._vertices4) == 0:
+            return None
+        xyz = self._vertices4[:, :3]
+        return xyz.min(axis=0), xyz.max(axis=0)
+
     def _geom_summary(self) -> str:
         nb_tris = pretty_size(self.nb_triangles)
         nb_vert = 0 if self._vertices4 is None else pretty_size(len(self._vertices4))
@@ -621,6 +663,15 @@ class PointsAsset(Asset):
     @property
     def nb_points(self) -> int:
         return 0 if self._points is None else len(self._points)
+
+    @property
+    def bounds(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        if self._points is None or len(self._points) == 0:
+            return None
+
+        pad = float(self._radii.max()) if self._radii is not None and len(self._radii) else 0.0
+
+        return self._points.min(axis=0) - pad, self._points.max(axis=0) + pad
 
     def _geom_summary(self) -> str:
         return f"{pretty_size(self.nb_points)} points"
@@ -748,6 +799,88 @@ class Instance(TransformMixin):
             self._visible_rev += 1
 
     is_visible = visible
+
+
+class InstanceGroup(list):
+    """
+    A list of Instances with bulk transform helpers, so a batch
+    of instances can be treated as one rigid group.
+    """
+
+    @property
+    def bounds(self) -> Optional[Tuple[glm.vec3, glm.vec3]]:
+        """
+        Min/max XYZ in world-space for the whole group.
+        """
+        lo = hi = None
+
+        for inst in self:
+            local = inst.asset.bounds
+            if local is None:
+                continue
+
+            lmin, lmax = local
+            for corner in itertools.product((lmin[0], lmax[0]), (lmin[1], lmax[1]), (lmin[2], lmax[2])):
+                world = glm.vec3(inst.transform * glm.vec4(*corner, 1.0))
+                lo = world if lo is None else glm.min(lo, world)
+                hi = world if hi is None else glm.max(hi, world)
+
+        return None if lo is None else (lo, hi)
+
+    @property
+    def center(self) -> glm.vec3:
+        b = self.bounds
+        return glm.vec3(0.0) if b is None else (b[0] + b[1]) * 0.5
+
+    @property
+    def extent(self) -> glm.vec3:
+        b = self.bounds
+        return glm.vec3(0.0) if b is None else (b[1] - b[0])
+
+    def translate(self, vec: Union[glm.vec3, ArrayLike]) -> 'InstanceGroup':
+        """Shift every instance by the same world-space vector."""
+        for inst in self:
+            inst.translate(vec)
+        return self
+
+    def rescale(self, factor: Union[float, glm.vec3, ArrayLike]) -> 'InstanceGroup':
+        """Scale every instance and its position relative to the group's center by a factor."""
+        center = self.center
+        factor_v = glm.vec3(factor)
+
+        for inst in self:
+            inst.position = center + (inst.position - center) * factor_v
+            inst.rescale(factor)
+        return self
+
+    def rotate_axis(self, angle: float, axis: Union[str, glm.vec3, ArrayLike], degrees: bool = True) -> 'InstanceGroup':
+        """Rotate the whole group as a rigid body around a world-space axis, through its center."""
+        center = self.center
+        rotation_axis = resolve_axis(axis)
+        a = glm.radians(angle) if degrees else angle
+        R = glm.mat4_cast(glm.angleAxis(a, rotation_axis))
+
+        for inst in self:
+            offset = inst.position - center
+            inst.position = center + glm.vec3(R * glm.vec4(offset, 0.0))
+            inst.rotate_axis(angle, axis, degrees=degrees)
+        return self
+
+    def recenter(self, target: Union[glm.vec3, ArrayLike] = (0.0, 0.0, 0.0)) -> 'InstanceGroup':
+        """Shift the whole group so its combined center lands on target."""
+        delta = glm.vec3(target) - self.center
+        return self.translate(delta)
+
+    def fit_to_size(self, target_size: float) -> 'InstanceGroup':
+        """
+        Uniformly scales the group about its center so its largest dimension equals target_size,
+        in world units.
+        """
+        extent = self.extent
+        largest = max(extent.x, extent.y, extent.z)
+        if largest < 1e-9:
+            return self
+        return self.rescale(target_size / largest)
 
 
 class Sky:
@@ -966,8 +1099,11 @@ class Scene:
     def load(self,
             file_path: Path | str,
             transform: Optional[Union[glm.mat4, ArrayLike]] = None,
+            recenter: bool = True,
+            target_size: Optional[float] = 10.0,
+            up_axis: Optional[str] = None,
             **kwargs
-        ) -> List[Instance]:
+        ) -> InstanceGroup:
         """
         Loads a file (obj, gltf, etc.) and creates Assets and Instances.
         """
@@ -980,7 +1116,7 @@ class Scene:
         if data is None:
             raise ValueError(f'Could not load model: {file_path}')
 
-        new_instances = []
+        new_instances = InstanceGroup()
 
         user_transform = glm.mat4(1.0)
         if transform is not None:
@@ -990,6 +1126,9 @@ class Scene:
                 user_transform = glm.mat4(transform_np)
             elif transform_np.shape == (3,):
                 user_transform = glm.translate(glm.mat4(1.0), glm.vec3(transform_np))
+
+        if up_axis is not None:
+            user_transform = _up_axis_rotation(up_axis) * user_transform
 
         if isinstance(data, trimesh.Scene):
             # Multi-geometry file: one Instance per node, Assets deduped/shared by geometry name.
@@ -1057,6 +1196,12 @@ class Scene:
 
         else:
             print(f"Warning: Unsupported data type from '{file_path}': {type(data)}")
+
+        if recenter:
+            new_instances.recenter()
+
+        if target_size is not None:
+            new_instances.fit_to_size(target_size)
 
         return new_instances
 
