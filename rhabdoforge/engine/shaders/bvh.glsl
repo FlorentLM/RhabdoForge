@@ -40,7 +40,42 @@ struct InstanceInfo {
 // ================================== Textures (fixed bindings) =====================================
 
 layout(binding = 0) uniform sampler2D sky_texture;
-layout(binding = 1) uniform sampler2DArray scene_textures;
+
+// Material images in size buckets
+layout(binding = 1) uniform sampler2DArray scene_textures_0;
+layout(binding = 2) uniform sampler2DArray scene_textures_1;
+layout(binding = 3) uniform sampler2DArray scene_textures_2;
+
+vec4 sample_material(Material mat, vec2 uv) {
+    uv *= mat.uv_scale;  // map mesh UV onto the texture's used sub-rect of its (square) tier canvas
+    if (mat.texture_tier == 0u) return texture(scene_textures_0, vec3(uv, mat.texture_idx));
+    if (mat.texture_tier == 1u) return texture(scene_textures_1, vec3(uv, mat.texture_idx));
+    return texture(scene_textures_2, vec3(uv, mat.texture_idx));
+}
+
+uniform float pixel_angular_size;   // for the LOD tests
+
+vec4 sample_material_lod(Material mat, vec2 uv, float lod) {
+    uv *= mat.uv_scale;
+    if (mat.texture_tier == 0u) return textureLod(scene_textures_0, vec3(uv, mat.texture_idx), lod);
+    if (mat.texture_tier == 1u) return textureLod(scene_textures_1, vec3(uv, mat.texture_idx), lod);
+    return textureLod(scene_textures_2, vec3(uv, mat.texture_idx), lod);
+}
+
+// Cheap LOD estimate from the hit triangle's world-vs-UV area ratio (texel density)
+// TODO: This will do for now... but micromaps and bit-lookup in a SSBO would completely avoid the texture lookup
+float estimate_lod(Material mat, float world_area, float uv_area, float hit_dist) {
+    if (uv_area <= 0.0 || world_area <= 0.0) return 0.0;
+
+    ivec3 dims = (mat.texture_tier == 0u) ? textureSize(scene_textures_0, 0)
+               : (mat.texture_tier == 1u) ? textureSize(scene_textures_1, 0)
+               : textureSize(scene_textures_2, 0);
+
+    float texel_world_size = sqrt(world_area / uv_area) / float(dims.x);
+    float footprint_world = hit_dist * pixel_angular_size;
+
+    return max(0.0, log2(max(footprint_world / texel_world_size, 1.0)));
+}
 
 // ========================================== Consts ================================================
 
@@ -241,7 +276,7 @@ bool alpha_discard(uint material_id, uint base_vtx, uint i0, uint i1, uint i2, v
         a = unpack_color(mat.base_color).a;
     } else {
         vec2 uv = getUV(base_vtx + i0) * bary.x + getUV(base_vtx + i1) * bary.y + getUV(base_vtx + i2) * bary.z;
-        a = texture(scene_textures, vec3(uv, mat.texture_idx)).a;
+        a = sample_material(mat, uv).a;
     }
     return a < mat.alpha_cutoff;
 }

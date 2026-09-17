@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, List, Dict, Optional
 import numpy as np
 from PIL import Image
 from pyglm import glm
-from pytinybvh import BVH, instance_dtype, Layout, supports_layout
+from pytinybvh import BVH, BuildQuality, instance_dtype, Layout, supports_layout
 
 from rhabdoforge.types import RENDERABLE_DTYPE, DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE, AssetType
 from rhabdoforge.engine.scene import MeshAsset, PointsAsset
@@ -16,8 +16,7 @@ if TYPE_CHECKING:
     from rhabdoforge.engine.scene import Scene
 
 
-TEX_ARRAY_CAP = 2048  # max side length for a (shared) material texture-array layer
-
+TEX_TIERS = (512, 1024, 2048)  # buckets for material textures, each image snaps to the smallest tier it fits in
 
 class SceneBaker:
     """
@@ -45,6 +44,7 @@ class SceneBaker:
         self.gpu_inst_info: Optional[np.ndarray] = None
         self._material_map: Dict[int, int] = {}
         self._asset_blas_map: Dict[int, Dict] = {}
+        self.tex_arrays: Dict[int, 'TextureObject'] = {}
         self._asset_tex_map = {}
 
         if not self.scene.instances:
@@ -109,67 +109,102 @@ class SceneBaker:
         return (a << 24) | (b << 16) | (g << 8) | r
 
     def _pack_material_row(self, asset) -> np.ndarray:
-        row = np.zeros(4, dtype=np.uint32)
+        row = np.zeros(6, dtype=np.uint32)
 
-        tex_idx = self._asset_tex_map.get(asset.id)
-        row[0] = tex_idx if tex_idx is not None else 0xFFFFFFFF
+        slot = self._asset_tex_map.get(asset.id)
+        if slot is None:
+            row[0] = 0xFFFFFFFF
+            row[4] = np.float32(1.0).view(np.uint32)
+            row[5] = np.float32(1.0).view(np.uint32)
+        else:
+            tier, layer, uv_scale = slot
+            row[0] = layer
+            row[3] = TEX_TIERS.index(tier)
+            row[4] = np.float32(uv_scale[0]).view(np.uint32)
+            row[5] = np.float32(uv_scale[1]).view(np.uint32)
 
         row[1] = self.pack_rgba8(asset.material.base_color)
         row[2] = np.float32(asset.material.alpha_cutoff).view(np.uint32)
 
         return row
 
+    @staticmethod
+    def _tier_fit(img: Image.Image, tier: int) -> tuple:
+        """
+        Downscales img to fit within a size tier and puts it into a (tier, tier) canvas
+        anchored at the origin
+        """
+
+        w, h = img.size
+        scale = min(1.0, tier / max(w, h))
+        new_w, new_h = max(1, round(w * scale)), max(1, round(h * scale))
+
+        if (new_w, new_h) != (w, h):
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        img = img.convert('RGBA').transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+
+        if (new_w, new_h) != (tier, tier):
+            canvas = Image.new('RGBA', (tier, tier), (0, 0, 0, 0))
+            canvas.paste(img, (0, 0))
+            img = canvas
+
+        return img, (new_w / tier, new_h / tier)
+
     def _prepare_texture_array(self, mesh_assets):
-        """Gathers images from assets and creates the GL_TEXTURE_2D_ARRAY."""
+        """
+        Gathers images from assets and creates one GL_TEXTURE_2D_ARRAY per size tier (TEX_TIERS).
+        """
 
-        texture_images = []
-        layer_by_key = {}  # texture_key -> layer index
+        tier_images: Dict[int, list] = {tier: [] for tier in TEX_TIERS}
+        key_to_slot = {}  # texture_key -> (tier, layer, uv_scale) for cross-asset dedupe
 
-        # Identify which assets need a slot in the array
+        # Identify which assets need a slot (and in which tier)
         for asset in mesh_assets:
             if not (asset.has_texture and asset.texture_image is not None):
                 self._asset_tex_map[asset.id] = None
                 continue
 
             key = asset.texture_key
-            if key is not None and key in layer_by_key:
-                self._asset_tex_map[asset.id] = layer_by_key[key]
+            if key is not None and key in key_to_slot:
+                self._asset_tex_map[asset.id] = key_to_slot[key]
                 continue
 
-            layer = len(texture_images)
-            texture_images.append(asset.texture_image)
-            self._asset_tex_map[asset.id] = layer
+            img = asset.texture_image
+            tier = next((t for t in TEX_TIERS if max(img.size) <= t), TEX_TIERS[-1])
+            img, uv_scale = self._tier_fit(img, tier)
+
+            slot = (tier, len(tier_images[tier]), uv_scale)
+            tier_images[tier].append(img)
+
+            self._asset_tex_map[asset.id] = slot
             if key is not None:
-                layer_by_key[key] = layer
+                key_to_slot[key] = slot
 
-        if not texture_images:
-            return
+        self.tex_arrays: Dict[int, 'TextureObject'] = {}
 
-        # Shared layer size: largest texture seen (capped)
-        largest = max(max(img.size) for img in texture_images)
+        for tier, imgs in tier_images.items():
+            if not imgs:
+                continue
 
-        self.tex_w = self.tex_h = min(largest, TEX_ARRAY_CAP)
+            array_tex = self.scene_textures.create_array(f'materials_{tier}', tier, tier, len(imgs))
 
-        layer_count = len(texture_images)
-        array_tex = self.scene_textures.create_array('materials', self.tex_w, self.tex_h, layer_count)
 
-        # Upload 1 texture at a time, copy it into its layer, free it immediately
-        for i, img in enumerate(texture_images):
-            if img.size != (self.tex_w, self.tex_h):
-                img = img.resize((self.tex_w, self.tex_h), Image.Resampling.LANCZOS)
+            # Upload 1 texture at a time, copy it into its layer, free it immediately
+            for i, img in enumerate(imgs):
+                temp_tex = self.scene_textures.allocate_2d(
+                    'temp', tier, tier,
+                    image_data=img.tobytes(),
+                    repeat=True, dtype=int
+                )
+                self.scene_textures.write_texture_layer(array_tex, temp_tex.handle, tier, tier, i)
+                temp_tex.free()
 
-            temp_tex = self.scene_textures.allocate_2d(
-                'temp', self.tex_w, self.tex_h,
-                image_data=img.transpose(Image.Transpose.FLIP_TOP_BOTTOM).convert('RGBA').tobytes(),
-                repeat=True, dtype=int
-            )
-            self.scene_textures.write_texture_layer(array_tex, temp_tex.handle, self.tex_w, self.tex_h, i)
-            temp_tex.free()
+            if 'temp' in self.scene_textures._textures:
+                del self.scene_textures._textures['temp']
 
-        if 'temp' in self.scene_textures._textures:
-            del self.scene_textures._textures['temp']
-
-        self.scene_textures.generate_mipmaps(array_tex)
+            self.scene_textures.generate_mipmaps(array_tex)
+            self.tex_arrays[tier] = array_tex
 
     def _pack_materials(self):
         """Initial material data packing for all mesh assets into GPU buffers."""
@@ -179,7 +214,7 @@ class SceneBaker:
         # allocate a dummy buffer when there are no meshes
         if not mesh_assets:
             self._material_assets = []
-            dummy_data = np.zeros((1, 4), dtype=np.uint32)
+            dummy_data = np.zeros((1, 6), dtype=np.uint32)
             self.bvh_buffers.allocate('materials',
                                       dtype=np.uint32,
                                       count=dummy_data.size,
@@ -194,7 +229,7 @@ class SceneBaker:
 
         self._prepare_texture_array(mesh_assets)        # populates self._asset_tex_map
 
-        mat_data = np.zeros((len(mesh_assets), 4), dtype=np.uint32)
+        mat_data = np.zeros((len(mesh_assets), 6), dtype=np.uint32)
 
         for asset in mesh_assets:
             idx = self._material_map[asset.id]
@@ -224,7 +259,7 @@ class SceneBaker:
             bundle = None
 
             if isinstance(asset, MeshAsset):
-                blas = BVH.from_indexed_mesh(asset.vertices4, asset.indices)
+                blas = BVH.from_indexed_mesh(asset.vertices4, asset.indices, quality=BuildQuality.High)
 
                 all_verts.append(asset.shading_vertices())
                 all_idxs.append(asset.indices.flatten())
@@ -396,12 +431,12 @@ class SceneBaker:
                 continue
 
             self.bvh_buffers['materials'].write(self._pack_material_row(asset),
-                                                start=self._material_map[asset.id] * 4)
+                                                start=self._material_map[asset.id] * 6)
             self._mat_last_rev[asset.id] = asset.material_revision
 
     def _sync_textures(self):
 
-        if 'materials' not in self.scene_textures:
+        if not self.tex_arrays:
             return
 
         for asset in self._material_assets:
@@ -409,21 +444,30 @@ class SceneBaker:
                 continue
             self._tex_last_rev[asset.id] = asset.texture_revision
 
-            tex_idx = self._asset_tex_map.get(asset.id)
-            if tex_idx is None:  # had no texture at bake but promotion needs an array realloc (TODO in future)
+            slot = self._asset_tex_map.get(asset.id)
+            if slot is None:  # had no texture at bake but promotion needs an array realloc (TODO in future)
                 continue
             img = asset.texture_image
             if img is None:
                 continue
 
-            if img.size != (self.tex_w, self.tex_h):
-                img = img.resize((self.tex_w, self.tex_h), Image.Resampling.LANCZOS)
+            tier, layer, _ = slot
+            array_tex = self.tex_arrays[tier]
 
-            glBindTexture(GL_TEXTURE_2D_ARRAY, self.scene_textures['materials'].handle)
-            glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, tex_idx,
-                            self.tex_w, self.tex_h, 1,
-                            GL_RGBA, GL_UNSIGNED_BYTE, img.convert('RGBA').tobytes())
+            img, uv_scale = self._tier_fit(img, tier)
+
+            glBindTexture(GL_TEXTURE_2D_ARRAY, array_tex.handle)
+            glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer,
+                            tier, tier, 1,
+                            GL_RGBA, GL_UNSIGNED_BYTE, img.tobytes())
             glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
+            self.scene_textures.generate_mipmaps(array_tex)
+
+            # Did aspect ratio changed (new image, same slot)? -> refresh uv_scale in the SSBO too
+            self._asset_tex_map[asset.id] = (tier, layer, uv_scale)
+            if 'materials' in self.bvh_buffers:
+                self.bvh_buffers['materials'].write(self._pack_material_row(asset),
+                                                    start=self._material_map[asset.id] * 6)
 
     def _sync_visibility(self):
 

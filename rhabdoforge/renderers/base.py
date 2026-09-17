@@ -21,7 +21,7 @@ from rhabdoforge.engine.resources import (
     TextureViewer, StaticRenderTarget
 )
 from rhabdoforge.engine.materials_utils import constant_sh
-from rhabdoforge.renderers.baking import SceneBaker
+from rhabdoforge.renderers.baking import SceneBaker, TEX_TIERS
 from rhabdoforge.renderers.helpers import VisualOutput
 
 if TYPE_CHECKING:
@@ -213,8 +213,10 @@ class Renderer:
             sky_texture=self._baker.scene_textures['sky_texture'].unit if using_sky else 0,
             sh_irradiance_coeffs=self.scene.sky.sh_coeffs if using_sky else constant_sh(self.scene.background_color),
 
-            # If any texture is used
-            scene_textures=self._baker.scene_textures['materials'].unit if 'materials' in self._baker.scene_textures else 0
+
+            # One material texture array per size tier
+            **{f'scene_textures_{i}': self._baker.tex_arrays[tier].unit if tier in self._baker.tex_arrays else 0
+               for i, tier in enumerate(TEX_TIERS)}
         )
 
         self._lights_uniforms.update(
@@ -516,7 +518,9 @@ class Renderer:
             else:  # view_name == 'perspective'
                 shader_path = 'shaders/perspective.comp'
 
-            self._projection_shaders[proj_name] = ShaderProgram(comp_path=shader_path, defines=self._current_defines)
+
+            defines = {**self._current_defines, 'USE_LOD': 1} # USE_LOD enables LOD estimate. Voluntarily not used for ommatidia dispatch shader
+            self._projection_shaders[proj_name] = ShaderProgram(comp_path=shader_path, defines=defines)
 
         return self._projection_shaders[proj_name]
 
@@ -865,6 +869,11 @@ class Renderer:
                         if curr_persp != self._last_persp_view_matrix:
                             self._eye_uniforms.update(inv_projection=glm.inverse(curr_persp))
                             self._last_persp_view_matrix =curr_persp
+                        pixel_angular_size = glm.radians(self.agent.fov) / res[1]
+                    else:
+                        pixel_angular_size = np.pi / res[1]  # Pano: 180 deg vertical
+
+                    self._eye_uniforms.update(pixel_angular_size=pixel_angular_size)
 
                     self._eye_uniforms.apply(shader)
                     self._scene_uniforms.apply(shader)

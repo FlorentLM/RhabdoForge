@@ -30,7 +30,8 @@ struct Material {
     uint texture_idx;       // 0xFFFFFFFF means no texture (use base_color)
     uint base_color;        // RGBA8 packed into uint32
     float alpha_cutoff;     // <=0 means opaque (no alpha test)
-    uint pad0;
+    uint texture_tier;      // which size bucket scene_textures_N arrays texture_idx indexes into
+    vec2 uv_scale;          // non-square textures are letterboxed into a (square) tier canvas, this maps mesh UV [0,1] to the used rectangle
 };
 
 // Ommatidium static  (read only)

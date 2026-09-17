@@ -241,7 +241,22 @@ vec3 get_surface_color(HitInfo hit) {
         if (hit_mat.texture_idx == 0xFFFFFFFFu) {
             albedo = unpack_color(hit_mat.base_color).rgb;
         } else {
-            return texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
+
+#ifdef USE_LOD
+            vec3 p0 = getPos(base_vtx + i0);
+            vec3 p1 = getPos(base_vtx + i1);
+            vec3 p2 = getPos(base_vtx + i2);
+            mat3 nmat = mat3(hit_inst.transform);
+            float world_area = 0.5 * length(cross(nmat * (p1 - p0), nmat * (p2 - p0)));
+
+            vec2 uv0 = getUV(base_vtx + i0), uv1 = getUV(base_vtx + i1), uv2 = getUV(base_vtx + i2);
+            float uv_area = 0.5 * abs((uv1.x - uv0.x) * (uv2.y - uv0.y) - (uv2.x - uv0.x) * (uv1.y - uv0.y));
+
+            float lod = estimate_lod(hit_mat, world_area, uv_area, hit.t);
+            return sample_material_lod(hit_mat, hit_uv, lod).rgb;
+#else
+            return sample_material(hit_mat, hit_uv).rgb;
+#endif
         }
     }
 
