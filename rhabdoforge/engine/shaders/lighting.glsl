@@ -241,7 +241,7 @@ vec3 get_surface_color(HitInfo hit) {
         if (hit_mat.texture_idx == 0xFFFFFFFFu) {
             albedo = unpack_color(hit_mat.base_color).rgb;
         } else {
-            albedo = texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
+            return texture(scene_textures, vec3(hit_uv, hit_mat.texture_idx)).rgb;
         }
     }
 
