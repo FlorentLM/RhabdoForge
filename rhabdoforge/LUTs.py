@@ -61,6 +61,7 @@ def airy_sensitivity_lut() -> np.ndarray:
     return np.array(lut_data, dtype=np.float32)
 
 
+# TODO: lorentzian_sensitivity_lut has heavy Cauchy tails maybe LUT_RANGE truncating at 4 is not enough???
 def lorentzian_sensitivity_lut() -> np.ndarray:
     """
     Lorentzian (Cauchy) profile.
