@@ -126,7 +126,7 @@ struct Point {
 };
 
 #ifdef SAMPLER_LUT
-layout(std430, binding = BINDING_SENSITIVITY_ICDF_LUT) readonly buffer SensitivityIcdfLutBlock { float sensit_iCDF_LUT[]; };
+layout(std430, binding = BINDING_SENSITIVITY_ICDF_LUT) readonly buffer SensitivityIcdfLutBlock { float sensitivity_iCDF_LUT[]; };
 uniform int sampling_target;   // 0 = gaussian, 1 = custom
 #endif
 
@@ -276,7 +276,7 @@ float sample_lut_radius(uint rhab_type, float u1) {
     float t  = fract(float_idx);
 
     int base = (sampling_target != 0) ? (LUT_SIZE + int(rhab_type) * LUT_SIZE) : 0;
-    return mix(sensit_iCDF_LUT[base + i0], sensit_iCDF_LUT[base + i1], t);
+    return mix(sensitivity_iCDF_LUT[base + i0], sensitivity_iCDF_LUT[base + i1], t);
 }
 
 vec3 sampledir_lut_importance(RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {

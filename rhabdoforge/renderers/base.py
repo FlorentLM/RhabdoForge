@@ -298,12 +298,12 @@ class Renderer:
                                   usage=GL_DYNAMIC_DRAW)
         self.eye_buffers['ema_state'].reset()
 
-        sensit_iCDF_LUT = self._get_iCDF_LUT()
+        sensitivity_iCDF_LUT = self._get_iCDF_LUT()
 
-        self.eye_buffers.allocate('sensit_iCDF_LUT',
+        self.eye_buffers.allocate('sensitivity_iCDF_LUT',
                                   dtype=np.float32,
-                                  count=sensit_iCDF_LUT.size,
-                                  data=sensit_iCDF_LUT,
+                                  count=sensitivity_iCDF_LUT.size,
+                                  data=sensitivity_iCDF_LUT,
                                   usage=GL_STATIC_DRAW)
         self.eye_buffers.allocate('rays_intermediate',
                                   dtype=np.dtype((np.float32, 4)),
@@ -683,7 +683,7 @@ class Renderer:
 
         with self.dispatch_shader as shader:
 
-            with b.grouped_bind(), l.grouped_bind(), e.grouped_bind(['rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic', 'sensit_iCDF_LUT']):
+            with b.grouped_bind(), l.grouped_bind(), e.grouped_bind(['rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic', 'sensitivity_iCDF_LUT']):
 
                 with self._baker.scene_textures.bind_all():
 
