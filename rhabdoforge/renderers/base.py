@@ -128,7 +128,6 @@ class Renderer:
             self._sampling_strategy: str = 'SAMPLER_LUT'
         else:
             self._sampling_strategy: str = 'SAMPLER_PURE_IMPORTANCE'
-        print(self._sampling_target, self._sampling_strategy)
 
         # Render surfaces and related things
         self._bg_col_linear = tuple(c ** 2.2 for c in self.scene.background_color)  # TODO: what if already linear
