@@ -63,13 +63,11 @@ if __name__ == "__main__":
         )
 
     else:
-
         scaffold_file = 'assets/honeybee_scaffold_s10.npz'
 
         model = Model.from_file(
             scaffold_file,
             bundle=honeybee_bundle(),
-            acceptance=WaveguideAcceptance(),
             neural_superposition=False,
         )
 
@@ -87,13 +85,10 @@ if __name__ == "__main__":
         nb_samples=SAMPLES_PER_RHABDOMERE,
         time_dithering=True,
         randomness_mode=RandomnessMode.Halton,
-        sampling_mode=SamplingMode.Waveguide if USE_DROSO_MODEL else SamplingMode.Gaussian,
         enable_microsaccades=True if USE_DROSO_MODEL else False,
         enable_direct=True, enable_shadows=True, enable_ambient=True,
         track_history=HEADLESS,   # history tracking is disk-backed (avoids blowing up RAM on long headless runs)
     )
-
-    renderer.hybrid_sampling = True if USE_DROSO_MODEL else False
 
     # Example: add debug objects (wireframes, grid etc)
     if SHOW_DEBUG_OBJECTS:
@@ -154,8 +149,8 @@ if __name__ == "__main__":
 
         for dt in context.run_headless(BATCH_SIZE):
 
-            # Move the agent forward at 0.5 m/s and yaw at 25 deg/s
-            agent.translate(agent.forward * 0.5 * dt).rotate(yaw=25.0 * dt, degrees=True)
+            # Move the agent forward at 0.1 m/s and yaw at 25 deg/s
+            agent.translate(agent.forward * 0.1 * dt).rotate(yaw=25.0 * dt, degrees=True)
 
             # Render one biological step (renderer's track_history=True means data is written on disk in a temp file)
             renderer.step()

@@ -25,8 +25,6 @@ uniform int rhab_per_omm;
 uniform int nb_samples;
 uniform bool fused_rhabdoms;
 uniform int randomness_mode;
-uniform bool use_hybrid_sampling;
-uniform int  sampling_mode;
 
 // Per-ray-group data: loaded once by local thread 0, shared across the whole workgroup
 // (because every sample of a rhabdomere reads the same rows and tangent frame)
@@ -79,11 +77,11 @@ void main() {
 
     float ray_weight;
     vec3 direction;
-    if (use_hybrid_sampling) {
-        direction = sampledir_hybrid(sampling_mode, sh_rs, sh_rd, sh_os, sh_T, sh_B, sh_F, s.u1, s.u2, ray_weight);
-    } else {
-        direction = sampledir_importance(sh_rs, sh_rd, sh_os, sh_T, sh_B, sh_F, s.u1, s.u2, ray_weight);
-    }
+#if defined(SAMPLER_PURE_IMPORTANCE)
+    direction = sampledir_importance(sh_rs, sh_rd, sh_os, sh_T, sh_B, sh_F, s.u1, s.u2, ray_weight);
+#else
+    direction = sampledir_lut_importance(sh_rs, sh_rd, sh_os, sh_T, sh_B, sh_F, s.u1, s.u2, ray_weight);
+#endif
 
     Ray ray;
     ray.origin = sh_P;

@@ -7,14 +7,15 @@ import glfw
 from pathlib import Path
 import random
 import numpy as np
+from numpy.typing import ArrayLike
 from pyglm import glm
 from pytinybvh import BVH
 
 from rhabdoforge.types import (
-    EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingMode, to_enum, OMM_STATIC_DTYPE,
+    EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingTarget, to_enum, OMM_STATIC_DTYPE,
     OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, RHAB_DYNAMIC_DTYPE
 )
-from rhabdoforge.LUTs import airy_sensitivity_lut, waveguide_sensitivity_lut
+from rhabdoforge.LUTs import gaussian_sensitivity_lut, waveguide_sensitivity_lut, invert_lut_cdf, LUT_SIZE, LUT_MODE_SLOTS
 from rhabdoforge.engine.meshes import CONE_VERTICES, SPHERE_VERTICES
 from rhabdoforge.engine.resources import (
     ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry, TextureRegistry, HDRRenderTarget,
@@ -75,7 +76,7 @@ class Renderer:
                  time_dithering: bool = True,
                  nb_samples: int = 256,
                  randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
-                 sampling_mode: Union[int, str, SamplingMode] = SamplingMode.Gaussian,
+                 custom_lut: Optional[ArrayLike] = None,
                  panoramic_resolution: Optional[Tuple[int, int]] = (1024, 512),
                  batch_size: int = 1,
                  track_history: bool = False,
@@ -114,9 +115,20 @@ class Renderer:
         self._samples_per_rhab: int = 1     # number of rays per rhabdomere
         self._samples_per_px: int = 1       # number of rays per pixel (third person visualisation only)
         self._noise_threshold = 0.05
-        self._use_hybrid_sampling = False
         self._randomness_mode = to_enum(randomness_mode, RandomnessMode)
-        self._sampling_mode = to_enum(sampling_mode, SamplingMode)
+
+        if custom_lut is not None:
+            self._custom_lut = np.asarray(custom_lut, dtype=np.float64)
+            self._sampling_target = SamplingTarget.Custom
+        else:
+            self._custom_lut = None
+            self._sampling_target = SamplingTarget.Waveguide if model.has_waveguide_optics else SamplingTarget.Gaussian
+
+        if self._sampling_target != SamplingTarget.Gaussian:
+            self._sampling_strategy: str = 'SAMPLER_LUT'
+        else:
+            self._sampling_strategy: str = 'SAMPLER_PURE_IMPORTANCE'
+        print(self._sampling_target, self._sampling_strategy)
 
         # Render surfaces and related things
         self._bg_col_linear = tuple(c ** 2.2 for c in self.scene.background_color)  # TODO: what if already linear
@@ -286,13 +298,12 @@ class Renderer:
                                   usage=GL_DYNAMIC_DRAW)
         self.eye_buffers['ema_state'].reset()
 
-        # Wave optics SSBO if needed
-        waveguide_lut = self._get_waveguide_lut()
+        sensit_iCDF_LUT = self._get_iCDF_LUT()
 
-        self.eye_buffers.allocate('waveguide_lut',
+        self.eye_buffers.allocate('sensit_iCDF_LUT',
                                   dtype=np.float32,
-                                  count=waveguide_lut.size,
-                                  data=waveguide_lut,
+                                  count=sensit_iCDF_LUT.size,
+                                  data=sensit_iCDF_LUT,
                                   usage=GL_STATIC_DRAW)
         self.eye_buffers.allocate('rays_intermediate',
                                   dtype=np.dtype((np.float32, 4)),
@@ -344,10 +355,8 @@ class Renderer:
             # Sampling modes
             nb_samples=self._samples_per_rhab,
             pixel_samples=self._samples_per_px,
-            use_hybrid_sampling=self._use_hybrid_sampling,
-            sampling_mode=self._sampling_mode,  # 0 = Gaussian, 1 = Airy, 2 = Waveguide
+            sampling_target=int(self._sampling_target),
             randomness_mode=self._randomness_mode,
-            airy_lut=airy_sensitivity_lut(),
 
             # Visualisation defaults
             overlay_fallback=True,
@@ -551,6 +560,8 @@ class Renderer:
         defines.update(self._baker.bvh_buffers.shader_defines)
         defines.update(self._baker.light_buffers.shader_defines)
 
+        defines[self._sampling_strategy] = 1
+
         for count, name in [
             (self._baker._nb_dir_lights, 'DIRECTIONAL'),
             (self._baker._nb_point_lights, 'POINT'),
@@ -672,7 +683,7 @@ class Renderer:
 
         with self.dispatch_shader as shader:
 
-            with b.grouped_bind(), l.grouped_bind(), e.grouped_bind(['rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic', 'waveguide_lut']):
+            with b.grouped_bind(), l.grouped_bind(), e.grouped_bind(['rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic', 'sensit_iCDF_LUT']):
 
                 with self._baker.scene_textures.bind_all():
 
@@ -1437,55 +1448,72 @@ class Renderer:
         self._tiled_mode = bool(value)
         self._eye_uniforms.update(tiled_mode=self._tiled_mode)
 
+    def _get_iCDF_LUT(self) -> np.ndarray:
+
+        if self._sampling_strategy != 'SAMPLER_LUT':
+            return np.zeros(1, dtype=np.float32)
+
+        if self._custom_lut is not None:
+            curr_LUT = self._custom_lut
+        else:
+            bundle = self._model.bundle
+
+            if bundle.focal_um is None:
+                return waveguide_sensitivity_lut([], [], 1.0)
+
+            apertures = np.asarray(self._model.buffer['aperture_um'], dtype=np.float64)
+            f_number = float(bundle.focal_um / max(np.median(apertures), 1e-6))
+
+            curr_LUT = waveguide_sensitivity_lut(
+                diameters_um=bundle.diameters_um,
+                wavelengths_um=np.asarray(bundle.wavelengths_nm, dtype=np.float64) * 1e-3,
+                f_number=f_number,
+                n_rhabdomere=bundle.n_rhabdomere,
+                n_surround=bundle.n_surround,
+                defocus_um=bundle.tip_defocus_um,
+                focal_um=bundle.focal_um,
+            )
+
+        if curr_LUT.size == LUT_SIZE:
+            curr_LUT = np.tile(curr_LUT, LUT_MODE_SLOTS)
+
+        curr_iCDF_LUT = invert_lut_cdf(curr_LUT)
+        gaussian_ICDF_LUT = invert_lut_cdf(gaussian_sensitivity_lut())  # TODO: Maybe avoid always adding the gaussian? It's cheap tho
+
+        return np.concatenate([gaussian_ICDF_LUT, curr_iCDF_LUT])
+
+
     @property
-    def hybrid_sampling(self) -> bool:
-        """Toggle between Importance Sampling (False) and Hybrid Weighted Sampling (True)."""
-        return self._use_hybrid_sampling
+    def sampling_target(self) -> 'SamplingTarget':
+        """Which sensitivity target profile rays are drawn from."""
+        return self._sampling_target
 
-    @hybrid_sampling.setter
-    def hybrid_sampling(self, value: bool) -> None:
-        self._use_hybrid_sampling = bool(value)
-        self._eye_uniforms.update(use_hybrid_sampling=self._use_hybrid_sampling)
+    @sampling_target.setter
+    def sampling_target(self, value: Union[int, str, 'SamplingTarget']) -> None:
 
-    def _get_waveguide_lut(self) -> np.ndarray:
-        """
-        Per-rhabdomere-type angular sensitivity profiles for SamplingMode.Waveguide.
+        mode = to_enum(value, SamplingTarget)
 
-        Falls back to Gaussians if the bundle has no focal length (no F-number, so no mode coupling to compute)
-        """
-        bundle = self._model.bundle
+        errs = set()
+        if mode in (SamplingTarget.Waveguide, SamplingTarget.Custom):
+            if self._sampling_strategy != 'SAMPLER_LUT':
+                errs.add('the LUT-based sampling strategy')
+            if mode == SamplingTarget.Custom and self._custom_lut is None:
+                errs.add('a custom LUT')
+            if mode == SamplingTarget.Waveguide and not self._model.has_waveguide_optics:
+                errs.add('a model built with Waveguide optics')
 
-        if bundle.focal_um is None:
-            return waveguide_sensitivity_lut([], [], 1.0)
+        if errs:
+            errs = list(errs)
+            if len(errs) <= 2:
+                err_print = ' and '.join(errs)
+            else:
+                err_print = ','.join(errs[:2]) + f' and {errs[-1]}'
+            raise ValueError(f"Can't set {mode.name} target. It needs {err_print}.")
 
-        apertures = np.asarray(self._model.buffer['aperture_um'], dtype=np.float64)
-        f_number = float(bundle.focal_um / max(np.median(apertures), 1e-6))
-
-        return waveguide_sensitivity_lut(
-            diameters_um=bundle.diameters_um,
-            wavelengths_um=np.asarray(bundle.wavelengths_nm, dtype=np.float64) * 1e-3,
-            f_number=f_number,
-            n_rhabdomere=bundle.n_rhabdomere,
-            n_surround=bundle.n_surround,
-            defocus_um=bundle.tip_defocus_um,
-            focal_um=bundle.focal_um,
-        )
-
-    @property
-    def sampling_mode(self) -> 'SamplingMode':
-        """The sensitivity profile used for weighting: 'gaussian', 'airy' or 'waveguide'."""
-        return self._sampling_mode
-
-    @sampling_mode.setter
-    def sampling_mode(self, value: Union[int, str, 'SamplingMode']) -> None:
-        self._sampling_mode = to_enum(value, SamplingMode)
-        self._eye_uniforms.update(sampling_mode=int(self._sampling_mode))
-
-        if self._sampling_mode is SamplingMode.Waveguide and not self._use_hybrid_sampling:
-            self.hybrid_sampling = True
-            print('Sampling Mode: Waveguide. Enabling hybrid sampling.')
-
-        print(f"Sampling Mode: {self._sampling_mode.name}")
+        self._sampling_target = mode
+        strat = 'LUT-based' if self._sampling_strategy == 'SAMPLER_LUT' else 'pure importance'
+        print(f'Sampling Target: {self._sampling_target.name} (achieved using {strat} sampling)')
+        self._eye_uniforms.update(sampling_target=int(self._sampling_target))
 
     @property
     def model_exaggeration(self) -> float:

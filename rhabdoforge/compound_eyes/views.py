@@ -27,11 +27,13 @@ from rhabdoforge.geometry.spherical import (
     cartesian_to_spherical, spherical_gradients, angle_to_chord, chord_to_angle, sphere_to_stereo, radius_of_curvature
 )
 from rhabdoforge.compound_eyes.helpers.resampling import SamplingGrid, DiscreteResampler
+from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance
 
 if TYPE_CHECKING:
     from rhabdoforge.compound_eyes.model import Model
     from rhabdoforge.compound_eyes.buffers import Buffer
     from rhabdoforge.compound_eyes import RhabdomereBundle
+    from rhabdoforge.compound_eyes.helpers.acceptance import AcceptanceModel
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,15 @@ class BaseView:
     def bundle(self) -> 'RhabdomereBundle':
         """The rhabdomere bundle model."""
         return self.model._bundle
+
+    @property
+    def acceptance_model(self) -> 'AcceptanceModel':
+        """The acceptance-angle model (Snyder/Waveguide/etc) this Model was built with."""
+        return self.model._acceptance_model
+
+    @property
+    def has_waveguide_optics(self) -> bool:
+        return isinstance(self.model._acceptance_model, WaveguideAcceptance)
 
     @property
     def omm_indices(self) -> np.ndarray:

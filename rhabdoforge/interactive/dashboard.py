@@ -4,8 +4,7 @@ import numpy as np
 import collections
 from pyglm import glm
 
-from rhabdoforge.types import EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingMode, \
-    RHAB_COLOURS
+from rhabdoforge.types import RHAB_COLOURS, EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingTarget
 
 if TYPE_CHECKING:
     from rhabdoforge.renderers.helpers import VisualOutput
@@ -364,11 +363,11 @@ class Dashboard:
                         callback=lambda s, a: setattr(self.ctx.renderer, 'randomness_mode', a)
                     )
 
-                    self.ui_tags['sampling_mode'] = dpg.add_combo(
-                        list(SamplingMode.__members__.keys()),
-                        label='Sampling Mode',
-                        default_value=self.ctx.renderer.sampling_mode.name,
-                        callback=lambda s, a: setattr(self.ctx.renderer, 'sampling_mode', a)
+                    self.ui_tags['sampling_target'] = dpg.add_combo(
+                        list(SamplingTarget.__members__.keys()),
+                        label='Sampling Target',
+                        default_value=self.ctx.renderer.sampling_target.name,
+                        callback=lambda s, a: setattr(self.ctx.renderer, 'sampling_target', a)
                     )
 
                     self.ui_tags['time_dither'] = dpg.add_checkbox(
@@ -649,7 +648,7 @@ class Dashboard:
         dpg.set_value(self.ui_tags['tiled_mode'], self.ctx.renderer.tiled_mode)
         dpg.set_value(self.ui_tags['heatmap'], self.ctx.renderer.overlay_enabled)
         dpg.set_value(self.ui_tags['randomness_mode'], self.ctx.renderer.randomness_mode.name)
-        dpg.set_value(self.ui_tags['sampling_mode'], self.ctx.renderer.sampling_mode.name)
+        dpg.set_value(self.ui_tags['sampling_target'], self.ctx.renderer.sampling_target.name)
         dpg.set_value(self.ui_tags['time_dither'], self.ctx.renderer.time_dithering)
         dpg.set_value(self.ui_tags['samples'], self.ctx.renderer.nb_samples)
 

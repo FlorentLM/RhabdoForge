@@ -10,6 +10,7 @@ from rhabdoforge.types import METADATA_BIT_LAYOUT
 # Angular range for sensitivity LUTs, in units of the acceptance angle (FWHM)
 LUT_RANGE = 4.0
 LUT_SIZE = 256
+LUT_MODE_SLOTS = 1 << METADATA_BIT_LAYOUT['rhab_R'][1]   # rhabdomere types a per-type LUT can index
 
 
 def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable':
@@ -27,6 +28,12 @@ def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable'
         return np.where(mask_oob, fill_value, vals)
 
     return wrapper
+
+
+def gaussian_sensitivity_lut() -> np.ndarray:
+    """Pure Gaussian target profile, baked onto the same grid as the other LUT-based targets."""
+    x_vals = np.linspace(0, LUT_RANGE, LUT_SIZE)
+    return np.exp(-2.77258872224 * x_vals ** 2).astype(np.float32)
 
 
 def airy_sensitivity_lut() -> np.ndarray:
@@ -79,6 +86,28 @@ def leakage_sensitivity_lut(pedestal_height: float = 0.05, pedestal_width: float
     return np.array(combined, dtype=np.float32)
 
 
+def invert_lut_cdf(lut: ArrayLike) -> np.ndarray:
+    """
+    Inverse CDF (area-weighted, isotropic 2D) of one or more LUT_SIZE-long profiles
+    (flat-packed)
+    """
+    lut = np.atleast_1d(np.asarray(lut, dtype=np.float64))
+    slots = lut.size // LUT_SIZE
+    lut = lut.reshape(slots, LUT_SIZE)
+
+    r = np.linspace(0.0, LUT_RANGE, LUT_SIZE)
+    u = np.linspace(0.0, 1.0, LUT_SIZE)
+    icdf = np.empty_like(lut)
+
+    for i in range(slots):
+        w = lut[i] * r         # 2D polar area element
+        cdf = np.concatenate(([0.0], np.cumsum(0.5 * (w[1:] + w[:-1]) * np.diff(r))))
+        total = cdf[-1]
+        icdf[i] = r if total <= 0.0 else np.interp(u, cdf / total, r)
+
+    return icdf.reshape(-1).astype(np.float32)
+
+
 def waveguide_sensitivity_lut(
         diameters_um: ArrayLike,
         wavelengths_um: ArrayLike,
@@ -109,7 +138,7 @@ def waveguide_sensitivity_lut(
     gaussian = np.exp(-2.77258872224 * x_vals ** 2)     # for unused slots
 
     if slots is None:
-        slots = 1 << METADATA_BIT_LAYOUT['rhab_R'][1]
+        slots = LUT_MODE_SLOTS
 
     lut = np.tile(gaussian, slots).astype(np.float32)
 

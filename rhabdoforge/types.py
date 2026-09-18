@@ -69,10 +69,10 @@ class RandomnessMode(IntEnum):
     Sobol = 5       # Sobol sequence, Owen scrambling
 
 
-class SamplingMode(IntEnum):
-    Gaussian = 0    # Default approximation
-    Airy = 1        # Physical diffraction pattern (needs hybrid sampling)
-    Waveguide = 2   # Per-rhabdomere LP mode sum (needs WaveguideAcceptance + hybrid sampling)
+class SamplingTarget(IntEnum):
+    Gaussian = 0    # Closed-form importance sampling
+    Waveguide = 1   # Per-rhabdomere LP mode sum
+    Custom = 2      # Renderer's custom_lut profile
 
 
 class AssetType(Enum):

@@ -37,7 +37,7 @@ from scipy.signal import savgol_filter
 from rhabdoforge.compound_eyes import Model
 from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance
 from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle
-from rhabdoforge.types import WORLD_FORWARD, RHAB_COLOURS, SamplingMode
+from rhabdoforge.types import WORLD_FORWARD, RHAB_COLOURS
 from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
 from rhabdoforge.engine import Context, Agent, Scene, Asset
 from rhabdoforge.engine.meshes import plane_geom
@@ -229,11 +229,9 @@ def simulate(model, sep_deg, pupil_drive):
     renderer = Renderer(
         model=model, scene=scene, agent=agent,
         nb_samples=512, time_dithering=True, randomness_mode='Halton',
-        sampling_mode=SamplingMode.Waveguide,
         enable_microsaccades=True,
         enable_ambient=True, enable_direct=True, enable_shadows=False)
 
-    renderer.hybrid_sampling = True         # Needed for Waveguide sampling
     renderer.ambient_intensity = 1.5
     renderer.photon_concentration = 0.0     # isolate RF geometry from the photon-concentration gain
     renderer.pupil_drive = pupil_drive      # fixed light adaptation state

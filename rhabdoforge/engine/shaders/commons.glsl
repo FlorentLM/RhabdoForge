@@ -8,10 +8,6 @@ const int RNG_FIBONACCI  = 3;
 const int RNG_HAMMERSLEY = 4;
 const int RNG_SOBOL      = 5;
 
-const int MODE_GAUSSIAN  = 0;
-const int MODE_AIRY      = 1;
-const int MODE_WAVEGUIDE = 2;
-
 // Sensitivity LUT geometry, must match LUT_RANGE / LUT_SIZE in LUTs.py:
 const int   LUT_SIZE  = 256;
 const float LUT_RANGE = 4.0;
@@ -129,15 +125,10 @@ struct Point {
     float pad0, pad1;
 };
 
-uniform float airy_lut[LUT_SIZE];
-
-// One profile per rhabdomere type, flat-packed (see LUTs.waveguide_sensitivity_lut)
-// LUT_MODE_SLOTS * LUT_SIZE floats overruns GL_MAX_COMPUTE_UNIFORM_COMPONENTS so... in an SSBO
-#ifdef BINDING_WAVEGUIDE_LUT
-layout(std430, binding = BINDING_WAVEGUIDE_LUT) readonly buffer WaveguideLutBlock { float waveguide_lut[]; };
+#ifdef SAMPLER_LUT
+layout(std430, binding = BINDING_SENSITIVITY_ICDF_LUT) readonly buffer SensitivityIcdfLutBlock { float sensit_iCDF_LUT[]; };
+uniform int sampling_target;   // 0 = gaussian, 1 = custom
 #endif
-
-// TODO: Maybe do the same for Airy if we keep it
 
 // =====================================================================================================================
 
@@ -275,33 +266,40 @@ Sampler get_samples(int mode, uint sample_idx, uint nb_samples, uint rhab_idx, u
 
 // =====================================================================================================================
 
-float get_sensitivity(int mode, float dx, float dy,
-                      RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os) {
+#ifdef SAMPLER_LUT
 
-    float g_min = dx / max(rd.curr_acc_angles.x, 1e-15);
-    float g_maj = dy / max(rd.curr_acc_angles.y, 1e-15);
-    float radial_dist = sqrt(g_min*g_min + g_maj*g_maj);
-
-    if (mode == MODE_GAUSSIAN) {
-        return exp(-GAUSS_CONSTANT_K * (radial_dist * radial_dist));
-    }
-
-    // Both LUT modes map 0.0 -> LUT_RANGE FWHM to 0.0 -> (LUT_SIZE - 1),
-    // then lerp between neighbouring samples
-    float float_idx = radial_dist * LUT_SCALE;
+// Maps u1 to a radius (FWHM units) via the active target's own inverse CDF, so weight can stay 1.0
+float sample_lut_radius(uint rhab_type, float u1) {
+    float float_idx = clamp(u1, 0.0, 1.0) * float(LUT_SIZE - 1);
     int   i0 = clamp(int(floor(float_idx)), 0, LUT_SIZE - 1);
     int   i1 = min(i0 + 1, LUT_SIZE - 1);
     float t  = fract(float_idx);
 
-#ifdef BINDING_WAVEGUIDE_LUT
-    if (mode == MODE_WAVEGUIDE) {
-        int base = int(unpack_rhab_type(rs.metadata)) * LUT_SIZE;
-        return mix(waveguide_lut[base + i0], waveguide_lut[base + i1], t);
-    }
-#endif
-
-    return mix(airy_lut[i0], airy_lut[i1], t);   // MODE_AIRY
+    int base = (sampling_target != 0) ? (LUT_SIZE + int(rhab_type) * LUT_SIZE) : 0;
+    return mix(sensit_iCDF_LUT[base + i0], sensit_iCDF_LUT[base + i1], t);
 }
+
+vec3 sampledir_lut_importance(RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
+
+    float phi = TWOPI * u2;
+    float r = sample_lut_radius(unpack_rhab_type(rs.metadata), u1);
+
+    float angle_min = rd.curr_acc_angles.x * r;
+    float angle_maj = rd.curr_acc_angles.y * r;
+
+    vec2 p = vec2(tan(angle_min) * cos(phi), tan(angle_maj) * sin(phi));
+
+    weight = 1.0;  // sampled from the target's own distribution: no need to reweight
+
+    float s = sin(os.ioa_tilt), c = cos(os.ioa_tilt);
+    vec2 tp = mat2(c, -s, s, c) * p;
+
+    return normalize(mat3(T, B, F) * normalize(vec3(tp, 1.0)));
+}
+
+#endif // SAMPLER_LUT
+
+#ifdef SAMPLER_PURE_IMPORTANCE
 
 vec3 sampledir_importance(RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
 
@@ -318,40 +316,6 @@ vec3 sampledir_importance(RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumS
     return normalize(mat3(T, B, F) * normalize(vec3(tp, 1.0)));
 }
 
-vec3 sampledir_hybrid(int mode, RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
-    float phi = TWOPI * u2;
-
-    // Sample a 'proposal' distribution that is wider than the actual acceptance
-    // -> ensures it samples the tails / Airy rings, wide-angle lights, etc
-    float spread_mult = 2.0;
-    float sample_sigma_min = rd.curr_acc_angles.x * spread_mult;
-    float sample_sigma_maj = rd.curr_acc_angles.y * spread_mult;
-
-    // These are the displacement angles to test (raw elliptical radii)
-    float r_min = sample_sigma_min * sqrt(-log(u1) / GAUSS_CONSTANT_K);
-    float r_maj = sample_sigma_maj * sqrt(-log(u1) / GAUSS_CONSTANT_K);
-
-    // Cartesian angles (dx, dy) for this specific ray
-    float dx = r_min * cos(phi);
-    float dy = r_maj * sin(phi);
-
-    // Rhabdomere sensitivity (at this specific sampled angle) -> 'Physical truth'
-    float rhab_sensitivity = get_sensitivity(mode, dx, dy, rs, rd, os);
-
-    // Sampling probability Density (PDF) of the proposal distribution -> likelihood that this ray was picked
-    float p_min = dx / sample_sigma_min;
-    float p_maj = dy / sample_sigma_maj;
-    float pdf = exp(-GAUSS_CONSTANT_K * (p_min*p_min + p_maj*p_maj));
-
-    // weight is truth / sampling
-    weight = rhab_sensitivity / max(pdf, 1e-6);  // avoid /0 in the extreme tails
-
-    // and convert angles to direction vector
-    vec2 p = vec2(tan(dx), tan(dy));
-    float s = sin(os.ioa_tilt), c = cos(os.ioa_tilt);
-    vec2 tp = mat2(c, -s, s, c) * p;
-
-    return normalize(mat3(T, B, F) * normalize(vec3(tp, 1.0)));
-}
+#endif // SAMPLER_PURE_IMPORTANCE
 
 #endif // COMMONS_GLSL

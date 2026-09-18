@@ -9,7 +9,7 @@ from rhabdoforge.compound_eyes import Model
 from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle
 from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance
 from rhabdoforge.renderers import Renderer
-from rhabdoforge.types import RandomnessMode, SamplingMode
+from rhabdoforge.types import RandomnessMode
 
 
 # Config
@@ -76,11 +76,9 @@ if __name__ == '__main__':
         nb_samples=SAMPLES_PER_RHABDOMERE,
         time_dithering=True,
         randomness_mode=RandomnessMode.Halton,
-        sampling_mode=SamplingMode.Waveguide,
         enable_microsaccades=ENABLE_DYNAMICS,
         enable_direct=True, enable_shadows=True, enable_ambient=True,
     )
-    renderer.hybrid_sampling = True
     renderer.pupil_drive = PUPIL_DRIVE if ENABLE_DYNAMICS else None
 
     # Cartridge (post neural-superposition) layout: saved with every take so a
