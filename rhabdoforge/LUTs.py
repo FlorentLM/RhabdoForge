@@ -12,6 +12,7 @@ LUT_RANGE = 4.0
 LUT_SIZE = 256
 LUT_MODE_SLOTS = 1 << METADATA_BIT_LAYOUT['rhab_R'][1]   # rhabdomere types a per-type LUT can index
 
+GAUSS_K = 4 * np.log(2)
 
 def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable':
     """
@@ -33,7 +34,7 @@ def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable'
 def gaussian_sensitivity_lut() -> np.ndarray:
     """Pure Gaussian target profile, baked onto the same grid as the other LUT-based targets."""
     x_vals = np.linspace(0, LUT_RANGE, LUT_SIZE)
-    return np.exp(-2.77258872224 * x_vals ** 2).astype(np.float32)
+    return np.exp(-GAUSS_K * x_vals ** 2).astype(np.float32)
 
 
 def airy_sensitivity_lut() -> np.ndarray:
@@ -80,8 +81,8 @@ def leakage_sensitivity_lut(pedestal_height: float = 0.05, pedestal_width: float
     light leakage between ommatidia (common in insect eye measurements).
     """
     x_vals = np.linspace(0, LUT_RANGE, LUT_SIZE)
-    core = np.exp(-2.77258872224 * x_vals ** 2) # Core Gaussian (standard GAUSS_K)
-    wide = np.exp(-2.77258872224 * (x_vals / pedestal_width) ** 2)   # wide Gaussian pedestal
+    core = np.exp(-GAUSS_K * x_vals ** 2) # Core Gaussian (standard GAUSS_K)
+    wide = np.exp(-GAUSS_K * (x_vals / pedestal_width) ** 2)   # wide Gaussian pedestal
     # re-normalised so peak is 1.0
     combined = (core + pedestal_height * wide) / (1.0 + pedestal_height)
     return np.array(combined, dtype=np.float32)
@@ -136,7 +137,7 @@ def waveguide_sensitivity_lut(
     )
 
     x_vals = np.linspace(0, LUT_RANGE, LUT_SIZE)
-    gaussian = np.exp(-2.77258872224 * x_vals ** 2)     # for unused slots
+    gaussian = np.exp(-GAUSS_K * x_vals ** 2)     # for unused slots
 
     if slots is None:
         slots = LUT_MODE_SLOTS
