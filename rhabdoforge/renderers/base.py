@@ -150,6 +150,8 @@ class Renderer:
 
         # Get workable memory sizes
         self._max_ssbo_bytes = glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)
+        self._max_ssbo_bindings = glGetIntegerv(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS)
+        self._max_compute_ssbo_blocks = glGetIntegerv(GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS)
         self._batch_size, self._samples_per_rhab = self._safe_samples_lim(
             batch_size, nb_samples, prioritize_batch=True
         )
@@ -382,6 +384,30 @@ class Renderer:
             trigger_delay=self._trigger_delay,
             aperture_follow=float(self._model.bundle.aperture_follow),
         )
+
+        self._ssbo_binding_limits()
+
+    def _ssbo_binding_limits(self) -> None:
+
+        total_bindings = self._resource_manager.ssbo_bindings_used
+        if total_bindings > self._max_ssbo_bindings:
+            raise RuntimeError(
+                f'{total_bindings} SSBO/UBO bindings allocated, exceeding this GPU\'s '
+                f'GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS ({self._max_ssbo_bindings}).'
+            )
+
+        dispatch_blocks = (
+            len(self._baker.bvh_buffers)
+            + len(self._baker.light_buffers)
+            + sum(1 for name in ('rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic')
+                  if name in self.eye_buffers)
+        )
+        if dispatch_blocks > self._max_compute_ssbo_blocks:
+            raise RuntimeError(
+                f'dispatch.comp would declare {dispatch_blocks} SSBO blocks, exceeding this '
+                f'GPU\'s GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS ({self._max_compute_ssbo_blocks}). '
+                'Reducing the number of simultaneous light types might help...'
+            )
 
     def _free_model_resources(self) -> None:
         """
@@ -1301,6 +1327,8 @@ class Renderer:
             point_lights_count=self._baker._nb_point_lights,
             area_lights_count=self._baker._nb_area_lights,
         )
+
+        self._ssbo_binding_limits()
 
     @property
     def context(self) -> Optional['Context']:
