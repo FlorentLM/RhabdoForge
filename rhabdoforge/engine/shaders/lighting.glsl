@@ -62,24 +62,59 @@ uniform int area_lights_count;
 
 uniform vec3 sh_irradiance_coeffs[9];
 
-// ====================================== Light SSBOs ===============================================
+// ====================================== Light SSBO =================================================
+
+const uint LIGHT_SLOT_WORDS = 20u;
+
+#if defined(HAS_DIRECTIONAL_LIGHT) || defined(HAS_POINT_LIGHT) || defined(HAS_AREA_LIGHT)
+layout(std430, binding = BINDING_LIGHTS) readonly buffer LightsBlock { uint light_words[]; };
+#endif
 
 #ifdef HAS_DIRECTIONAL_LIGHT
-layout(std430, binding = BINDING_DIR) readonly buffer DirectionalLightsBuffer {
-    DirectionalLightData directional_lights[];
-};
+DirectionalLightData unpack_dir_light(uint i) {
+    uint b = i * LIGHT_SLOT_WORDS;
+    DirectionalLightData l;
+    l.direction      = uintBitsToFloat(uvec3(light_words[b], light_words[b + 1u], light_words[b + 2u]));
+    l.angular_radius = uintBitsToFloat(light_words[b + 3u]);
+    l.color          = uintBitsToFloat(uvec3(light_words[b + 4u], light_words[b + 5u], light_words[b + 6u]));
+    l.intensity      = uintBitsToFloat(light_words[b + 7u]);
+    l.cast_shadows   = light_words[b + 8u];
+    return l;
+}
 #endif
 
 #ifdef HAS_POINT_LIGHT
-layout(std430, binding = BINDING_POINT) readonly buffer PointLightsBuffer {
-    PointLightData point_lights[];
-};
+PointLightData unpack_point_light(uint i) {
+    uint b = (uint(directional_lights_count) + i) * LIGHT_SLOT_WORDS;
+    PointLightData l;
+    l.position        = uintBitsToFloat(uvec3(light_words[b], light_words[b + 1u], light_words[b + 2u]));
+    l.radius          = uintBitsToFloat(light_words[b + 3u]);
+    l.color           = uintBitsToFloat(uvec3(light_words[b + 4u], light_words[b + 5u], light_words[b + 6u]));
+    l.intensity       = uintBitsToFloat(light_words[b + 7u]);
+    l.constant_atten  = uintBitsToFloat(light_words[b + 8u]);
+    l.linear_atten    = uintBitsToFloat(light_words[b + 9u]);
+    l.quadratic_atten = uintBitsToFloat(light_words[b + 10u]);
+    l.cast_shadows    = light_words[b + 11u];
+    return l;
+}
 #endif
 
 #ifdef HAS_AREA_LIGHT
-layout(std430, binding = BINDING_AREA) readonly buffer AreaLightsBuffer {
-    AreaLightData area_lights[];
-};
+AreaLightData unpack_area_light(uint i) {
+    uint b = (uint(directional_lights_count) + uint(point_lights_count) + i) * LIGHT_SLOT_WORDS;
+    AreaLightData l;
+    l.position     = uintBitsToFloat(uvec3(light_words[b], light_words[b + 1u], light_words[b + 2u]));
+    l.width        = uintBitsToFloat(light_words[b + 3u]);
+    l.normal       = uintBitsToFloat(uvec3(light_words[b + 4u], light_words[b + 5u], light_words[b + 6u]));
+    l.height       = uintBitsToFloat(light_words[b + 7u]);
+    l.tangent      = uintBitsToFloat(uvec3(light_words[b + 8u], light_words[b + 9u], light_words[b + 10u]));
+    l.intensity    = uintBitsToFloat(light_words[b + 11u]);
+    l.bitangent    = uintBitsToFloat(uvec3(light_words[b + 12u], light_words[b + 13u], light_words[b + 14u]));
+    l.cast_shadows = light_words[b + 15u];
+    l.color        = uintBitsToFloat(uvec3(light_words[b + 16u], light_words[b + 17u], light_words[b + 18u]));
+    l.two_sided    = light_words[b + 19u];
+    return l;
+}
 #endif
 
 // ==================================== Sampling ===================================================
@@ -185,10 +220,10 @@ vec3 get_sun_disk_color(vec3 direction) {
 #elif defined(MULTI_DIRECTIONAL)
     vec3 color = vec3(0.0);
     for (int i = 0; i < directional_lights_count; i++)
-        color += sun_disk_contribution(directional_lights[i], direction);
+        color += sun_disk_contribution(unpack_dir_light(uint(i)), direction);
     return color;
 #else
-    return sun_disk_contribution(directional_lights[0], direction);
+    return sun_disk_contribution(unpack_dir_light(0u), direction);
 #endif
 }
 
@@ -328,7 +363,7 @@ vec3 calculate_direct_lighting(vec3 hp, vec3 N, inout uint rng) {
 
 #ifdef HAS_DIRECTIONAL_LIGHT
     if (pick < directional_lights_count) {
-        DirectionalLightData dl = directional_lights[pick];
+        DirectionalLightData dl = unpack_dir_light(uint(pick));
         if (dl.intensity > 0.0) {
             vec3 ld = sample_disk_direction(dl.direction, dl.angular_radius, random_float(rng), random_float(rng));
             float NdL = max(dot(N, ld), 0.0);
@@ -344,7 +379,7 @@ vec3 calculate_direct_lighting(vec3 hp, vec3 N, inout uint rng) {
 
 #ifdef HAS_POINT_LIGHT
     if (pick < point_lights_count) {
-        PointLightData pl = point_lights[pick];
+        PointLightData pl = unpack_point_light(uint(pick));
         if (pl.intensity > 0.0) {
             float dist;
             vec3 ld = sample_point_light_direction(pl, hp, random_float(rng), random_float(rng), dist);
@@ -361,7 +396,7 @@ vec3 calculate_direct_lighting(vec3 hp, vec3 N, inout uint rng) {
 
 #ifdef HAS_AREA_LIGHT
     if (pick < area_lights_count) {
-        AreaLightData al = area_lights[pick];
+        AreaLightData al = unpack_area_light(uint(pick));
         if (al.intensity > 0.0) {
             vec3 sp = sample_area_light_point(al, random_float(rng), random_float(rng));
             vec3 tl = sp - hp;

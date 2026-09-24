@@ -8,7 +8,7 @@ from PIL import Image
 from pyglm import glm
 from pytinybvh import BVH, BuildQuality, instance_dtype, Layout, supports_layout
 
-from rhabdoforge.types import RENDERABLE_DTYPE, DIR_LIGHT_DTYPE, POINT_LIGHT_DTYPE, AREA_LIGHT_DTYPE, AssetType
+from rhabdoforge.types import RENDERABLE_DTYPE, AssetType
 from rhabdoforge.engine.scene import MeshAsset, PointsAsset
 from rhabdoforge.engine.resources import write_pytinybvh_preamble, GPUResourceManager, BufferRegistry, TextureRegistry
 
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 
 TEX_TIERS = (512, 1024, 2048)  # buckets for material textures, each image snaps to the smallest tier it fits in
+LIGHT_SLOT_WORDS = 20  # per-light record size (words)
 
 class SceneBaker:
     """
@@ -72,6 +73,14 @@ class SceneBaker:
 
     # Main packing methods
 
+    @staticmethod
+    def _light_slot(light) -> np.ndarray:
+        """A light's packed row, zero-padded to LIGHT_SLOT_WORDS record size."""
+        raw = np.ascontiguousarray(light.pack()).view(np.uint32).ravel()
+        slot = np.zeros(LIGHT_SLOT_WORDS, dtype=np.uint32)
+        slot[:raw.size] = raw
+        return slot
+
     def _pack_lights(self):
 
         self._dir_order = [l for l in self.scene.directional_lights if l.active]
@@ -82,24 +91,22 @@ class SceneBaker:
         self._nb_point_lights = len(self._point_order)
         self._nb_area_lights = len(self._area_order)
 
-        def _pack_or_update(name, lights, dtype):
-            data = np.concatenate([l.pack() for l in lights]) if lights else np.zeros(1, dtype=dtype)
 
-            if name in self.light_buffers:
-                self.light_buffers[name].resize(len(data), data=data)
-            else:
-                self.light_buffers.allocate(name,
-                                            dtype=dtype,
-                                            count=len(data),
-                                            data=data,
-                                            usage=GL_DYNAMIC_DRAW)
+        all_lights = [*self._dir_order, *self._point_order, *self._area_order]
+        data = (np.concatenate([self._light_slot(l) for l in all_lights]) if all_lights
+                else np.zeros(LIGHT_SLOT_WORDS, dtype=np.uint32))
 
-        _pack_or_update('dir', self._dir_order, DIR_LIGHT_DTYPE)
-        _pack_or_update('point', self._point_order, POINT_LIGHT_DTYPE)
-        _pack_or_update('area', self._area_order, AREA_LIGHT_DTYPE)
+        if 'lights' in self.light_buffers:
+            self.light_buffers['lights'].resize(len(data), data=data)
+        else:
+            self.light_buffers.allocate('lights',
+                                        dtype=np.uint32,
+                                        count=len(data),
+                                        data=data,
+                                        usage=GL_DYNAMIC_DRAW)
 
         self._light_last_rev = {
-            id(l): l.revision for l in (*self._dir_order, *self._point_order, *self._area_order)
+            id(l): l.revision for l in all_lights
         }
 
     @staticmethod
@@ -198,10 +205,7 @@ class SceneBaker:
                     repeat=True, dtype=int
                 )
                 self.scene_textures.write_texture_layer(array_tex, temp_tex.handle, tier, tier, i)
-                temp_tex.free()
-
-            if 'temp' in self.scene_textures._textures:
-                del self.scene_textures._textures['temp']
+                self.scene_textures.remove('temp')
 
             self.scene_textures.generate_mipmaps(array_tex)
             self.tex_arrays[tier] = array_tex
@@ -410,16 +414,16 @@ class SceneBaker:
 
         self._dir_order, self._point_order, self._area_order = new_dir, new_point, new_area
 
-        for name, order in (('dir', self._dir_order),
-                            ('point', self._point_order),
-                            ('area', self._area_order)):
+        section_start = 0
+        for order in (self._dir_order, self._point_order, self._area_order):
 
             for row, light in enumerate(order):
-                if light.revision == self._light_last_rev.get(id(light)):
-                    continue
+                if light.revision != self._light_last_rev.get(id(light)):
+                    raw = np.ascontiguousarray(light.pack()).view(np.uint32).ravel()
+                    self.light_buffers['lights'].write(raw, start=(section_start + row) * LIGHT_SLOT_WORDS)
+                    self._light_last_rev[id(light)] = light.revision
 
-                self.light_buffers[name].write(light.pack(), start=row)
-                self._light_last_rev[id(light)] = light.revision
+            section_start += len(order)
 
     def _sync_materials(self):
 
