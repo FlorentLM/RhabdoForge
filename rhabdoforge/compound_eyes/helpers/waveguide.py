@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Tuple, List, Iterator, Optional
 import numpy as np
+from numpy.typing import ArrayLike
 from scipy.optimize import brentq
 from scipy.special import jv, kv, jn_zeros
 
@@ -190,30 +191,30 @@ def mode_profile_2d(x: np.ndarray, y: np.ndarray, u: float, w: float, l: int, or
     return field / np.sqrt(power)
 
 
-def power_in_boundary(u: float, w: float, v_number: float, l: int) -> float:
+def power_in_boundary(u: ArrayLike, w: ArrayLike, v_number: float, l: ArrayLike) -> ArrayLike:
     """
     Fraction of a mode's power travelling inside the rhabdomere boundary (Eq. 25).
     """
     denom = jv(l - 1, u) * jv(l + 1, u)  # negative for bound LP modes
-    return float((w ** 2 / v_number ** 2) * (1.0 - jv(l, u) ** 2 / denom))
+    return (w ** 2 / v_number ** 2) * (1.0 - jv(l, u) ** 2 / denom)
 
 
-def outside_fraction(u: float, w: float, v_number: float, l: int, s_over_b: float) -> float:
+def outside_fraction(u: ArrayLike, w: ArrayLike, v_number: float, l: ArrayLike, s_over_b: float) -> ArrayLike:
     """
     Fraction of a mode's power beyond radius S = s/b, S >= 1 (Stavenga 2004/III Eq. A15).
     """
 
-    def power_beyond(s: float) -> float:
+    def power_beyond(s: float) -> ArrayLike:
         kl, klm1, klp1 = kv(l, w * s), kv(l - 1, w * s), kv(l + 1, w * s)
         return (jv(l, u) / kv(l, w)) ** 2 * (s ** 2 / 2.0) * (klm1 * klp1 - kl ** 2)
 
     # At S = 1, fraction is:  1 - power_in_boundary  (by construction)
     outside_at_1 = 1.0 - power_in_boundary(u, w, v_number, l)
 
-    return float(outside_at_1 * power_beyond(s_over_b) / power_beyond(1.0))
+    return outside_at_1 * power_beyond(s_over_b) / power_beyond(1.0)
 
 
-def g_factor(x: np.ndarray, u: float, w: float, v_number: float, l: int) -> np.ndarray:
+def g_factor(x: np.ndarray, u: ArrayLike, w: ArrayLike, v_number: float, l: ArrayLike) -> np.ndarray:
     """
     Radial coupling factor G(X) of the excitation integral (Eqs. 35a, 35b).
     """
@@ -225,8 +226,8 @@ def g_factor(x: np.ndarray, u: float, w: float, v_number: float, l: int) -> np.n
     return np.where(np.abs(x - u) < 1e-7, g_at_u, g)
 
 
-def pupil_transmittance(u: float, w: float, v_number: float, l: int, b_um: float,
-                        h_um: float, m_s: float = 50.0, a_s: float = 1.0) -> float:
+def pupil_transmittance(u: ArrayLike, w: ArrayLike, v_number: float, l: ArrayLike, b_um: float,
+                        h_um: float, m_s: float = 50.0, a_s: float = 1.0) -> ArrayLike:
     """
     Transmittance of a mode through the pupil mechanism (Stavenga 2004/III Eqs. A15, A16):
 
@@ -237,7 +238,7 @@ def pupil_transmittance(u: float, w: float, v_number: float, l: int, b_um: float
 
     a_s    : pigment's absorption spectrum (Fig. 7) # TODO: digitise a_s instead of defaulting to 1.0?
     """
-    return float(np.exp(-m_s * a_s * outside_fraction(u, w, v_number, l, 1.0 + h_um / b_um)))
+    return np.exp(-m_s * a_s * outside_fraction(u, w, v_number, l, 1.0 + h_um / b_um))
 
 
 
