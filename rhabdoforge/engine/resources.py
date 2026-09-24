@@ -5,7 +5,7 @@ from OpenGL.GL import *
 import re
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
-from typing import Optional, Set, Dict, Any, Union, Callable, Sequence
+from typing import Optional, Set, Dict, Any, Union, Callable, Sequence, List
 import numpy as np
 from pyglm import glm
 
@@ -287,18 +287,35 @@ class GPUResourceManager:
     Manages global bindings and texture units to prevent overlapping when combining registries.
     """
     def __init__(self):
-        self.ssbo_binding = 0
-        self.texture_unit = 0
+        self._next_ssbo = 0
+        self._free_ssbo: List[int] = []
+        self._next_texture = 0
+        self._free_texture: List[int] = []
 
     def next_ssbo(self) -> int:
-        val = self.ssbo_binding
-        self.ssbo_binding += 1
+        if self._free_ssbo:
+            return self._free_ssbo.pop()
+        val = self._next_ssbo
+        self._next_ssbo += 1
         return val
 
+    def release_ssbo(self, binding: int) -> None:
+        self._free_ssbo.append(binding)
+
     def next_texture(self) -> int:
-        val = self.texture_unit
-        self.texture_unit += 1
+        if self._free_texture:
+            return self._free_texture.pop()
+        val = self._next_texture
+        self._next_texture += 1
         return val
+
+    def release_texture(self, unit: int) -> None:
+        self._free_texture.append(unit)
+
+    @property
+    def ssbo_bindings_used(self) -> int:
+        """Highest SSBO/UBO binding index used so far."""
+        return self._next_ssbo
 
 
 class BufferObject:
@@ -471,6 +488,9 @@ class BufferRegistry:
     def __iter__(self):
         return iter(self._buffers)
 
+    def __len__(self) -> int:
+        return len(self._buffers)
+
     def __repr__(self):
         return f"<BufferRegistry {list(self._buffers)}>"
 
@@ -558,6 +578,8 @@ class BufferRegistry:
     def free(self):
         for buf in self._buffers.values():
             buf.free()
+            if buf.binding is not None and self._rm:
+                self._rm.release_ssbo(buf.binding)
         self._buffers.clear()
 
 
@@ -677,10 +699,16 @@ class TextureRegistry:
         self._textures[name] = tex
         return tex
 
+    def remove(self, name: str) -> None:
+        """Free and unregister a single texture, releasing its unit."""
+        tex = self._textures.pop(name)
+        tex.free()
+        if self._rm:
+            self._rm.release_texture(tex.unit)
+
     def free(self):
-        for tex in self._textures.values():
-            tex.free()
-        self._textures.clear()
+        for name in list(self._textures):
+            self.remove(name)
 
 
 class UniformRegistry:
