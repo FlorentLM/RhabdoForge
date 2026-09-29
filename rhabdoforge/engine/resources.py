@@ -282,6 +282,9 @@ class ShaderProgram:
 
 ##
 
+TEX_UNITS_FIXED = 4  # units 0-3 match the shader's layout(binding): sky, then one per material tier
+
+
 class GPUResourceManager:
     """
     Manages global bindings and texture units to prevent overlapping when combining registries.
@@ -289,7 +292,7 @@ class GPUResourceManager:
     def __init__(self):
         self._next_ssbo = 0
         self._free_ssbo: List[int] = []
-        self._next_texture = 0
+        self._next_texture = TEX_UNITS_FIXED
         self._free_texture: List[int] = []
 
     def next_ssbo(self) -> int:
@@ -647,7 +650,7 @@ class TextureRegistry:
         self._textures[name] = tex
         return tex
 
-    def create_array(self, name: str, width: int, height: int, layer_count: int) -> TextureObject:
+    def create_array(self, name: str, width: int, height: int, layer_count: int, unit: Optional[int] = None) -> TextureObject:
         """Allocates empty GL_TEXTURE_2D_ARRAY, layers are filled in later with write_texture_layer()."""
 
         max_layers = glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS)
@@ -674,7 +677,8 @@ class TextureRegistry:
         glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
         glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
 
-        unit = self._rm.next_texture() if self._rm else 0
+        if unit is None:
+            unit = self._rm.next_texture() if self._rm else 0
         tex = TextureObject(name, tex_array_id, GL_TEXTURE_2D_ARRAY, unit)
         self._textures[name] = tex
         return tex
@@ -693,8 +697,9 @@ class TextureRegistry:
             width, height, 1
         )
 
-    def register_existing(self, name: str, handle: int, target: int) -> TextureObject:
-        unit = self._rm.next_texture() if self._rm else 0
+    def register_existing(self, name: str, handle: int, target: int, unit: Optional[int] = None) -> TextureObject:
+        if unit is None:
+            unit = self._rm.next_texture() if self._rm else 0
         tex = TextureObject(name, handle, target, unit)
         self._textures[name] = tex
         return tex
@@ -703,7 +708,7 @@ class TextureRegistry:
         """Free and unregister a single texture, releasing its unit."""
         tex = self._textures.pop(name)
         tex.free()
-        if self._rm:
+        if self._rm and tex.unit >= TEX_UNITS_FIXED:
             self._rm.release_texture(tex.unit)
 
     def free(self):

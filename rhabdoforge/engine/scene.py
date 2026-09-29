@@ -464,6 +464,7 @@ class Asset:
             vertex_colors: Optional[np.ndarray] = None,
             uv_coords: Optional[np.ndarray] = None,
             texture: Optional[Union[Path, str, Image.Image, np.ndarray]] = None,
+            color: Optional[ArrayLike] = None,
             sRGB: bool = True,
             radii: Optional[Union[float, ArrayLike]] = None
         ) -> 'Asset':
@@ -486,6 +487,10 @@ class Asset:
 
         if texture is not None:
             asset.set_texture(texture)
+
+        if color is not None:
+            c = np.asarray(color, dtype=np.float32)
+            asset.set_material(base_color=np.r_[c, 1.0] if c.size == 3 else c)
 
         asset.is_srgb = sRGB
 

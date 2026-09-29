@@ -64,7 +64,7 @@ class SceneBaker:
         self._push_to_gpu()
 
         if self.scene.sky:
-            self.scene_textures.register_existing('sky_texture', self.scene.sky.texture_id, GL_TEXTURE_2D)
+            self.scene_textures.register_existing('sky_texture', self.scene.sky.texture_id, GL_TEXTURE_2D, unit=0)
 
     def __repr__(self):
         return (f"<SceneBaker | {len(self._blases)} BLAS"
@@ -152,9 +152,8 @@ class SceneBaker:
         img = img.convert('RGBA').transpose(Image.Transpose.FLIP_TOP_BOTTOM)
 
         if (new_w, new_h) != (tier, tier):
-            canvas = Image.new('RGBA', (tier, tier), (0, 0, 0, 0))
-            canvas.paste(img, (0, 0))
-            img = canvas
+            pad = ((0, tier - new_h), (0, tier - new_w), (0, 0))
+            img = Image.fromarray(np.pad(np.asarray(img), pad, mode='edge'), 'RGBA')  # edge padding so mips don't bleed
 
         return img, (new_w / tier, new_h / tier)
 
@@ -194,8 +193,8 @@ class SceneBaker:
             if not imgs:
                 continue
 
-            array_tex = self.scene_textures.create_array(f'materials_{tier}', tier, tier, len(imgs))
-
+            array_tex = self.scene_textures.create_array(f'materials_{tier}', tier, tier, len(imgs),
+                                                      unit=1 + TEX_TIERS.index(tier))
 
             # Upload 1 texture at a time, copy it into its layer, free it immediately
             for i, img in enumerate(imgs):

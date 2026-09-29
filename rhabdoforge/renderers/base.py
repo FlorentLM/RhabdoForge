@@ -22,7 +22,7 @@ from rhabdoforge.engine.resources import (
     TextureViewer, StaticRenderTarget
 )
 from rhabdoforge.engine.materials_utils import constant_sh
-from rhabdoforge.renderers.baking import SceneBaker, TEX_TIERS
+from rhabdoforge.renderers.baking import SceneBaker
 from rhabdoforge.renderers.helpers import VisualOutput, HistoryRecorder
 
 if TYPE_CHECKING:
@@ -225,13 +225,7 @@ class Renderer:
 
             # Sky params
             use_sky=using_sky,
-            sky_texture=self._baker.scene_textures['sky_texture'].unit if using_sky else 0,
             sh_irradiance_coeffs=self.scene.sky.sh_coeffs if using_sky else constant_sh(self.scene.background_color),
-
-
-            # One material texture array per size tier
-            **{f'scene_textures_{i}': self._baker.tex_arrays[tier].unit if tier in self._baker.tex_arrays else 0
-               for i, tier in enumerate(TEX_TIERS)}
         )
 
         self._lights_uniforms.update(
@@ -1318,7 +1312,6 @@ class Renderer:
             nb_tlas_nodes=len(self._baker.cpu_tlas_nodes),
             background_color=new_scene.background_color,
             use_sky=using_sky,
-            sky_texture=self._baker.scene_textures['sky_texture'].unit if using_sky else 0,
             sh_irradiance_coeffs=(new_scene.sky.sh_coeffs if using_sky
                                   else constant_sh(new_scene.background_color)),
         )

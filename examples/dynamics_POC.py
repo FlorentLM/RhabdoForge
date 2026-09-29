@@ -117,7 +117,7 @@ def get_context() -> Context:
 
 
 def build_model():
-    """Build the Drosophila eyes model used for every run; pupil state is forced per-run at render time."""
+    """Build the Drosophila eyes model used for every run."""
 
     bundle = drosophila_bundle()
     bundle.clip_ratio = CLIP_RATIO
@@ -166,7 +166,6 @@ def make_bars(sep_deg):
     thickness = 2.0 * DISTANCE * np.tan(np.radians(BAR_WIDTH_DEG) / 2.0)
     sep_m = 2.0 * DISTANCE * np.tan(np.radians(sep_deg) / 2.0)
     centres = ([-sep_m / 2, +sep_m / 2] if sep_deg > 0 else [0.0])
-    bars_lum = np.ones((32, 32), dtype=np.uint8) * 255
 
     bars = []
     for i, cy in enumerate(centres):
@@ -175,7 +174,7 @@ def make_bars(sep_deg):
         v2 = [+BAR_LENGTH / 2, cy + thickness / 2, -DISTANCE]
         v3 = [+BAR_LENGTH / 2, cy - thickness / 2, -DISTANCE]
         verts, uv, faces = plane_geom(v0, v1, v2, v3)
-        bars.append(Asset.from_arrays(name=f'bar{i}', vertices=verts, faces=faces, uv_coords=uv, texture=bars_lum))
+        bars.append(Asset.from_arrays(name=f'bar{i}', vertices=verts, faces=faces, uv_coords=uv, color=(1, 1, 1)))
 
     return bars
 
