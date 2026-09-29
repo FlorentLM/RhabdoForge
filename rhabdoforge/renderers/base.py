@@ -912,7 +912,7 @@ class Renderer:
                     self._lights_uniforms.apply(shader)
 
                     glDispatchCompute((res[0] + 15) // 16, (res[1] + 15) // 16, 1)
-                    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
+                    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT)
 
     def flush(self) -> Optional['VisualOutput']:
         """

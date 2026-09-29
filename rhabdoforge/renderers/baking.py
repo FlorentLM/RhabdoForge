@@ -209,6 +209,8 @@ class SceneBaker:
             self.scene_textures.generate_mipmaps(array_tex)
             self.tex_arrays[tier] = array_tex
 
+        glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT)
+
     def _pack_materials(self):
         """Initial material data packing for all mesh assets into GPU buffers."""
 
@@ -465,6 +467,8 @@ class SceneBaker:
                             GL_RGBA, GL_UNSIGNED_BYTE, img.tobytes())
             glBindTexture(GL_TEXTURE_2D_ARRAY, 0)
             self.scene_textures.generate_mipmaps(array_tex)
+
+            glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT)
 
             # Did aspect ratio changed (new image, same slot)? -> refresh uv_scale in the SSBO too
             self._asset_tex_map[asset.id] = (tier, layer, uv_scale)

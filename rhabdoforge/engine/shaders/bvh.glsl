@@ -71,7 +71,7 @@ float estimate_lod(Material mat, float world_area, float uv_area, float hit_dist
                : (mat.texture_tier == 1u) ? textureSize(scene_textures_1, 0)
                : textureSize(scene_textures_2, 0);
 
-    float texel_world_size = sqrt(world_area / uv_area) / float(dims.x);
+    float texel_world_size = sqrt(world_area / uv_area) / (float(dims.x) * mat.uv_scale.x);
     float footprint_world = hit_dist * pixel_angular_size;
 
     return max(0.0, log2(max(footprint_world / texel_world_size, 1.0)));
