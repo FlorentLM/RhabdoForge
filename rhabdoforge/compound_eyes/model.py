@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Optional, Union, Tuple, List
 import numpy as np
 from numpy.typing import ArrayLike
 
-from rhabdoforge.types import WORLD_FORWARD, METADATA_BIT_LAYOUT
+from rhabdoforge.types import WORLD_FORWARD, METADATA_BIT_LAYOUT, rhab_static_dtype, rhab_dynamic_dtype
 from rhabdoforge.utils import norm_l2, broadcast_to_shape, broadcast_1d, resolve_path
 
 from rhabdoforge.engine.meshes import icosphere, fibonacci_sphere
@@ -33,7 +33,7 @@ from rhabdoforge.compound_eyes.helpers.neural_superposition import (
 from rhabdoforge.compound_eyes.helpers.acceptance import (
     SnyderAcceptance, SamplingAcceptance, LensOptics, RhabdomereOptics, ExplicitAcceptance
 )
-from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance, solve_modes, solve_per_lens
+from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance, solve_per_lens
 from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
 from rhabdoforge.compound_eyes.views import SpatialQueries, BaseView, OmmatidiumView, EyeView, RhabdomereView
 
@@ -94,9 +94,17 @@ class Model(SpatialQueries, BaseView):
             self._bundle = RhabdomereBundle()  # default R=1
         self._R = self._bundle.count
 
+        # 1 slot per bound LP mode (also defines MAX_LP_MODES in shader)
+        if isinstance(acceptance, WaveguideAcceptance):
+            self._max_modes = max(int(self._rhab_optics().nb_modes.max()), 1)
+        else:
+            self._max_modes = 1
+
         # ============ All sizes now known -> allocate the buffer ============
 
-        self._buf = Buffer(shape=(self._N, self._R))
+        self._buf = Buffer(shape=(self._N, self._R),
+                           rhab_static_dtype=rhab_static_dtype(self._max_modes),
+                           rhab_dynamic_dtype=rhab_dynamic_dtype(self._max_modes))
 
         # ============ Apply geometry ============
 
@@ -231,6 +239,9 @@ class Model(SpatialQueries, BaseView):
 
         self._compute_pupil_response()
         self._compute_axial_response()
+        self._bake_modes()
+
+        self._buf['curr_mode_weight'] = self._buf['mode_weight'].reshape(self._N, self._R, self._max_modes).copy()
 
         # ============ Fill other ommatidia neighbourhood related stuff ============
 
@@ -1084,41 +1095,103 @@ class Model(SpatialQueries, BaseView):
             return
 
         h = self._bundle.pupil_distance_um
-        f_number = float(np.median(self._buf['focal_um'] / np.clip(self._buf['aperture_um'], 1e-6, None)))
+        focal_um = np.clip(self._buf['focal_um'].astype(np.float64), 1e-6, None)
+        f_number = focal_um / np.clip(self._buf['aperture_um'].astype(np.float64), 1e-6, None)
 
         optics = self._rhab_optics()
-        focal_um = float(np.median(self._buf['focal_um']))
 
-        ratio = np.ones(self._R, dtype=np.float32)
-        transmit = np.ones(self._R, dtype=np.float32)
+        ratio = np.ones((self._N, self._R), dtype=np.float32)
+        transmit = np.ones((self._N, self._R), dtype=np.float32)
 
         for r in range(self._R):
 
-            dark = solve_modes(
-                v_number=float(optics.v_number[r]),
+            common = dict(
                 f_number=f_number,
+                focal_um=focal_um,
+                v_number=float(optics.v_number[r]),
                 diameter_um=float(optics.diameter_um[r]),
                 wavelength_um=float(optics.wavelength_um[r]),
-                h_um=np.inf,
                 defocus_um=optics.defocus_um,
-                focal_um=focal_um
             )
 
-            lit = solve_modes(
-                v_number=float(optics.v_number[r]),
+            dark_hwhm = solve_per_lens('d_half', h_um=np.inf, **common)
+            dark_peak = solve_per_lens('peak_power', h_um=np.inf, **common)
+            lit_hwhm = solve_per_lens('d_half', h_um=h, **common)
+            lit_peak = solve_per_lens('peak_power', h_um=h, **common)
+
+            ratio[:, r] = lit_hwhm / dark_hwhm
+            transmit[:, r] = lit_peak / np.maximum(dark_peak, 1e-300)
+
+        self._buf['closed_pupil_ratio'] = ratio
+        self._buf['closed_pupil_transmit'] = transmit
+
+    def _bake_modes(self) -> None:
+        """
+        Bakes each mode's rest weight, pupil ratio and radians per HWHM.
+        """
+
+        M = self._max_modes
+
+        rest_angle = self._buf['rest_acc_angles'].reshape(self._N, self._R, 2)[..., 0]
+
+        mode_weight = np.zeros((self._N, self._R, M), dtype=np.float32)
+        mode_weight[..., 0] = 1.0
+        self._buf['mode_weight'] = mode_weight
+        self._buf['mode_pupil_ratio'] = 1.0
+        self._buf['rad_per_hwhm'] = 1.0
+        self._buf['curr_mode_angle'] = np.repeat(rest_angle[..., None], M, axis=-1)
+
+        if not isinstance(self._acceptance_model, WaveguideAcceptance):
+            return
+
+        h = self._bundle.pupil_distance_um
+        focal_um = np.clip(self._buf['focal_um'].astype(np.float64), 1e-6, None)
+        f_number = focal_um / np.clip(self._buf['aperture_um'].astype(np.float64), 1e-6, None)
+
+        optics = self._rhab_optics()
+
+        weight = np.zeros((self._N, self._R, M), dtype=np.float32)
+        pupil_ratio = np.ones((self._N, self._R, M), dtype=np.float32)
+        angle_ratio = np.ones((self._N, self._R, M), dtype=np.float32)
+        rad_per_hwhm = np.ones((self._N, self._R), dtype=np.float32)
+
+        for r in range(self._R):
+
+            common = dict(
                 f_number=f_number,
+                focal_um=focal_um,
+                v_number=float(optics.v_number[r]),
                 diameter_um=float(optics.diameter_um[r]),
                 wavelength_um=float(optics.wavelength_um[r]),
-                h_um=h,
-                defocus_um=optics.defocus_um,
-                focal_um=focal_um
             )
 
-            ratio[r] = lit.d_half / dark.d_half
-            transmit[r] = lit.peak_power / dark.peak_power
+            dark_hwhm = solve_per_lens('d_half', h_um=np.inf, defocus_um=optics.defocus_um, **common)
 
-        self._buf['closed_pupil_ratio'] = np.broadcast_to(ratio, (self._N, self._R))
-        self._buf['closed_pupil_transmit'] = np.broadcast_to(transmit, (self._N, self._R))
+            dark_peaks = np.stack([
+                solve_per_lens('mode_peak', h_um=np.inf, defocus_um=optics.defocus_um, mode=m, **common)
+                for m in range(M)
+            ], axis=-1)
+
+            dark_hwhms = np.stack([
+                solve_per_lens('mode_hwhm', h_um=np.inf, defocus_um=optics.defocus_um, mode=m, **common)
+                for m in range(M)
+            ], axis=-1)
+
+            weight[:, r, :] = dark_peaks / np.maximum(dark_peaks.sum(axis=-1, keepdims=True), 1e-300)
+            angle_ratio[:, r, :] = dark_hwhms / dark_hwhm[..., None]
+            rad_per_hwhm[:, r] = rest_angle[:, r] / np.maximum(dark_hwhm, 1e-300)
+
+            if h is not None and np.isfinite(h):
+                lit_peaks = np.stack([
+                    solve_per_lens('mode_peak', h_um=h, defocus_um=optics.defocus_um, mode=m, **common)
+                    for m in range(M)
+                ], axis=-1)
+                pupil_ratio[:, r, :] = lit_peaks / np.maximum(dark_peaks, 1e-300)
+
+        self._buf['mode_weight'] = weight
+        self._buf['mode_pupil_ratio'] = pupil_ratio
+        self._buf['rad_per_hwhm'] = rad_per_hwhm
+        self._buf['curr_mode_angle'] = rest_angle[..., None] * angle_ratio
 
     def _compute_axial_response(self) -> None:
         """
@@ -1128,12 +1201,14 @@ class Model(SpatialQueries, BaseView):
         The axial move slides the rhabdomere tip along the optical axis. Waveguide models read
         that as a change of defocus, the others models fall back to the Snyder (geometric) blur.
         """
-        self._buf['axial_scale_floor'] = 1.0
+        self._buf['saccade_ratio_dark'] = 1.0
+        self._buf['saccade_ratio_lit'] = 1.0
 
         # R7/R8 sit almost on the optical axis: they don't move far enough laterally to clip
+        # TODO: This binary distinction is a bit shit
         clip_enabled = np.ones(self._R, dtype=np.float32)
         clip_enabled[self._bundle.center_index] = 0.0
-        self._buf['lateral_clip_enabled'] = np.broadcast_to(clip_enabled, (self._N, self._R))
+        self._buf['lateral_clipping'] = np.broadcast_to(clip_enabled, (self._N, self._R))
 
         ampl = self._bundle.ampl_ax_um
         if ampl == 0.0 or self._bundle.focal_um is None:
@@ -1145,33 +1220,31 @@ class Model(SpatialQueries, BaseView):
 
             focal_um = np.clip(self._buf['focal_um'].astype(np.float64), 1e-6, None)
             f_number = focal_um / np.clip(self._buf['aperture_um'].astype(np.float64), 1e-6, None)
+            h_lit = self._bundle.pupil_distance_um
 
-            floor = np.ones((self._N, self._R), dtype=np.float32)
+            floor_dark = np.ones((self._N, self._R), dtype=np.float32)
+            floor_lit = np.ones((self._N, self._R), dtype=np.float32)
             for r in range(self._R):
 
-                rest = solve_per_lens(
-                    attr='d_half',
+                common = dict(
                     f_number=f_number,
                     focal_um=focal_um,
-                    defocus_um=optics.defocus_um,
                     v_number=float(optics.v_number[r]),
                     diameter_um=float(optics.diameter_um[r]),
-                    wavelength_um=float(optics.wavelength_um[r])
+                    wavelength_um=float(optics.wavelength_um[r]),
                 )
 
-                moved = solve_per_lens(
-                    attr='d_half',
-                    f_number=f_number,
-                    focal_um=focal_um,
-                    defocus_um=optics.defocus_um + ampl,
-                    v_number=float(optics.v_number[r]),
-                    diameter_um=float(optics.diameter_um[r]),
-                    wavelength_um=float(optics.wavelength_um[r])
-                )
+                rest_dark = solve_per_lens(attr='d_half', h_um=np.inf, defocus_um=optics.defocus_um, **common)
+                moved_dark = solve_per_lens(attr='d_half', h_um=np.inf, defocus_um=optics.defocus_um + ampl, **common)
 
-                floor[:, r] = moved / np.maximum(rest, 1e-12)
+                floor_dark[:, r] = moved_dark / np.maximum(rest_dark, 1e-12)
 
-            self._buf['axial_scale_floor'] = floor
+                rest_lit = solve_per_lens(attr='d_half', h_um=h_lit, defocus_um=optics.defocus_um, **common)
+                moved_lit = solve_per_lens(attr='d_half', h_um=h_lit, defocus_um=optics.defocus_um + ampl, **common)
+                floor_lit[:, r] = moved_lit / np.maximum(rest_lit, 1e-12)
+
+            self._buf['saccade_ratio_dark'] = floor_dark
+            self._buf['saccade_ratio_lit'] = floor_lit
             return
 
         # Snyder fallback: only the geometric blur recedes with the tip
@@ -1185,7 +1258,11 @@ class Model(SpatialQueries, BaseView):
         rest = np.hypot(np.arctan(d_rhab / d_rest), rho_diff)
         moved = np.hypot(np.arctan(d_rhab / (d_rest + ampl)), rho_diff)
 
-        self._buf['axial_scale_floor'] = (moved / np.maximum(rest, 1e-12)).astype(np.float32)
+        # No pupupil mechanism in Snyder model yet, dark and lit ratios are the same
+        #TODO: Include a simple pupil mechanism in Snyder model
+        floor = (moved / np.maximum(rest, 1e-12)).astype(np.float32)
+        self._buf['saccade_ratio_dark'] = floor
+        self._buf['saccade_ratio_lit'] = floor
 
     # Public - Bundle alignment refinement (post-superposition)
 

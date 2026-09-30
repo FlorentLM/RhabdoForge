@@ -8,6 +8,7 @@ layout(std430, binding = BINDING_OMM_STATIC)   readonly buffer OmmatidiumStaticB
 layout(std430, binding = BINDING_EMA_STATE)    readonly buffer EmaHistory             { vec4 ema_state[]; };
 layout(std430, binding = BINDING_RHAB_DYNAMIC) buffer          RhabDynamicBlock       { RhabdomereDynamic rhab_dynamic[]; };
 layout(std430, binding = BINDING_OMM_DYNAMIC)  buffer          OmmatidiumDynamicBlock { OmmatidiumDynamic     omm_dynamic[]; };
+layout(std430, binding = BINDING_MODE_HWHM)    readonly buffer ModeHwhmBlock          { float mode_hwhm[]; };
 
 uniform int   nb_ommatidia;
 uniform int   rhab_per_omm;
@@ -23,6 +24,30 @@ uniform bool  force_saccade_drive;  // Override the reflex arc with saccade_driv
 uniform float saccade_drive;
 uniform float trigger_delay;       // onset latency between light detection and movement start (s)
 uniform float aperture_follow;     // Swing effect: how much of the lateral move the aperture follows
+
+// Bilinearly interpolate one mode's HWHM at [pupil, saccade] grid pos
+float mode_hwhm_at(uint mode, uint rhab_type, float drive, float frac) {
+
+    float hf = clamp(drive, 0.0, 1.0) * float(N_PUPIL_STEPS - 1);
+    float zf = clamp(frac, 0.0, 1.0) * float(N_SACCADE_STEPS - 1);
+
+    int   h0 = clamp(int(floor(hf)), 0, N_PUPIL_STEPS - 1);
+    int   h1 = min(h0 + 1, N_PUPIL_STEPS - 1);
+    int   z0 = clamp(int(floor(zf)), 0, N_SACCADE_STEPS - 1);
+    int   z1 = min(z0 + 1, N_SACCADE_STEPS - 1);
+
+    float th = fract(hf);
+    float tz = fract(zf);
+
+    int stride = LUT_MODE_SLOTS;
+    int i00 = ((h0 * N_SACCADE_STEPS + z0) * MAX_LP_MODES + int(mode)) * stride + int(rhab_type);
+    int i01 = ((h0 * N_SACCADE_STEPS + z1) * MAX_LP_MODES + int(mode)) * stride + int(rhab_type);
+    int i10 = ((h1 * N_SACCADE_STEPS + z0) * MAX_LP_MODES + int(mode)) * stride + int(rhab_type);
+    int i11 = ((h1 * N_SACCADE_STEPS + z1) * MAX_LP_MODES + int(mode)) * stride + int(rhab_type);
+
+    return mix(mix(mode_hwhm[i00], mode_hwhm[i01], tz),
+               mix(mode_hwhm[i10], mode_hwhm[i11], tz), th);
+}
 
 void main() {
     uint omm_idx = gl_GlobalInvocationID.x;
@@ -132,7 +157,7 @@ void main() {
 
     // RF width has three independent sources:
     //   - Axial: the move slides the tip along the optical axis, changing its defocus.
-    //      Saturates at the baked axial_scale_floor.
+    //      Saturates at the baked saccade_ratio_dark.
     //   - Pupil: the screening pigment absorbs the boundary wave of the higher-order modes.
     //      Driven by the steady light level, per rhabdomere.
     //   - Clipping (clip_ratio): RF vignetting against the lens's Airy footprint and/or
@@ -141,7 +166,7 @@ void main() {
     // Swing effect: the aperture is dragged along by the rhabdomere, so only their relative offset vignettes
     float rel_lat  = od.curr_lateral_disp * (1.0 - clamp(aperture_follow, 0.0, 1.0));
     float lat_frac = clamp(rel_lat / max(os.ampl_lateral, 1e-6), 0.0, 1.0);
-    float axial_frac = clamp(od.curr_axial_disp / max(os.ampl_axial, 1e-6), 0.0, 1.0);
+    float saccade_frac = clamp(od.curr_axial_disp / max(os.ampl_axial, 1e-6), 0.0, 1.0);
     float er = (clip_ratio <= 0.0) ? 1.0 : clip_ratio;  // unset uniform -> pure optics
 
     for (int r = 0; r < rhab_per_omm; r++) {
@@ -157,16 +182,36 @@ void main() {
         vec3 tip = (total_xy.x * os.right) + (total_xy.y * os.up) + (-d_eff * os.forward);
         rhab_dynamic[rhab_idx].curr_direction = normalize(-tip);
 
-        float optical_scale = mix(1.0, rs.axial_scale_floor, axial_frac);
-        float pupil_scale   = mix(1.0, rs.closed_pupil_ratio, steady_state_drive);
-        float clip_scale    = mix(1.0, er, lat_frac * rs.lateral_clip_enabled);
+        float saccade_ratio  = mix(rs.saccade_ratio_dark, rs.saccade_ratio_lit, steady_state_drive);
+        float saccade_scale  = mix(1.0, saccade_ratio, saccade_frac);
+        float pupil_scale  = mix(1.0, rs.closed_pupil_ratio, steady_state_drive);
+        float clip_scale   = mix(1.0, er, lat_frac * rs.lateral_clipping);
 
-        rhab_dynamic[rhab_idx].curr_acc_angles = rs.rest_acc_angles * (optical_scale * pupil_scale * clip_scale);
+        rhab_dynamic[rhab_idx].curr_acc_angles = rs.rest_acc_angles * (saccade_scale * pupil_scale * clip_scale);
 
-        // Photon concentration reads the optical narrowing only: the pupil narrows by absorbing
+        // Photon concentration reads the saccade-induced optical narrowing only
         // light (opposite sign), and clipping is not optical at all
-        rhab_dynamic[rhab_idx].optical_scale = optical_scale;
+        rhab_dynamic[rhab_idx].saccade_scale = saccade_scale;
         rhab_dynamic[rhab_idx].pupil_transmit = mix(1.0, rs.closed_pupil_transmit, steady_state_drive);
+
+        // LP modes mixture importance sampling: pupil re-weights which mode gets sampled
+        uint rhab_type = unpack_rhab_type(rs.metadata);
+
+        float mode_w[MAX_LP_MODES];
+        float w_sum = 0.0;
+        for (int m = 0; m < MAX_LP_MODES; ++m) {
+            float w = rs.mode_weight[m] * mix(1.0, rs.mode_pupil_ratio[m], steady_state_drive);
+            mode_w[m] = w;
+            w_sum += w;
+        }
+        w_sum = max(w_sum, 1e-15);
+
+        for (int m = 0; m < MAX_LP_MODES; ++m) {
+            float hwhm = mode_hwhm_at(uint(m), rhab_type, steady_state_drive, saccade_frac);
+            rhab_dynamic[rhab_idx].curr_mode_weight[m] = mode_w[m] / w_sum;
+            rhab_dynamic[rhab_idx].curr_mode_angle[m]  = rs.rad_per_hwhm * hwhm * clip_scale;
+        }
+        rhab_dynamic[rhab_idx].curr_saccade_frac = saccade_frac;
 
         // This is purely the biochemical/neural gain (the optical concentration is done in reduction.comp)
         rhab_dynamic[rhab_idx].curr_adaptation = lum_gain;

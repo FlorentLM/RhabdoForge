@@ -122,7 +122,7 @@ def build_model():
     bundle = drosophila_bundle()
     bundle.clip_ratio = CLIP_RATIO
 
-    bundle.ampl_ax_um = AMP_AX  # axial_scale_floor is baked from this at build time, so it must match the runtime axial amplitude
+    bundle.ampl_ax_um = AMP_AX  # saccade_ratio_dark is baked from this at build time, so it must match the runtime axial amplitude
 
     droso_head_ptich = np.deg2rad(10.1)  # drosophila head pitch in flight
 

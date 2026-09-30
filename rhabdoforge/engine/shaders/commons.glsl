@@ -8,10 +8,17 @@ const int RNG_FIBONACCI  = 3;
 const int RNG_HAMMERSLEY = 4;
 const int RNG_SOBOL      = 5;
 
-// Sensitivity LUT geometry, must match LUT_RANGE / LUT_SIZE in LUTs.py:
+// Sensitivity LUT, should match LUT_RANGE / LUT_SIZE / LUT_MODE_SLOTS in LUTs.py
 const int   LUT_SIZE  = 256;
 const float LUT_RANGE = 4.0;
 const float LUT_SCALE = float(LUT_SIZE - 1) / LUT_RANGE;
+const int   LUT_MODE_SLOTS = 16;   // rhabdomere types a per-type LUT can index
+
+#ifndef MAX_LP_MODES    //  injected by the renderer
+#define MAX_LP_MODES 2
+#endif
+const int N_PUPIL_STEPS   = 8;   // grid steps: dark to lit
+const int N_SACCADE_STEPS = 8;   // grid steps: rest to full saccade
 
 
 const float PI = 3.141592653589793;
@@ -79,18 +86,36 @@ struct RhabdomereStatic {
     uint  metadata;
     float closed_pupil_ratio;      // D rho (light-adapted) / D rho (dark), <= 1 (narrower)
     float closed_pupil_transmit;   // Peak sensitivity ratio, <= 1 (dimmer)
-    float axial_scale_floor;       // D rho (full axial move) / D rho (rest), <= 1 (narrower)
-    float lateral_clip_enabled;    // 1.0 if this rhabdomere type clips against the lens/aperture (R1-6), 0.0 if not (R7/8)
-}; // 64 bytes
+    float saccade_ratio_dark;   // D rho (full saccade) / D rho (rest), dark-adapted
+    float saccade_ratio_lit;    // D rho (full saccade) / D rho (rest), light-adapted
+    float lateral_clipping;     // 1.0 if this rhabdomere type clips against the lens/aperture (R1-6), 0.0 if not (R7/8) // TODO: improve that maybe
+
+    // LP modes mixture importance sampling
+    float mode_weight[MAX_LP_MODES];        // Each mode's power fraction at rest/dark (sums to 1)
+    float mode_pupil_ratio[MAX_LP_MODES];   // Each mode's power ratio: light-adapted / dark-adapted
+    float rad_per_hwhm;                     // (unit is dimensionless mode half-width)
+#if (MAX_LP_MODES % 2) == 0
+    float _pad[2];
+#endif
+}; // size: depends on MAX_LP_MODES
 
 // Rhabdomere dynamic
 struct RhabdomereDynamic {
     vec3  curr_direction;
     float curr_adaptation;
     vec2  curr_acc_angles;
-    float optical_scale;
+    float saccade_scale;    // RF narrowing from the saccade only (no pupil/clip) for photon concentration
     float pupil_transmit;
-}; // 32 bytes
+
+    float curr_mode_weight[MAX_LP_MODES]; // Current per-mode mixture proba (sum to 1)
+    float curr_mode_angle[MAX_LP_MODES];  // Current (actuated) per-mode acceptance angle (rad)
+    float curr_saccade_frac;           // Saccade fraction (0 -> 1)
+#if (MAX_LP_MODES % 2) == 0
+    float _pad[3];
+#else
+    float _pad;
+#endif
+}; // size: depends on MAX_LP_MODES
 
 
 // Metadata Unpacking
@@ -126,8 +151,12 @@ struct Point {
 };
 
 #ifdef SAMPLER_LUT
+// Layout: [gaussian (1 block)][active target per R type (LUT_MODE_SLOTS blocks)][mode profiles]  // TODO: Maybe reorg this
 layout(std430, binding = BINDING_SENSITIVITY_ICDF_LUT) readonly buffer SensitivityIcdfLutBlock { float sensitivity_iCDF_LUT[]; };
-uniform int sampling_target;   // 0 = gaussian, 1 = custom
+const int MODE_LUT_BASE = LUT_SIZE + LUT_MODE_SLOTS * LUT_SIZE;
+uniform int sampling_target;
+const int SAMPLING_TARGET_GAUSSIAN  = 0;
+const int SAMPLING_TARGET_WAVEGUIDE = 1;
 #endif
 
 // =====================================================================================================================
@@ -279,7 +308,82 @@ float sample_lut_radius(uint rhab_type, float u1) {
     return mix(sensitivity_iCDF_LUT[base + i0], sensitivity_iCDF_LUT[base + i1], t);
 }
 
+// Third uniform to pick a mode, quality barely affects variance so hash-derived is bueno
+float mode_rand(float u1, float u2) {
+    uint h = pcg_hash(floatBitsToUint(u1) ^ (floatBitsToUint(u2) * 0x9E3779B9u) ^ 0x5BD1E995u);
+    return float(h) * THE_TINIEST_FLOAT;
+}
+
+const float PROPOSAL_WIDEN = 1.7;   // proposal width mult (over curr_mode_angle)
+
+// One mode's profile value at normalized radius x, for the current saccade fraction.
+// The pupil only reweights modes, so the lookup doesn't vary with it.
+float mode_profile(uint mode, uint rhab_type, float frac, float x) {
+    float zf = clamp(frac, 0.0, 1.0) * float(N_SACCADE_STEPS - 1);
+    int   z0 = clamp(int(floor(zf)), 0, N_SACCADE_STEPS - 1);
+    int   z1 = min(z0 + 1, N_SACCADE_STEPS - 1);
+    float tz = fract(zf);
+
+    float xi = clamp(x, 0.0, LUT_RANGE) * LUT_SCALE;
+    int   i0 = clamp(int(floor(xi)), 0, LUT_SIZE - 1);
+    int   i1 = min(i0 + 1, LUT_SIZE - 1);
+    float t  = fract(xi);
+
+    int stride = LUT_MODE_SLOTS * LUT_SIZE;
+    int b0 = MODE_LUT_BASE + (z0 * MAX_LP_MODES + int(mode)) * stride + int(rhab_type) * LUT_SIZE;
+    int b1 = MODE_LUT_BASE + (z1 * MAX_LP_MODES + int(mode)) * stride + int(rhab_type) * LUT_SIZE;
+
+    float p0 = mix(sensitivity_iCDF_LUT[b0 + i0], sensitivity_iCDF_LUT[b0 + i1], t);
+    float p1 = mix(sensitivity_iCDF_LUT[b1 + i0], sensitivity_iCDF_LUT[b1 + i1], t);
+    return mix(p0, p1, tz);
+}
+
+// Proposal = wide-Gaussian mixture, reweighted against mode profiles
+vec3 sampledir_mixture(RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
+
+    float phi = TWOPI * u2;
+    uint rhab_type = unpack_rhab_type(rs.metadata);
+
+    // Pick a mode (by walking cum weight)
+    float u_pick = mode_rand(u1, u2);
+    float cum_w = 0.0;
+    float a_pick = rd.curr_mode_angle[0] * PROPOSAL_WIDEN;
+    bool picked = false;
+    for (int m = 0; m < MAX_LP_MODES; ++m) {
+        cum_w += rd.curr_mode_weight[m];
+        if (!picked && u_pick < cum_w) {
+            a_pick = rd.curr_mode_angle[m] * PROPOSAL_WIDEN;
+            picked = true;
+        }
+    }
+    float angle = a_pick * sqrt(-log(u1) / GAUSS_CONSTANT_K);
+
+    // Proposal and target densities over all modes, target normalised by each mode's angle
+    float proposal = 0.0;
+    float target = 0.0;
+    for (int m = 0; m < MAX_LP_MODES; ++m) {
+        float w = rd.curr_mode_weight[m];
+        float a = rd.curr_mode_angle[m] * PROPOSAL_WIDEN;
+        float e = exp(-GAUSS_CONSTANT_K * angle * angle / (a * a)) / (a * a);
+        proposal += w * e;
+        target += w * mode_profile(uint(m), rhab_type, rd.curr_saccade_frac, angle / max(rd.curr_mode_angle[m], 1e-6));
+    }
+
+    weight = (proposal > 1e-20) ? (target / proposal) : 0.0;
+
+    vec2 p = vec2(tan(angle) * cos(phi), tan(angle) * sin(phi));
+
+    float s = sin(os.ioa_tilt), c = cos(os.ioa_tilt);
+    vec2 tp = mat2(c, -s, s, c) * p;
+
+    return normalize(mat3(T, B, F) * normalize(vec3(tp, 1.0)));
+}
+
 vec3 sampledir_lut_importance(RhabdomereStatic rs, RhabdomereDynamic rd, OmmatidiumStatic os, vec3 T, vec3 B, vec3 F, float u1, float u2, out float weight) {
+
+    if (sampling_target == SAMPLING_TARGET_WAVEGUIDE) {
+        return sampledir_mixture(rs, rd, os, T, B, F, u1, u2, weight);
+    }
 
     float phi = TWOPI * u2;
     float r = sample_lut_radius(unpack_rhab_type(rs.metadata), u1);

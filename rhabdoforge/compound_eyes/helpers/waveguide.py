@@ -249,21 +249,31 @@ class RhabdomereModes:
     """
 
     v_number: float
-    mode_p: np.ndarray          # Mode numbers (1-based indexing)
+    mode_p: np.ndarray              # Mode numbers (1-based indexing)
     u: np.ndarray
     w: np.ndarray
-    eta: np.ndarray             # Fraction of the power inside the boundary (per mode)
-    t_p: np.ndarray             # Pupil transmittance (per mode). 1.0 when dark-adapted
-    d_half: float               # Angular half-width (dimensionless D=d/b units)
-    d_sweep: np.ndarray         # Offsets the sensitivity was sampled at (dimensionless D=d/b units)
-    sensitivity: np.ndarray     # Summed angular sensitivity (normalised to the peak)
-    peak_power: float           # Peak pre-normalisation (for comparing across pupil states)
+    eta: np.ndarray                 # Fraction of the power inside the boundary (per mode)
+    t_p: np.ndarray                 # Pupil transmittance (per mode). 1.0 when dark-adapted
+    d_half: float                   # Angular half-width (dimensionless D=d/b units)
+    d_sweep: np.ndarray             # Offsets the sensitivity was sampled at (dimensionless D=d/b units)
+    sensitivity: np.ndarray         # Summed angular sensitivity (normalised to the peak)
+    peak_power: float               # Peak pre-normalisation (for comparing across pupil states)
+    mode_sensitivity: np.ndarray    # Each LP mode's contribution (nb_modes, d_sweep.size)
+    mode_hwhm: np.ndarray           # Each LP mode's half-width (D=d/b units) (nb_modes,)
+    mode_peak: np.ndarray           # Each LP mode's peak contribution (nb_modes,)
 
     @property
     def nb_modes(self) -> int:
         return int(self.mode_p.size)
 
+    def get_mode_hwhm(self, i: int) -> float:
+        return float(self.mode_hwhm[min(i, self.nb_modes - 1)])  # indices clamped to last bound mode
 
+    def get_mode_peak(self, i: int) -> float:
+        return float(self.mode_peak[min(i, self.nb_modes - 1)])
+
+
+@lru_cache(maxsize=2048)
 def solve_modes(
         v_number: float,
         f_number: float,
@@ -313,71 +323,85 @@ def solve_modes(
 
     d_sweep = np.linspace(0.0, SWEEP_MAX_D, SWEEP_NODES)
 
-    u_all, w_all, eta_all, t_all, p_all = [], [], [], [], []
-    sensitivity = np.zeros_like(d_sweep)
-
+    # u, w are each mode's root of the characteristic equation (Eq. 17)
+    p_all, l_all, u_all, w_all = [], [], [], []
     for mode in bound:
-        l, m = mode.l, mode.m
-
         try:
-            u, w = solve_uw(v_number, l, m)
+            u, w = solve_uw(v_number, mode.l, mode.m)
         except ValueError:
             continue
-
-        eta = power_in_boundary(u, w, v_number, l)
-        t_p = 1.0 if not np.isfinite(h_um) else pupil_transmittance(u, w, v_number, l, b, h_um)
-
-        g = g_factor(x, u, w, v_number, l)
-
-        # Excitation coefficient (Eq. 34), tip in the focal plane (Z=0, van Hateren 1984)
-        c_p = 2.0 if l == 0 else 1.0
-        norm = (w / v_number) * math.sqrt(2.0 / (c_p * abs(jv(l - 1, u) * jv(l + 1, u))))
-
-        # Weight each mode:
-        #     P_eff = P_exc * T_p(h) * eta_p (Stavenga 2004/III Eq. A19)
-        #   -> higher-order modes drop out first
-        integral = (jv(l, np.outer(d_sweep, x)) * (g * x * wt * phase)).sum(axis=1)  # (sweep, quad) -> (sweep,)
-        sensitivity += t_p * eta * norm ** 2 * np.abs(integral) ** 2
-
-        u_all.append(u), w_all.append(w), eta_all.append(eta), t_all.append(t_p), p_all.append(mode.p)
+        p_all.append(mode.p), l_all.append(mode.l), u_all.append(u), w_all.append(w)
 
     if not p_all:
         raise ValueError(f'no bound modes converged at V={v_number:.4f}')
 
-    peak = float(sensitivity.max())
+    l = np.asarray(l_all)   # (M,)
+    u = np.asarray(u_all)   # (M,)
+    w = np.asarray(w_all)   # (M,)
+
+    eta = power_in_boundary(u, w, v_number, l)
+    t_p = np.ones_like(u) if not np.isfinite(h_um) else pupil_transmittance(u, w, v_number, l, b, h_um)
+
+    # Excitation coefficient (Eq. 34), tip in the focal plane (Z=0, van Hateren 1984)
+    c_p = np.where(l == 0, 2.0, 1.0)
+    norm = (w / v_number) * np.sqrt(2.0 / (c_p * np.abs(jv(l - 1, u) * jv(l + 1, u))))
+
+    g = g_factor(x, u[:, None], w[:, None], v_number, l[:, None])   # (M, quad)
+
+    # Weight each mode:
+    #     P_eff = P_exc * T_p(h) * eta_p (Stavenga 2004/III Eq. A19)
+    #   -> higher-order modes drop out first
+    bessel = jv(l[:, None, None], np.outer(d_sweep, x)[None, :, :])      # (M, sweep, quad)
+    integral = (bessel * (g * x * wt * phase)[:, None, :]).sum(axis=-1)  # (M, sweep)
+    mode_sensitivity = t_p[:, None] * eta[:, None] * norm[:, None] ** 2 * np.abs(integral) ** 2  # (M, sweep)
+    total_sensitivity = mode_sensitivity.sum(axis=0)
+
+    peak = float(total_sensitivity.max())
     if peak <= 0.0:
         raise ValueError(f'pupil absorbs all power at V={v_number:.4f}, h={h_um}')
+
+    mode_peak = mode_sensitivity.max(axis=1)
+    mode_hwhm = np.empty_like(mode_peak)
+    for i in range(mode_peak.size):
+        try:
+            mode_hwhm[i] = half_width(d_sweep, mode_sensitivity[i]) if mode_peak[i] > 0.0 else SWEEP_MAX_D
+        except ValueError:
+            mode_hwhm[i] = SWEEP_MAX_D
 
     return RhabdomereModes(
         v_number=v_number,
         mode_p=np.asarray(p_all, dtype=np.int32),
-        u=np.asarray(u_all),
-        w=np.asarray(w_all),
-        eta=np.asarray(eta_all),
-        t_p=np.asarray(t_all),
-        d_half=half_width(d_sweep, sensitivity),
+        u=u,
+        w=w,
+        eta=eta,
+        t_p=t_p,
+        d_half=half_width(d_sweep, total_sensitivity),
         d_sweep=d_sweep,
-        sensitivity=sensitivity / peak,
+        sensitivity=total_sensitivity / peak,
         peak_power=peak,
+        mode_sensitivity=mode_sensitivity,
+        mode_hwhm=mode_hwhm,
+        mode_peak=mode_peak,
     )
 
 
 def half_width(d_sweep: np.ndarray, sensitivity: np.ndarray) -> float:
     """
-    FWHM of the angular sensitivity measured from its peak (not the on-axis value
-    because a multi-mode profile can be double-peaked off-axis)
+    FWHM of the angular sensitivity measured outward from the peak.
+    (a multi-mode profile can be double-peaked off-axis and a mode's contribution is exactly 0 on-axis)
     """
 
-    peak = sensitivity.max()
+    peak_idx = int(np.argmax(sensitivity))
+    peak = sensitivity[peak_idx]
     if peak <= 0.0:
         raise ValueError('angular sensitivity has no power')
 
     normalised = sensitivity / peak
-    below = np.flatnonzero(normalised < 0.5)
+    below = np.flatnonzero(normalised[peak_idx:] < 0.5)
     if below.size == 0:
         raise ValueError('sensitivity does not fall to half max within the sweep range')
 
-    i = int(below[0])
+    i = peak_idx + int(below[0])
     y0, y1 = normalised[i - 1], normalised[i]
     t = (y0 - 0.5) / max(y0 - y1, 1e-12)
     return float(d_sweep[i - 1] + t * (d_sweep[i] - d_sweep[i - 1]))
@@ -426,20 +450,46 @@ def _bilinear(x_grid: np.ndarray, y_grid: np.ndarray, table: np.ndarray,
     return rows[i, cols] * (1.0 - t) + rows[i + 1, cols] * t
 
 
-@lru_cache(maxsize=8192)
-def _solve_scalar(attr: str, v_number: float, f_number: float, diameter_um: float,
-                  wavelength_um: float, h_um: float, defocus_um: float, focal_um: float) -> float:
+def _solve_scalar(
+        attr: str,
+        v_number: float,
+        f_number: float,
+        diameter_um: float,
+        wavelength_um: float,
+        h_um: float,
+        defocus_um: float,
+        focal_um: float,
+        mode: Optional[int] = None
+    ) -> float:
     """
-    One scalar attribute of a mode solve (baking passes share the rest state so it's lru-cached).
+    One scalar attribute of a (cached) mode solve.
     """
-    modes = solve_modes(v_number, f_number, diameter_um, wavelength_um,
-                        h_um=h_um, defocus_um=defocus_um, focal_um=focal_um)
+    modes = solve_modes(
+        v_number=v_number,
+        f_number=f_number,
+        diameter_um=diameter_um,
+        wavelength_um=wavelength_um,
+        h_um=h_um,
+        defocus_um=defocus_um,
+        focal_um=focal_um
+    )
+    if mode is not None:
+        return getattr(modes, f'get_{attr}')(mode)
     return float(getattr(modes, attr))
 
 
-def solve_per_lens(attr: str, f_number: np.ndarray, focal_um: np.ndarray, *,
-                   v_number: float, diameter_um: float, wavelength_um: float,
-                   h_um: float = np.inf, defocus_um: float = 0.0) -> np.ndarray:
+def solve_per_lens(
+        attr: str,
+        f_number: np.ndarray,
+        focal_um: np.ndarray,
+        *,
+        v_number: float,
+        diameter_um: float,
+        wavelength_um: float,
+        h_um: float = np.inf,
+        defocus_um: float = 0.0,
+        mode: Optional[int] = None
+    ) -> np.ndarray:
     """
     Per-lens value of a scalar 'RhabdomereModes' attribute (for one rhabdomere type).
 
@@ -451,7 +501,7 @@ def solve_per_lens(attr: str, f_number: np.ndarray, focal_um: np.ndarray, *,
 
     table = np.array([
         [_solve_scalar(attr, v_number, float(fn), diameter_um, wavelength_um,
-                       h_um, defocus_um, float(fl))
+                       h_um, defocus_um, float(fl), mode)
          for fl in f_grid]
         for fn in fn_grid
     ])

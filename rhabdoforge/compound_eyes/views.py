@@ -96,6 +96,11 @@ class BaseView:
         return isinstance(self.model._acceptance_model, WaveguideAcceptance)
 
     @property
+    def max_modes(self) -> int:
+        """Number of per-rhabdomere LP modes the mixture sampler should have."""
+        return self.model._max_modes
+
+    @property
     def omm_indices(self) -> np.ndarray:
         raise NotImplementedError
 

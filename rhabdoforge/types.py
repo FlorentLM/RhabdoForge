@@ -220,35 +220,57 @@ OMM_DYNAMIC_DTYPE = np.dtype([
 
 # Per-rhabdomere data
 
-RHAB_STATIC_DTYPE = np.dtype([
-    # 16 bytes: 12 bytes (UV, G, B) channel sensitivity multipliers, and 4 bytes peak wavelength (μm)
-    ('sensitivity',     np.float32, 3),     ('wavelength_um',   np.float32),
 
-    # 16 bytes: Rest position and acceptance angles
-    ('rest_acc_angles', np.float32, 2),     # 8 bytes: acceptance angles (minor, major) at rest (rad)
-    ('rest_offset',     np.float32, 2),     # 8 bytes: offset (at rest) from the ommatidium optical axis (μm), post chi/chirality
-
-    # 16 bytes: the 3 remaining 4 bytes fields, and the packed metadata
-    ('tau_membrane',    np.float32),        # 4 bytes: Rhabdomere membrane RC (s)
-    ('cartridge_src',   np.uint32),         # 4 bytes: Rhabdomere index (global) of the neural-superposition source
-    ('diameter_um',     np.float32),        # 4 bytes: Rhabdomere diameter (μm)
-    ('metadata',        np.uint32),         # 4 bytes: bit-packed, see _BIT_LAYOUT below
-
-    # 16 bytes: baked microsaccade response (waveguide acceptance models only)
-    ('closed_pupil_ratio',    np.float32),  # 4 bytes: Δρ (light-adapted) / Δρ (dark), <= 1 (narrower)
-    ('closed_pupil_transmit', np.float32),  # 4 bytes: peak sensitivity ratio, <= 1 (dimmer)
-    ('axial_scale_floor',     np.float32),  # 4 bytes: Δρ (full axial move) / Δρ (rest), <= 1 (narrower)
-    ('lateral_clip_enabled',  np.float32),  # 4 bytes: 1.0 if this rhabdomere type clips laterally (R1-6), 0.0 if not (R7/8)
-])  # 64 bytes
+def pad16(fields: list) -> np.dtype:
+    pad = (-np.dtype(fields).itemsize) % 16
+    return np.dtype(fields + [('_pad', np.float32, pad // 4)])
 
 
-RHAB_DYNAMIC_DTYPE = np.dtype([
-    ('curr_direction',  np.float32, 3),     # 12 bytes: current (actuated) viewing direction
-    ('curr_adaptation', np.float32),        #  4 bytes: current adaptation state
-    ('curr_acc_angles', np.float32, 2),     #  8 bytes: current (actuated) acceptance angles (rad)
-    ('optical_scale',   np.float32),        #  4 bytes: optical RF-narrowing factor Δρ_eff/Δρ_rest, read for photon concentration
-    ('pupil_transmit',  np.float32),        #  4 bytes: current pupil transmittance (<= 1, read as a radiance multiplier)
-])  # 32 bytes
+def rhab_static_dtype(max_modes: int = 1) -> np.dtype:
+    return pad16([
+        # 16 bytes: 12 bytes (UV, G, B) channel sensitivity multipliers, and 4 bytes peak wavelength (μm)
+        ('sensitivity',     np.float32, 3),     ('wavelength_um',   np.float32),
+
+        # 16 bytes: Rest position and acceptance angles
+        ('rest_acc_angles', np.float32, 2),     # 8 bytes: acceptance angles (minor, major) at rest (rad)
+        ('rest_offset',     np.float32, 2),     # 8 bytes: offset (at rest) from the ommatidium optical axis (μm), post chi/chirality
+
+        # 16 bytes: the 3 remaining 4 bytes fields, and the packed metadata
+        ('tau_membrane',    np.float32),        # 4 bytes: Rhabdomere membrane RC (s)
+        ('cartridge_src',   np.uint32),         # 4 bytes: Rhabdomere index (global) of the neural-superposition source
+        ('diameter_um',     np.float32),        # 4 bytes: Rhabdomere diameter (μm)
+        ('metadata',        np.uint32),         # 4 bytes: bit-packed, see _BIT_LAYOUT below
+
+        # baked microsaccade response (waveguide acceptance models only)
+        ('closed_pupil_ratio',     np.float32),  # Δρ (light-adapted) / Δρ (dark), <= 1 (narrower)
+        ('closed_pupil_transmit',  np.float32),  # peak sensitivity ratio, <= 1 (dimmer)
+        ('saccade_ratio_dark',     np.float32),  # Δρ (full saccade) / Δρ (rest), dark-adapted
+        ('saccade_ratio_lit',      np.float32),  # Δρ (full saccade) / Δρ (rest), light-adapted
+        ('lateral_clipping',       np.float32),  # 1.0 if this rhabdomere type clips laterally (R1-6), 0.0 if not (R7/8)
+
+        # Mixture-of-modes importance sampling (SAMPLER_LUT + WaveguideAcceptance only)
+        ('mode_weight',       np.float32, max_modes),  # Each mode's power fraction at rest/dark (sums to 1)
+        ('mode_pupil_ratio',  np.float32, max_modes),  # Each mode's power ratio, light-adapted / dark-adapted
+        ('rad_per_hwhm',      np.float32),              # rad per dimensionless unit of mode half-width
+    ])
+
+
+def rhab_dynamic_dtype(max_modes: int = 1) -> np.dtype:
+    return pad16([
+        ('curr_direction',  np.float32, 3),     # 12 bytes: current (actuated) viewing direction
+        ('curr_adaptation', np.float32),        #  4 bytes: current adaptation state
+        ('curr_acc_angles', np.float32, 2),     #  8 bytes: current (actuated) acceptance angles (rad)
+        ('saccade_scale',   np.float32),        #  4 bytes: saccade optical RF-narrowing factor Δρ_eff/Δρ_rest
+        ('pupil_transmit',  np.float32),        #  4 bytes: current pupil transmittance (<= 1, read as a radiance multiplier)
+
+        # LP modes mixture importance sampling
+        ('curr_mode_weight',  np.float32, max_modes),   # Current per-mode mixture probabilities (sum to 1)
+        ('curr_mode_angle',   np.float32, max_modes),   # Current (actuated) per-mode acceptance angle (rad)
+        ('curr_saccade_frac', np.float32),              # 4 bytes: Saccade fraction (0 -> 1)
+    ])
+
+RHAB_STATIC_DTYPE = rhab_static_dtype()
+RHAB_DYNAMIC_DTYPE = rhab_dynamic_dtype()
 
 # TODO: Move most metadata to per-ommatidium ?? Only rhab_R, chirality and is_wired are per-rhabdomere
 
@@ -297,16 +319,20 @@ def _assert_layout_aligned():
 
     STD430_BLOCK = 16
 
-    for _name, _dtype in (
+    fixed = [
         ('RENDERABLE_DTYPE', RENDERABLE_DTYPE),
         ('DIR_LIGHT_DTYPE', DIR_LIGHT_DTYPE),
         ('POINT_LIGHT_DTYPE', POINT_LIGHT_DTYPE),
         ('AREA_LIGHT_DTYPE', AREA_LIGHT_DTYPE),
         ('OMM_DYNAMIC_DTYPE', OMM_DYNAMIC_DTYPE),
-        ('RHAB_STATIC_DTYPE', RHAB_STATIC_DTYPE),
-        ('RHAB_DYNAMIC_DTYPE', RHAB_DYNAMIC_DTYPE),
-    ):
+    ]
 
+    # max_modes derived from bundle at runtime
+    for max_modes in (1, 2):
+        fixed.append((f'rhab_static_dtype({max_modes})', rhab_static_dtype(max_modes)))
+        fixed.append((f'rhab_dynamic_dtype({max_modes})', rhab_dynamic_dtype(max_modes)))
+
+    for _name, _dtype in fixed:
         r = _dtype.itemsize % STD430_BLOCK
         if r != 0:
             raise AssertionError(

@@ -12,6 +12,11 @@ LUT_RANGE = 4.0
 LUT_SIZE = 256
 LUT_MODE_SLOTS = 1 << METADATA_BIT_LAYOUT['rhab_R'][1]   # rhabdomere types a per-type LUT can index
 
+# LP mode LUT grid resolution (pupil closure x saccade fraction)
+N_PUPIL_STEPS = 8
+N_SACCADE_STEPS = 8
+
+
 GAUSS_K = 4 * np.log(2)
 
 def akima_interp_fn(x: ArrayLike, y: ArrayLike, fill_value: float) -> 'Callable':
@@ -110,7 +115,7 @@ def invert_lut_cdf(lut: ArrayLike) -> np.ndarray:
     return icdf.reshape(-1).astype(np.float32)
 
 
-def waveguide_sensitivity_lut(
+def waveguide_sensitivity_LUT(
         diameters_um: ArrayLike,
         wavelengths_um: ArrayLike,
         f_number: float,
@@ -159,3 +164,80 @@ def waveguide_sensitivity_lut(
         lut[r * LUT_SIZE:(r + 1) * LUT_SIZE] = np.interp(x_vals, profile_x, modes.sensitivity)
 
     return lut
+
+
+def waveguide_modes_LUT(
+        diameters_um: ArrayLike,
+        wavelengths_um: ArrayLike,
+        f_number: float,
+        n_rhabdomere: ArrayLike = None,
+        n_surround: ArrayLike = None,
+        rest_defocus_um: float = 0.0,
+        saccade_ampl_um: float = 0.0,
+        pupil_distance_um: Optional[float] = None,
+        focal_um: Optional[float] = None,
+        slots: Optional[int] = None,
+        n_pupil: int = N_PUPIL_STEPS,
+        n_saccade: int = N_SACCADE_STEPS,
+        max_modes: int = 17,
+    ) -> tuple:
+    """
+    Per-mode profiles and HWHMs over a [pupil closure, saccade fraction] grid.
+    Returns (profiles, mode_hwhm), flatened: [pupil][saccade][mode][rhab type][...]  # TODO: Maybe revise this format
+    """
+    from rhabdoforge.compound_eyes.helpers.acceptance import RhabdomereOptics
+    from rhabdoforge.compound_eyes.helpers.waveguide import solve_modes
+
+    optics = RhabdomereOptics(
+        diameter_um=np.atleast_1d(np.asarray(diameters_um, dtype=np.float32)),
+        wavelength_um=np.atleast_1d(np.asarray(wavelengths_um, dtype=np.float32)),
+        n_rhabdomere=None if n_rhabdomere is None else np.atleast_1d(np.asarray(n_rhabdomere, dtype=np.float32)),
+        n_surround=None if n_surround is None else np.atleast_1d(np.asarray(n_surround, dtype=np.float32)),
+    )
+
+    x_vals = np.linspace(0, LUT_RANGE, LUT_SIZE)
+    gaussian = np.exp(-GAUSS_K * x_vals ** 2)     # pure G for unused slots
+
+    if slots is None:
+        slots = LUT_MODE_SLOTS
+
+    n_grid = n_pupil * n_saccade
+    profiles = np.tile(gaussian, n_grid * max_modes * slots).astype(np.float32)
+    mode_hwhm = np.ones(n_grid * max_modes * slots, dtype=np.float32)
+
+    pupil_levels = np.linspace(0.0, 1.0, n_pupil)
+    saccade_fracs = np.linspace(0.0, 1.0, n_saccade)
+    h_lit = pupil_distance_um if pupil_distance_um is not None else np.inf
+
+    for pupil_i, pupil in enumerate(pupil_levels):
+        h_um = np.inf if pupil <= 0.0 else h_lit / pupil  # pupil=0 (dark) -> h=inf
+
+        for saccade_i, frac in enumerate(saccade_fracs):
+            defocus_um = rest_defocus_um + float(frac) * saccade_ampl_um
+            grid_idx = pupil_i * n_saccade + saccade_i
+
+            for r in range(min(optics.nb_rhabdomeres, slots)):
+
+                modes = solve_modes(
+                    v_number=float(optics.v_number[r]),
+                    f_number=f_number,
+                    diameter_um=float(optics.diameter_um[r]),
+                    wavelength_um=float(optics.wavelength_um[r]),
+                    h_um=h_um,
+                    defocus_um=defocus_um,
+                    focal_um=focal_um,
+                )
+
+                nb = min(modes.nb_modes, max_modes)
+                for m in range(max_modes):
+                    mi = min(m, nb - 1)
+                    hwhm = modes.get_mode_hwhm(mi)
+
+                    profile_x = 0.5 * modes.d_sweep / hwhm
+                    block = (grid_idx * max_modes + m) * slots * LUT_SIZE + r * LUT_SIZE
+                    profiles[block:block + LUT_SIZE] = np.interp(
+                        x_vals, profile_x, modes.mode_sensitivity[mi] / modes.get_mode_peak(mi))
+                    hwhm_idx = (grid_idx * max_modes + m) * slots + r
+                    mode_hwhm[hwhm_idx] = hwhm
+
+    return profiles, mode_hwhm

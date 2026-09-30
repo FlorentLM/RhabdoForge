@@ -32,7 +32,11 @@ class Buffer:
     GPU-ready packed buffers for a compound eye.
     """
 
-    def __init__(self, shape: Tuple[int, int] = (1, 1)):
+    def __init__(self,
+            shape: Tuple[int, int] = (1, 1),
+            rhab_static_dtype: np.dtype = RHAB_STATIC_DTYPE,
+            rhab_dynamic_dtype: np.dtype = RHAB_DYNAMIC_DTYPE
+        ):
 
         N, R = shape
 
@@ -62,8 +66,8 @@ class Buffer:
                 # TODO: Maybe use a threshold to tell the renderer's sync_cpu whether to update all the buffer or not? ...or drop the surgical update and just always push all the data
             },
             'rhabdomere': {
-                'static': np.zeros(self.size, dtype=RHAB_STATIC_DTYPE),
-                'dynamic': np.zeros(self.size, dtype=RHAB_DYNAMIC_DTYPE),
+                'static': np.zeros(self.size, dtype=rhab_static_dtype),
+                'dynamic': np.zeros(self.size, dtype=rhab_dynamic_dtype),
                 'stale_mask': np.zeros(self.size, dtype=bool),
                 'stale': False
             },

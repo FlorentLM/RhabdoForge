@@ -68,12 +68,11 @@ void main() {
         float pupil_transmit = rhab_dynamic[rhab_idx].pupil_transmit;
         rcpt_color *= (pupil_transmit < 1e-6) ? 1.0 : pupil_transmit;    // 0 before the first dynamics pass
 
-        // Photon concentration: a narrower optical RF (optical narrowing only) funnels
-    // a point source's light into the waveguide more tightly.
-        float s = rhab_dynamic[rhab_idx].optical_scale;
-        if (s < 1e-6) s = 1.0;                       // before the first dynamics pass
+        // Photon concentration: a narrower RF (saccade narrowing only) funnels light into the waveguide
+        float saccade_scale = rhab_dynamic[rhab_idx].saccade_scale;
+        if (saccade_scale < 1e-6) saccade_scale = 1.0;   // 0 before first dynamics pass
 
-        float physical_gain = clamp(1.0 / (s * s), 1.0, 3.0);
+        float physical_gain = clamp(1.0 / (saccade_scale * saccade_scale), 1.0, 3.0);
         float concentration_gain = mix(1.0, physical_gain, photon_concentration_factor);    // mix between 1.0 (no boost) and physical gain
 
         // this is the physical radiance hitting the phototransduction machinery

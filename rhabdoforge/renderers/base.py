@@ -12,11 +12,14 @@ from pyglm import glm
 from pytinybvh import BVH
 
 from rhabdoforge.types import (
-    EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingTarget, to_enum, OMM_STATIC_DTYPE,
-    OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, RHAB_DYNAMIC_DTYPE
-    EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingTarget, ReadbackMode, to_enum, OMM_STATIC_DTYPE,
+    to_enum,
+    EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingTarget, ReadbackMode,
+    OMM_STATIC_DTYPE, OMM_DYNAMIC_DTYPE
 )
-from rhabdoforge.LUTs import gaussian_sensitivity_lut, waveguide_sensitivity_lut, invert_lut_cdf, LUT_SIZE, LUT_MODE_SLOTS
+from rhabdoforge.LUTs import (
+    LUT_SIZE, LUT_MODE_SLOTS, N_PUPIL_STEPS, N_SACCADE_STEPS,
+    gaussian_sensitivity_lut, waveguide_sensitivity_LUT, waveguide_modes_LUT, invert_lut_cdf
+)
 from rhabdoforge.engine.meshes import CONE_VERTICES, SPHERE_VERTICES
 from rhabdoforge.engine.resources import (
     ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry, TextureRegistry, HDRRenderTarget,
@@ -271,7 +274,7 @@ class Renderer:
 
         # SSBOs
         self.eye_buffers.allocate('rhab_static',
-                                  dtype=RHAB_STATIC_DTYPE,
+                                  dtype=self._model.buffer.rhabdomere_static.dtype,
                                   count=self._model.size,
                                   data=self._model.buffer.rhabdomere_static,
                                   usage=GL_STATIC_DRAW)
@@ -281,7 +284,7 @@ class Renderer:
                                   data=self._model.buffer.ommatidia_static,
                                   usage=GL_STATIC_DRAW)
         self.eye_buffers.allocate('rhab_dynamic',
-                                  dtype=RHAB_DYNAMIC_DTYPE,
+                                  dtype=self._model.buffer.rhabdomere_dynamic.dtype,
                                   count=self._model.size,
                                   data=self._model.buffer.rhabdomere_dynamic,
                                   usage=GL_DYNAMIC_DRAW)
@@ -296,13 +299,22 @@ class Renderer:
                                   usage=GL_DYNAMIC_DRAW)
         self.eye_buffers['ema_state'].reset()
 
-        sensitivity_iCDF_LUT = self._get_iCDF_LUT()
+        # Mode profiles appended to sensitivity_iCDF_LUTfor now # TODO: This can be split once the bindings are reorganised per program
+        mode_profiles, mode_hwhm = self._bake_mode_LUTs()
+        sensitivity_iCDF_LUT = np.concatenate([self._bake_sensitivity_LUT(), mode_profiles])
 
         self.eye_buffers.allocate('sensitivity_iCDF_LUT',
                                   dtype=np.float32,
                                   count=sensitivity_iCDF_LUT.size,
                                   data=sensitivity_iCDF_LUT,
                                   usage=GL_STATIC_DRAW)
+
+        self.eye_buffers.allocate('mode_hwhm',
+                                  dtype=np.float32,
+                                  count=mode_hwhm.size,
+                                  data=mode_hwhm,
+                                  usage=GL_STATIC_DRAW)
+
         self.eye_buffers.allocate('rays_intermediate',
                                   dtype=np.dtype((np.float32, 4)),
                                   count=rays_elements * self._samples_per_rhab,
@@ -396,7 +408,7 @@ class Renderer:
         dispatch_blocks = (
             len(self._baker.bvh_buffers)
             + len(self._baker.light_buffers)
-            + sum(1 for name in ('rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic')
+            + sum(1 for name in ('rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic',  'sensitivity_iCDF_LUT')
                   if name in self.eye_buffers)
         )
         if dispatch_blocks > self._max_compute_ssbo_blocks:
@@ -411,13 +423,14 @@ class Renderer:
         Tear down everything sized by or derived from the model
         """
 
-        # Compute shaders: dispatch + panoramic/perspective projection
-        self._invalidate_shaders()
-
-        # Reduction / dynamics compute shaders
-        for shader in (self.reduction_shader, self.dynamics_shader):
+        # Compute shaders
+        for shader in (self.dispatch_shader, self.reduction_shader, self.dynamics_shader, *self._projection_shaders.values()):
             if shader:
                 shader.free()
+
+        self._projection_shaders.clear()
+
+        self.dispatch_shader = None
         self.reduction_shader = None
         self.dynamics_shader = None
 
@@ -583,6 +596,7 @@ class Renderer:
         defines.update(self._baker.light_buffers.shader_defines)
 
         defines[self._sampling_strategy] = 1
+        defines['MAX_LP_MODES'] = self._model.max_modes
 
         for count, name in [
             (self._baker._nb_dir_lights, 'DIRECTIONAL'),
@@ -739,7 +753,7 @@ class Renderer:
 
         with self.dynamics_shader as shader:
 
-            with self.eye_buffers.grouped_bind(['rhab_static', 'omm_static', 'colors', 'ema_state', 'rhab_dynamic', 'omm_dynamic']):
+            with self.eye_buffers.grouped_bind(['rhab_static', 'omm_static', 'colors', 'ema_state', 'rhab_dynamic', 'omm_dynamic', 'mode_hwhm']):
 
                 self._eye_uniforms.apply(shader)
 
@@ -1489,7 +1503,7 @@ class Renderer:
         self._tiled_mode = bool(value)
         self._eye_uniforms.update(tiled_mode=self._tiled_mode)
 
-    def _get_iCDF_LUT(self) -> np.ndarray:
+    def _bake_sensitivity_LUT(self) -> np.ndarray:
 
         if self._sampling_strategy != 'SAMPLER_LUT':
             return np.zeros(1, dtype=np.float32)
@@ -1500,12 +1514,12 @@ class Renderer:
             bundle = self._model.bundle
 
             if bundle.focal_um is None:
-                return waveguide_sensitivity_lut([], [], 1.0)
+                return waveguide_sensitivity_LUT([], [], 1.0)
 
             apertures = np.asarray(self._model.buffer['aperture_um'], dtype=np.float64)
             f_number = float(bundle.focal_um / max(np.median(apertures), 1e-6))
 
-            curr_LUT = waveguide_sensitivity_lut(
+            curr_LUT = waveguide_sensitivity_LUT(
                 diameters_um=bundle.diameters_um,
                 wavelengths_um=np.asarray(bundle.wavelengths_nm, dtype=np.float64) * 1e-3,
                 f_number=f_number,
@@ -1523,6 +1537,35 @@ class Renderer:
 
         return np.concatenate([gaussian_ICDF_LUT, curr_iCDF_LUT])
 
+    def _bake_mode_LUTs(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Bakes per-mode profiles and HWHMs over a (pupil, saccade) grid.
+        """
+
+        bundle = self._model.bundle
+        max_modes = self._model.max_modes
+
+        n_slots = N_PUPIL_STEPS * N_SACCADE_STEPS * max_modes * LUT_MODE_SLOTS
+        fallback = (np.zeros(n_slots * LUT_SIZE, dtype=np.float32), np.ones(n_slots, dtype=np.float32))
+
+        if self._sampling_strategy != 'SAMPLER_LUT' or not self._model.has_waveguide_optics or bundle.focal_um is None:
+            return fallback
+
+        apertures = np.asarray(self._model.buffer['aperture_um'], dtype=np.float64)
+        f_number = float(bundle.focal_um / max(np.median(apertures), 1e-6))     # constant F#
+
+        return waveguide_modes_LUT(
+            diameters_um=bundle.diameters_um,
+            wavelengths_um=np.asarray(bundle.wavelengths_nm, dtype=np.float64) * 1e-3,
+            f_number=f_number,
+            n_rhabdomere=bundle.n_rhabdomere,
+            n_surround=bundle.n_surround,
+            rest_defocus_um=bundle.tip_defocus_um,
+            saccade_ampl_um=bundle.ampl_ax_um,
+            pupil_distance_um=bundle.pupil_distance_um,
+            focal_um=bundle.focal_um,
+            max_modes=max_modes,
+        )
 
     @property
     def sampling_target(self) -> 'SamplingTarget':
