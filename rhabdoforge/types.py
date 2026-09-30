@@ -69,6 +69,12 @@ class RandomnessMode(IntEnum):
     Sobol = 5       # Sobol sequence, Owen scrambling
 
 
+class ReadbackMode(IntEnum):
+    Wait = 0    # Blocks until the new gpu frame is ready
+    Zeros = 1   # Return zeros if new gpu frame isn't ready
+    Last = 2    # Return the last data if new gpu frame isn't ready
+
+
 class SamplingTarget(IntEnum):
     Gaussian = 0    # Closed-form importance sampling
     Waveguide = 1   # Per-rhabdomere LP mode sum

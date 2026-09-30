@@ -14,6 +14,7 @@ from pytinybvh import BVH
 from rhabdoforge.types import (
     EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingTarget, to_enum, OMM_STATIC_DTYPE,
     OMM_DYNAMIC_DTYPE, RHAB_STATIC_DTYPE, RHAB_DYNAMIC_DTYPE
+    EyeOutput, OmmatidiaProjection, OverlayColormap, DisplayMode, RandomnessMode, SamplingTarget, ReadbackMode, to_enum, OMM_STATIC_DTYPE,
 )
 from rhabdoforge.LUTs import gaussian_sensitivity_lut, waveguide_sensitivity_lut, invert_lut_cdf, LUT_SIZE, LUT_MODE_SLOTS
 from rhabdoforge.engine.meshes import CONE_VERTICES, SPHERE_VERTICES
@@ -76,6 +77,7 @@ class Renderer:
                  time_dithering: bool = True,
                  nb_samples: int = 256,
                  randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
+                 readback_mode: Union[int, str, ReadbackMode] = ReadbackMode.Wait,
                  custom_lut: Optional[ArrayLike] = None,
                  panoramic_resolution: Optional[Tuple[int, int]] = (1024, 512),
                  batch_size: int = 1,
@@ -116,6 +118,7 @@ class Renderer:
         self._samples_per_px: int = 1       # number of rays per pixel (third person visualisation only)
         self._noise_threshold = 0.05
         self._randomness_mode = to_enum(randomness_mode, RandomnessMode)
+        self.readback_mode = readback_mode
 
         if custom_lut is not None:
             self._custom_lut = np.asarray(custom_lut, dtype=np.float64)
@@ -768,7 +771,11 @@ class Renderer:
         next_pbo_index = (self._pbo_index + 1) % 2
         fence = self._fences[next_pbo_index]
 
-        if fence:
+        if (fence and self._readback_mode != ReadbackMode.Wait and glClientWaitSync(fence, 0, 0) == GL_TIMEOUT_EXPIRED):
+            out_array = (self._colours_cpu_buffer.copy() if self._readback_mode == ReadbackMode.Last
+                         else np.zeros_like(self._colours_cpu_buffer))
+
+        elif fence:
 
             with self.eye_buffers[f'pbo_{next_pbo_index}'].bind(mode_override=GL_PIXEL_PACK_BUFFER):
                 ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, bytes_to_read, GL_MAP_READ_BIT)
@@ -1632,6 +1639,15 @@ class Renderer:
     def time_dithering(self, value: bool) -> None:
         self._time_dithering = bool(value)
         print(f"Time dithering: {'Enabled' if self._time_dithering else 'Disabled'}.")
+
+    @property
+    def readback_mode(self) -> 'ReadbackMode':
+        """What step() returns when the previous frame isn't ready on the GPU yet."""
+        return self._readback_mode
+
+    @readback_mode.setter
+    def readback_mode(self, value: Union[int, str, ReadbackMode]) -> None:
+        self._readback_mode = to_enum(value, ReadbackMode)
 
     @property
     def randomness_mode(self) -> 'RandomnessMode':
