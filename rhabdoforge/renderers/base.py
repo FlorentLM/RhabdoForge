@@ -1009,16 +1009,21 @@ class Renderer:
         elif view_mode in (DisplayMode.Panoramic, DisplayMode.Perspective, DisplayMode.Third_person):
             n = 'panoramic' if view_mode == DisplayMode.Panoramic else 'perspective'
 
-            self._baker.update()
-            self._raytrace_thirdperson(n, point_of_view)
+
+            with self.context.profiler('bake'):
+                self._baker.update()
+
+            with self.context.profiler('rt_view', gpu=True):
+                self._raytrace_thirdperson(n, point_of_view)
 
             tex_id, _ = self._get_projection_texture(n)
 
-            self.screen_surface.display(
-                tex_id,
-                false_colors=self.false_colours,
-                uv_encoded_textures=self.uv_encoded_textures
-            )
+            with self.context.profiler('display'):
+                self.screen_surface.display(
+                    tex_id,
+                    false_colors=self.false_colours,
+                    uv_encoded_textures=self.uv_encoded_textures
+                )
 
         if view_mode == DisplayMode.Third_person:
             self._render_external_view(point_of_view)
@@ -1028,7 +1033,10 @@ class Renderer:
 
         self._hdr_surface.blit_depth_to(target_fbo)
 
-        self._tonemap_pass()
+        with self.context.profiler('tonemap'):
+            self._tonemap_pass()
+
+        self.context.profiler.tick()
 
     def step(self, dt: Optional[float] = None, readback: bool = True) -> Optional['VisualOutput']:
         """
@@ -1047,7 +1055,8 @@ class Renderer:
             raise RuntimeError('renderer.step() requires an attached Context.')
 
         # Sync any CPU-side changes to the eye model
-        self.sync_cpu()
+        with self.context.profiler('sync'):
+            self.sync_cpu()
 
         step_dt = dt if dt is not None else self._context.dt
 
@@ -1064,9 +1073,13 @@ class Renderer:
             dither_counter=self._dither_counter,
         )
 
-        self._dispatch()
-        self._reduction()
-        self._dynamics()
+
+        with self.context.profiler('dispatch', gpu=True):
+            self._dispatch()
+        with self.context.profiler('reduce', gpu=True):
+            self._reduction()
+        with self.context.profiler('dynamics', gpu=True):
+            self._dynamics()
 
         self._frame_index += 1
 
@@ -1075,7 +1088,8 @@ class Renderer:
         if readback:
             if self.runs_interactive or self._batch_size == 1:
                 # Interactive path: return previous frame via ping-pong PBO
-                out_array = self._readback_async()
+                with self.context.profiler('readback'):
+                    out_array = self._readback_async()
                 if out_array.size > 0:
                     out = VisualOutput(out_array, self._model)
                 self._frame_index = 0   # frame consumed, reset counter

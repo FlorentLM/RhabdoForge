@@ -17,6 +17,7 @@ from rhabdoforge.interactive.controls import Controls, ActionRegistry
 from rhabdoforge.interactive.hud import HUD
 from rhabdoforge.interactive.debug import DebugOverlay
 from rhabdoforge.interactive.dashboard import Dashboard
+from rhabdoforge.engine.profiler import Profiler, NoProfiler
 
 if TYPE_CHECKING:
     from rhabdoforge.renderers.base import Renderer
@@ -86,6 +87,7 @@ class Context:
         self._hud: Optional['HUD'] = None
         self._hud_state = 2     # 0: off, 1: info only (no hints), 2: full info
         self.dashboard: Optional['Dashboard'] = None
+        self.profiler = NoProfiler()
         self.debug: Optional['DebugOverlay'] = DebugOverlay() if debug_overlay else None
 
         # Timing states
@@ -478,7 +480,7 @@ class Context:
             ratio=self._viewport_size[0] / self._viewport_size[1],
         )
 
-    def run_interactive(self, renderer: Optional['Renderer'] = None, use_dashboard=False) -> bool:
+    def run_interactive(self, renderer: Optional['Renderer'] = None, use_dashboard: bool = False, use_profiler: bool = False) -> bool:
         """
         On first call, initialises and shows the window. Then reports whether the
         interactive loop should continue.
@@ -489,6 +491,9 @@ class Context:
             glfw.show_window(self.window)
 
             self.display_mode = DisplayMode.Compound
+
+            if use_profiler:
+                self.profiler = Profiler()
 
             if use_dashboard:
                 self.dashboard = Dashboard(self)
@@ -523,10 +528,13 @@ class Context:
 
         return True
 
-    def run_headless(self, steps: Optional[int] = None, reset_timers: bool = False) -> Generator[float, None, None]:
+    def run_headless(self, steps: Optional[int] = None, reset_timers: bool = False, use_profiler: bool = False) -> Generator[float, None, None]:
         """Generator for a headless loop (ticks the clock and returns dt)."""
         if reset_timers:
             self.reset_timers()
+
+        if use_profiler:
+            self.profiler = Profiler()
 
         # Anchor wall clock right before the first tick
         self._last_wall_time = glfw.get_time()
@@ -601,6 +609,7 @@ class Context:
             self.hud.free()
         if self.dashboard:
             self.dashboard.free()
+        self.profiler.free()
         if self._renderer:
             self._renderer.free()
 
