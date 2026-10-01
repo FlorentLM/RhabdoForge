@@ -208,7 +208,14 @@ class ShaderProgram:
             geom_path: Optional[Union[str, Path]] = None,
             comp_path: Optional[Union[str, Path]] = None,
             defines: Optional[Union[Set[str], Dict[str, Any]]] = None,
+            buffers: Optional[Sequence[str]] = None,
         ):
+
+        self.bindings: Dict[str, int] = {name: i for i, name in enumerate(buffers or ())}
+
+        if self.bindings:
+            defines = {d: '' for d in defines} if not isinstance(defines, dict) and defines else dict(defines or {})
+            defines.update({f'BINDING_{name.upper()}': slot for name, slot in self.bindings.items()})
 
         compiler = ShaderCompiler(defines=defines)
 
@@ -274,6 +281,19 @@ class ShaderProgram:
         """
         return self.locations.get(name, -1)
 
+    @contextmanager
+    def bind_buffers(self, *registries: 'BufferRegistry'):
+        """
+        Binds buffer forr a program.
+        """
+        with ExitStack() as stack:
+            for registry in registries:
+                for name, buf in registry.items():
+                    slot = self.bindings.get(name)
+                    if slot is not None:
+                        stack.enter_context(buf.bind(binding=slot))
+            yield
+
     def free(self):
         """
         Delete the shader program.
@@ -282,28 +302,17 @@ class ShaderProgram:
 
 ##
 
-TEX_UNITS_FIXED = 4  # units 0-3 match the shader's layout(binding): sky, then one per material tier
+TEX_UNITS_FIXED = 5  # units 0-4 match the shaders' layout(binding): sky, one per material tier, mode LUT
+TEX_UNIT_MODE_LUT = 4
 
 
 class GPUResourceManager:
     """
-    Manages global bindings and texture units to prevent overlapping when combining registries.
+    Manages texture units to prevent overlapping when combining registries.
     """
     def __init__(self):
-        self._next_ssbo = 0
-        self._free_ssbo: List[int] = []
         self._next_texture = TEX_UNITS_FIXED
         self._free_texture: List[int] = []
-
-    def next_ssbo(self) -> int:
-        if self._free_ssbo:
-            return self._free_ssbo.pop()
-        val = self._next_ssbo
-        self._next_ssbo += 1
-        return val
-
-    def release_ssbo(self, binding: int) -> None:
-        self._free_ssbo.append(binding)
 
     def next_texture(self) -> int:
         if self._free_texture:
@@ -314,11 +323,6 @@ class GPUResourceManager:
 
     def release_texture(self, unit: int) -> None:
         self._free_texture.append(unit)
-
-    @property
-    def ssbo_bindings_used(self) -> int:
-        """Highest SSBO/UBO binding index used so far."""
-        return self._next_ssbo
 
 
 class BufferObject:
@@ -341,7 +345,6 @@ class BufferObject:
             count: int,
             target: int = GL_SHADER_STORAGE_BUFFER,
             usage: int = GL_STATIC_DRAW,
-            binding: Optional[int] = None,
             supports_async: bool = False,
             _async_reader: Optional['Callable'] = None,
     ):
@@ -352,34 +355,33 @@ class BufferObject:
         self.count = count
         self.target = target
         self.usage = usage
-        self.binding = binding
         self._supports_async = supports_async
         self._async_reader = _async_reader
 
     def __repr__(self):
         sync_str = ' (async)' if self._supports_async else ''
-        binding_str = f' binding={self.binding}' if self.binding else ''
         return (
             f"<{self.BUFFER_TYPES.get(self.target, 'Unknown buffer')}{sync_str} "
             f'name={self.name!r} handle={self.handle} '
-            f'count={self.count} dtype={self.dtype}'
-            f'{binding_str}>'
+            f'count={self.count} dtype={self.dtype}>'
         )
 
     @contextmanager
-    def bind(self, mode_override: Optional[int] = None):
-        target = mode_override if mode_override is not None else self.target
+    def bind(self, binding: Optional[int] = None, mode_override: Optional[int] = None):
 
-        if self.binding is not None and mode_override is None:
-            glBindBufferBase(target, self.binding, self.handle)
+        target = mode_override if mode_override is not None else self.target
+        indexed = binding is not None and mode_override is None
+
+        if indexed:
+            glBindBufferBase(target, binding, self.handle)
         else:
             glBindBuffer(target, self.handle)
 
         try:
             yield self
         finally:
-            if self.binding is not None and mode_override is None:
-                glBindBufferBase(target, self.binding, 0)
+            if indexed:
+                glBindBufferBase(target, binding, 0)
             else:
                 glBindBuffer(target, 0)
 
@@ -475,9 +477,8 @@ class BufferObject:
 
 class BufferRegistry:
 
-    def __init__(self, resource_manager: Optional[GPUResourceManager] = None):
+    def __init__(self):
         self._buffers: Dict[str, BufferObject] = {}
-        self._rm = resource_manager
 
     def __getitem__(self, name: str) -> BufferObject:
         if name not in self._buffers:
@@ -505,10 +506,6 @@ class BufferRegistry:
 
     def values(self):
         return self._buffers.values()
-
-    @property
-    def shader_defines(self) -> Dict[str, Any]:
-        return {f"BINDING_{b.name.upper()}": b.binding for b in self._buffers.values() if b.binding is not None}
 
     def allocate(self,
             name: str,
@@ -539,10 +536,6 @@ class BufferRegistry:
 
         glBindBuffer(target, 0)
 
-        binding = None
-        if target in (GL_SHADER_STORAGE_BUFFER, GL_UNIFORM_BUFFER) and self._rm:
-            binding = self._rm.next_ssbo()
-
         buf = BufferObject(
             name=name,
             handle=handle,
@@ -550,7 +543,6 @@ class BufferRegistry:
             count=actual_count,
             target=target,
             usage=usage,
-            binding=binding,
             supports_async=supports_async,
             _async_reader=_async_reader
         )
@@ -562,27 +554,9 @@ class BufferRegistry:
 
         return buf
 
-    @contextmanager
-    def grouped_bind(self, names: Optional[Union[str, Sequence[str]]] = None):
-        """
-        Binds a group of buffers.
-        """
-        if names is None:
-            names =  self._buffers.keys()
-        elif isinstance(names, str):
-            names = [names]
-
-        with ExitStack() as stack:
-            for name in names:
-                if name in self._buffers:
-                    stack.enter_context(self._buffers[name].bind())
-            yield
-
     def free(self):
         for buf in self._buffers.values():
             buf.free()
-            if buf.binding is not None and self._rm:
-                self._rm.release_ssbo(buf.binding)
         self._buffers.clear()
 
 
@@ -628,24 +602,49 @@ class TextureRegistry:
                 stack.enter_context(tex.bind())
             yield
 
-    def allocate_2d(self, name: str, width: int, height: int, image_data=None, repeat=False, dtype=float) -> TextureObject:
+    def allocate_2d(self,
+            name: str,
+            width: int,
+            height: int,
+            image_data=None,
+            repeat=False,
+            dtype=float,
+            channels: int = 4,
+            nearest: bool = False,
+            unit: Optional[int] = None  # default to the next free one
+        ) -> TextureObject:
+        """
+        2D texture: float32 (1 or 4 channels) or sRGB8 RGBA (with dtype=int)
+        """
+
+        max_size = glGetIntegerv(GL_MAX_TEXTURE_SIZE)
+        if width > max_size or height > max_size:
+            raise ValueError(f"Texture '{name}' is {width}x{height}, but this GPU's max texture size is {max_size}.")
+
+        if dtype == float:
+            bitdepth, fmt, typ = (GL_R32F, GL_RED, GL_FLOAT) if channels == 1 else (GL_RGBA32F, GL_RGBA, GL_FLOAT)
+        else:
+            bitdepth, fmt, typ = GL_SRGB_ALPHA, GL_RGBA, GL_UNSIGNED_BYTE
+
+        if isinstance(image_data, np.ndarray):
+            image_data = np.ascontiguousarray(image_data, dtype=np.float32 if dtype == float else np.uint8)
+
+        wrap = GL_REPEAT if repeat else GL_CLAMP_TO_EDGE
+        filt = GL_NEAREST if nearest else GL_LINEAR
+
         tex_id = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, tex_id)
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT if repeat else GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT if repeat else GL_CLAMP_TO_EDGE)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filt)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filt)
 
-        if dtype == float:
-            bitdepth, typ = GL_RGBA32F, GL_FLOAT
-        else:
-            bitdepth, typ = GL_SRGB_ALPHA, GL_UNSIGNED_BYTE
-
-        glTexImage2D(GL_TEXTURE_2D, 0, bitdepth, width, height, 0, GL_RGBA, typ, image_data)
+        glTexImage2D(GL_TEXTURE_2D, 0, bitdepth, width, height, 0, fmt, typ, image_data)
         glBindTexture(GL_TEXTURE_2D, 0)
 
-        unit = self._rm.next_texture() if self._rm else 0
+        if unit is None:
+            unit = self._rm.next_texture() if self._rm else 0
         tex = TextureObject(name, tex_id, GL_TEXTURE_2D, unit)
         self._textures[name] = tex
         return tex

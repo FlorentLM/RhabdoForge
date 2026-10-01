@@ -23,7 +23,7 @@ from rhabdoforge.LUTs import (
 from rhabdoforge.engine.meshes import CONE_VERTICES, SPHERE_VERTICES
 from rhabdoforge.engine.resources import (
     ShaderProgram, GPUResourceManager, BufferRegistry, UniformRegistry, TextureRegistry, HDRRenderTarget,
-    TextureViewer, StaticRenderTarget
+    TextureViewer, StaticRenderTarget, TEX_UNIT_MODE_LUT
 )
 from rhabdoforge.engine.materials_utils import constant_sh
 from rhabdoforge.renderers.baking import SceneBaker
@@ -38,6 +38,12 @@ if TYPE_CHECKING:
 
 
 WORKGROUPS_DYNAMICS = 64
+
+# Eye SSBOs
+DISPATCH_BUFFERS = ('rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic', 'sensitivity_iCDF_LUT')
+REDUCTION_BUFFERS = ('rays_intermediate', 'rhab_static', 'colors', 'ema_state', 'rhab_dynamic')
+DYNAMICS_BUFFERS = ('rhab_static', 'omm_static', 'ema_state', 'rhab_dynamic', 'omm_dynamic', 'mode_hwhm')
+EYEMESH_BUFFERS = ('rhab_static', 'omm_static', 'rhab_dynamic', 'omm_dynamic', 'colors')
 
 
 def query_available_VRAM() -> int:
@@ -156,7 +162,6 @@ class Renderer:
 
         # Get workable memory sizes
         self._max_ssbo_bytes = glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE)
-        self._max_ssbo_bindings = glGetIntegerv(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS)
         self._max_compute_ssbo_blocks = glGetIntegerv(GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS)
         self._batch_size, self._samples_per_rhab = self._safe_samples_lim(
             batch_size, nb_samples, prioritize_batch=True
@@ -170,8 +175,9 @@ class Renderer:
         self._lights_uniforms = UniformRegistry()
         self._scene_uniforms = UniformRegistry()
 
-        self.eye_buffers: 'BufferRegistry' = BufferRegistry(self._resource_manager)
+        self.eye_buffers: 'BufferRegistry' = BufferRegistry()
         self._projection_textures: 'TextureRegistry' = TextureRegistry(self._resource_manager)
+        self._eye_textures: 'TextureRegistry' = TextureRegistry(self._resource_manager)
 
         # Store local attributes to sync with uniforms
 
@@ -299,9 +305,16 @@ class Renderer:
                                   usage=GL_DYNAMIC_DRAW)
         self.eye_buffers['ema_state'].reset()
 
-        # Mode profiles appended to sensitivity_iCDF_LUTfor now # TODO: This can be split once the bindings are reorganised per program
         mode_profiles, mode_hwhm = self._bake_mode_LUTs()
-        sensitivity_iCDF_LUT = np.concatenate([self._bake_sensitivity_LUT(), mode_profiles])
+        sensitivity_iCDF_LUT = self._bake_sensitivity_LUT()
+
+        self._eye_textures.allocate_2d('mode_profiles',
+                                       width=mode_profiles.shape[1],
+                                       height=mode_profiles.shape[0],
+                                       image_data=mode_profiles,
+                                       channels=1,
+                                       nearest=True,
+                                       unit=TEX_UNIT_MODE_LUT)
 
         self.eye_buffers.allocate('sensitivity_iCDF_LUT',
                                   dtype=np.float32,
@@ -330,9 +343,9 @@ class Renderer:
 
         # All buffers allocated (baker ones + eye_buffers ones): Compile the main shaders
         self._current_defines = self._collect_defines()
-        self.dispatch_shader = ShaderProgram(comp_path='shaders/dispatch.comp', defines=self._current_defines)
-        self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp', defines=self._current_defines)
-        self.dynamics_shader = ShaderProgram(comp_path='shaders/dynamics.comp', defines=self._current_defines)
+        self.dispatch_shader = self._compile_dispatch_shader()
+        self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp', defines=self._current_defines, buffers=REDUCTION_BUFFERS)
+        self.dynamics_shader = ShaderProgram(comp_path='shaders/dynamics.comp', defines=self._current_defines, buffers=DYNAMICS_BUFFERS)
 
         # Tracking of PBOs state
         self._pbo_index = 0
@@ -394,29 +407,23 @@ class Renderer:
             aperture_follow=float(self._model.bundle.aperture_follow),
         )
 
-        self._ssbo_binding_limits()
+    def _dispatch_buffers(self) -> List[str]:
+        return [*self._baker.bvh_buffers.keys(), *self._baker.light_buffers.keys(), *DISPATCH_BUFFERS]
 
-    def _ssbo_binding_limits(self) -> None:
+    def _scene_buffers(self) -> List[str]:
+        return [*self._baker.bvh_buffers.keys(), *self._baker.light_buffers.keys()]
 
-        total_bindings = self._resource_manager.ssbo_bindings_used
-        if total_bindings > self._max_ssbo_bindings:
-            raise RuntimeError(
-                f'{total_bindings} SSBO/UBO bindings allocated, exceeding this GPU\'s '
-                f'GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS ({self._max_ssbo_bindings}).'
-            )
+    def _compile_dispatch_shader(self) -> 'ShaderProgram':
+        dispatch_blocks = len(self._dispatch_buffers())
 
-        dispatch_blocks = (
-            len(self._baker.bvh_buffers)
-            + len(self._baker.light_buffers)
-            + sum(1 for name in ('rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic',  'sensitivity_iCDF_LUT')
-                  if name in self.eye_buffers)
-        )
         if dispatch_blocks > self._max_compute_ssbo_blocks:
             raise RuntimeError(
                 f'dispatch.comp would declare {dispatch_blocks} SSBO blocks, exceeding this '
-                f'GPU\'s GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS ({self._max_compute_ssbo_blocks}). '
+                f"GPU's GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS ({self._max_compute_ssbo_blocks}). "
                 'Reducing the number of simultaneous light types might help...'
             )
+
+        return ShaderProgram(comp_path='shaders/dispatch.comp', defines=self._current_defines, buffers=self._dispatch_buffers())
 
     def _free_model_resources(self) -> None:
         """
@@ -454,6 +461,8 @@ class Renderer:
             shader.free()
         self._eyemesh_shaders.clear()
 
+        self._eye_textures.free()
+
         # All per-ommatidium / per-rhabdomere SSBOs + PBOs and the lazy overlay / eye mesh VBOs that share the registry
         self.eye_buffers.free()
 
@@ -488,10 +497,10 @@ class Renderer:
         self._current_defines = self._collect_defines()
 
         self.dispatch_shader.free()
-        self.dispatch_shader = ShaderProgram(comp_path='shaders/dispatch.comp', defines=self._current_defines)
+        self.dispatch_shader = self._compile_dispatch_shader()
 
         self.reduction_shader.free()
-        self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp', defines=self._current_defines)
+        self.reduction_shader = ShaderProgram(comp_path='shaders/reduction.comp', defines=self._current_defines, buffers=REDUCTION_BUFFERS)
 
         for s in self._projection_shaders.values():
             s.free()
@@ -540,15 +549,18 @@ class Renderer:
 
         if key not in self._eyemesh_shaders:
             prefix = 'subjective' if view_type == 'subjective' else 'external'
-            defines = self.eye_buffers.shader_defines.copy()
+            defines = {}
+            buffers = list(EYEMESH_BUFFERS)
 
             if overlay:
                 defines['OVERLAY_MODE'] = 1
+                buffers.append('overlay')
 
             self._eyemesh_shaders[key] = ShaderProgram(
                 vert_path=f'{prefix}.vert',
                 frag_path=f'{prefix}.frag',
-                defines=defines
+                defines=defines,
+                buffers=buffers
             )
 
         return self._eyemesh_shaders[key]
@@ -566,7 +578,7 @@ class Renderer:
 
 
             defines = {**self._current_defines, 'USE_LOD': 1} # USE_LOD enables LOD estimate. Voluntarily not used for ommatidia dispatch shader
-            self._projection_shaders[proj_name] = ShaderProgram(comp_path=shader_path, defines=defines)
+            self._projection_shaders[proj_name] = ShaderProgram(comp_path=shader_path, defines=defines, buffers=self._scene_buffers())
 
         return self._projection_shaders[proj_name]
 
@@ -590,10 +602,6 @@ class Renderer:
         """
 
         defines = {}
-
-        defines.update(self.eye_buffers.shader_defines)
-        defines.update(self._baker.bvh_buffers.shader_defines)
-        defines.update(self._baker.light_buffers.shader_defines)
 
         defines[self._sampling_strategy] = 1
         defines['MAX_LP_MODES'] = self._model.max_modes
@@ -719,9 +727,9 @@ class Renderer:
 
         with self.dispatch_shader as shader:
 
-            with b.grouped_bind(), l.grouped_bind(), e.grouped_bind(['rays_intermediate', 'rhab_static', 'omm_static', 'rhab_dynamic', 'sensitivity_iCDF_LUT']):
+            with shader.bind_buffers(b, l, e):
 
-                with self._baker.scene_textures.bind_all():
+                with self._baker.scene_textures.bind_all(), self._eye_textures.bind_all():
 
                     current_view = self.agent.view
                     if current_view != self._last_view_matrix:
@@ -740,8 +748,7 @@ class Renderer:
     def _reduction(self) -> None:
 
         with self.reduction_shader as shader:
-            with self.eye_buffers.grouped_bind(
-                    ['rays_intermediate', 'rhab_static', 'colors', 'ema_state', 'rhab_dynamic']):
+            with shader.bind_buffers(self.eye_buffers):
                 self._eye_uniforms.apply(shader)
 
                 rays_elements = self._model.N if self._model.bundle.fused_rhabdoms else self._model.size
@@ -753,7 +760,7 @@ class Renderer:
 
         with self.dynamics_shader as shader:
 
-            with self.eye_buffers.grouped_bind(['rhab_static', 'omm_static', 'colors', 'ema_state', 'rhab_dynamic', 'omm_dynamic', 'mode_hwhm']):
+            with shader.bind_buffers(self.eye_buffers):
 
                 self._eye_uniforms.apply(shader)
 
@@ -846,11 +853,7 @@ class Renderer:
 
             self._eye_uniforms.apply(shader)
 
-            to_bind = ['rhab_static', 'omm_static', 'rhab_dynamic', 'omm_dynamic', 'colors']
-            if self.overlay_enabled:
-                to_bind.append('overlay')
-
-            with self.eye_buffers.grouped_bind(to_bind):
+            with shader.bind_buffers(self.eye_buffers):
                 nb_units = self._model.size if self.output_mode == EyeOutput.Raw else self._model.N
 
                 vao, vertex_count = self._get_eyemesh_vao('cone')
@@ -880,11 +883,7 @@ class Renderer:
 
             self._eye_uniforms.apply(shader)
 
-            to_bind = ['rhab_static', 'omm_static', 'rhab_dynamic', 'omm_dynamic', 'colors']
-            if self.overlay_enabled:
-                to_bind.append('overlay')
-
-            with self.eye_buffers.grouped_bind(to_bind):
+            with shader.bind_buffers(self.eye_buffers):
                 nb_units = self._model.size if self.output_mode == EyeOutput.Raw else self._model.N
 
                 shape = 'hemisphere' if self.projection_mode == OmmatidiaProjection.Position else 'cone'
@@ -909,7 +908,7 @@ class Renderer:
         with self._get_projection_shader(view_name) as shader:
             glBindImageTexture(0, tex_id, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F)
 
-            with b.grouped_bind(), l.grouped_bind():
+            with shader.bind_buffers(b, l):
                 with self._baker.scene_textures.bind_all():
 
                     current_view = pov.view
@@ -1356,8 +1355,6 @@ class Renderer:
             area_lights_count=self._baker._nb_area_lights,
         )
 
-        self._ssbo_binding_limits()
-
     @property
     def context(self) -> Optional['Context']:
         """The Context this renderer is attached to."""
@@ -1539,14 +1536,17 @@ class Renderer:
 
     def _bake_mode_LUTs(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Bakes per-mode profiles and HWHMs over a (pupil, saccade) grid.
+        Bakes per-mode profiles (rows: saccade step, mode, rhab type, columns: radius) and HWHMs
+        (over pupil x saccade grid)
+         Profiles are pupil-independent so only that axis' dark slice is kept
         """
 
         bundle = self._model.bundle
         max_modes = self._model.max_modes
 
         n_slots = N_PUPIL_STEPS * N_SACCADE_STEPS * max_modes * LUT_MODE_SLOTS
-        fallback = (np.zeros(n_slots * LUT_SIZE, dtype=np.float32), np.ones(n_slots, dtype=np.float32))
+        n_rows = N_SACCADE_STEPS * max_modes * LUT_MODE_SLOTS
+        fallback = (np.zeros((n_rows, LUT_SIZE), dtype=np.float32), np.ones(n_slots, dtype=np.float32))
 
         if self._sampling_strategy != 'SAMPLER_LUT' or not self._model.has_waveguide_optics or bundle.focal_um is None:
             return fallback
@@ -1554,7 +1554,7 @@ class Renderer:
         apertures = np.asarray(self._model.buffer['aperture_um'], dtype=np.float64)
         f_number = float(bundle.focal_um / max(np.median(apertures), 1e-6))     # constant F#
 
-        return waveguide_modes_LUT(
+        profiles, mode_hwhm = waveguide_modes_LUT(
             diameters_um=bundle.diameters_um,
             wavelengths_um=np.asarray(bundle.wavelengths_nm, dtype=np.float64) * 1e-3,
             f_number=f_number,
@@ -1566,6 +1566,8 @@ class Renderer:
             focal_um=bundle.focal_um,
             max_modes=max_modes,
         )
+
+        return profiles[:n_rows * LUT_SIZE].reshape(n_rows, LUT_SIZE), mode_hwhm
 
     @property
     def sampling_target(self) -> 'SamplingTarget':

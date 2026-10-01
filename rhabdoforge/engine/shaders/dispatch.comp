@@ -6,6 +6,7 @@
 #include "traceSimple.glsl"
 #endif
 
+#include "sampling.glsl"
 
 #ifndef SAMPLE_GROUP_SIZE
 #define SAMPLE_GROUP_SIZE 256

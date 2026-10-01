@@ -33,8 +33,8 @@ class SceneBaker:
 
         self.resource_manager: 'GPUResourceManager' = resource_manager
 
-        self.bvh_buffers: 'BufferRegistry' = BufferRegistry(self.resource_manager)
-        self.light_buffers: 'BufferRegistry' = BufferRegistry(self.resource_manager)
+        self.bvh_buffers: 'BufferRegistry' = BufferRegistry()
+        self.light_buffers: 'BufferRegistry' = BufferRegistry()
         self.scene_textures: 'TextureRegistry' = TextureRegistry(self.resource_manager)
 
         self._nb_dir_lights: int = 0
