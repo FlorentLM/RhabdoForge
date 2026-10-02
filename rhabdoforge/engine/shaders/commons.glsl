@@ -85,7 +85,7 @@ struct RhabdomereStatic {
     float diameter_um;
     uint  metadata;
     float closed_pupil_ratio;      // D rho (light-adapted) / D rho (dark), <= 1 (narrower)
-    float closed_pupil_transmit;   // Peak sensitivity ratio, <= 1 (dimmer)
+    float closed_pupil_transmit[3];   // Peak sensitivity ratio per (R, G, B) channel, <= 1 (dimmer)
     float saccade_ratio_dark;   // D rho (full saccade) / D rho (rest), dark-adapted
     float saccade_ratio_lit;    // D rho (full saccade) / D rho (rest), light-adapted
     float lateral_clipping;     // 1.0 if this rhabdomere type clips against the lens/aperture (R1-6), 0.0 if not (R7/8) // TODO: improve that maybe
@@ -94,7 +94,7 @@ struct RhabdomereStatic {
     float mode_weight[MAX_LP_MODES];        // Each mode's power fraction at rest/dark (sums to 1)
     float mode_pupil_ratio[MAX_LP_MODES];   // Each mode's power ratio: light-adapted / dark-adapted
     float rad_per_hwhm;                     // (unit is dimensionless mode half-width)
-#if (MAX_LP_MODES % 2) == 0
+#if (MAX_LP_MODES % 2) == 1
     float _pad[2];
 #endif
 }; // size: depends on MAX_LP_MODES
@@ -105,15 +105,15 @@ struct RhabdomereDynamic {
     float curr_adaptation;
     vec2  curr_acc_angles;
     float saccade_scale;    // RF narrowing from the saccade only (no pupil/clip) for photon concentration
-    float pupil_transmit;
+    float pupil_transmit[3];    // per (R, G, B) channel
 
     float curr_mode_weight[MAX_LP_MODES]; // Current per-mode mixture proba (sum to 1)
     float curr_mode_angle[MAX_LP_MODES];  // Current (actuated) per-mode acceptance angle (rad)
     float curr_saccade_frac;           // Saccade fraction (0 -> 1)
 #if (MAX_LP_MODES % 2) == 0
-    float _pad[3];
-#else
     float _pad;
+#else
+    float _pad[3];
 #endif
 }; // size: depends on MAX_LP_MODES
 

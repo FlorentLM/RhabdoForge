@@ -35,6 +35,7 @@ from rhabdoforge.compound_eyes.helpers.acceptance import (
 )
 from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance, solve_per_lens
 from rhabdoforge.compound_eyes.helpers.alignment import BundlesAligner
+from rhabdoforge.compound_eyes.helpers.spectral import RGB_NM
 from rhabdoforge.compound_eyes.views import SpatialQueries, BaseView, OmmatidiumView, EyeView, RhabdomereView
 
 if TYPE_CHECKING:
@@ -237,6 +238,7 @@ class Model(SpatialQueries, BaseView):
         self._buf['rest_acc_angles'] = acceptance_angles
         self._buf['curr_acc_angles'] = acceptance_angles
 
+        self._channel_nm = np.asarray(RGB_NM, dtype=np.float64)
         self._compute_pupil_response()
         self._compute_axial_response()
         self._bake_modes()
@@ -1081,12 +1083,28 @@ class Model(SpatialQueries, BaseView):
 
         return acceptance_angles
 
+    def set_channel_wavelengths(self, channel_nm: Optional[ArrayLike]) -> None:
+        """
+        Set the wavelengths (nm) corresponding to each of the (R, G, B) channel and re-bake the pupil transmittance.
+        None: uses per-receptor peak wavelengths.
+        """
+        if channel_nm is not None:
+            channel_nm = np.asarray(channel_nm, dtype=np.float64).reshape(-1)
+            if channel_nm.size != 3:
+                raise ValueError(f'channel_nm must have 3 values (R, G, B), got {channel_nm.size}')
+
+        self._channel_nm = channel_nm
+        self._compute_pupil_response()
+
     def _compute_pupil_response(self) -> None:
         """
         Bake in the effect of closing the pupil to distance h (um) for each rhabdomere
         (how much RF narrows and how much sensitivity decreases)
 
         Only used for waveguide acceptance models. Left at 1.0 otherwise (no effect).
+
+        The RF narrowing is solved at each receptor's wavelength.
+        The sensitivity drop is baked per (R, G, B) channel at the channel wavelengths.
         """
         self._buf['closed_pupil_ratio'] = 1.0
         self._buf['closed_pupil_transmit'] = 1.0
@@ -1101,7 +1119,9 @@ class Model(SpatialQueries, BaseView):
         optics = self._rhab_optics()
 
         ratio = np.ones((self._N, self._R), dtype=np.float32)
-        transmit = np.ones((self._N, self._R), dtype=np.float32)
+        transmit = np.ones((self._N, self._R, 3), dtype=np.float32)
+
+        ch_lam_um = None if self._channel_nm is None else self._channel_nm * 1e-3
 
         for r in range(self._R):
 
@@ -1120,7 +1140,22 @@ class Model(SpatialQueries, BaseView):
             lit_peak = solve_per_lens('peak_power', h_um=h, **common)
 
             ratio[:, r] = lit_hwhm / dark_hwhm
-            transmit[:, r] = lit_peak / np.maximum(dark_peak, 1e-300)
+            transmit[:, r, :] = (lit_peak / np.maximum(dark_peak, 1e-300))[:, None]
+
+            if ch_lam_um is None:
+                continue
+
+            # V-number and phase term at each channel's wavelength
+            for c in range(3):
+                lam = float(ch_lam_um[c])
+                ch = dict(common,
+                          wavelength_um=lam,
+                          v_number=float(np.pi * optics.diameter_um[r] / lam * optics.numerical_aperture[r]))
+
+                ch_dark = solve_per_lens('peak_power', h_um=np.inf, **ch)
+                ch_lit = solve_per_lens('peak_power', h_um=h, **ch)
+
+                transmit[:, r, c] = ch_lit / np.maximum(ch_dark, 1e-300)
 
         self._buf['closed_pupil_ratio'] = ratio
         self._buf['closed_pupil_transmit'] = transmit

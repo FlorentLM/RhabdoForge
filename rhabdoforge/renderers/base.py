@@ -8,6 +8,7 @@ from pathlib import Path
 import random
 import numpy as np
 from numpy.typing import ArrayLike
+from rhabdoforge.compound_eyes.helpers.spectral import RGB_NM
 from pyglm import glm
 from pytinybvh import BVH
 
@@ -88,6 +89,7 @@ class Renderer:
                  randomness_mode: Union[int, str, RandomnessMode] = RandomnessMode.Pseudo,
                  readback_mode: Union[int, str, ReadbackMode] = ReadbackMode.Wait,
                  custom_lut: Optional[ArrayLike] = None,
+                 channel_wavelengths_nm: Optional[ArrayLike] = RGB_NM,
                  panoramic_resolution: Optional[Tuple[int, int]] = (1024, 512),
                  batch_size: int = 1,
                  track_history: bool = False,
@@ -112,6 +114,9 @@ class Renderer:
         # Compound eyes model and agent
         self._model: 'Model' = model
         self.agent: 'Agent' = agent
+
+        # this needs to be baked before the GPU upload
+        self._model.set_channel_wavelengths(channel_wavelengths_nm)
 
         self._context.renderer = self
 

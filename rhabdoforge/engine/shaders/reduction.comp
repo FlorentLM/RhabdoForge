@@ -65,8 +65,11 @@ void main() {
         vec3 rcpt_color = total_color * rhab_static[rhab_idx].sensitivity;
 
         // The pupil narrows the RF by absorbing the boundary wave, so it costs sensitivity
-        float pupil_transmit = rhab_dynamic[rhab_idx].pupil_transmit;
-        rcpt_color *= (pupil_transmit < 1e-6) ? 1.0 : pupil_transmit;    // 0 before the first dynamics pass
+
+        for (int c = 0; c < 3; ++c) {
+            float pupil_transmit = rhab_dynamic[rhab_idx].pupil_transmit[c];
+            rcpt_color[c] *= (pupil_transmit < 1e-6) ? 1.0 : pupil_transmit;    // 0 before the first dynamics pass
+        }
 
         // Photon concentration: a narrower RF (saccade narrowing only) funnels light into the waveguide
         float saccade_scale = rhab_dynamic[rhab_idx].saccade_scale;

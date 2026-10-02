@@ -243,7 +243,7 @@ def rhab_static_dtype(max_modes: int = 1) -> np.dtype:
 
         # baked microsaccade response (waveguide acceptance models only)
         ('closed_pupil_ratio',     np.float32),  # Δρ (light-adapted) / Δρ (dark), <= 1 (narrower)
-        ('closed_pupil_transmit',  np.float32),  # peak sensitivity ratio, <= 1 (dimmer)
+        ('closed_pupil_transmit',  np.float32, 3),  # peak sensitivity ratio per (R, G, B) channel, <= 1 (dimmer)
         ('saccade_ratio_dark',     np.float32),  # Δρ (full saccade) / Δρ (rest), dark-adapted
         ('saccade_ratio_lit',      np.float32),  # Δρ (full saccade) / Δρ (rest), light-adapted
         ('lateral_clipping',       np.float32),  # 1.0 if this rhabdomere type clips laterally (R1-6), 0.0 if not (R7/8)
@@ -261,7 +261,7 @@ def rhab_dynamic_dtype(max_modes: int = 1) -> np.dtype:
         ('curr_adaptation', np.float32),        #  4 bytes: current adaptation state
         ('curr_acc_angles', np.float32, 2),     #  8 bytes: current (actuated) acceptance angles (rad)
         ('saccade_scale',   np.float32),        #  4 bytes: saccade optical RF-narrowing factor Δρ_eff/Δρ_rest
-        ('pupil_transmit',  np.float32),        #  4 bytes: current pupil transmittance (<= 1, read as a radiance multiplier)
+        ('pupil_transmit',  np.float32, 3),     # 12 bytes: current pupil transmittance per (R, G, B) channel (<= 1, radiance multiplier)
 
         # LP modes mixture importance sampling
         ('curr_mode_weight',  np.float32, max_modes),   # Current per-mode mixture probabilities (sum to 1)

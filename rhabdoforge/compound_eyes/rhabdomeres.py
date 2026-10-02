@@ -5,6 +5,7 @@ from numpy.typing import ArrayLike
 
 from rhabdoforge.utils import broadcast_1d
 from rhabdoforge.compound_eyes.helpers.acceptance import N_RHABDOMERE_FLY, N_SURROUND_FLY
+from rhabdoforge.compound_eyes.helpers.spectral import RGB_NM, opsin_sensitivity
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -546,9 +547,18 @@ class RhabdomereBundle:
 def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
     """Reference Drosophila melanogaster bundle."""
 
-    # R1-R6 panchromatic, R7/8 strong UV bias
+    wavelengths = [480.0, 480.0, 480.0, 480.0, 480.0, 480.0, 350.0]
+
+    # Opsin template sampled at the RGB channel wavelengths (this should be kept in sync with the renderer's channel_wavelengths_nm)
+
+    # Temporary: dev UV textures are encoded as red, so the UV peak (R7/8) is placed in the red channel
+    # peaks = list(wavelengths)
+    # peaks[6] = RGB_NM[0]
+    # sensitivity = opsin_sensitivity(peaks, RGB_NM)
+
+    # R1-R6 panchromatic, R7/8 from the template
     sensitivity = np.ones((7, 3), dtype=np.float32)
-    # sensitivity[6] = [1.0, 0.2, 0.6]      # using human colours for now
+    sensitivity[6] = opsin_sensitivity(RGB_NM[0], RGB_NM)[0]
 
     return RhabdomereBundle(
         name=name,
@@ -566,7 +576,7 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
         diameters_um=np.array([1.97776759, 1.66796322, 1.63865270, 1.66139302, 1.73640129, 1.92751097, 1.29170464]),
 
         # R1-6 are Rh1 (lambda_max ~480 nm), the merged R7/8 slot is UV-biased (Rh3/Rh4)
-        wavelengths_nm=[480.0, 480.0, 480.0, 480.0, 480.0, 480.0, 350.0],
+        wavelengths_nm=wavelengths,
 
         sensitivity=sensitivity,
         focal_um=20.6,              # Object focal length = posterior nodal distance (Stavenga 2003b, Appendix 1)

@@ -192,7 +192,9 @@ void main() {
         // Photon concentration reads the saccade-induced optical narrowing only
         // light (opposite sign), and clipping is not optical at all
         rhab_dynamic[rhab_idx].saccade_scale = saccade_scale;
-        rhab_dynamic[rhab_idx].pupil_transmit = mix(1.0, rs.closed_pupil_transmit, steady_state_drive);
+        for (int c = 0; c < 3; ++c) {
+            rhab_dynamic[rhab_idx].pupil_transmit[c] = mix(1.0, rs.closed_pupil_transmit[c], steady_state_drive);
+        }
 
         // LP modes mixture importance sampling: pupil re-weights which mode gets sampled
         uint rhab_type = unpack_rhab_type(rs.metadata);
