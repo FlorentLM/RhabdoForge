@@ -29,6 +29,10 @@ class RhabdomereBundle:
             rhabdomere boundary when fully light-adapted (μm). Only used by waveguide models.
             0.0 is the mathematical extreme (and probably unrealistic), ~0.2 reproduces the ~6x sensitivity
             drop Stavenga 2004 reports for Musca.
+        - ref_aperture_um: float (optional), Aperture (μm) of the reference lens that focal_um, tip_distance_um
+            and focal_plane_um are defined for. Sets the bundle's F-number (focal_um / ref_aperture_um), and the
+            lattice's lenses are then scaled to it (focal = F-number * aperture, tip defocus scales with focal length).
+            None: the reference lens is the lattice's median lens.
         - tip_distance_um: float (optional), Distance from the lens' rear surface to the rhabdomere
             tip at rest (μm). The tip normally sits short of the focal plane, and contraction moves
             it towards focus. Construction-time only. Defaults to focal_um.
@@ -74,6 +78,7 @@ class RhabdomereBundle:
                  offsets_um: ArrayLike = ((0.0, 0.0),),
                  diameters_um: Union[float, ArrayLike] = 2.0,
                  focal_um: Optional[float] = 20.0,
+                 ref_aperture_um: Optional[float] = None,
                  tip_distance_um: Optional[float] = None,
                  focal_plane_um: Optional[float] = None,
                  pupil_distance_um: float = 0.2,
@@ -101,6 +106,7 @@ class RhabdomereBundle:
 
         self.name = str(name)
         self.focal_um = float(focal_um) if focal_um is not None else None
+        self.ref_aperture_um = float(ref_aperture_um) if ref_aperture_um is not None else None
 
         # Resting tip position, should be short of the focal plane
         if tip_distance_um is not None:
@@ -580,6 +586,7 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
 
         sensitivity=sensitivity,
         focal_um=20.6,              # Object focal length = posterior nodal distance (Stavenga 2003b, Appendix 1)
+        ref_aperture_um=16.0,       # Lens aperture those distances refer to (F = 1.288)
         tip_distance_um=17.0,       # Resting tip-to-lens distance (Kemppainen 2022, Table S6)
         focal_plane_um=21.33,       # same frame (Kemppainen 2022: 'dzc=17, f at dz=21.33')
         tau_membrane=0.005,

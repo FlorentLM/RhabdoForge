@@ -73,6 +73,7 @@ class RhabdomereOptics:
     n_rhabdomere: Optional[np.ndarray] = None   # rhabdomere interior refractive index
     n_surround: Optional[np.ndarray] = None     # surrounding medium refractive index
     defocus_um: float = 0.0                     # rhabdomere tip's (signed) distance from the image focal plane
+    ref_focal_um: Optional[float] = None        # focal length that defocus_um is defined for (scales with each lens' focal length)
 
     def __post_init__(self):
         for name, default in (('n_rhabdomere', N_RHABDOMERE_FLY), ('n_surround', N_SURROUND_FLY)):

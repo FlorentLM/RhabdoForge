@@ -62,7 +62,7 @@ SWEEP_AMPLITUDE = 1.0               # m (travel is +/- this)
 # Forced steady_state_drive per pupil adaptation state
 PUPIL_STATES = {'dark-adapted': 0.0, 'halfway': 0.5, 'light-adapted': 1.0}
 
-CLIP_RATIO = 0.55
+CLIP_RATIO = 0.85
 
 bundle = drosophila_bundle()
 

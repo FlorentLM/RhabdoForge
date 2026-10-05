@@ -187,16 +187,17 @@ class Model(SpatialQueries, BaseView):
 
         if self._bundle.focal_um is not None:
 
-            # Scale bundle-provided focal length by the relative size of each lens
-            median_aperture = np.median(self._buf['aperture_um'])
-            f_number = self._bundle.focal_um / max(median_aperture, 1e-6)
-            f_per_lens = f_number * self._buf['aperture_um']
+            # The bundle's focal length comes from its reference lens ref_aperture_um (or the median lens)
+            # then all lenses get this F-number
+            self._ref_aperture_um = self._bundle.ref_aperture_um or float(np.median(self._buf['aperture_um']))
+            f_per_lens = self.f_number * self._buf['aperture_um']
 
             # Prevent absurdly small/zero focal lengths on degenerate edge lenses
             focal_um = np.where(f_per_lens > 1e-3, f_per_lens, self._bundle.focal_um)
         else:
             # Fallback: Assume diurnal apposition eye with F-number ~= 2.0,  f = D * F#
             logger.debug('Rhabdomere bundle focal_um is None. Assuming F-number = 2.0 for fallback focal lengths.')
+            self._ref_aperture_um = None
             focal_um = self._buf['aperture_um'] * 2.0
 
         self._buf['focal_um'] = focal_um
@@ -1065,6 +1066,7 @@ class Model(SpatialQueries, BaseView):
             n_rhabdomere=np.atleast_1d(self._bundle.n_rhabdomere).astype(np.float32),
             n_surround=np.atleast_1d(self._bundle.n_surround).astype(np.float32),
             defocus_um=self._bundle.tip_defocus_um,
+            ref_focal_um=self._bundle.focal_um,
         )
 
     def _compute_acceptance(self, acceptance_model: 'AcceptanceModel') -> np.ndarray:
@@ -1132,6 +1134,7 @@ class Model(SpatialQueries, BaseView):
                 diameter_um=float(optics.diameter_um[r]),
                 wavelength_um=float(optics.wavelength_um[r]),
                 defocus_um=optics.defocus_um,
+                ref_focal_um=optics.ref_focal_um,
             )
 
             dark_hwhm = solve_per_lens('d_half', h_um=np.inf, **common)
@@ -1200,15 +1203,15 @@ class Model(SpatialQueries, BaseView):
                 wavelength_um=float(optics.wavelength_um[r]),
             )
 
-            dark_hwhm = solve_per_lens('d_half', h_um=np.inf, defocus_um=optics.defocus_um, **common)
+            dark_hwhm = solve_per_lens('d_half', h_um=np.inf, defocus_um=optics.defocus_um, ref_focal_um=optics.ref_focal_um, **common)
 
             dark_peaks = np.stack([
-                solve_per_lens('mode_peak', h_um=np.inf, defocus_um=optics.defocus_um, mode=m, **common)
+                solve_per_lens('mode_peak', h_um=np.inf, defocus_um=optics.defocus_um, ref_focal_um=optics.ref_focal_um, mode=m, **common)
                 for m in range(M)
             ], axis=-1)
 
             dark_hwhms = np.stack([
-                solve_per_lens('mode_hwhm', h_um=np.inf, defocus_um=optics.defocus_um, mode=m, **common)
+                solve_per_lens('mode_hwhm', h_um=np.inf, defocus_um=optics.defocus_um, ref_focal_um=optics.ref_focal_um, mode=m, **common)
                 for m in range(M)
             ], axis=-1)
 
@@ -1218,7 +1221,7 @@ class Model(SpatialQueries, BaseView):
 
             if h is not None and np.isfinite(h):
                 lit_peaks = np.stack([
-                    solve_per_lens('mode_peak', h_um=h, defocus_um=optics.defocus_um, mode=m, **common)
+                    solve_per_lens('mode_peak', h_um=h, defocus_um=optics.defocus_um, ref_focal_um=optics.ref_focal_um, mode=m, **common)
                     for m in range(M)
                 ], axis=-1)
                 pupil_ratio[:, r, :] = lit_peaks / np.maximum(dark_peaks, 1e-300)
@@ -1269,13 +1272,13 @@ class Model(SpatialQueries, BaseView):
                     wavelength_um=float(optics.wavelength_um[r]),
                 )
 
-                rest_dark = solve_per_lens(attr='d_half', h_um=np.inf, defocus_um=optics.defocus_um, **common)
-                moved_dark = solve_per_lens(attr='d_half', h_um=np.inf, defocus_um=optics.defocus_um + ampl, **common)
+                rest_dark = solve_per_lens(attr='d_half', h_um=np.inf, defocus_um=optics.defocus_um, ref_focal_um=optics.ref_focal_um, **common)
+                moved_dark = solve_per_lens(attr='d_half', h_um=np.inf, defocus_um=optics.defocus_um, ref_focal_um=optics.ref_focal_um, shift_um=ampl, **common)
 
                 floor_dark[:, r] = moved_dark / np.maximum(rest_dark, 1e-12)
 
-                rest_lit = solve_per_lens(attr='d_half', h_um=h_lit, defocus_um=optics.defocus_um, **common)
-                moved_lit = solve_per_lens(attr='d_half', h_um=h_lit, defocus_um=optics.defocus_um + ampl, **common)
+                rest_lit = solve_per_lens(attr='d_half', h_um=h_lit, defocus_um=optics.defocus_um, ref_focal_um=optics.ref_focal_um, **common)
+                moved_lit = solve_per_lens(attr='d_half', h_um=h_lit, defocus_um=optics.defocus_um, ref_focal_um=optics.ref_focal_um, shift_um=ampl, **common)
                 floor_lit[:, r] = moved_lit / np.maximum(rest_lit, 1e-12)
 
             self._buf['saccade_ratio_dark'] = floor_dark
@@ -1340,6 +1343,18 @@ class Model(SpatialQueries, BaseView):
         return self
 
     # Advanced properties
+
+    @property
+    def ref_aperture_um(self) -> Optional[float]:
+        """Aperture of the reference lens the bundle's optics are defined for."""
+        return self._ref_aperture_um
+
+    @property
+    def f_number(self) -> Optional[float]:
+        """F-number shared by every lens (bundle focal length / reference aperture)."""
+        if self._bundle.focal_um is None or self._ref_aperture_um is None:
+            return None
+        return self._bundle.focal_um / max(self._ref_aperture_um, 1e-6)
 
     @property
     def lens_packing(self) -> float:

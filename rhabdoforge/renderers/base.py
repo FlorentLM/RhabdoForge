@@ -1518,8 +1518,7 @@ class Renderer:
             if bundle.focal_um is None:
                 return waveguide_sensitivity_LUT([], [], 1.0)
 
-            apertures = np.asarray(self._model.buffer['aperture_um'], dtype=np.float64)
-            f_number = float(bundle.focal_um / max(np.median(apertures), 1e-6))
+            f_number = float(self._model.f_number)
 
             curr_LUT = waveguide_sensitivity_LUT(
                 diameters_um=bundle.diameters_um,
@@ -1556,8 +1555,7 @@ class Renderer:
         if self._sampling_strategy != 'SAMPLER_LUT' or not self._model.has_waveguide_optics or bundle.focal_um is None:
             return fallback
 
-        apertures = np.asarray(self._model.buffer['aperture_um'], dtype=np.float64)
-        f_number = float(bundle.focal_um / max(np.median(apertures), 1e-6))     # constant F#
+        f_number = float(self._model.f_number)     # constant F#
 
         profiles, mode_hwhm = waveguide_modes_LUT(
             diameters_um=bundle.diameters_um,

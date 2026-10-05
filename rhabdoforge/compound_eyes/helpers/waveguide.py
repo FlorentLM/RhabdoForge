@@ -488,6 +488,8 @@ def solve_per_lens(
         wavelength_um: float,
         h_um: float = np.inf,
         defocus_um: float = 0.0,
+        ref_focal_um: Optional[float] = None,
+        shift_um: float = 0.0,
         mode: Optional[int] = None
     ) -> np.ndarray:
     """
@@ -495,13 +497,15 @@ def solve_per_lens(
 
     Solving per lens is way too slow, so solve on a grid spanning the (F-number, focal length)
     values the eye has and interpolate.
+
     """
     fn_grid = _interp_grid(f_number)
     f_grid = _interp_grid(focal_um)
 
     table = np.array([
-        [_solve_scalar(attr, v_number, float(fn), diameter_um, wavelength_um,
-                       h_um, defocus_um, float(fl), mode)
+        [_solve_scalar(attr, v_number, float(fn), diameter_um, wavelength_um, h_um,
+                       defocus_um * (float(fl) / ref_focal_um if ref_focal_um else 1.0) + shift_um,
+                       float(fl), mode)
          for fl in f_grid]
         for fn in fn_grid
     ])
@@ -535,6 +539,7 @@ class WaveguideAcceptance:
         wavelengths = np.asarray(rhab_optics.wavelength_um, dtype=np.float64)
 
         defocus = float(rhab_optics.defocus_um)
+        ref_focal = rhab_optics.ref_focal_um
 
         rho = np.empty((f.size, d_rhab.size), dtype=np.float32)
 
@@ -545,7 +550,7 @@ class WaveguideAcceptance:
                                     v_number=float(v_number[r]),
                                     diameter_um=d_val,
                                     wavelength_um=float(wavelengths[r]),
-                                    defocus_um=defocus)
+                                    defocus_um=defocus, ref_focal_um=ref_focal)
 
             rho[:, r] = to_angle(d_half, d_val, f)
 
