@@ -6,13 +6,12 @@ from rhabdoforge.compound_eyes.rhabdomeres import drosophila_bundle, honeybee_bu
 from rhabdoforge.compound_eyes.helpers.waveguide import WaveguideAcceptance
 from rhabdoforge.renderers import Renderer
 from rhabdoforge.interactive.debug import DebugBox, AxesGizmo
-from rhabdoforge.renderers.helpers import VisualOutput
-from rhabdoforge.types import RandomnessMode, SamplingMode
+from rhabdoforge.types import RandomnessMode
 
 
 if __name__ == "__main__":
 
-    SAMPLES_PER_RHABDOMERE = 64
+    SAMPLES_PER_RHABDOMERE = 32
     HEADLESS = False
     BATCH_SIZE = 1000
     SHOW_DEBUG_OBJECTS = False
