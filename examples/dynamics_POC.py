@@ -24,7 +24,7 @@ Figure layout:
     A: Schematic placeholder (stimulus, sweep, cartridge)
     B: Pupil state (rows) x condition (cols), mirrored UP/DOWN pooled R1-R6 profiles
     C: Per-rhabdomere decomposition for one exemplar condition
-    D: Scalar summaries: dip depth and UP/DOWN shape divergence
+    D: UP/DOWN centre-of-mass offset of the profile, relative to the 'none' condition
 """
 import numpy as np
 import matplotlib.pyplot as plt
@@ -525,6 +525,13 @@ def updown_shape_divergence(grid, up, down):
     return float(np.mean(np.abs(a - b)) / span)
 
 
+def updown_shift_deg(res, cond):
+    """UP minus DOWN centre-of-mass offset (deg) of the pooled profile, before centring."""
+    gu, up = trace(res, cond, +1, 'pool')
+    gd, dn = trace(res, cond, -1, 'pool')
+    return float(to_deg(profile_centre(gu, up)) - to_deg(profile_centre(gd, dn)))
+
+
 # Figure
 
 def _cell_stats(results, pupil_state, cond):
@@ -543,6 +550,7 @@ def _cell_stats(results, pupil_state, cond):
 
     return {
         'asym': updown_shape_divergence(gu, up, dn),
+        'shift': abs(updown_shift_deg(res2, cond) - updown_shift_deg(res2, 'none')),
         'dip_up': d_up,
         'dip_dn': d_dn,
         'dip': 0.5 * (d_up + d_dn),
@@ -751,8 +759,8 @@ def make_figure(results, s: PlotSettings) -> plt.Figure:
 
     # D: Direction dependence scalar summary
     axD = fig.add_subplot(gsCD[1])
-    _summary_bars(axD, s, stats, cond_names, 'asym',
-                  'Direction dependence', 'UP/DOWN shape $\\Delta$')
+    _summary_bars(axD, s, stats, cond_names, 'shift',
+                  'Direction dependence', 'UP/DOWN offset (deg)')
     axD.set_ylim(0, None)
     axD.yaxis.set_major_locator(MaxNLocator(nbins=4))
 

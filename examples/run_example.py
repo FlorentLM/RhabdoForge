@@ -36,17 +36,18 @@ if __name__ == "__main__":
     seville = Asset.from_file(name='seville', file_path='assets/seville_filtered.ply')
     scene.add_instance(seville)
 
+    # # Or a gltf scene from Sketchfab: https://sketchfab.com/3d-models/realistic-grass-pack-for-games-free-9b958d613e9a44dbba580748e7a1789c
+    # scene.load('C:/Users/flolm/Downloads/plants_scene_free/scene.gltf')
 
-    # Create a mesh asset from raw vertex and index data
-    cube_positions, cube_uvs = np.split(CUBE_VERTICES.reshape(-1, 5), [3], axis=1)
-    cube_faces = CUBE_INDICES.reshape(-1, 3)
-    crate = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='assets/textures/wood.jpg', sRGB=False)
+    # # Create a mesh asset from raw vertex and index data
+    # cube_positions, cube_uvs = np.split(CUBE_VERTICES.reshape(-1, 5), [3], axis=1)
+    # cube_faces = CUBE_INDICES.reshape(-1, 3)
+    # crate = Asset.from_arrays(name='crate', vertices=cube_positions, faces=cube_faces, uv_coords=cube_uvs, texture='assets/textures/wood.jpg', sRGB=False)
 
-
-    # Add multiple instances of the same asset
-    # crate_instance_1 = scene.add_instance(asset=crate, transform=(-3.0, 0.0, 0.0))
-    # crate_instance_2 = scene.add_instance(asset=crate, transform=(3.0, 0.0, 0.0))
-    # crate_instance_3 = scene.add_instance(asset=crate, transform=(0.0, 0.0, 2.0), dynamic=True)  # this one can move
+    # # Add multiple instances of the same asset
+    # crate_instance_1 = scene.add_instance(asset=crate, transform=(-3.0, 0.0, 4.0))
+    # crate_instance_2 = scene.add_instance(asset=crate, transform=(3.0, 0.0, 4.0))
+    # crate_instance_3 = scene.add_instance(asset=crate, transform=(0.0, 0.0, 6.0), dynamic=True)  # this one can move
 
 
     # Setup compound eyes model
@@ -76,11 +77,12 @@ if __name__ == "__main__":
     # model.tau_membrane = 0.012
 
     # Setup the agent
-    agent = Agent(position=(0.0, 0.0, 4.0))
+    agent = Agent(position=(0.0, 0.0, 0.0))
 
     # Setup the renderer
     renderer = Renderer(
         model=model, scene=scene, agent=agent,
+        max_bounces=0,      # changing this enables Path Tracing
         nb_samples=SAMPLES_PER_RHABDOMERE,
         time_dithering=True,
         randomness_mode=RandomnessMode.Halton,
@@ -130,7 +132,7 @@ if __name__ == "__main__":
 
     if not HEADLESS:
         # Interactive mode
-        while context.run_interactive(use_dashboard=False):
+        while context.run_interactive(use_dashboard=True):
 
             context.input()  # processes inputs from keyboard / gamepad etc (optional)
 
