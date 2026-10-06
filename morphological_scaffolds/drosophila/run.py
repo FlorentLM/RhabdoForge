@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from svg.path import parse_path, Line, Close
 
 from rhabdoforge.geometry.spherical import (
-    sphere_to_stereo, stereo_to_sphere, EllipsoidCurvature, LinearGradient, position_from_curvature
+    sphere_to_stereo, stereo_to_sphere, EllipsoidCurvature, LinearGradient, position_from_curvature, surface_from_normals
 )
 from rhabdoforge.compound_eyes.model import Model
 from rhabdoforge.lattice_fitting.relaxation import mirror_bilateral
@@ -252,6 +252,13 @@ if __name__ == "__main__":
     GRADIENT_AXIS = (0.0, -1.0, -1.0)
     GRADIENT_SLOPE = 0.08   # I dont have a real number for this :(
 
+    # Büchner directions are the surface normals and facets have the prescribed size
+    # (local radius of curvature = spacing / IOA)
+    SURFACE = 'normals'
+    FACET_UM = 17.0        # Median lens aperture (Gonzalez-Bellido et al. 2011)
+    LENS_PACKING = 0.9     # aperture / spacing (the Model's default)
+    ANCHOR = 0.02          # pull towards the ellipsoid, relative to the facet constraints
+
     svg_file = 'morphological_scaffolds/drosophila/data/buchner1971_redigitised.svg'
 
     L_dirs = reconstruct_buchner_data(svg_file, show_plots=SHOW_PLOTS)
@@ -277,6 +284,27 @@ if __name__ == "__main__":
     rx, ry, rz = (HW - FW) / 2.0 * EYE_SCALE, EL / 2.0 * EYE_SCALE, ED / 2.0 * EYE_SCALE
     curvature = LinearGradient(base=EllipsoidCurvature(rx, ry, rz), axis=GRADIENT_AXIS, slope=GRADIENT_SLOPE)
     L_positions = position_from_curvature(lattice_dirs, curvature)
+
+    if SURFACE == 'normals':
+        # TODO: Integrate this better
+
+        from scipy.spatial import Delaunay
+
+        # Neighbour edges: Delaunay in the stereographic plane except long edges across the boundary
+        tri = Delaunay(lattice2d)
+        pairs = np.unique(np.sort(np.concatenate([tri.simplices[:, [0, 1]], tri.simplices[:, [1, 2]],
+                                                  tri.simplices[:, [2, 0]]]), axis=1), axis=0)
+        ang = np.arccos(np.clip(np.einsum('ek,ek->e', lattice_dirs[pairs[:, 0]], lattice_dirs[pairs[:, 1]]), -1, 1))
+        pairs = pairs[ang < 1.5 * np.median(ang)]
+
+        # Facet size: gradient along the Buffry axis, normalised to the median
+        axis = np.asarray(GRADIENT_AXIS) / np.linalg.norm(GRADIENT_AXIS)
+        mid = lattice_dirs[pairs[:, 0]] + lattice_dirs[pairs[:, 1]]
+        mid /= np.linalg.norm(mid, axis=1, keepdims=True)
+        size = 1.0 + GRADIENT_SLOPE * (mid @ axis)
+        spacing = FACET_UM / LENS_PACKING * size / np.median(size)
+
+        L_positions = surface_from_normals(lattice_dirs, pairs, spacing, L_positions, anchor=ANCHOR)
 
     # Align medial edge, then mirror across X=0 to build the right eye
     shift_x = -FW / 2.0 - np.max(L_positions[:, 0])

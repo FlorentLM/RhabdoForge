@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Tuple, Optional, Sequence, Protocol
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.optimize import least_squares
+from scipy.sparse import coo_matrix
 
 from rhabdoforge.utils import norm_l2
 from rhabdoforge.geometry.linalg import tangent_frames, local_to_world, project_to_tangent
@@ -227,6 +229,65 @@ class LinearGradient:
         return self.base(directions) * (1.0 + self.slope * proj)
 
 # TODO: 2D gradient
+
+def surface_from_normals(
+        normals: ArrayLike,
+        edges: ArrayLike,
+        spacing: ArrayLike,
+        init: ArrayLike,
+        anchor: float = 0.02,
+    ) -> np.ndarray:
+    """
+    Lens positions on a surface whose normals are the optical axes: local radius of curvature is spacing / IOA.
+
+    Args:
+        - normals: (N, 3) unit optical axes
+        - edges: (E, 2) neighbour index pairs
+        - spacing: (E,) target distance for each edge (μm)
+        - init: (N, 3) initial positions (μm)
+        - anchor: weight of the pull towards 'init' (relative to the edge terms)
+    """
+
+    n = norm_l2(np.asarray(normals, dtype=np.float64))
+    edges = np.asarray(edges, dtype=np.intp)
+    spacing = np.asarray(spacing, dtype=np.float64)
+    p0 = np.asarray(init, dtype=np.float64)
+
+    N, E = len(p0), len(edges)
+    i, j = edges[:, 0], edges[:, 1]
+
+    mean_n = norm_l2(n[i] + n[j])
+    scale = spacing.mean()
+
+    def residuals(x):
+        p = x.reshape(N, 3)
+        d = p[j] - p[i]
+        length = np.linalg.norm(d, axis=1)
+        return np.concatenate([
+            (length - spacing) / spacing,
+            np.einsum('ek,ek->e', d, mean_n) / spacing,
+            anchor * ((p - p0) / scale).ravel(),
+        ])
+
+    rows = []
+    cols = []
+
+    e_idx = np.arange(E)
+    for k in range(3):
+        for a in (i, j):
+            rows += [e_idx, E + e_idx]
+            cols += [3 * a + k, 3 * a + k]
+
+    rows.append(2 * E + np.arange(3 * N))
+    cols.append(np.arange(3 * N))
+
+    sparsity = coo_matrix((np.ones(sum(len(r) for r in rows)), (np.concatenate(rows), np.concatenate(cols))),
+                          shape=(2 * E + 3 * N, 3 * N))
+
+    sol = least_squares(residuals, p0.ravel(), jac_sparsity=sparsity, method='trf', tr_solver='lsmr', x_scale='jac')
+
+    return sol.x.reshape(N, 3)
+
 
 def position_from_curvature(directions: ArrayLike, curvature: 'CurvatureModel') -> np.ndarray:
     """Places each direction at its local eye radius (µm) from a CurvatureModel."""
