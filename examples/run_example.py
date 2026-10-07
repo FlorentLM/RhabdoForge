@@ -59,7 +59,6 @@ if __name__ == "__main__":
             scaffold_file,
             bundle=drosophila_bundle(),
             acceptance=WaveguideAcceptance(),
-            neural_superposition=True,
         )
 
     else:
@@ -68,7 +67,6 @@ if __name__ == "__main__":
         model = Model.from_file(
             scaffold_file,
             bundle=honeybee_bundle(),
-            neural_superposition=False,
         )
 
     model.scale(1e-6)   # model constructs in micrometers

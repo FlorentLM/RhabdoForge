@@ -88,7 +88,7 @@ struct RhabdomereStatic {
     float closed_pupil_transmit[3];   // Peak sensitivity ratio per (R, G, B) channel, <= 1 (dimmer)
     float saccade_ratio_dark;   // D rho (full saccade) / D rho (rest), dark-adapted
     float saccade_ratio_lit;    // D rho (full saccade) / D rho (rest), light-adapted
-    float lateral_clipping;     // 1.0 if this rhabdomere type clips against the lens/aperture (R1-6), 0.0 if not (R7/8) // TODO: improve that maybe
+    float lateral_clipping;     // Clipping weight against the lens/aperture, scales with the offset from the bundle centre (0 on axis, 1 farthest)
 
     // LP modes mixture importance sampling
     float mode_weight[MAX_LP_MODES];        // Each mode's power fraction at rest/dark (sums to 1)

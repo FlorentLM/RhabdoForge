@@ -61,7 +61,11 @@ class RhabdomereBundle:
         - aperture_follow: float, Swing effect: fraction of the rhabdomere's lateral movement
             followed by the cone/pigment aperture. Only their relative offset vignettes, so
             1.0 never clips and 0.0 clips as if the aperture were fixed.
-        - center_index: int, Index of the central rhabdomere (e.g. R7/8 in Drosophila is index 6).
+        - center_index: int, Index of the central rhabdomere (e.g. R7/8 in Drosophila is index 6). It is the
+            geometric reference of the bundle, and can't be part of the superposed rhabdomeres.
+        - superposed_indices: array-like of int, optional. Rhabdomeres wired across ommatidia by neural superposition
+            (e.g. R1-R6 in Drosophila). All others stay with their own ommatidium. Empty or None
+            means no neural superposition for this bundle.
         - major_axis: float or (int, int), optional. Defines the bundle's major structural axis.
             If (int, int): indices of the two rhabdomeres whose line is the major axis.
             If float: the major-axis angle directly (deg, mod 180).
@@ -99,6 +103,7 @@ class RhabdomereBundle:
                  clip_ratio: float = 1.0,
                  aperture_follow: float = 0.5,
                  center_index: int = 0,
+                 superposed_indices: Optional[ArrayLike] = None,
                  major_axis: Union[float, Tuple[int, int], None] = None,
                  alignment_offset: float = 0.0,
                  saccade_offset: Union[float, Tuple[int, int], None] = None,
@@ -152,6 +157,16 @@ class RhabdomereBundle:
         # Validation
         if not (0 <= self.center_index < R):
             raise ValueError(f'center_index={self.center_index} out of range for R={R}')
+
+        superposed = np.unique(np.asarray([] if superposed_indices is None else superposed_indices, dtype=np.intp).ravel())
+
+        if superposed.size and not (0 <= superposed[0] and superposed[-1] < R):
+            raise ValueError(f'superposed_indices={superposed.tolist()} out of range for R={R}')
+
+        if self.center_index in superposed:
+            raise ValueError(f'center_index={self.center_index} cannot be in superposed_indices')
+
+        self._superposed_indices = superposed
 
         # Major axis: None (auto longest) | float (angle deg, mod 180) | (int, int) rhabdomere indices.
         if major_axis is None:
@@ -291,9 +306,25 @@ class RhabdomereBundle:
         return np.arange(self.count, dtype=np.intp)
 
     @property
+    def superposed_indices(self) -> np.ndarray:
+        """Indices of rhabdomeres wired across ommatidia by neural superposition."""
+        return self._superposed_indices
+
+    @property
+    def has_superposition(self) -> bool:
+        """Whether this bundle is wired by neural superposition."""
+        return self._superposed_indices.size > 0
+
+    @property
+    def unpooled_indices(self) -> np.ndarray:
+        """Indices of rhabdomeres that stay with their own ommatidium."""
+        return np.setdiff1d(self.indices, self._superposed_indices)
+
+    @property
     def peripheral_indices(self) -> np.ndarray:
-        """Indices of peripheral rhabdomeres (all except the central one)."""
-        return np.array([i for i in self.indices if i != self.center_index])
+        """Alias to superposed_indices"""
+        return self._superposed_indices
+    # TODO: Can remove this alias eventually
 
     # Axes / alignment
 
@@ -550,8 +581,14 @@ class RhabdomereBundle:
 # Built-in bundle: Drosophila melanogaster
 # (values inspired from Kemppainen et al., 2022)
 
-def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
-    """Reference Drosophila melanogaster bundle."""
+def drosophila_bundle(name: str = 'Drosophila', split_r78: bool = False) -> RhabdomereBundle:
+    """
+    Reference Drosophila melanogaster bundle.
+
+    By default R7 and R8 are merged in a single central slot (R7/8, UV-biased). With `split_r78=True` they are
+    two separate slots (R7 and R8) stacked on the optical axis. In both cases R1-6 are wired by neural superposition.
+    The R8 peak (Rh5, ~437 nm) is a placeholder.
+    """
 
     wavelengths = [480.0, 480.0, 480.0, 480.0, 480.0, 480.0, 350.0]
 
@@ -566,20 +603,30 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
     sensitivity = np.ones((7, 3), dtype=np.float32)
     sensitivity[6] = opsin_sensitivity(RGB_NM[0], RGB_NM)[0]
 
+    offsets = [
+        [-1.6881,  1.0273],   # R1
+        [-1.8046, -0.9934],   # R2
+        [-1.7111, -2.9717],   # R3
+        [-0.0025, -1.9261],   # R4
+        [ 1.6690, -0.9493],   # R5
+        [ 1.6567,  0.9762],   # R6
+        [ 0.0045, -0.0113],   # R7/8 (central)
+    ]
+
+    # Geometric means of minor and major axes obtained from redigitising Juusola et al. 2017' Appendix 5 Fig. 1
+    diameters = [1.97776759, 1.66796322, 1.63865270, 1.66139302, 1.73640129, 1.92751097, 1.29170464]
+
+    if split_r78:
+        # R8 sits right below R7 on the same axis: same position and size, its own opsin
+        offsets.append(offsets[6])
+        diameters.append(diameters[6])
+        wavelengths.append(437.0)
+        sensitivity = np.vstack([sensitivity, opsin_sensitivity(wavelengths[7], RGB_NM)])
+
     return RhabdomereBundle(
         name=name,
-        offsets_um=[
-            [-1.6881,  1.0273],   # R1
-            [-1.8046, -0.9934],   # R2
-            [-1.7111, -2.9717],   # R3
-            [-0.0025, -1.9261],   # R4
-            [ 1.6690, -0.9493],   # R5
-            [ 1.6567,  0.9762],   # R6
-            [ 0.0045, -0.0113],   # R7/8 (central)
-        ],
-
-        # Geometric means of minor and major axes obtained from redigitising Juusola et al. 2017' Appendix 5 Fig. 1
-        diameters_um=np.array([1.97776759, 1.66796322, 1.63865270, 1.66139302, 1.73640129, 1.92751097, 1.29170464]),
+        offsets_um=offsets,
+        diameters_um=np.array(diameters),
 
         # R1-6 are Rh1 (lambda_max ~480 nm), the merged R7/8 slot is UV-biased (Rh3/Rh4)
         wavelengths_nm=wavelengths,
@@ -599,6 +646,7 @@ def drosophila_bundle(name: str = 'Drosophila') -> RhabdomereBundle:
         ampl_lat_um=1.25,           # Average microsaccade move (Kemppainen 2022 suppl)
         ampl_ax_um=2.0,             # Axial move 17->19 μm (Kemppainen 2022, Table S6)
         center_index=6,
+        superposed_indices=range(6),
         major_axis=(2, 5),          # R3-R6 line
         alignment_offset=81.0,      # major axis sits ~81° (mod 180) off the flow reference
         saccade_offset=28.6,        # ~R1-R2-R3 line, offset from the major axis

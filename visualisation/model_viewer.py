@@ -1179,14 +1179,12 @@ if __name__ == "__main__":
     #     eye_radius=200.0,    # 200 µm
     #     bundle=drosophila_bundle(),
     #     orientation=aligner,
-    #     neural_superposition=True
     # )
 
     model = Model.from_file(
         'assets/drosophila_scaffold.npz',
         bundle=drosophila_bundle(),
         orientation=aligner,
-        neural_superposition=True,    # superposition eyes
     )
     # model.refine_superposition(smooth_iters=3, adjust_scale=True, adjust_anisotropy=True, rewire=True)
 
@@ -1205,7 +1203,6 @@ if __name__ == "__main__":
     #     'assets/honeybee_scaffold_s10.npz',
     #     bundle=honeybee_bundle(),
     #     orientation=aligner,
-    #     neural_superposition=False,     # Apposition eyes
     # )
 
     # ----------------------------------------------------------------------

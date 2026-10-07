@@ -65,7 +65,6 @@ if __name__ == '__main__':
         'assets/drosophila_scaffold.npz',
         bundle=drosophila_bundle(),
         acceptance=WaveguideAcceptance(),
-        neural_superposition=True,
     )
     model.scale(1e-6)
 

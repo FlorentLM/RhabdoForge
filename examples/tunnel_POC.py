@@ -296,7 +296,6 @@ def run_all_trials(cfg: Configuration) -> Results:
         'assets/honeybee_scaffold_s10.npz',
         bundle=honeybee_bundle(),
         orientation=aligner,
-        neural_superposition=False,     # Apposition eyes
     )
 
     model.scale(1e-6)

@@ -576,11 +576,10 @@ def wire_neural_superposition(
     N, R = model.shape
     cartridge_map = np.full((N, R), -1, dtype=np.intp)
 
-    if R == 1:
-        return cartridge_map, np.ones((N, 1), bool)
+    if not model.bundle.has_superposition:
+        return cartridge_map, np.ones((N, R), bool)
 
-    center = model.bundle.center_index
-    cartridge_map[:, center] = model.omm_indices
+    cartridge_map[:, model.bundle.unpooled_indices] = model.omm_indices[:, None]
 
     solver_context = _make_solver_context(
         model=model, angular_dev=angular_dev, assign_radius=assign_radius, scale_dev=scale_dev,

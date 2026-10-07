@@ -59,7 +59,6 @@ def load_wired_model(
         scaffold,
         bundle=drosophila_bundle(),
         orientation=aligner,
-        neural_superposition=False,      # False because it's wired just below with trace
     )
 
     wire_neural_superposition(model, apply=True, collect_trace=True)

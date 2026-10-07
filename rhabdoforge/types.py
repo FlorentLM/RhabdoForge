@@ -246,7 +246,7 @@ def rhab_static_dtype(max_modes: int = 1) -> np.dtype:
         ('closed_pupil_transmit',  np.float32, 3),  # peak sensitivity ratio per (R, G, B) channel, <= 1 (dimmer)
         ('saccade_ratio_dark',     np.float32),  # Δρ (full saccade) / Δρ (rest), dark-adapted
         ('saccade_ratio_lit',      np.float32),  # Δρ (full saccade) / Δρ (rest), light-adapted
-        ('lateral_clipping',       np.float32),  # 1.0 if this rhabdomere type clips laterally (R1-6), 0.0 if not (R7/8)
+        ('lateral_clipping',       np.float32),  # Lateral clipping weight, scales with the offset from the bundle centre (0 on axis, 1 farthest)
 
         # Mixture-of-modes importance sampling (SAMPLER_LUT + WaveguideAcceptance only)
         ('mode_weight',       np.float32, max_modes),  # Each mode's power fraction at rest/dark (sums to 1)

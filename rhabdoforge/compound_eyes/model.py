@@ -66,7 +66,6 @@ class Model(SpatialQueries, BaseView):
             chiralities: Optional[ArrayLike] = None,
             orientation: Optional['BundlesAligner'] = None,
             flow_direction: Optional[ArrayLike] = None,
-            neural_superposition: bool = False,
             lens_packing: float = 0.9,
         ):
 
@@ -270,7 +269,7 @@ class Model(SpatialQueries, BaseView):
         # ============ Neural superposition ============
         self._wiring_trace = None
 
-        if neural_superposition and self._R > 1:
+        if self._bundle.has_superposition:
             wire_neural_superposition(self, apply=True)
             # Note: self._conflicts_cache is initialised with apply=True,
             #  but it must be set to None by any thing that changes the bundles orientation
@@ -1242,10 +1241,10 @@ class Model(SpatialQueries, BaseView):
         self._buf['saccade_ratio_dark'] = 1.0
         self._buf['saccade_ratio_lit'] = 1.0
 
-        # R7/R8 sit almost on the optical axis: they don't move far enough laterally to clip
-        # TODO: This binary distinction is a bit shit
-        clip_enabled = np.ones(self._R, dtype=np.float32)
-        clip_enabled[self._bundle.center_index] = 0.0
+        # Clipping scales with the offset from the bundle centre: rhabdomeres near the axis don't move far enough laterally to clip
+        off = self._bundle.offsets_um
+        dist = np.linalg.norm(off - off[self._bundle.center_index], axis=1)
+        clip_enabled = (dist / max(dist.max(), 1e-9)).astype(np.float32)
         self._buf['lateral_clipping'] = np.broadcast_to(clip_enabled, (self._N, self._R))
 
         ampl = self._bundle.ampl_ax_um

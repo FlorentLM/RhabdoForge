@@ -143,7 +143,6 @@ def build_model():
         bundle=bundle,
         acceptance=WaveguideAcceptance(),
         orientation=aligner,
-        neural_superposition=True,
     )
 
     model.refine_superposition(smooth_iters=5, relax=0.8, adjust_scale=True, adjust_anisotropy=True, rewire=True)
