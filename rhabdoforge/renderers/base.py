@@ -219,7 +219,7 @@ class Renderer:
         # Other visualisation state and parameters stuff
         self._projection_mode = OmmatidiaProjection.Position
         self._output_mode: 'EyeOutput' = EyeOutput.Cartridge
-        self._tiled_mode = True
+        self._tiled_mode = False
         self._lum_ref = 1.0             # target operating-point luminance (scene-dependant)
         self._noise_threshold = 0.05
         self._trigger_delay = 0.008     # reflex arc onset latency (s), Juusola 2017 Appendix 8
